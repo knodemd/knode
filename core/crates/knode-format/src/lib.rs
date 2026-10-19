@@ -55,8 +55,8 @@ pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{
     ActorKind, Agent, AgentKey, Change, ChangeDetail, ChangeId, ChangeOp, Folder, FolderSpec,
-    GrantLevel, HistoryEntry, Link, LinkHistoryEntry, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
+    GrantLevel, HistoryEntry, ImportedNode, Link, LinkHistoryEntry, NewNode, Node, NodeId,
+    NodeSummary, NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
 };
 
 /// The extension of a space package.
