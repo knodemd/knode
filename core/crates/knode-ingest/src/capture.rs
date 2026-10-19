@@ -11,7 +11,7 @@ use knode_format::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::discover::{SessionFile, changed_sessions, default_root, discover};
+use crate::discover::{SessionFile, changed_sessions, default_roots, discover};
 use crate::filter::ProjectFilter;
 use crate::model::{Agent, Conversation};
 use crate::reader::{self, SessionReader};
@@ -191,7 +191,7 @@ pub struct Capture {
 
 impl Capture {
     /// Capture with its state in `state_path`, read now if it exists, and the default session
-    /// folders of every agent (see [`default_root`]).
+    /// folders of every agent (see [`default_roots`](crate::default_roots)).
     ///
     /// A state file that cannot be parsed, or that was written by a newer version, is ignored:
     /// every session is read again from the start, which finds and updates the same nodes.
@@ -207,7 +207,11 @@ impl Capture {
         };
         let roots = Agent::ALL
             .into_iter()
-            .filter_map(|agent| default_root(agent).map(|root| (agent, root)))
+            .flat_map(|agent| {
+                default_roots(agent)
+                    .into_iter()
+                    .map(move |root| (agent, root))
+            })
             .collect();
         Ok(Self {
             state_path,
@@ -260,7 +264,7 @@ impl Capture {
     /// Reads every session in the session folders and writes what changed, then saves the
     /// state. Use it once at start, to catch up, and from time to time to find what the
     /// watcher missed. Files that are gone are forgotten; their nodes stay. A session folder
-    /// that cannot be listed (or an OpenCode database that cannot be read) is reported in
+    /// that cannot be listed (or a database that cannot be read) is reported in
     /// [`CaptureReport::failed`] and the others are still read.
     pub fn sync_all(&mut self, space: &mut Space) -> Result<CaptureReport, CaptureError> {
         let mut files = Vec::new();
@@ -286,8 +290,9 @@ impl Capture {
 
     /// Reads the given paths, such as the ones a [`Watcher`](crate::Watcher) reported, and
     /// writes what changed, then saves the state. Paths that are not session files under one of
-    /// the session folders are ignored; removed files are forgotten. A change to the OpenCode
-    /// database checks every OpenCode session, and reads the ones that changed.
+    /// the session folders are ignored; removed files are forgotten. A change to a database
+    /// (OpenCode, Cursor, or a Windsurf window) checks every session in it, and reads the ones
+    /// that changed.
     pub fn sync_paths<P: AsRef<Path>>(
         &mut self,
         space: &mut Space,
