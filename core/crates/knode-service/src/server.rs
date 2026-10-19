@@ -382,6 +382,12 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             let space = lock_ignoring_poison(&space);
             to_value(space.get_node(&p.id)?)
         }
+        methods::NODE_FIND_BY_TITLE => {
+            let p: TitleParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(space.find_by_title(&p.title)?)
+        }
         methods::NODE_UPDATE => {
             let p: NodeUpdateParams = params(method, raw)?;
             let space = state.space(&p.space)?;
@@ -434,13 +440,17 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             }
             to_value(removed)
         }
-        methods::LINKS_FROM | methods::LINKS_BACK | methods::HISTORY => {
+        methods::LINKS_FROM
+        | methods::LINKS_BACK
+        | methods::LINKS_UNRESOLVED
+        | methods::HISTORY => {
             let p: NodeParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
             match method {
                 methods::LINKS_FROM => to_value(space.links_from(&p.id)?),
                 methods::LINKS_BACK => to_value(space.backlinks(&p.id)?),
+                methods::LINKS_UNRESOLVED => to_value(space.unresolved_links(&p.id)?),
                 _ => to_value(space.history(&p.id)?),
             }
         }

@@ -395,3 +395,54 @@ fn connect_or_spawn_gives_up_when_nothing_listens() {
         .unwrap_err();
     assert!(matches!(err, Error::StartTimeout { .. }), "{err}");
 }
+
+#[test]
+fn finds_nodes_by_title_and_lists_unresolved_links() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let path = fixture.space_path("Titles");
+    client.create_space(&path, "Titles").unwrap();
+    let me = Provenance::person("tester");
+    let first = client
+        .create_node(
+            &path,
+            NewNode::note("Plan", "See [[Roadmap]] and [[Ideas]]."),
+            &me,
+        )
+        .unwrap();
+    let second = client
+        .create_node(&path, NewNode::note("plan", "Another one."), &me)
+        .unwrap();
+    client
+        .create_node(&path, NewNode::note("Ideas", ""), &me)
+        .unwrap();
+
+    let found = client.find_by_title(&path, "  PLAN ").unwrap();
+    let ids: Vec<_> = found.iter().map(|n| n.id).collect();
+    assert_eq!(ids, vec![first.id, second.id]);
+    assert!(client.find_by_title(&path, "Nothing").unwrap().is_empty());
+
+    assert_eq!(
+        client.unresolved_links(&path, &first.id).unwrap(),
+        vec!["Roadmap".to_string()]
+    );
+    assert!(
+        client
+            .unresolved_links(&path, &second.id)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Over the wire, with the documented names.
+    let raw = client
+        .call(
+            "node.find_by_title",
+            json!({ "space": path, "title": "ideas" }),
+        )
+        .unwrap();
+    assert_eq!(raw.as_array().unwrap().len(), 1);
+    assert_eq!(raw[0]["title"], "Ideas");
+    let (code, kind) = rpc_code(client.call("node.find_by_title", json!({ "space": path })));
+    assert_eq!(code, codes::INVALID_PARAMS);
+    assert_eq!(kind.as_deref(), Some("invalid_params"));
+}

@@ -19,6 +19,8 @@ pub mod methods {
     pub const NODE_CREATE: &str = "node.create";
     /// Reads a node.
     pub const NODE_GET: &str = "node.get";
+    /// Finds the nodes with a title.
+    pub const NODE_FIND_BY_TITLE: &str = "node.find_by_title";
     /// Changes a node.
     pub const NODE_UPDATE: &str = "node.update";
     /// Deletes a node.
@@ -31,6 +33,8 @@ pub mod methods {
     pub const LINKS_FROM: &str = "links.from";
     /// The links to a node.
     pub const LINKS_BACK: &str = "links.back";
+    /// The `[[links]]` of a node that name no node yet.
+    pub const LINKS_UNRESOLVED: &str = "links.unresolved";
     /// Full-text search.
     pub const SEARCH: &str = "search";
     /// The nodes changed most recently.
@@ -252,6 +256,12 @@ pub(crate) struct NodeCreateParams {
 pub(crate) struct NodeParams {
     pub space: PathBuf,
     pub id: NodeId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct TitleParams {
+    pub space: PathBuf,
+    pub title: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

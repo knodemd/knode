@@ -70,12 +70,14 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `space.open` | `space` | Space info. |
 | `node.create` | `space`, `title`, `body`?, `kind`? (default `note`), `tags`?, `by` | The node. |
 | `node.get` | `space`, `id` | The node, or `null` when no node has this id. |
+| `node.find_by_title` | `space`, `title` | Node summaries with this title, oldest first. Titles are compared without regard to case or extra spaces; a `[[link]]` with this title points at the first one. |
 | `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `by` | The node as it is now. Fields left out stay as they are. |
 | `node.delete` | `space`, `id`, `by` | `null`. |
 | `link.create` | `space`, `from`, `to`, `kind`? (default `related`), `by` | The link. |
 | `link.delete` | `space`, `from`, `to`, `kind`? (default `related`) | `true` if there was such a link. |
 | `links.from` | `space`, `id` | The links that start from the node. |
 | `links.back` | `space`, `id` | The links that point at the node. |
+| `links.unresolved` | `space`, `id` | The `[[links]]` in the node's text that name no node yet, as written. |
 | `search` | `space`, `query`, `limit`? (default 20, at most 1000) | Search hits, best first. |
 | `recent` | `space`, `limit`? (default 20, at most 1000) | Node summaries, newest change first. |
 | `history` | `space`, `id` | Every version of the node, oldest first. |

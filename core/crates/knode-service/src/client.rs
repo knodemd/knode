@@ -171,6 +171,16 @@ impl Client {
         self.request(methods::NODE_GET, self.node_params(space.as_ref(), id)?)
     }
 
+    /// The nodes with this title, compared without regard to case or extra spaces, oldest
+    /// first. A `[[link]]` with this title points at the first one.
+    pub fn find_by_title(&self, space: impl AsRef<Path>, title: &str) -> Result<Vec<NodeSummary>> {
+        let params = TitleParams {
+            space: space_path(space.as_ref())?,
+            title: title.to_string(),
+        };
+        self.request(methods::NODE_FIND_BY_TITLE, params)
+    }
+
     /// Changes a node and returns it as it is now.
     pub fn update_node(
         &self,
@@ -243,6 +253,14 @@ impl Client {
     /// The links that point at a node.
     pub fn backlinks(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<Link>> {
         self.request(methods::LINKS_BACK, self.node_params(space.as_ref(), id)?)
+    }
+
+    /// The `[[links]]` in a node's body that name no node yet, as written.
+    pub fn unresolved_links(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<String>> {
+        self.request(
+            methods::LINKS_UNRESOLVED,
+            self.node_params(space.as_ref(), id)?,
+        )
     }
 
     /// Searches titles and text, best match first.
