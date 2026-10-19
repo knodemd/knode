@@ -1,0 +1,53 @@
+name: homebrew
+
+# Asks knodemd/homebrew-tap to update its formula and cask when a release is published.
+# The release workflow only drafts releases; a maintainer checks the draft and publishes
+# it, and publishing runs this. It can also be run by hand with a version.
+# The tap opens a pull request; nothing lands without review. The process is in the handbook:
+# https://github.com/knodemd/handbook/blob/main/07-releasing.md
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version of a published release, X.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: Update the Homebrew tap
+    runs-on: ubuntu-24.04
+    # Homebrew does not offer pre-releases.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    env:
+      # A fine-grained token with "Contents: read and write" on knodemd/homebrew-tap,
+      # the permission repository_dispatch needs.
+      TAP_DISPATCH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
+      INPUT_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Send the knode-release event
+        run: |
+          version="${INPUT_VERSION#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::$INPUT_VERSION is not a X.Y.Z release, the tap is not updated"
+            exit 0
+          fi
+          if [ -z "$TAP_DISPATCH_TOKEN" ]; then
+            echo "::warning::TAP_DISPATCH_TOKEN is not set, knodemd/homebrew-tap is not updated; run its bump workflow by hand with $version"
+            exit 0
+          fi
+          jq -n --arg version "$version" '{event_type: "knode-release", client_payload: {version: $version}}' |
+            curl --fail-with-body --silent --show-error \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $TAP_DISPATCH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/knodemd/homebrew-tap/dispatches \
+              --data @-
+          echo "Sent knode-release $version to knodemd/homebrew-tap"
