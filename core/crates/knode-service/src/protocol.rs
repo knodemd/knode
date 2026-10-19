@@ -1,0 +1,331 @@
+//! The wire protocol: JSON-RPC 2.0 over a Unix socket, one JSON message per line.
+//!
+//! See `PROTOCOL.md` in this crate for the full description.
+
+use std::fmt;
+use std::path::PathBuf;
+
+use knode_format::{NodeId, NodeUpdate, Provenance, Space};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// The method names.
+pub mod methods {
+    /// Creates a space.
+    pub const SPACE_CREATE: &str = "space.create";
+    /// Opens a space.
+    pub const SPACE_OPEN: &str = "space.open";
+    /// Creates a node.
+    pub const NODE_CREATE: &str = "node.create";
+    /// Reads a node.
+    pub const NODE_GET: &str = "node.get";
+    /// Changes a node.
+    pub const NODE_UPDATE: &str = "node.update";
+    /// Deletes a node.
+    pub const NODE_DELETE: &str = "node.delete";
+    /// Links two nodes.
+    pub const LINK_CREATE: &str = "link.create";
+    /// Removes a link.
+    pub const LINK_DELETE: &str = "link.delete";
+    /// The links from a node.
+    pub const LINKS_FROM: &str = "links.from";
+    /// The links to a node.
+    pub const LINKS_BACK: &str = "links.back";
+    /// Full-text search.
+    pub const SEARCH: &str = "search";
+    /// The nodes changed most recently.
+    pub const RECENT: &str = "recent";
+    /// Every version of a node.
+    pub const HISTORY: &str = "history";
+    /// Starts `changed` notifications on this connection.
+    pub const SUBSCRIBE: &str = "subscribe";
+    /// Stops `changed` notifications on this connection.
+    pub const UNSUBSCRIBE: &str = "unsubscribe";
+    /// What the service is doing.
+    pub const SERVICE_STATUS: &str = "service.status";
+    /// Notification: a node changed.
+    pub const CHANGED: &str = "changed";
+    /// Notification: this connection fell behind and missed changes.
+    pub const LAGGED: &str = "lagged";
+}
+
+/// The JSON-RPC error codes the service answers with.
+pub mod codes {
+    /// The line is not valid JSON.
+    pub const PARSE_ERROR: i64 = -32700;
+    /// The message is not a valid JSON-RPC 2.0 request.
+    pub const INVALID_REQUEST: i64 = -32600;
+    /// No method has this name.
+    pub const METHOD_NOT_FOUND: i64 = -32601;
+    /// The params are missing, of the wrong type or out of range.
+    pub const INVALID_PARAMS: i64 = -32602;
+    /// Something went wrong inside the service.
+    pub const INTERNAL_ERROR: i64 = -32603;
+    /// No node has this id.
+    pub const NOT_FOUND: i64 = -32001;
+    /// The path is not a `.knode` package.
+    pub const NOT_A_SPACE: i64 = -32002;
+    /// A space already exists at this path.
+    pub const ALREADY_EXISTS: i64 = -32003;
+    /// A value breaks a rule of the format, such as an empty title.
+    pub const INVALID: i64 = -32004;
+    /// The space was written by a newer version of Knode, or its files do not agree.
+    pub const UNSUPPORTED: i64 = -32005;
+    /// The files of the space could not be read or written.
+    pub const STORAGE: i64 = -32006;
+}
+
+/// An error answered by the service: a JSON-RPC error object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RpcError {
+    /// The error code, one of [`codes`].
+    pub code: i64,
+    /// What went wrong, for people.
+    pub message: String,
+    /// More detail: `{"kind": "..."}` with a stable name for the error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl RpcError {
+    /// An error with a code and a message.
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        RpcError {
+            code,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn with_kind(mut self, kind: &str) -> Self {
+        self.data = Some(serde_json::json!({ "kind": kind }));
+        self
+    }
+
+    /// The stable name of the error from `data.kind`, such as `not_found`.
+    pub fn kind(&self) -> Option<&str> {
+        self.data.as_ref()?.get("kind")?.as_str()
+    }
+
+    pub(crate) fn invalid_params(message: impl Into<String>) -> Self {
+        RpcError::new(codes::INVALID_PARAMS, message).with_kind("invalid_params")
+    }
+}
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} (code {})", self.message, self.code)
+    }
+}
+
+impl std::error::Error for RpcError {}
+
+impl From<knode_format::Error> for RpcError {
+    fn from(e: knode_format::Error) -> Self {
+        use knode_format::Error as E;
+        let message = e.to_string();
+        let (code, kind) = match e {
+            E::NotFound(_) => (codes::NOT_FOUND, "not_found"),
+            E::NotASpace(_) => (codes::NOT_A_SPACE, "not_a_space"),
+            E::AlreadyExists(_) => (codes::ALREADY_EXISTS, "already_exists"),
+            E::Invalid(_) => (codes::INVALID, "invalid"),
+            E::UnsupportedFormat { .. } | E::NewerSchema { .. } | E::MismatchedSpace { .. } => {
+                (codes::UNSUPPORTED, "unsupported")
+            }
+            E::Io(_) | E::Sqlite(_) | E::Manifest(_) => (codes::STORAGE, "storage"),
+            _ => (codes::INTERNAL_ERROR, "internal"),
+        };
+        RpcError::new(code, message).with_kind(kind)
+    }
+}
+
+/// What happened to a node, in a [`Change`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind {
+    /// The node was created.
+    Create,
+    /// The node was changed, directly or because a node it links to was renamed.
+    Update,
+    /// The node was deleted.
+    Delete,
+    /// A link from the node was made.
+    Link,
+    /// A link from the node was removed.
+    Unlink,
+}
+
+/// The params of a `changed` notification: one node changed in one space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    /// The space, as the service opened it (an absolute, canonical path).
+    pub space: PathBuf,
+    /// The node that changed.
+    pub node_id: NodeId,
+    /// What happened to it.
+    pub op: ChangeKind,
+}
+
+/// A notification received by a subscribed [`Client`](crate::Client).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// A node changed.
+    Changed(Change),
+    /// The connection fell behind and missed this many changes; reload what is shown.
+    Lagged {
+        /// How many changes were missed.
+        missed: u64,
+    },
+}
+
+/// A space as the service has it open: the result of `space.create` and `space.open`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceInfo {
+    /// The package folder, absolute and canonical. Use it as `space` in later calls.
+    pub path: PathBuf,
+    /// The id of the space from `manifest.json`.
+    pub id: String,
+    /// The name of the space.
+    pub name: String,
+    /// The format version.
+    pub format: u64,
+    /// When the space was created, in RFC 3339.
+    pub created_at: String,
+    /// How many nodes it holds.
+    pub nodes: u64,
+}
+
+impl SpaceInfo {
+    pub(crate) fn of(space: &Space) -> knode_format::Result<Self> {
+        let manifest = space.manifest();
+        Ok(SpaceInfo {
+            path: space.path().to_path_buf(),
+            id: manifest.id.clone(),
+            name: manifest.name.clone(),
+            format: manifest.format,
+            created_at: manifest.created_at.clone(),
+            nodes: space.node_count()?,
+        })
+    }
+}
+
+/// What the service is doing: the result of `service.status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Status {
+    /// The version of Knode Service.
+    pub version: String,
+    /// The process id of the service.
+    pub pid: u32,
+    /// The spaces the service has open.
+    pub spaces: Vec<PathBuf>,
+    /// How many clients are connected, this one included.
+    pub clients: u64,
+}
+
+// Params of each method, shared by the client and the server.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SpaceParams {
+    pub space: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SpaceCreateParams {
+    pub space: PathBuf,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NodeCreateParams {
+    pub space: PathBuf,
+    #[serde(default)]
+    pub kind: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NodeParams {
+    pub space: PathBuf,
+    pub id: NodeId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NodeUpdateParams {
+    pub space: PathBuf,
+    pub id: NodeId,
+    #[serde(flatten)]
+    pub update: NodeUpdate,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NodeDeleteParams {
+    pub space: PathBuf,
+    pub id: NodeId,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct LinkCreateParams {
+    pub space: PathBuf,
+    pub from: NodeId,
+    pub to: NodeId,
+    #[serde(default = "default_link_kind")]
+    pub kind: String,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct LinkDeleteParams {
+    pub space: PathBuf,
+    pub from: NodeId,
+    pub to: NodeId,
+    #[serde(default = "default_link_kind")]
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SearchParams {
+    pub space: PathBuf,
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RecentParams {
+    pub space: PathBuf,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct SubscribeParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct LaggedParams {
+    pub missed: u64,
+}
+
+fn default_link_kind() -> String {
+    knode_format::link_kinds::RELATED.to_string()
+}
+
+/// The `limit` of `search` and `recent` when none is given.
+pub const DEFAULT_LIMIT: usize = 20;
+/// The largest `limit` the service accepts.
+pub const MAX_LIMIT: usize = 1000;
+/// The longest line, in bytes, the service reads. Longer lines close the connection.
+pub const MAX_LINE: usize = 16 * 1024 * 1024;
+
+fn default_limit() -> usize {
+    DEFAULT_LIMIT
+}
