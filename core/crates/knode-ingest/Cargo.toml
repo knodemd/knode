@@ -8,3 +8,8 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[dependencies]
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
