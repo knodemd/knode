@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use knode_format::{
-    Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance, SearchHit, Space,
+    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
+    NodeUpdate, Provenance, SearchHit, Space,
 };
 
 /// What can go wrong in a backend. Every error is shown to the agent as a tool error, so the
@@ -29,9 +30,13 @@ pub enum BackendError {
 impl From<knode_format::Error> for BackendError {
     fn from(error: knode_format::Error) -> Self {
         match error {
-            knode_format::Error::Invalid(_) | knode_format::Error::NotFound(_) => {
-                BackendError::Invalid(error.to_string())
-            }
+            knode_format::Error::Invalid(_)
+            | knode_format::Error::NotFound(_)
+            | knode_format::Error::ChangeNotFound(_)
+            | knode_format::Error::CannotUndo { .. }
+            | knode_format::Error::AlreadyUndone { .. }
+            | knode_format::Error::UndoConflict { .. }
+            | knode_format::Error::PersonOnly(_) => BackendError::Invalid(error.to_string()),
             other => BackendError::Failed(other.to_string()),
         }
     }
@@ -61,6 +66,18 @@ pub trait Backend: Send + Sync + 'static {
     fn backlinks(&self, id: &NodeId) -> BackendResult<Vec<Link>>;
     /// `recent`: the nodes changed last, newest first.
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>>;
+    /// `history`: every version of a node, oldest first.
+    fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>>;
+    /// `changes`: the changes of the space, newest first, older than `before` when set.
+    fn changes(&self, limit: usize, before: Option<ChangeId>) -> BackendResult<Vec<Change>>;
+    /// `changes` with a subject: the changes made to a node, newest first.
+    fn changes_of(&self, subject: &str, limit: usize) -> BackendResult<Vec<Change>>;
+    /// `change`: one change with what it wrote, or `None`.
+    fn change(&self, id: ChangeId) -> BackendResult<Option<ChangeDetail>>;
+    /// `undo`: undoes a change and returns the change that undoes it.
+    fn undo(&self, id: ChangeId, force: bool, by: &Provenance) -> BackendResult<Change>;
+    /// `restore`: puts a node back to one of its versions and returns it.
+    fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node>;
 }
 
 /// A backend that opens the space directly with `knode-format`.
@@ -172,6 +189,30 @@ impl Backend for DirectBackend {
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         self.with(|s| s.recent(limit))
     }
+
+    fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {
+        self.with(|s| s.history(id))
+    }
+
+    fn changes(&self, limit: usize, before: Option<ChangeId>) -> BackendResult<Vec<Change>> {
+        self.with(|s| s.changes(limit, before))
+    }
+
+    fn changes_of(&self, subject: &str, limit: usize) -> BackendResult<Vec<Change>> {
+        self.with(|s| s.changes_of(subject, limit))
+    }
+
+    fn change(&self, id: ChangeId) -> BackendResult<Option<ChangeDetail>> {
+        self.with(|s| s.change(id))
+    }
+
+    fn undo(&self, id: ChangeId, force: bool, by: &Provenance) -> BackendResult<Change> {
+        self.with(|s| s.undo(id, by, force))
+    }
+
+    fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
+        self.with(|s| s.restore(id, version, by))
+    }
 }
 
 /// A boxed backend is a backend, so the backend can be picked at run time.
@@ -210,5 +251,29 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         (**self).recent(limit)
+    }
+
+    fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {
+        (**self).history(id)
+    }
+
+    fn changes(&self, limit: usize, before: Option<ChangeId>) -> BackendResult<Vec<Change>> {
+        (**self).changes(limit, before)
+    }
+
+    fn changes_of(&self, subject: &str, limit: usize) -> BackendResult<Vec<Change>> {
+        (**self).changes_of(subject, limit)
+    }
+
+    fn change(&self, id: ChangeId) -> BackendResult<Option<ChangeDetail>> {
+        (**self).change(id)
+    }
+
+    fn undo(&self, id: ChangeId, force: bool, by: &Provenance) -> BackendResult<Change> {
+        (**self).undo(id, force, by)
+    }
+
+    fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
+        (**self).restore(id, version, by)
     }
 }

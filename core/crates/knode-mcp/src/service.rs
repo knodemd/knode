@@ -4,7 +4,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use knode_format::{Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance, SearchHit};
+use knode_format::{
+    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
+    NodeUpdate, Provenance, SearchHit,
+};
 use knode_service::{Client, Error};
 
 use crate::backend::{Backend, BackendError, BackendResult};
@@ -97,9 +100,10 @@ impl ServiceBackend {
     fn error(&self, error: Error) -> BackendError {
         match error {
             Error::Rpc(rpc) => match rpc.kind() {
-                Some("not_found" | "invalid" | "invalid_params") => {
-                    BackendError::Invalid(rpc.message)
-                }
+                Some(
+                    "not_found" | "invalid" | "invalid_params" | "cannot_undo" | "already_undone"
+                    | "undo_conflict" | "person_only",
+                ) => BackendError::Invalid(rpc.message),
                 Some("not_a_space" | "unsupported") => BackendError::Unavailable(format!(
                     "cannot open the Knode space at {}: {}",
                     self.space.display(),
@@ -155,5 +159,29 @@ impl Backend for ServiceBackend {
 
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         self.with(|c, s| c.recent(s, limit))
+    }
+
+    fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {
+        self.with(|c, s| c.history(s, id))
+    }
+
+    fn changes(&self, limit: usize, before: Option<ChangeId>) -> BackendResult<Vec<Change>> {
+        self.with(|c, s| c.changes(s, limit, before))
+    }
+
+    fn changes_of(&self, subject: &str, limit: usize) -> BackendResult<Vec<Change>> {
+        self.with(|c, s| c.changes_of(s, subject, limit))
+    }
+
+    fn change(&self, id: ChangeId) -> BackendResult<Option<ChangeDetail>> {
+        self.with(|c, s| c.change(s, id))
+    }
+
+    fn undo(&self, id: ChangeId, force: bool, by: &Provenance) -> BackendResult<Change> {
+        self.with(|c, s| c.undo(s, id, force, by))
+    }
+
+    fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
+        self.with(|c, s| c.restore(s, id, version, by))
     }
 }
