@@ -9,6 +9,7 @@ members = [
     "crates/knode-sync",
     "crates/knode-ffi",
     "crates/knode-cli",
+    "crates/knode-config",
 ]
 
 [workspace.package]

@@ -12,10 +12,15 @@ final class AppModel {
     private(set) var editor: NoteEditorModel?
     var errorMessage: String?
 
-    /// True while the app runs on `PreviewSpaceStore` instead of the Knode core.
-    let isPreview: Bool
+    /// The spaces opened most recently, newest first.
+    private(set) var recentSpaceURLs: [URL] = []
 
     var selectedSpace: Space? { spaces.first { $0.id == selectedSpaceID } }
+
+    /// True when the selected space is the example space, kept in memory.
+    var isShowingExample: Bool {
+        selectedSpaceID.map(exampleSpaceIDs.contains) ?? false
+    }
 
     var selectedNodeID: Node.ID? {
         get { editor?.nodeID }
@@ -27,31 +32,55 @@ final class AppModel {
     }
 
     @ObservationIgnored private let store: any SpaceStore
+    @ObservationIgnored private let exampleStore: any SpaceStore
+    @ObservationIgnored private let recentSpaces: RecentSpaces?
+    @ObservationIgnored private var exampleSpaceIDs: Set<Space.ID> = []
     @ObservationIgnored private let searchDelay: Duration
     @ObservationIgnored private let saveDelay: Duration
     @ObservationIgnored private var pendingSearch: Task<Void, Never>?
 
+    /// - Parameters:
+    ///   - store: where spaces are read and written: the Knode core in the app.
+    ///   - exampleStore: where the example space lives, in memory.
+    ///   - recentSpaces: where the recent spaces are remembered; `nil` remembers nothing.
     init(
         store: any SpaceStore,
-        isPreview: Bool = false,
+        exampleStore: any SpaceStore = PreviewSpaceStore(),
+        recentSpaces: RecentSpaces? = nil,
         searchDelay: Duration = .milliseconds(200),
         saveDelay: Duration = .milliseconds(600)
     ) {
         self.store = store
-        self.isPreview = isPreview
+        self.exampleStore = exampleStore
+        self.recentSpaces = recentSpaces
         self.searchDelay = searchDelay
         self.saveDelay = saveDelay
+        recentSpaceURLs = recentSpaces?.urls ?? []
     }
 
     // MARK: Spaces
 
     func openSpace(at url: URL) async {
-        await show { try await self.store.openSpace(at: url) }
+        await show(remembering: url) { try await self.store.openSpace(at: url) }
     }
 
     func createSpace(at url: URL) async {
         let name = url.deletingPathExtension().lastPathComponent
-        await show { try await self.store.createSpace(at: url, name: name) }
+        await show(remembering: url) { try await self.store.createSpace(at: url, name: name) }
+    }
+
+    /// Opens the example space: example notes kept in memory, never written to disk.
+    func openExampleSpace() async {
+        await show {
+            let space = try await self.exampleStore.openSpace(at: SpacePanels.exampleURL)
+            self.exampleSpaceIDs.insert(space.id)
+            return space
+        }
+    }
+
+    func clearRecentSpaces() {
+        recentSpaces?.clear()
+        recentSpaceURLs = []
     }
 
     func selectSpace(_ id: Space.ID?) async {
@@ -64,14 +93,23 @@ final class AppModel {
         await reload()
     }
 
-    private func show(_ open: @escaping () async throws -> Space) async {
+    private func show(remembering url: URL? = nil, _ open: @escaping () async throws -> Space) async {
         do {
             let space = try await open()
             if !spaces.contains(where: { $0.id == space.id }) { spaces.append(space) }
+            if let recentSpaces, let url = space.url ?? url {
+                recentSpaces.add(url)
+                recentSpaceURLs = recentSpaces.urls
+            }
             await selectSpace(space.id)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// The store that holds a space: the example store for the example space.
+    private func store(for space: Space.ID) -> any SpaceStore {
+        exampleSpaceIDs.contains(space) ? exampleStore : store
     }
 
     // MARK: Nodes
@@ -84,9 +122,10 @@ final class AppModel {
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
+            let spaceStore = store(for: space)
             let result = query.isEmpty
-                ? try await store.listNodes(in: space)
-                : try await store.search(query, in: space)
+                ? try await spaceStore.listNodes(in: space)
+                : try await spaceStore.search(query, in: space)
             // A newer search or another space may have started meanwhile.
             guard space == selectedSpaceID, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             nodes = result
@@ -113,9 +152,10 @@ final class AppModel {
             return
         }
         do {
-            let node = try await store.node(id, in: space)
+            let spaceStore = store(for: space)
+            let node = try await spaceStore.node(id, in: space)
             guard space == selectedSpaceID else { return }
-            let editor = NoteEditorModel(node: node, spaceID: space, store: store, saveDelay: saveDelay)
+            let editor = NoteEditorModel(node: node, spaceID: space, store: spaceStore, saveDelay: saveDelay)
             editor.onSave = { [weak self] node in self?.didSave(node) }
             self.editor = editor
         } catch {
@@ -127,7 +167,7 @@ final class AppModel {
     func createNode() async {
         guard let space = selectedSpaceID else { return }
         do {
-            let node = try await store.createNode(in: space, title: "Untitled", body: "")
+            let node = try await store(for: space).createNode(in: space, title: "Untitled", body: "")
             searchText = ""
             pendingSearch?.cancel()
             await reload()
@@ -141,7 +181,7 @@ final class AppModel {
     func openLinkedNode(titled title: String) async {
         guard let space = selectedSpaceID else { return }
         do {
-            let all = try await store.listNodes(in: space)
+            let all = try await store(for: space).listNodes(in: space)
             if let match = all.first(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
                 await openNode(match.id)
             }

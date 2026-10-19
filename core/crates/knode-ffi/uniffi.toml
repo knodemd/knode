@@ -1,0 +1,5 @@
+[bindings.swift]
+# The Swift bindings are their own module, `KnodeCore`, on top of the C module `KnodeCoreFFI`.
+module_name = "KnodeCore"
+ffi_module_name = "KnodeCoreFFI"
+ffi_module_filename = "KnodeCoreFFI"

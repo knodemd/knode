@@ -2,9 +2,9 @@ import Foundation
 
 /// Everything the app needs from a space.
 ///
-/// The Rust core implements this through UniFFI (`core/crates/knode-ffi`); until then the app runs
-/// on `PreviewSpaceStore`. Every method is async so the real store can call into Knode Service
-/// without blocking the main thread.
+/// `CoreSpaceStore` implements it with the Rust core (`core/crates/knode-ffi`), and
+/// `PreviewSpaceStore` with example notes in memory. Every method is async so a store never blocks
+/// the main thread.
 public protocol SpaceStore: Sendable {
     /// Creates a new, empty `.knode` package at `url` and opens it.
     func createSpace(at url: URL, name: String) async throws -> Space

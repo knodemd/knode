@@ -63,8 +63,8 @@ struct SidebarView: View {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
                 }
                 .buttonStyle(.borderless)
-                if model.isPreview {
-                    PreviewNotice()
+                if model.isShowingExample {
+                    ExampleNotice()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -73,11 +73,11 @@ struct SidebarView: View {
     }
 }
 
-/// Says plainly that the notes are examples until the core is connected.
-struct PreviewNotice: View {
+/// Says plainly that the example space is not saved.
+struct ExampleNotice: View {
     var body: some View {
         Label {
-            Text("Preview: example notes, kept in memory. Spaces are not read from disk yet.")
+            Text("Example space: notes kept in memory, nothing is saved.")
         } icon: {
             Image(systemName: "info.circle")
         }
@@ -165,17 +165,43 @@ struct WelcomeView: View {
                 Button("New Space…", systemImage: "plus.square.on.square") {
                     if let url = SpacePanels.chooseNewSpace() { Task { await model.createSpace(at: url) } }
                 }
-                if model.isPreview {
-                    Button("Try the Example Space", systemImage: "sparkles") {
-                        Task { await model.openSpace(at: SpacePanels.exampleURL) }
-                    }
+                Button("Try the Example Space", systemImage: "sparkles") {
+                    Task { await model.openExampleSpace() }
                 }
             }
             .controlSize(.large)
+            if !model.recentSpaceURLs.isEmpty {
+                RecentSpacesList()
+            }
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PaperBackground())
+    }
+}
+
+/// The spaces opened most recently, one click to open again.
+struct RecentSpacesList: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("RECENT").font(.knodeLine(11)).foregroundStyle(.secondary)
+            ForEach(model.recentSpaceURLs.prefix(5), id: \.self) { url in
+                Button {
+                    Task { await model.openSpace(at: url) }
+                } label: {
+                    Label {
+                        Text(url.deletingPathExtension().lastPathComponent)
+                    } icon: {
+                        KnodeIconView(.knode).frame(width: 13, height: 13)
+                    }
+                }
+                .buttonStyle(.link)
+                .help(url.path(percentEncoded: false))
+            }
+        }
+        .frame(width: 280, alignment: .leading)
     }
 }
 
