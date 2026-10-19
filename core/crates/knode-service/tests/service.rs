@@ -446,3 +446,13 @@ fn finds_nodes_by_title_and_lists_unresolved_links() {
     assert_eq!(code, codes::INVALID_PARAMS);
     assert_eq!(kind.as_deref(), Some("invalid_params"));
 }
+
+#[test]
+fn connect_or_spawn_stops_waiting_when_the_service_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket: &Path = &dir.path().join("service.sock");
+    let started = Instant::now();
+    let err = connect_or_spawn_with(socket, Command::new("false"), WAIT).unwrap_err();
+    assert!(matches!(err, Error::StartFailed { .. }), "{err}");
+    assert!(started.elapsed() < WAIT);
+}

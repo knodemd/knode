@@ -10,6 +10,8 @@ pub const SOCKET_FILE: &str = knode_config::SERVICE_SOCKET;
 /// The lock file in the Knode home. The running service holds an exclusive lock on it and
 /// writes its process id in it.
 pub const LOCK_FILE: &str = "service.lock";
+/// The log in the Knode home where a service started in the background writes its messages.
+pub const LOG_FILE: &str = "service.log";
 
 /// The Knode home: `KNODE_HOME` when it is set, else `~/Library/Application Support/Knode` on
 /// macOS, else `$XDG_DATA_HOME/knode` (by default `~/.local/share/knode`) on other systems.

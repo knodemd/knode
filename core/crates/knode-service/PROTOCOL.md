@@ -83,7 +83,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `history` | `space`, `id` | Every version of the node, oldest first. |
 | `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients" }`. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. |
 
 Space info is:
 
@@ -109,6 +109,24 @@ order the writes were made:
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
+
+## Capture
+
+Knode Service captures every Claude Code and Codex conversation into the default space: one
+`conversation` node per session, kept current while the agent writes it. It reads
+`$KNODE_HOME/config.toml` when it starts and again every few seconds:
+
+- `default_space` is the space conversations go to. With none, nothing is captured.
+- `capture = false` turns capture off. It is on when left out.
+- `capture_exclude = ["/path/to/project"]` leaves out the conversations held in these projects
+  and in every folder inside them.
+
+Capture follows `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) and `~/.codex/sessions`
+(or `$CODEX_HOME/sessions`). What it has read is saved in `$KNODE_HOME/capture/state.json`, so
+after a restart it only reads what is new. Its writes are made with the provenance
+`{ "kind": "agent", "actor": "claude-code" | "codex", "session": "<session id>" }`, go through
+the same space as every client's, one at a time, and are announced with `changed` like any other
+write.
 
 ## Errors
 

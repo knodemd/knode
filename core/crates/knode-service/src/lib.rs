@@ -6,7 +6,9 @@
 //! one change at a time, and every subscribed client hears about each change. The protocol is
 //! described in `PROTOCOL.md`.
 //!
-//! - [`run`] runs the service until SIGTERM: this is `knode service run`.
+//! - [`run`] runs the service until SIGTERM: this is `knode service run`. With
+//!   [`Config::from_env`] it also captures agent conversations into the default space (see
+//!   [`CaptureOptions`]).
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`install_launch_agent`] and [`install_systemd_unit`] start it at login.
@@ -24,6 +26,7 @@
 #![warn(missing_docs)]
 #![cfg(unix)]
 
+mod capture;
 mod client;
 mod error;
 mod install;
@@ -32,6 +35,7 @@ mod paths;
 pub mod protocol;
 mod server;
 
+pub use capture::{CAPTURE_DIR, CAPTURE_STATE_FILE, CaptureOptions};
 pub use client::{Client, SPAWN_TIMEOUT, Subscription, connect_or_spawn, connect_or_spawn_with};
 pub use error::{Error, Result};
 pub use install::{
@@ -40,7 +44,8 @@ pub use install::{
     systemd_unit, systemd_unit_path, uninstall_launch_agent, uninstall_launch_agent_in,
     uninstall_systemd_unit, uninstall_systemd_unit_in,
 };
-pub use paths::{LOCK_FILE, SOCKET_FILE, knode_home, socket_path};
+pub use knode_ingest::{Agent, WatchOptions};
+pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
 pub use protocol::{Change, ChangeKind, Event, RpcError, SpaceInfo, Status};
 pub use server::{Config, ServiceHandle, run, start};
 

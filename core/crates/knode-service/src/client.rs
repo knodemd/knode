@@ -447,54 +447,105 @@ fn space_path(path: &Path) -> Result<PathBuf> {
     Ok(fs::canonicalize(&path).unwrap_or(path))
 }
 
+/// How long to keep trying to connect after the started service has exited: it may have lost
+/// a race with another service starting at the same time.
+const EXITED_GRACE: Duration = Duration::from_secs(2);
+
+/// A log of the service's messages larger than this is started again.
+const LOG_LIMIT: u64 = 1024 * 1024;
+
 /// Connects to Knode Service, starting it in the background first when it is not running.
 ///
 /// The service is started as `<exe> service run`, in its own process group, with the
-/// environment of this process (so it uses the same `KNODE_HOME`). Waits up to
-/// [`SPAWN_TIMEOUT`] for its socket.
+/// environment of this process (so it uses the same `KNODE_HOME`). Its messages go to
+/// [`LOG_FILE`](crate::LOG_FILE) in the Knode home. Waits up to [`SPAWN_TIMEOUT`] for its
+/// socket.
 pub fn connect_or_spawn(exe: impl AsRef<Path>) -> Result<Client> {
+    let paths = paths::paths()?;
+    let socket = paths.service_socket();
+    if let Ok(client) = Client::connect(&socket) {
+        return Ok(client);
+    }
     let mut command = Command::new(exe.as_ref());
     command.args(["service", "run"]);
-    connect_or_spawn_with(paths::socket_path()?, command, SPAWN_TIMEOUT)
+    let log = open_log(&paths.home.join(crate::LOG_FILE))
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+    spawn_and_connect(&socket, command, SPAWN_TIMEOUT, log)
+}
+
+fn open_log(path: &Path) -> std::io::Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let long = fs::metadata(path).is_ok_and(|m| m.len() > LOG_LIMIT);
+    fs::OpenOptions::new()
+        .create(true)
+        .append(!long)
+        .write(true)
+        .truncate(long)
+        .open(path)
 }
 
 /// Like [`connect_or_spawn`], with the socket, the command that starts the service and the
-/// time to wait given by the caller.
+/// time to wait given by the caller. The service's output is discarded.
 pub fn connect_or_spawn_with(
     socket: impl AsRef<Path>,
-    mut command: Command,
+    command: Command,
     timeout: Duration,
 ) -> Result<Client> {
     let socket = socket.as_ref();
     if let Ok(client) = Client::connect(socket) {
         return Ok(client);
     }
+    spawn_and_connect(socket, command, timeout, Stdio::null())
+}
+
+fn spawn_and_connect(
+    socket: &Path,
+    mut command: Command,
+    timeout: Duration,
+    stderr: Stdio,
+) -> Result<Client> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .process_group(0);
     let mut child = command.spawn()?;
     let started = Instant::now();
+    let mut exited: Option<(Instant, std::process::ExitStatus)> = None;
     let mut delay = Duration::from_millis(5);
     loop {
         if let Ok(client) = Client::connect(socket) {
             // Reap the service when it ends, so it never lingers as a zombie of this process.
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
+            if exited.is_none() {
+                thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
             return Ok(client);
         }
+        if exited.is_none() {
+            if let Ok(Some(status)) = child.try_wait() {
+                exited = Some((Instant::now(), status));
+            }
+        }
+        if let Some((at, status)) = exited {
+            // A service that exits early may have lost a race with another one starting at
+            // the same time; give that one a moment, then give up.
+            if at.elapsed() >= EXITED_GRACE {
+                return Err(Error::StartFailed {
+                    status: status.to_string(),
+                });
+            }
+        }
         if started.elapsed() >= timeout {
-            let _ = child.try_wait();
             return Err(Error::StartTimeout {
                 seconds: timeout.as_secs(),
                 socket: socket.to_path_buf(),
             });
         }
-        // A child that exits early may have lost a race with another service starting at the
-        // same time; keep trying to connect until the timeout.
-        let _ = child.try_wait();
         thread::sleep(delay);
         delay = (delay * 2).min(Duration::from_millis(100));
     }

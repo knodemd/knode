@@ -224,6 +224,9 @@ pub struct Status {
     pub spaces: Vec<PathBuf>,
     /// How many clients are connected, this one included.
     pub clients: u64,
+    /// The space agent conversations are captured into, or `None` when capture is off.
+    #[serde(default)]
+    pub capture: Option<PathBuf>,
 }
 
 // Params of each method, shared by the client and the server.

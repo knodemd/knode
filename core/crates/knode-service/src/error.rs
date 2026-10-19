@@ -28,6 +28,12 @@ pub enum Error {
     /// The connection to the service closed before the answer came.
     #[error("the connection to Knode Service closed")]
     Disconnected,
+    /// The service that was started exited without listening.
+    #[error("Knode Service could not start ({status})")]
+    StartFailed {
+        /// How it exited.
+        status: String,
+    },
     /// The service did not start in time.
     #[error("Knode Service did not start within {seconds} seconds at {socket}")]
     StartTimeout {
