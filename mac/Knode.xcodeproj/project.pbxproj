@@ -25,7 +25,6 @@
 /* Begin PBXBuildFile section */
 		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
 		0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */; };
-		14A610A8D3A990E112010D52 /* knode in CopyFiles */ = {isa = PBXBuildFile; fileRef = 990084E95F9E098F6F742836 /* knode */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17772215D1051C90CE7039B0 /* RecentSpaces.swift */; };
 		1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16065546A150F910F6A236AD /* SpacePanels.swift */; };
 		2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = F62D33407D7A83E40E34FE2B /* AppIcon.icns */; };
@@ -86,19 +85,6 @@
 		};
 /* End PBXContainerItemProxy section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		077C05B99D572E5479A5FA7C /* CopyFiles */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = Contents/Helpers;
-			dstSubfolderSpec = 1;
-			files = (
-				14A610A8D3A990E112010D52 /* knode in CopyFiles */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFileReference section */
 		0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KnodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		16065546A150F910F6A236AD /* SpacePanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacePanels.swift; sourceTree = "<group>"; };
@@ -123,7 +109,6 @@
 		95BDD689D2D618AB825F4B13 /* NoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteView.swift; sourceTree = "<group>"; };
 		96D250CA89BC07524A87D4A6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		9789760F309094F157FE9CFB /* FakeKnodeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeKnodeService.swift; sourceTree = "<group>"; };
-		990084E95F9E098F6F742836 /* knode */ = {isa = PBXFileReference; name = knode; path = build/KnodeCLI/knode; sourceTree = "<group>"; };
 		9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStore.swift; sourceTree = "<group>"; };
 		A2BD7995016E9A8B78A2D927 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockTests.swift; sourceTree = "<group>"; };
@@ -166,7 +151,6 @@
 			isa = PBXGroup;
 			children = (
 				728F5149D953E20288E38B18 /* Knode */,
-				CB472C2EE52FFB81EF3048F0 /* KnodeCLI */,
 				D82D2E95A830F5FCDF3CDE7F /* KnodeCore */,
 				A5E23F349B3EFF883D816035 /* KnodeTests */,
 				529B43B6A0B8A4634D220332 /* Packages */,
@@ -260,14 +244,6 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
-		CB472C2EE52FFB81EF3048F0 /* KnodeCLI */ = {
-			isa = PBXGroup;
-			children = (
-				990084E95F9E098F6F742836 /* knode */,
-			);
-			name = KnodeCLI;
-			sourceTree = "<group>";
-		};
 		D82D2E95A830F5FCDF3CDE7F /* KnodeCore */ = {
 			isa = PBXGroup;
 			children = (
@@ -349,9 +325,9 @@
 			buildPhases = (
 				8340D0F44146AF2466ACD28C /* Sources */,
 				FFE2EDFE52E8047C6335954C /* Resources */,
-				077C05B99D572E5479A5FA7C /* CopyFiles */,
 				3E79938F245BD411D0EE4B99 /* Frameworks */,
 				3EBA76DB20C1DB317004A352 /* Document Icon */,
+				1F23B87B62D96390E3905BF0 /* Embed knode */,
 			);
 			buildRules = (
 			);
@@ -454,6 +430,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$SRCROOT/scripts/build-xcframework.sh\" \"$SRCROOT/build/KnodeCore\"\n";
+		};
+		1F23B87B62D96390E3905BF0 /* Embed knode */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/embed-knode-cli.sh",
+				"$(SRCROOT)/build/KnodeCLI/knode",
+			);
+			name = "Embed knode";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/knode",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SCRIPT_INPUT_FILE_0\" \"$SCRIPT_INPUT_FILE_1\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
 		};
 		3EBA76DB20C1DB317004A352 /* Document Icon */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -597,6 +594,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Knode/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -813,13 +811,13 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Knode/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				OTHER_CODE_SIGN_FLAGS = "$(inherited) --options=runtime";
 				OTHER_LDFLAGS = (
 					"$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a",
 					"-ObjC",

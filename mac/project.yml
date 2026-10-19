@@ -36,16 +36,6 @@ targets:
       - path: "../brand/07 App Icon/macOS/AppIcon.icns"
         buildPhase: resources
         group: Resources
-      # The knode command, built by the KnodeCLI target, copied to Contents/Helpers and signed
-      # with the app.
-      - path: build/KnodeCLI/knode
-        optional: true
-        group: KnodeCLI
-        buildPhase:
-          copyFiles:
-            destination: wrapper
-            subpath: Contents/Helpers
-        attributes: [CodeSignOnCopy]
     dependencies:
       - package: KnodeBrand
       - target: KnodeCore
@@ -58,14 +48,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: md.knode.Knode
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
+        # codesign, in the Embed knode phase, writes beside the file it signs.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         COMBINE_HIDPI_IMAGES: YES
         OTHER_LDFLAGS: "$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-      configs:
-        # The hardened runtime for the knode command in Contents/Helpers too, which Xcode signs
-        # on copy. Not in Debug, where Xcode turns the hardened runtime off for ad-hoc builds.
-        Release:
-          OTHER_CODE_SIGN_FLAGS: "$(inherited) --options=runtime"
     postBuildScripts:
       - name: Document Icon
         basedOnDependencyAnalysis: true
@@ -76,6 +63,16 @@ targets:
           - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/KnodeDocument.icns"
         script: |
           "$SCRIPT_INPUT_FILE_0" "$SRCROOT/../brand/07 App Icon/Document" "$SCRIPT_OUTPUT_FILE_0"
+      # The knode command, built by the KnodeCLI target, inside the app and signed before it.
+      - name: Embed knode
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/scripts/embed-knode-cli.sh"
+          - "$(SRCROOT)/build/KnodeCLI/knode"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/knode"
+        script: |
+          "$SCRIPT_INPUT_FILE_0" "$SCRIPT_INPUT_FILE_1" "$SCRIPT_OUTPUT_FILE_0"
   # The Swift bindings of the Rust core (core/crates/knode-ffi). Before it builds,
   # scripts/build-xcframework.sh builds the core and generates KnodeCore.swift; both live in the
   # ignored build/ folder and are never committed.

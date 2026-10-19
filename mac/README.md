@@ -86,7 +86,8 @@ scripts/build-xcframework.sh
 The `KnodeCLI` target runs `scripts/build-knode-cli.sh`, which builds `knode-cli`
 (`core/crates/knode-cli`) in release mode for Apple silicon and Intel and joins the two with
 `lipo` into `build/KnodeCLI/knode`. The `Knode` target copies it to `Contents/Helpers` and signs it
-with the app: ad hoc for local builds, with the hardened runtime in Release. Like the core, it is
+with the identity of the app and the hardened runtime (`scripts/embed-knode-cli.sh`): ad hoc for
+local builds. Like the core, it is
 rebuilt only when a file in `scripts/knode-cli-inputs.xcfilelist` changes, and the script fails if a
 source file of `knode-cli` or of a crate it uses is missing from that list.
 
