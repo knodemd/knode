@@ -79,8 +79,9 @@ impl Config {
 /// Runs Knode Service in this thread until it receives SIGTERM or SIGINT. This is
 /// `knode service run`.
 ///
-/// Fails at once with [`Error::AlreadyRunning`] when another service runs in the same Knode
-/// home. On the way out it removes the socket and releases the lock.
+/// Fails at once with [`Error::AlreadyRunning`](crate::Error::AlreadyRunning) when another
+/// service runs in the same Knode home. On the way out it removes the socket and releases the
+/// lock.
 pub fn run(config: Config) -> Result<()> {
     let bound = Bound::bind(&config)?;
     let runtime = runtime()?;

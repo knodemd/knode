@@ -550,3 +550,34 @@ fn spawn_and_connect(
         delay = (delay * 2).min(Duration::from_millis(100));
     }
 }
+
+/// Stops the Knode Service listening on `socket`, however it was started: sends it SIGTERM and
+/// waits up to `timeout` until it has closed its spaces and released its lock. A service run
+/// by launchd or systemd stays stopped until the next login. Returns its process id, or `None`
+/// when no service was listening.
+pub fn stop_service(socket: impl AsRef<Path>, timeout: Duration) -> Result<Option<u32>> {
+    let socket = socket.as_ref();
+    let Ok(client) = Client::connect(socket) else {
+        return Ok(None);
+    };
+    let pid = client.status()?.pid;
+    drop(client);
+    let pid_t = libc::pid_t::try_from(pid)
+        .map_err(|_| Error::Protocol(format!("the service sent a bad process id {pid}")))?;
+    // SAFETY: kill has no memory preconditions.
+    if unsafe { libc::kill(pid_t, libc::SIGTERM) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let lock = socket.with_file_name(crate::LOCK_FILE);
+    let started = Instant::now();
+    while socket.exists() || crate::lock::is_held(&lock) {
+        if started.elapsed() >= timeout {
+            return Err(Error::StopTimeout {
+                pid,
+                seconds: timeout.as_secs(),
+            });
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Ok(Some(pid))
+}

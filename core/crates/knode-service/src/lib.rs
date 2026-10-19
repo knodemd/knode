@@ -11,7 +11,7 @@
 //!   [`CaptureOptions`]).
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
-//! - [`install_launch_agent`] and [`install_systemd_unit`] start it at login.
+//! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
 //!
 //! ```no_run
 //! use knode_format::{NewNode, Provenance};
@@ -36,13 +36,13 @@ pub mod protocol;
 mod server;
 
 pub use capture::{CAPTURE_DIR, CAPTURE_STATE_FILE, CaptureOptions};
-pub use client::{Client, SPAWN_TIMEOUT, Subscription, connect_or_spawn, connect_or_spawn_with};
+pub use client::{
+    Client, SPAWN_TIMEOUT, Subscription, connect_or_spawn, connect_or_spawn_with, stop_service,
+};
 pub use error::{Error, Result};
 pub use install::{
-    LAUNCH_AGENT_LABEL, SYSTEMD_UNIT, install_launch_agent, install_launch_agent_in,
-    install_systemd_unit, install_systemd_unit_in, launch_agent_path, launch_agent_plist,
-    systemd_unit, systemd_unit_path, uninstall_launch_agent, uninstall_launch_agent_in,
-    uninstall_systemd_unit, uninstall_systemd_unit_in,
+    LAUNCH_AGENT_LABEL, LoginKind, LoginService, SYSTEMD_UNIT, launch_agent_path,
+    launch_agent_plist, systemd_unit, systemd_unit_path,
 };
 pub use knode_ingest::{Agent, WatchOptions};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
