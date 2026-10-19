@@ -10,6 +10,7 @@ members = [
     "crates/knode-ffi",
     "crates/knode-cli",
     "crates/knode-config",
+    "crates/knode-vault",
 ]
 
 [workspace.package]
