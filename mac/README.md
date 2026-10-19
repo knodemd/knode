@@ -74,7 +74,7 @@ The `KnodeCore` target runs `scripts/build-xcframework.sh` before it compiles. T
 
 `build/` is ignored: the framework and the bindings are made by the build and never committed.
 Xcode reruns the script only when a file in `scripts/knode-core-inputs.xcfilelist` changes; the
-script fails if a source file of `knode-ffi`, `knode-format` or `knode-md` is missing from that
+script fails if a source file of `knode-ffi`, `knode-config`, `knode-format` or `knode-md` is missing from that
 list. Cargo builds into `build/cargo`, apart from `core/target`. The script also runs on its own:
 
 ```sh

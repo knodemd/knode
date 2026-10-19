@@ -23,7 +23,7 @@ fi
 # Xcode only reruns this script when a file in the input list changes, so the list must name
 # every source file of the crates the core is built from.
 missing=0
-for file in $(cd "$core_dir" && find crates/knode-ffi crates/knode-format crates/knode-md \
+for file in $(cd "$core_dir" && find crates/knode-ffi crates/knode-config crates/knode-format crates/knode-md \
     -path '*/target' -prune -o -type f \( -path '*/src/*' -o -name Cargo.toml -o -name uniffi.toml \) -print | sort); do
     if ! grep -qxF "\$(SRCROOT)/../core/$file" "$inputs"; then
         echo "error: core/$file is missing from mac/scripts/knode-core-inputs.xcfilelist" >&2
