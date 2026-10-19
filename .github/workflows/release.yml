@@ -188,13 +188,23 @@ jobs:
         working-directory: core
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
 
+      - name: Check the binary
+        run: |
+          bin="core/target/$TARGET/release/knode"
+          file "$bin"
+          "$bin" --version | grep -F "$VERSION"
+          # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
+          objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+
       - name: Package
         run: |
           name="knode-v${VERSION}-${TARGET}"
           stage="dist/stage/$name"
           mkdir -p "$stage" dist/release
           cp "core/target/$TARGET/release/knode" LICENSE NOTICE README.md "$stage/"
-          tar -C "$stage" -czf "dist/release/$name.tar.gz" knode LICENSE NOTICE README.md
+          chmod 755 "$stage/knode"
+          tar -C "$stage" --owner=0 --group=0 --numeric-owner \
+            -czf "dist/release/$name.tar.gz" knode LICENSE NOTICE README.md
           (cd dist/release && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
           ls -l dist/release
 

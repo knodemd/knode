@@ -1,0 +1,66 @@
+name: linux
+
+# Builds and tests the core on the same Linux runners the release uses, so a change
+# that breaks Linux (a macOS-only code path, a missing cfg, a C dependency) is caught
+# in the pull request and not when a version is tagged.
+
+on:
+  push:
+    branches: [main]
+    paths: ["core/**", ".github/workflows/linux.yml", ".github/workflows/release.yml"]
+  pull_request:
+    paths: ["core/**", ".github/workflows/linux.yml", ".github/workflows/release.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The same runners as the release workflow, the oldest supported Ubuntu.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+          rustc --version
+
+      - name: Build the workspace
+        run: cargo build --locked --workspace --all-targets
+
+      - name: Test the workspace
+        run: cargo test --locked --workspace
+
+      - name: Build the release binary
+        run: cargo build --release --locked -p knode-cli --target "$TARGET"
+
+      - name: Run the release binary
+        run: |
+          bin="target/$TARGET/release/knode"
+          file "$bin"
+          "$bin" --version
+          # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
+          objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
