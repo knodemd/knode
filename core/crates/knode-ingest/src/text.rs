@@ -73,6 +73,28 @@ pub(crate) fn first_str<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> 
         .find(|text| !text.trim().is_empty())
 }
 
+/// Decodes `%XX` escapes in a URL path.
+pub(crate) fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let Some(Ok(byte)) = text
+                .get(i + 1..i + 3)
+                .map(|hex| u8::from_str_radix(hex, 16))
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

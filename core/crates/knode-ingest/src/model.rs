@@ -30,11 +30,24 @@ pub enum Agent {
     Amp,
     /// Aider, which keeps a `.aider.chat.history.md` file in each project.
     Aider,
+    /// Cursor, which keeps chats and agent sessions in the SQLite database `state.vscdb` in
+    /// its `User/globalStorage` folder.
+    Cursor,
+    /// Windsurf, which keeps workspace chats in the SQLite database `state.vscdb` of each
+    /// folder in its `User/workspaceStorage` folder.
+    Windsurf,
+    /// Cline, the VS Code extension, which keeps one folder per task in its `globalStorage`
+    /// folder (`saoudrizwan.claude-dev/tasks`).
+    Cline,
+    /// Roo Code, the VS Code extension, which keeps tasks the way Cline does
+    /// (`rooveterinaryinc.roo-cline/tasks`).
+    #[serde(rename = "roo-code")]
+    RooCode,
 }
 
 impl Agent {
     /// Every agent, in a stable order.
-    pub const ALL: [Agent; 7] = [
+    pub const ALL: [Agent; 11] = [
         Agent::ClaudeCode,
         Agent::Codex,
         Agent::GeminiCli,
@@ -42,6 +55,10 @@ impl Agent {
         Agent::OpenCode,
         Agent::Amp,
         Agent::Aider,
+        Agent::Cursor,
+        Agent::Windsurf,
+        Agent::Cline,
+        Agent::RooCode,
     ];
 
     /// A stable identifier, suitable for storage.
@@ -54,6 +71,10 @@ impl Agent {
             Agent::OpenCode => "opencode",
             Agent::Amp => "amp",
             Agent::Aider => "aider",
+            Agent::Cursor => "cursor",
+            Agent::Windsurf => "windsurf",
+            Agent::Cline => "cline",
+            Agent::RooCode => "roo-code",
         }
     }
 
@@ -72,6 +93,10 @@ impl Agent {
             Agent::OpenCode => "OpenCode",
             Agent::Amp => "Amp",
             Agent::Aider => "Aider",
+            Agent::Cursor => "Cursor",
+            Agent::Windsurf => "Windsurf",
+            Agent::Cline => "Cline",
+            Agent::RooCode => "Roo Code",
         }
     }
 }

@@ -94,8 +94,8 @@ impl std::fmt::Debug for Watcher {
 
 impl Watcher {
     /// Watches `roots` recursively and calls `on_changes` from a background thread with each
-    /// batch of changed session files (`.jsonl` and `.json` files, Aider history files and the
-    /// OpenCode database), or [`Changes::Rescan`].
+    /// batch of changed session files (`.jsonl` and `.json` files, Aider history files, the
+    /// OpenCode database and editor `state.vscdb` databases), or [`Changes::Rescan`].
     pub fn start<F>(
         roots: &[PathBuf],
         options: WatchOptions,
@@ -147,8 +147,10 @@ impl Watcher {
     /// `on_report` with the result of every sync. A rescan runs [`Capture::sync_all`]; a batch
     /// of files runs [`Capture::sync_paths`].
     ///
-    /// The OpenCode folder is watched without its subfolders, which hold snapshots rather than
-    /// sessions. Aider roots are broad folders of projects and are not watched: the periodic
+    /// The OpenCode and Cursor folders are watched without their subfolders, which hold other
+    /// data than sessions; a write to their database (or its WAL) checks every session in it.
+    /// Windsurf's `workspaceStorage` is watched with its subfolders, for the database of each
+    /// window. Aider roots are broad folders of projects and are not watched: the periodic
     /// rescan ([`WatchOptions::rescan`]) picks up their changes.
     pub fn capture<F>(
         capture: Arc<Mutex<Capture>>,
@@ -210,7 +212,7 @@ impl Drop for Watcher {
 /// How the session folder of an agent is watched, or `None` when it is left to rescans.
 fn watch_mode(agent: Agent) -> Option<RecursiveMode> {
     match agent {
-        Agent::OpenCode => Some(RecursiveMode::NonRecursive),
+        Agent::OpenCode | Agent::Cursor => Some(RecursiveMode::NonRecursive),
         Agent::Aider => None,
         _ => Some(RecursiveMode::Recursive),
     }
@@ -223,6 +225,7 @@ fn is_session(path: &Path) -> bool {
         || extension == Some(OsStr::new("json"))
         || path.file_name() == Some(OsStr::new(crate::aider::HISTORY_FILE))
         || crate::opencode::is_database_file(path)
+        || crate::vscdb::is_database_file(path)
 }
 
 /// Collects events into batches and hands them over, until told to stop.
@@ -323,12 +326,19 @@ mod tests {
         sender.send(event("/r/a.jsonl")).unwrap();
         sender.send(event("/r/b.txt")).unwrap();
         sender.send(event("/r/opencode/opencode.db-wal")).unwrap();
+        sender
+            .send(event("/r/User/globalStorage/state.vscdb-wal"))
+            .unwrap();
+        sender
+            .send(event("/r/User/globalStorage/state.vscdb.backup"))
+            .unwrap();
         sender.send(event("/r/a.jsonl")).unwrap();
         sender.send(event("/r/c.jsonl")).unwrap();
         let got = batches.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(
             got,
             Changes::Paths(vec![
+                "/r/User/globalStorage/state.vscdb-wal".into(),
                 "/r/a.jsonl".into(),
                 "/r/c.jsonl".into(),
                 "/r/opencode/opencode.db-wal".into()
