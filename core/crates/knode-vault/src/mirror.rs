@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use knode_format::{Node, NodeId, Properties, Space, kinds, link_kinds};
+use knode_format::{Node, NodeId, Properties, Provenance, Space, kinds, link_kinds};
 use serde::{Deserialize, Serialize};
 
 use crate::frontmatter::{self, entries, flow_list, scalar};
@@ -382,7 +382,11 @@ fn render(
             .cloned()
             .unwrap_or(updated_at);
         line("created", &created);
+        provenance(&mut line, "created_by", &node.created_by);
         line("updated", &updated);
+        if node.updated_by != node.created_by {
+            provenance(&mut line, "updated_by", &node.updated_by);
+        }
     }
     if !links.is_empty() {
         line("links", "");
@@ -406,6 +410,19 @@ fn render(
         }
     }
     Ok(format!("---{nl}{fm}---{nl}{}", node.body))
+}
+
+/// Writes a provenance as `kind`, `actor`, `session` and `source` pairs under `key`.
+fn provenance(line: &mut impl FnMut(&str, &str), key: &str, by: &Provenance) {
+    line(key, "");
+    line("  kind", by.kind.as_str());
+    line("  actor", &scalar(&by.actor));
+    if let Some(session) = &by.session {
+        line("  session", &scalar(session));
+    }
+    if let Some(source) = &by.source {
+        line("  source", &scalar(source));
+    }
 }
 
 /// The frontmatter of a note from another app, as it was imported, with its tags changed only if

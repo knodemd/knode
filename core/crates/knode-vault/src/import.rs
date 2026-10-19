@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use knode_format::{NewNode, NodeId, NodeUpdate, Properties, Provenance, Space, link_kinds};
+use knode_format::{
+    ActorKind, ImportedNode, NewNode, NodeId, NodeUpdate, Properties, Provenance, Space, Timestamp,
+    link_kinds,
+};
 
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
 use crate::names::{stem_of, title_from_stem};
@@ -45,9 +48,12 @@ pub struct ImportReport {
 /// - The title is the `title` of the frontmatter, else the file name. The body is the file after
 ///   its frontmatter, as written: `[[Title|alias]]`, `[[Title#heading]]` and `![[embeds]]` stay
 ///   as text and become links by title.
-/// - A file with an `id` in its frontmatter updates the node with that id (or the node imported
-///   before from a file with that id) instead of making a new one. A file without an id updates
-///   the node imported before from the same path. Importing a folder again never duplicates.
+/// - A file with an `id` in its frontmatter updates the node with that id (or a node imported
+///   from a file with that id by an earlier version of Knode) instead of making a new one. When
+///   the space has no such node, the new node keeps the id, and for a file written by Knode its
+///   `created`, `updated`, `created_by` and `updated_by` too, so a copy of a space has the same
+///   ids, dates and authors. A file without an id updates the node imported before from the
+///   same path. Importing a folder again never duplicates.
 /// - A file written by Knode gives the node its kind, tags, typed links and properties. Any other
 ///   file (an Obsidian note) gives it the tags of its frontmatter and its inline `#tags`; its
 ///   frontmatter is kept as it is, to be written back on export.
@@ -162,6 +168,8 @@ struct Note {
     tags: Vec<String>,
     created: Option<String>,
     updated: Option<String>,
+    created_by: Option<Provenance>,
+    updated_by: Option<Provenance>,
     links: Vec<(String, Vec<String>)>,
     props: Properties,
     /// The frontmatter entries Knode does not read, as written.
@@ -227,6 +235,8 @@ fn parse(rel: &str, text: &str) -> Note {
                 Some("tags") => note.tags = entry.list(),
                 Some("created") => note.created = entry.scalar(),
                 Some("updated") => note.updated = entry.scalar(),
+                Some("created_by") => note.created_by = read_provenance(entry),
+                Some("updated_by") => note.updated_by = read_provenance(entry),
                 Some("links") => note.links = read_links(entry),
                 Some("properties") => note.props = read_props(entry),
                 _ => note.extra.push_str(entry.text),
@@ -283,6 +293,32 @@ fn parse(rel: &str, text: &str) -> Note {
     note
 }
 
+/// A provenance written as `kind`, `actor`, `session` and `source` pairs, if it is one.
+fn read_provenance(entry: &Entry<'_>) -> Option<Provenance> {
+    let mut kind = None;
+    let mut by = Provenance::system();
+    by.actor.clear();
+    for (key, value) in entry.map() {
+        let value = parse_scalar(&value);
+        match key.as_str() {
+            "kind" => {
+                kind = match value.as_str() {
+                    "person" => Some(ActorKind::Person),
+                    "agent" => Some(ActorKind::Agent),
+                    "system" => Some(ActorKind::System),
+                    _ => return None,
+                }
+            }
+            "actor" => by.actor = value,
+            "session" => by.session = Some(value),
+            "source" => by.source = Some(value),
+            _ => {}
+        }
+    }
+    by.kind = kind?;
+    (!by.actor.trim().is_empty()).then_some(by)
+}
+
 /// Whether `kind` is a node kind: `[a-z][a-z0-9-]*`, at most 32 characters.
 fn is_kind(kind: &str) -> bool {
     kind.len() <= 32
@@ -298,8 +334,8 @@ enum Outcome {
     Unchanged,
 }
 
-/// The node a file `id` stands for: the node with that id, or the node imported before from a
-/// file with that id.
+/// The node a file `id` stands for: the node with that id, or a node imported from a file with
+/// that id by an earlier version of Knode, which gave it an id of its own.
 fn find(space: &Space, id: &str) -> Result<Option<NodeId>> {
     let Ok(id) = NodeId::parse(id) else {
         return Ok(None);
@@ -338,23 +374,45 @@ fn write(space: &mut Space, rel: &str, note: &Note, by: &Provenance) -> Result<(
     if note.extra.is_empty() {
         stale.push(keys::FRONTMATTER);
     }
-    // The id and dates of a file from another space.
-    let foreign = note.id.filter(|id| existing != Some(*id));
-    if let Some(id) = foreign {
-        props.insert(keys::ID.into(), id.to_string());
-        if !note.vault {
-            for (key, value) in [
-                (keys::CREATED, &note.created),
-                (keys::UPDATED, &note.updated),
-            ] {
-                if let Some(value) = value {
-                    props.insert(key.into(), value.clone());
-                }
-            }
-        }
-    }
-
     let (id, outcome) = match existing {
+        // A file from another space: the node keeps its id, and its dates and authors when
+        // Knode wrote the file.
+        None if note.id.is_some() => {
+            let id = note.id.expect("checked above");
+            let now = Timestamp::now();
+            let read = |value: &Option<String>| value.as_deref().and_then(time::parse);
+            let (created_at, updated_at, created_by, updated_by) = if note.vault {
+                (now, now, by.clone(), by.clone())
+            } else {
+                let created_at = read(&note.created).unwrap_or(now);
+                let updated_at = read(&note.updated).unwrap_or(created_at).max(created_at);
+                let created_by = note.created_by.clone().unwrap_or_else(|| by.clone());
+                let updated_by = match (&note.updated_by, &note.created_by) {
+                    (Some(updated_by), _) => updated_by.clone(),
+                    (None, Some(created_by)) => created_by.clone(),
+                    (None, None) => by.clone(),
+                };
+                (created_at, updated_at, created_by, updated_by)
+            };
+            let node = space.import_node(
+                ImportedNode {
+                    id,
+                    node: NewNode {
+                        kind: note.kind.clone().unwrap_or_default(),
+                        title: note.title.clone(),
+                        body: note.body.clone(),
+                        tags: note.tags.clone(),
+                    },
+                    created_at,
+                    updated_at,
+                    created_by,
+                    updated_by,
+                },
+                &props,
+                by,
+            )?;
+            (node.id, Outcome::Created)
+        }
         None => {
             let node = space.create_node_with_properties(
                 NewNode {
@@ -393,10 +451,5 @@ fn write(space: &mut Space, rel: &str, note: &Note, by: &Provenance) -> Result<(
             (id, outcome)
         }
     };
-    if foreign.is_some() && !note.vault {
-        if let Some(node) = space.get_node(&id)? {
-            space.set_property(&id, keys::WRITTEN, &node.updated_at.to_string(), by)?;
-        }
-    }
     Ok((id, outcome))
 }
