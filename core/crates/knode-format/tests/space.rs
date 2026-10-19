@@ -315,6 +315,109 @@ fn keeps_every_version_in_the_history() {
 }
 
 #[test]
+fn a_run_of_session_updates_keeps_one_history_row() {
+    let (_dir, mut space) = new_space();
+    let node = space
+        .create_node(NewNode::note("Live", "0"), &claude())
+        .unwrap();
+    for i in 1..=100 {
+        space
+            .update_node_coalescing(&node.id, set_body(&i.to_string()), &claude())
+            .unwrap();
+    }
+    let history = space.history(&node.id).unwrap();
+    let bodies: Vec<_> = history.iter().map(|h| (h.op, h.body.as_str())).collect();
+    assert_eq!(
+        bodies,
+        [(ChangeOp::Create, "0"), (ChangeOp::Update, "100")],
+        "the create row stays and one update row holds the newest version"
+    );
+    assert_eq!(history[1].changed_by, claude());
+    assert_eq!(
+        history[1].changed_at,
+        space.get_node(&node.id).unwrap().unwrap().updated_at
+    );
+}
+
+#[test]
+fn edits_by_anyone_else_end_a_run_and_stay_in_the_history() {
+    let (_dir, mut space) = new_space();
+    let node = space
+        .create_node(NewNode::note("Live", "a"), &claude())
+        .unwrap();
+    let other_session = Provenance::agent("claude-code").with_session("session-2");
+    for (round, body) in ["ab", "abc"].into_iter().enumerate() {
+        for i in 0..10 {
+            space
+                .update_node_coalescing(&node.id, set_body(&format!("{body}{i}")), &claude())
+                .unwrap();
+        }
+        if round == 0 {
+            space
+                .update_node(&node.id, set_body("edited by me"), &me())
+                .unwrap();
+        } else {
+            space
+                .update_node_coalescing(&node.id, set_body("other session"), &other_session)
+                .unwrap();
+        }
+    }
+    space
+        .update_node_coalescing(&node.id, set_body("abcd"), &claude())
+        .unwrap();
+
+    let history = space.history(&node.id).unwrap();
+    let rows: Vec<_> = history
+        .iter()
+        .map(|h| (h.body.as_str(), h.changed_by.kind))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("a", ActorKind::Agent),
+            ("ab9", ActorKind::Agent),
+            ("edited by me", ActorKind::Person),
+            ("abc9", ActorKind::Agent),
+            ("other session", ActorKind::Agent),
+            ("abcd", ActorKind::Agent),
+        ],
+        "every version someone else changed or saw replaced stays, ready to restore"
+    );
+    assert_eq!(history[4].changed_by, other_session);
+    assert!(history.windows(2).all(|w| w[0].seq < w[1].seq));
+}
+
+#[test]
+fn only_agent_sessions_coalesce() {
+    let (_dir, mut space) = new_space();
+    let no_session = Provenance::agent("claude-code");
+    for by in [me(), no_session] {
+        let node = space.create_node(NewNode::note("N", "0"), &by).unwrap();
+        for i in 1..=3 {
+            space
+                .update_node_coalescing(&node.id, set_body(&i.to_string()), &by)
+                .unwrap();
+        }
+        assert_eq!(space.history(&node.id).unwrap().len(), 4);
+        space.delete_node(&node.id, &by).unwrap();
+    }
+}
+
+#[test]
+fn plain_updates_never_coalesce() {
+    let (_dir, mut space) = new_space();
+    let node = space
+        .create_node(NewNode::note("N", "0"), &claude())
+        .unwrap();
+    for i in 1..=3 {
+        space
+            .update_node(&node.id, set_body(&i.to_string()), &claude())
+            .unwrap();
+    }
+    assert_eq!(space.history(&node.id).unwrap().len(), 4);
+}
+
+#[test]
 fn reuses_provenance_rows() {
     let (_dir, mut space) = new_space();
     for i in 0..3 {
