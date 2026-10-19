@@ -1,0 +1,578 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
+		1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16065546A150F910F6A236AD /* SpacePanels.swift */; };
+		2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = F62D33407D7A83E40E34FE2B /* AppIcon.icns */; };
+		2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D00F921E755F4E322D2982 /* ContentView.swift */; };
+		3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */; };
+		47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F73AC1170815F22E83004BB /* MarkdownBlock.swift */; };
+		612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */; };
+		6F9C14E6DD8BF4CC863DEAAB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589D1B5A99FDE143376F1AB3 /* Assets.xcassets */; };
+		7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BD7995016E9A8B78A2D927 /* AppModel.swift */; };
+		9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */; };
+		A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B7EDA91000979E88901A77 /* SpaceStore.swift */; };
+		C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */; };
+		CEFADFD00FD50BC5A7D28D33 /* KnodeBrand in Frameworks */ = {isa = PBXBuildFile; productRef = 5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */; };
+		DB16242C01E6D130B62D3344 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D250CA89BC07524A87D4A6 /* Models.swift */; };
+		E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */; };
+		EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4B3419241EB387375C606EC1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 778FFC6DA636488F963D493D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 95A8661D22178656057D6562;
+			remoteInfo = Knode;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KnodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		16065546A150F910F6A236AD /* SpacePanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacePanels.swift; sourceTree = "<group>"; };
+		2F73AC1170815F22E83004BB /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
+		346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeApp.swift; sourceTree = "<group>"; };
+		54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorModel.swift; sourceTree = "<group>"; };
+		589D1B5A99FDE143376F1AB3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSpaceStore.swift; sourceTree = "<group>"; };
+		84B7EDA91000979E88901A77 /* SpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceStore.swift; sourceTree = "<group>"; };
+		95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		95BDD689D2D618AB825F4B13 /* NoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteView.swift; sourceTree = "<group>"; };
+		96D250CA89BC07524A87D4A6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A2BD7995016E9A8B78A2D927 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockTests.swift; sourceTree = "<group>"; };
+		AE6E4A2F4819EE2F22C0756B /* KnodeBrand */ = {isa = PBXFileReference; lastKnownFileType = folder; name = KnodeBrand; path = "../brand/12 Code/swift/KnodeBrand"; sourceTree = SOURCE_ROOT; };
+		B9D00F921E755F4E322D2982 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSpaceStoreTests.swift; sourceTree = "<group>"; };
+		D1EAFF9DAC325C9B0B21945F /* Knode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Knode.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F62D33407D7A83E40E34FE2B /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = AppIcon.icns; path = "../brand/07 App Icon/macOS/AppIcon.icns"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		3E79938F245BD411D0EE4B99 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CEFADFD00FD50BC5A7D28D33 /* KnodeBrand in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		05A0241CEC604FF1C653E5E2 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				F62D33407D7A83E40E34FE2B /* AppIcon.icns */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+		};
+		29E99834E244CC6A3B3792C5 = {
+			isa = PBXGroup;
+			children = (
+				728F5149D953E20288E38B18 /* Knode */,
+				A5E23F349B3EFF883D816035 /* KnodeTests */,
+				529B43B6A0B8A4634D220332 /* Packages */,
+				05A0241CEC604FF1C653E5E2 /* Resources */,
+				6869DCD595CA0ABEB945C1CA /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		529B43B6A0B8A4634D220332 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				AE6E4A2F4819EE2F22C0756B /* KnodeBrand */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		5A9EC62E57A231B237475B00 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				B9D00F921E755F4E322D2982 /* ContentView.swift */,
+				95BDD689D2D618AB825F4B13 /* NoteView.swift */,
+				16065546A150F910F6A236AD /* SpacePanels.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		6869DCD595CA0ABEB945C1CA /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D1EAFF9DAC325C9B0B21945F /* Knode.app */,
+				0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		728F5149D953E20288E38B18 /* Knode */ = {
+			isa = PBXGroup;
+			children = (
+				589D1B5A99FDE143376F1AB3 /* Assets.xcassets */,
+				346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */,
+				BF6415D44EC381BCE4A0E5B3 /* Markdown */,
+				C66AD3A997986DE0D5BCD859 /* Models */,
+				F5DB68D172C71D490F3AFE7A /* Store */,
+				5A9EC62E57A231B237475B00 /* Views */,
+			);
+			path = Knode;
+			sourceTree = "<group>";
+		};
+		A5E23F349B3EFF883D816035 /* KnodeTests */ = {
+			isa = PBXGroup;
+			children = (
+				95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */,
+				A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */,
+				C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */,
+			);
+			path = KnodeTests;
+			sourceTree = "<group>";
+		};
+		BF6415D44EC381BCE4A0E5B3 /* Markdown */ = {
+			isa = PBXGroup;
+			children = (
+				2F73AC1170815F22E83004BB /* MarkdownBlock.swift */,
+			);
+			path = Markdown;
+			sourceTree = "<group>";
+		};
+		C66AD3A997986DE0D5BCD859 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A2BD7995016E9A8B78A2D927 /* AppModel.swift */,
+				54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		F5DB68D172C71D490F3AFE7A /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				96D250CA89BC07524A87D4A6 /* Models.swift */,
+				766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */,
+				84B7EDA91000979E88901A77 /* SpaceStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		70B2CD96FD0E7DB48E22C589 /* KnodeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BFE12942716CD7502067C8D2 /* Build configuration list for PBXNativeTarget "KnodeTests" */;
+			buildPhases = (
+				176C38DFD81675776E30A405 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A9C3D44202AE2A7964191ADC /* PBXTargetDependency */,
+			);
+			name = KnodeTests;
+			packageProductDependencies = (
+			);
+			productName = KnodeTests;
+			productReference = 0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		95A8661D22178656057D6562 /* Knode */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F44BD577CC7AF60F87BD9D1E /* Build configuration list for PBXNativeTarget "Knode" */;
+			buildPhases = (
+				8340D0F44146AF2466ACD28C /* Sources */,
+				FFE2EDFE52E8047C6335954C /* Resources */,
+				3E79938F245BD411D0EE4B99 /* Frameworks */,
+				3EBA76DB20C1DB317004A352 /* Document Icon */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Knode;
+			packageProductDependencies = (
+				5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */,
+			);
+			productName = Knode;
+			productReference = D1EAFF9DAC325C9B0B21945F /* Knode.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		778FFC6DA636488F963D493D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					70B2CD96FD0E7DB48E22C589 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+					95A8661D22178656057D6562 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 711731B5925F2CB93747651B /* Build configuration list for PBXProject "Knode" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 29E99834E244CC6A3B3792C5;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				3088911C93D126F42B2D62C4 /* XCLocalSwiftPackageReference "../brand/12 Code/swift/KnodeBrand" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6869DCD595CA0ABEB945C1CA /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				95A8661D22178656057D6562 /* Knode */,
+				70B2CD96FD0E7DB48E22C589 /* KnodeTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FFE2EDFE52E8047C6335954C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */,
+				6F9C14E6DD8BF4CC863DEAAB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		3EBA76DB20C1DB317004A352 /* Document Icon */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/document-icon.sh",
+				"$(SRCROOT)/../brand/07 App Icon/Document/knode-document-icon-1024.png",
+			);
+			name = "Document Icon";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/KnodeDocument.icns",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SCRIPT_INPUT_FILE_0\" \"$SRCROOT/../brand/07 App Icon/Document\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		176C38DFD81675776E30A405 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */,
+				EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */,
+				C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8340D0F44146AF2466ACD28C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */,
+				2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */,
+				612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */,
+				47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */,
+				DB16242C01E6D130B62D3344 /* Models.swift in Sources */,
+				9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */,
+				0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */,
+				3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */,
+				1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */,
+				A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A9C3D44202AE2A7964191ADC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 95A8661D22178656057D6562 /* Knode */;
+			targetProxy = 4B3419241EB387375C606EC1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		099B26572B5622CDE1459ECD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Knode/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = md.knode.Knode;
+				PRODUCT_NAME = Knode;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		3524235ADD182CB7C0DCDB0E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		4E845DB615E742E49C204000 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = md.knode.KnodeTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Knode.app/Contents/MacOS/Knode";
+			};
+			name = Release;
+		};
+		6C4D9B57BA516DFE5FEB4F8B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		801850061E6F8073B43A21F1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Knode/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = md.knode.Knode;
+				PRODUCT_NAME = Knode;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		E64BECD2F35C79F32273EAD1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = md.knode.KnodeTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Knode.app/Contents/MacOS/Knode";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		711731B5925F2CB93747651B /* Build configuration list for PBXProject "Knode" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C4D9B57BA516DFE5FEB4F8B /* Debug */,
+				3524235ADD182CB7C0DCDB0E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BFE12942716CD7502067C8D2 /* Build configuration list for PBXNativeTarget "KnodeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E64BECD2F35C79F32273EAD1 /* Debug */,
+				4E845DB615E742E49C204000 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F44BD577CC7AF60F87BD9D1E /* Build configuration list for PBXNativeTarget "Knode" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				099B26572B5622CDE1459ECD /* Debug */,
+				801850061E6F8073B43A21F1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		3088911C93D126F42B2D62C4 /* XCLocalSwiftPackageReference "../brand/12 Code/swift/KnodeBrand" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../brand/12 Code/swift/KnodeBrand";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = KnodeBrand;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 778FFC6DA636488F963D493D /* Project object */;
+}

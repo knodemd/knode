@@ -1,0 +1,261 @@
+name: release
+
+# Builds the knode binary for every platform when a version tag is pushed, and
+# creates a draft GitHub Release with the archives and their checksums.
+# The process is described in the handbook:
+# https://github.com/knodemd/handbook/blob/main/07-releasing.md
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        name: Tag matches the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $tag is not vX.Y.Z or vX.Y.Z-pre"
+            exit 1
+          fi
+          cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' core/Cargo.toml)"
+          if [ "$cargo_version" != "$version" ]; then
+            echo "::error::Tag $tag does not match core/Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  macos:
+    name: Build macOS (Apple silicon, Intel, universal)
+    needs: version
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        working-directory: core
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p knode-cli --target "$target"
+          done
+
+      - name: Make the universal binary
+        run: |
+          mkdir -p dist/bin/universal-apple-darwin
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "dist/bin/$target"
+            cp "core/target/$target/release/knode" "dist/bin/$target/knode"
+          done
+          lipo -create -output dist/bin/universal-apple-darwin/knode \
+            dist/bin/aarch64-apple-darwin/knode dist/bin/x86_64-apple-darwin/knode
+          lipo -info dist/bin/universal-apple-darwin/knode
+
+      - name: Import the Developer ID certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: |
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Sign
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
+            codesign --force --timestamp --options runtime \
+              --sign "$MACOS_SIGNING_IDENTITY" "dist/bin/$target/knode"
+            codesign --verify --strict --verbose=2 "dist/bin/$target/knode"
+          done
+
+      - name: Skip signing
+        if: env.MACOS_CERTIFICATE_P12 == ''
+        run: echo "::warning::MACOS_CERTIFICATE_P12 is not set, the macOS binaries are not signed or notarised"
+
+      - name: Notarise
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_API_KEY_P8 != ''
+        run: |
+          key="$RUNNER_TEMP/AuthKey.p8"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$key"
+          # A bare binary cannot be stapled; notarising it registers the ticket with
+          # Apple, which Gatekeeper checks online.
+          ditto -c -k --keepParent dist/bin/universal-apple-darwin/knode "$RUNNER_TEMP/knode-notarise.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/knode-notarise.zip" \
+            --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 30m
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            ditto -c -k --keepParent "dist/bin/$target/knode" "$RUNNER_TEMP/knode-$target.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/knode-$target.zip" \
+              --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+              --wait --timeout 30m
+          done
+          rm "$key"
+
+      - name: Package
+        run: |
+          mkdir -p dist/release
+          for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
+            name="knode-v${VERSION}-${target}"
+            stage="dist/stage/$name"
+            mkdir -p "$stage"
+            cp "dist/bin/$target/knode" LICENSE NOTICE README.md "$stage/"
+            tar -C "$stage" -czf "dist/release/$name.tar.gz" knode LICENSE NOTICE README.md
+            (cd dist/release && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          done
+          ls -l dist/release
+
+      - name: Remove the signing keychain
+        if: always() && env.MACOS_CERTIFICATE_P12 != ''
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux (${{ matrix.target }})
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Built on the oldest supported runners so the binaries run on older glibc.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        working-directory: core
+        run: cargo build --release --locked -p knode-cli --target "$TARGET"
+
+      - name: Package
+        run: |
+          name="knode-v${VERSION}-${TARGET}"
+          stage="dist/stage/$name"
+          mkdir -p "$stage" dist/release
+          cp "core/target/$TARGET/release/knode" LICENSE NOTICE README.md "$stage/"
+          tar -C "$stage" -czf "dist/release/$name.tar.gz" knode LICENSE NOTICE README.md
+          (cd dist/release && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          ls -l dist/release
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  release:
+    name: Create the draft release
+    needs: [version, macos, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum knode-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Release notes from the changelog
+        run: |
+          # The section of CHANGELOG.md for this version, without its heading.
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$VERSION" '
+              /^## / { if (found) exit; if (index($0, "[" v "]") || $2 == v) { found = 1; next } }
+              found { print }
+            ' CHANGELOG.md > dist/NOTES.md
+          fi
+          if [ -s dist/NOTES.md ]; then
+            echo "Using the CHANGELOG.md section for $VERSION"
+          else
+            echo "::warning::No CHANGELOG.md section for $VERSION, the draft starts from generated notes"
+            rm -f dist/NOTES.md
+          fi
+
+      - name: Create the draft release
+        working-directory: dist
+        run: |
+          flags=(--draft --verify-tag --title "Knode ${VERSION}")
+          if [ -f NOTES.md ]; then
+            flags+=(--notes-file NOTES.md)
+          else
+            flags+=(--generate-notes)
+          fi
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
+            knode-*.tar.gz knode-*.tar.gz.sha256 SHA256SUMS
