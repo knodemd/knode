@@ -39,6 +39,7 @@ targets:
     dependencies:
       - package: KnodeBrand
       - target: KnodeCore
+      - target: KnodeCLI
     info:
       path: Knode/Info.plist
     settings:
@@ -47,6 +48,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: md.knode.Knode
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
+        # codesign, in the Embed knode phase, writes beside the file it signs.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         COMBINE_HIDPI_IMAGES: YES
         OTHER_LDFLAGS: "$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -60,6 +63,16 @@ targets:
           - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/KnodeDocument.icns"
         script: |
           "$SCRIPT_INPUT_FILE_0" "$SRCROOT/../brand/07 App Icon/Document" "$SCRIPT_OUTPUT_FILE_0"
+      # The knode command, built by the KnodeCLI target, inside the app and signed before it.
+      - name: Embed knode
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/scripts/embed-knode-cli.sh"
+          - "$(SRCROOT)/build/KnodeCLI/knode"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/knode"
+        script: |
+          "$SCRIPT_INPUT_FILE_0" "$SCRIPT_INPUT_FILE_1" "$SCRIPT_OUTPUT_FILE_0"
   # The Swift bindings of the Rust core (core/crates/knode-ffi). Before it builds,
   # scripts/build-xcframework.sh builds the core and generates KnodeCore.swift; both live in the
   # ignored build/ folder and are never committed.
@@ -101,6 +114,25 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Knode.app/Contents/MacOS/Knode"
         BUNDLE_LOADER: "$(TEST_HOST)"
+# The knode command (core/crates/knode-cli) for Apple silicon and Intel, built by
+# scripts/build-knode-cli.sh into the ignored build/ folder; the Knode target embeds it.
+aggregateTargets:
+  KnodeCLI:
+    settings:
+      base:
+        # The script runs cargo, which reads and writes outside the declared files.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    buildScripts:
+      - name: Build knode
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/scripts/build-knode-cli.sh"
+        inputFileLists:
+          - "$(SRCROOT)/scripts/knode-cli-inputs.xcfilelist"
+        outputFiles:
+          - "$(SRCROOT)/build/KnodeCLI/knode"
+        script: |
+          "$SRCROOT/scripts/build-knode-cli.sh" "$SCRIPT_OUTPUT_FILE_0"
 schemes:
   Knode:
     build:

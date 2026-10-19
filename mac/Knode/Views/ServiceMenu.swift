@@ -1,0 +1,69 @@
+import AppKit
+import SwiftUI
+
+/// The menu of the Knode menu bar item: whether Knode Service runs, what it has open, and the
+/// actions to open the app, start or stop the service and start it at login.
+struct ServiceMenu: View {
+    let monitor: ServiceMonitor
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        status
+        if let error = monitor.errorMessage {
+            Text(error)
+        }
+        Divider()
+        Button("Open Knode", systemImage: "macwindow") {
+            openWindow(id: "main")
+            NSApp.activate()
+        }
+        if monitor.isRunning {
+            Button("Stop Knode Service", systemImage: "stop.circle") {
+                Task { await monitor.stopService() }
+            }
+            .disabled(monitor.isBusy)
+        } else {
+            Button("Start Knode Service", systemImage: "play.circle") {
+                Task { await monitor.startService() }
+            }
+            .disabled(monitor.isBusy)
+        }
+        Toggle("Run at Login", systemImage: "power.circle", isOn: Binding(
+            get: { monitor.runsAtLogin },
+            set: { on in Task { await monitor.setRunsAtLogin(on) } }
+        ))
+        .disabled(monitor.isBusy)
+        Divider()
+        Button("Quit Knode", systemImage: "xmark.circle") { NSApp.terminate(nil) }
+            .keyboardShortcut("q")
+    }
+
+    @ViewBuilder private var status: some View {
+        switch monitor.state {
+        case .checking:
+            Text("Checking Knode Service…")
+        case .stopped:
+            Text("Knode Service is stopped")
+        case .running(let status):
+            Text("Knode Service is running")
+            Text(Self.summary(of: status))
+            if !status.spaces.isEmpty {
+                Section("Open Spaces") {
+                    ForEach(status.spaces, id: \.self) { path in
+                        Text(Self.name(ofSpaceAt: path))
+                    }
+                }
+            }
+        }
+    }
+
+    static func summary(of status: ServiceMonitor.Status) -> String {
+        let spaces = status.spaces.count == 1 ? "1 space" : "\(status.spaces.count) spaces"
+        let clients = status.clients == 1 ? "1 client" : "\(status.clients) clients"
+        return "\(spaces) open, \(clients) connected"
+    }
+
+    static func name(ofSpaceAt path: String) -> String {
+        URL(filePath: path).deletingPathExtension().lastPathComponent
+    }
+}

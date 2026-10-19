@@ -1,0 +1,13 @@
+{"type":"session.start","data":{"sessionId":"c0c0c0c0-1111-4222-8333-444455556666","version":1,"producer":"copilot-agent","copilotVersion":"1.0.0","startTime":"2026-01-02T12:00:00.000Z","selectedModel":"model-example","context":{"cwd":"/Users/example/project","gitRoot":"/Users/example/project","branch":"main"}},"id":"e1","timestamp":"2026-01-02T12:00:00.000Z","parentId":null}
+{"type":"session.model_change","data":{"newModel":"model-example-2"},"id":"e2","timestamp":"2026-01-02T12:00:01.000Z","parentId":"e1"}
+{"type":"user.message","data":{"content":"Add a README","transformedContent":"<current_datetime>2026-01-02</current_datetime> Add a README","attachments":[],"interactionId":"i1"},"id":"e3","timestamp":"2026-01-02T12:00:02.000Z","parentId":"e2"}
+{"type":"assistant.turn_start","data":{"turnId":"0","interactionId":"i1"},"id":"e4","timestamp":"2026-01-02T12:00:03.000Z","parentId":"e3"}
+{"type":"assistant.message","data":{"messageId":"m1","content":"I'll check what is there.","toolRequests":[{"toolCallId":"c1","name":"report_intent","arguments":{"intent":"Exploring"}},{"toolCallId":"c2","name":"bash","arguments":{"command":"ls -a","description":"List files"}}]},"id":"e5","timestamp":"2026-01-02T12:00:04.000Z","parentId":"e4"}
+{"type":"tool.execution_start","data":{"toolCallId":"c2","toolName":"bash","arguments":{"command":"ls -a"}},"id":"e6","timestamp":"2026-01-02T12:00:04.500Z","parentId":"e5"}
+{"type":"tool.execution_complete","data":{"toolCallId":"c2","success":true,"result":{"content":"output that is never kept"}},"id":"e7","timestamp":"2026-01-02T12:00:05.000Z","parentId":"e6"}
+{"type":"assistant.message","data":{"messageId":"m2","content":"","toolRequests":[{"toolCallId":"c3","name":"create","arguments":{"path":"/Users/example/project/README.md","file_text":"# Example"}}]},"id":"e8","timestamp":"2026-01-02T12:00:06.000Z","parentId":"e7"}
+{"type":"tool.execution_complete","data":{"toolCallId":"c3","success":false,"error":{"message":"denied"}},"id":"e9","timestamp":"2026-01-02T12:00:07.000Z","parentId":"e8"}
+{"type":"assistant.message","data":{"messageId":"m3","content":"Subagent notes","parentToolCallId":"c9"},"id":"e10","timestamp":"2026-01-02T12:00:08.000Z","parentId":"e9"}
+{"type":"assistant.message","data":{"messageId":"m4","content":"Writing the file was denied."},"id":"e11","timestamp":"2026-01-02T12:00:09.000Z","parentId":"e10"}
+{"type":"assistant.turn_end","data":{"turnId":"0"},"id":"e12","timestamp":"2026-01-02T12:00:10.000Z","parentId":"e11"}
+{"type":"session.title_changed","data":{"title":"Add a README"},"id":"e13","timestamp":"2026-01-02T12:00:11.000Z","parentId":"e12"}

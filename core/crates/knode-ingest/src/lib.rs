@@ -1,8 +1,10 @@
 //! Capture conversations from AI agents.
 //!
-//! Every Claude Code and Codex conversation becomes a [`Conversation`]: its agent, project, dates,
-//! title and turns, with tool calls condensed to one line each and tool output left out. A
-//! conversation renders to Markdown with [`to_markdown`]; its metadata stays structured.
+//! Every conversation with Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode, Amp or Aider
+//! becomes a [`Conversation`]: its agent, project, dates, title and turns, with tool calls
+//! condensed to one line each and tool output left out. A conversation renders to Markdown with
+//! [`to_markdown`]; its metadata stays structured. [`default_root`] says where each agent keeps
+//! its sessions.
 //!
 //! ```no_run
 //! use knode_ingest::{ProjectFilter, discover_all, read_session, to_markdown};
@@ -29,22 +31,28 @@
 //! it as the session grows, saving what it has read in a state file; [`Watcher`] follows the
 //! session folders and hands [`Capture`] the files that changed.
 
+mod aider;
+mod amp;
 mod capture;
 pub mod claude_code;
 pub mod codex;
+mod copilot;
 mod discover;
 mod filter;
+mod gemini;
 mod model;
+mod opencode;
 mod reader;
 mod render;
 mod text;
 mod watch;
 
+pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured};
-pub use discover::{SessionFile, default_root, discover, discover_all};
+pub use discover::{AIDER_ROOT_VARIABLE, SessionFile, default_root, discover, discover_all};
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
-pub use reader::{Error, Progress, SessionReader, read_session};
+pub use reader::{Error, Progress, SessionReader, read_session, read_sessions};
 pub use render::{derive_title, to_markdown};
 pub use watch::{Changes, WatchOptions, Watcher};
 
@@ -58,6 +66,10 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &serde_json::Value)
     match conversation.agent {
         Agent::ClaudeCode => claude_code::apply(conversation, record),
         Agent::Codex => codex::apply(conversation, record),
+        Agent::GeminiCli => gemini::apply(conversation, record),
+        Agent::CopilotCli => copilot::apply(conversation, record),
+        // Read whole or as text, never a JSON record at a time.
+        Agent::OpenCode | Agent::Amp | Agent::Aider => {}
     }
 }
 

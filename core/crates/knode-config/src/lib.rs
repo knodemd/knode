@@ -3,7 +3,9 @@
 //! - **Knode home** holds `config.toml` and, later, the Knode Service socket. It is the
 //!   `KNODE_HOME` environment variable if set, else `~/Library/Application Support/Knode` on
 //!   macOS, else `$XDG_DATA_HOME/knode` (by default `~/.local/share/knode`).
-//! - **`config.toml`** names the default space: `default_space = "/path/to/Work.knode"`.
+//! - **`config.toml`** names the default space: `default_space = "/path/to/Work.knode"`. It
+//!   also turns capture of agent conversations off (`capture = false`) or leaves projects out
+//!   of it (`capture_exclude = ["/path/to/project"]`).
 //! - **Spaces** are created by default in `~/Knode`, as `~/Knode/<name>.knode`.
 //!
 //! The space a command uses is, in order: the `--space <path>` flag, the `KNODE_SPACE`
@@ -167,12 +169,25 @@ pub struct Config {
     /// The space commands and agents use when none is given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_space: Option<PathBuf>,
+    /// Whether Knode Service captures agent conversations into the default space. On when
+    /// left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<bool>,
+    /// Projects whose conversations are not captured. Leaving out a folder leaves out
+    /// everything inside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_exclude: Vec<PathBuf>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
 }
 
 impl Config {
+    /// Whether conversations are captured: `capture` in `config.toml`, on by default.
+    pub fn capture_enabled(&self) -> bool {
+        self.capture.unwrap_or(true)
+    }
+
     /// Reads `config.toml`. A missing file is an empty config.
     pub fn load(paths: &Paths) -> Result<Config> {
         Self::load_from(&paths.config_file())
@@ -369,6 +384,17 @@ mod tests {
         assert!(text.contains("default_space = \"/b.knode\""), "{text}");
         assert!(text.contains("future = 1"), "{text}");
         assert!(text.contains("[later]"), "{text}");
+    }
+
+    #[test]
+    fn capture_settings() {
+        assert!(Config::default().capture_enabled());
+        let config: Config =
+            toml::from_str("capture = false\ncapture_exclude = [\"/p/secret\"]\n").unwrap();
+        assert!(!config.capture_enabled());
+        assert_eq!(config.capture_exclude, vec![PathBuf::from("/p/secret")]);
+        let text = toml::to_string(&Config::default()).unwrap();
+        assert!(!text.contains("capture"), "{text}");
     }
 
     #[test]

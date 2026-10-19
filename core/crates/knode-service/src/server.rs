@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::Result;
+use crate::capture::{CaptureOptions, CaptureTask};
 use crate::lock::InstanceLock;
 use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
@@ -30,23 +31,38 @@ use crate::protocol::*;
 const CHANGE_BUFFER: usize = 1024;
 /// How many outgoing messages wait for a slow connection.
 const OUTBOX: usize = 256;
+/// How often the service checks that its socket is still there. A service whose socket was
+/// removed cannot be reached, so it stops.
+const SOCKET_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Where the service keeps its socket and lock.
+/// Where the service keeps its socket and lock, and whether it captures conversations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// The Knode home. The socket is `service.sock` and the lock `service.lock` inside it.
     pub home: PathBuf,
+    /// Capture of agent conversations into the default space, or `None` for no capture.
+    pub capture: Option<CaptureOptions>,
 }
 
 impl Config {
-    /// A service in this Knode home.
+    /// A service in this Knode home, without capture.
     pub fn new(home: impl Into<PathBuf>) -> Self {
-        Config { home: home.into() }
+        Config {
+            home: home.into(),
+            capture: None,
+        }
     }
 
-    /// A service in the default Knode home, see [`knode_home`](crate::knode_home).
+    /// A service in the default Knode home (see [`knode_home`](crate::knode_home)) that
+    /// captures conversations as `config.toml` says. This is `knode service run`.
     pub fn from_env() -> Result<Self> {
-        Ok(Config::new(knode_home()?))
+        Ok(Config::new(knode_home()?).with_capture(CaptureOptions::default()))
+    }
+
+    /// The same service, capturing conversations with these options.
+    pub fn with_capture(mut self, options: CaptureOptions) -> Self {
+        self.capture = Some(options);
+        self
     }
 
     /// The socket the service listens on.
@@ -63,8 +79,9 @@ impl Config {
 /// Runs Knode Service in this thread until it receives SIGTERM or SIGINT. This is
 /// `knode service run`.
 ///
-/// Fails at once with [`Error::AlreadyRunning`] when another service runs in the same Knode
-/// home. On the way out it removes the socket and releases the lock.
+/// Fails at once with [`Error::AlreadyRunning`](crate::Error::AlreadyRunning) when another
+/// service runs in the same Knode home. On the way out it removes the socket and releases the
+/// lock.
 pub fn run(config: Config) -> Result<()> {
     let bound = Bound::bind(&config)?;
     let runtime = runtime()?;
@@ -160,6 +177,8 @@ struct Bound {
     lock: InstanceLock,
     listener: StdUnixListener,
     socket: PathBuf,
+    home: PathBuf,
+    capture: Option<CaptureOptions>,
 }
 
 impl Bound {
@@ -185,6 +204,8 @@ impl Bound {
             lock,
             listener,
             socket,
+            home: config.home.clone(),
+            capture: config.capture.clone(),
         })
     }
 }
@@ -196,14 +217,27 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
         lock,
         listener,
         socket,
+        home,
+        capture,
     } = bound;
     let listener = UnixListener::from_std(listener)?;
     let state = Arc::new(State::new());
+    let capture = match capture {
+        Some(options) => Some(CaptureTask::start(state.clone(), home, options)?),
+        None => None,
+    };
     let mut connections = JoinSet::new();
+    let mut check = tokio::time::interval(SOCKET_CHECK);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            _ = check.tick() => {
+                if !socket.exists() {
+                    eprintln!("Knode Service: {} was removed; stopping", socket.display());
+                    break;
+                }
+            }
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     connections.spawn(connection(stream, state.clone()));
@@ -219,6 +253,10 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
     drop(listener);
     let _ = fs::remove_file(&socket);
     connections.shutdown().await;
+    // Capture holds a space open: stop it before the spaces close.
+    if let Some(capture) = capture {
+        tokio::task::spawn_blocking(move || capture.stop()).await?;
+    }
     // Writes already running finish in their blocking threads; wait for them before closing
     // the spaces and releasing the lock.
     tokio::task::spawn_blocking(move || state.close()).await?;
@@ -230,7 +268,7 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
 type OpenSpaces = HashMap<PathBuf, Arc<Mutex<Space>>>;
 
 /// What every connection shares: the open spaces and the change feed.
-struct State {
+pub(crate) struct State {
     /// Each open space, by canonical path. A space is only used with its mutex held, so writes
     /// to one space happen one at a time, in one place.
     spaces: Mutex<OpenSpaces>,
@@ -238,6 +276,8 @@ struct State {
     clients: AtomicU64,
     /// Set when the service is stopping: no space opens after that.
     closing: AtomicBool,
+    /// The space conversations are captured into, while capture runs.
+    capturing: Mutex<Option<PathBuf>>,
 }
 
 impl State {
@@ -247,11 +287,12 @@ impl State {
             changes: broadcast::channel(CHANGE_BUFFER).0,
             clients: AtomicU64::new(0),
             closing: AtomicBool::new(false),
+            capturing: Mutex::new(None),
         }
     }
 
     /// The open space at `path`, opening it the first time.
-    fn space(&self, path: &Path) -> Result<Arc<Mutex<Space>>, RpcError> {
+    pub(crate) fn space(&self, path: &Path) -> Result<Arc<Mutex<Space>>, RpcError> {
         require_absolute(path)?;
         let key = fs::canonicalize(path)
             .map_err(|_| RpcError::from(knode_format::Error::NotASpace(path.to_path_buf())))?;
@@ -300,12 +341,22 @@ impl State {
     }
 
     fn notify(&self, space: &Space, node_id: NodeId, op: ChangeKind) {
+        self.notify_path(space.path(), node_id, op);
+    }
+
+    /// Announces a change to the space opened at `space`.
+    pub(crate) fn notify_path(&self, space: &Path, node_id: NodeId, op: ChangeKind) {
         // No receivers is not an error: nobody is subscribed.
         let _ = self.changes.send(Change {
-            space: space.path().to_path_buf(),
+            space: space.to_path_buf(),
             node_id,
             op,
         });
+    }
+
+    /// Records the space capture writes to, or that capture stopped.
+    pub(crate) fn set_capturing(&self, space: Option<PathBuf>) {
+        *lock_ignoring_poison(&self.capturing) = space;
     }
 
     fn status(&self) -> Status {
@@ -316,6 +367,7 @@ impl State {
             pid: std::process::id(),
             spaces,
             clients: self.clients.load(Ordering::Relaxed),
+            capture: lock_ignoring_poison(&self.capturing).clone(),
         }
     }
 }
@@ -382,6 +434,12 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             let space = lock_ignoring_poison(&space);
             to_value(space.get_node(&p.id)?)
         }
+        methods::NODE_FIND_BY_TITLE => {
+            let p: TitleParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(space.find_by_title(&p.title)?)
+        }
         methods::NODE_UPDATE => {
             let p: NodeUpdateParams = params(method, raw)?;
             let space = state.space(&p.space)?;
@@ -434,13 +492,17 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             }
             to_value(removed)
         }
-        methods::LINKS_FROM | methods::LINKS_BACK | methods::HISTORY => {
+        methods::LINKS_FROM
+        | methods::LINKS_BACK
+        | methods::LINKS_UNRESOLVED
+        | methods::HISTORY => {
             let p: NodeParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
             match method {
                 methods::LINKS_FROM => to_value(space.links_from(&p.id)?),
                 methods::LINKS_BACK => to_value(space.backlinks(&p.id)?),
+                methods::LINKS_UNRESOLVED => to_value(space.unresolved_links(&p.id)?),
                 _ => to_value(space.history(&p.id)?),
             }
         }

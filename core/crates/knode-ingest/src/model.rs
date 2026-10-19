@@ -7,22 +7,59 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// The agent a conversation was held with.
+///
+/// More agents may be added, so matches on it need a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum Agent {
     /// Claude Code, which keeps sessions in `~/.claude/projects`.
     ClaudeCode,
     /// Codex, which keeps sessions in `~/.codex/sessions`.
     Codex,
+    /// Gemini CLI, which keeps sessions in `~/.gemini/tmp/<project>/chats`.
+    #[serde(rename = "gemini-cli")]
+    GeminiCli,
+    /// GitHub Copilot CLI, which keeps sessions in `~/.copilot/session-state`.
+    #[serde(rename = "copilot-cli")]
+    CopilotCli,
+    /// OpenCode, which keeps sessions in a SQLite database in `~/.local/share/opencode`.
+    #[serde(rename = "opencode")]
+    OpenCode,
+    /// Amp, which keeps threads in `~/.local/share/amp/threads`.
+    Amp,
+    /// Aider, which keeps a `.aider.chat.history.md` file in each project.
+    Aider,
 }
 
 impl Agent {
+    /// Every agent, in a stable order.
+    pub const ALL: [Agent; 7] = [
+        Agent::ClaudeCode,
+        Agent::Codex,
+        Agent::GeminiCli,
+        Agent::CopilotCli,
+        Agent::OpenCode,
+        Agent::Amp,
+        Agent::Aider,
+    ];
+
     /// A stable identifier, suitable for storage.
     pub fn id(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude-code",
             Agent::Codex => "codex",
+            Agent::GeminiCli => "gemini-cli",
+            Agent::CopilotCli => "copilot-cli",
+            Agent::OpenCode => "opencode",
+            Agent::Amp => "amp",
+            Agent::Aider => "aider",
         }
+    }
+
+    /// The agent with this [`Agent::id`].
+    pub fn from_id(id: &str) -> Option<Agent> {
+        Agent::ALL.into_iter().find(|agent| agent.id() == id)
     }
 
     /// The name people know the agent by.
@@ -30,6 +67,11 @@ impl Agent {
         match self {
             Agent::ClaudeCode => "Claude Code",
             Agent::Codex => "Codex",
+            Agent::GeminiCli => "Gemini CLI",
+            Agent::CopilotCli => "Copilot CLI",
+            Agent::OpenCode => "OpenCode",
+            Agent::Amp => "Amp",
+            Agent::Aider => "Aider",
         }
     }
 }
@@ -179,6 +221,23 @@ pub struct Conversation {
     pub recorded_title: Option<Title>,
     /// The turns, in order.
     pub messages: Vec<Message>,
+    /// Where each record of a source that rewrites or rewinds records began, so it can be
+    /// replaced (see [`Conversation::begin_record`]).
+    #[serde(
+        default,
+        rename = "record_marks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    marks: Vec<RecordMark>,
+}
+
+/// Where one record began in a conversation: how many messages there were, and how many parts
+/// the last of them had.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RecordMark {
+    id: String,
+    messages: usize,
+    parts: usize,
 }
 
 impl Conversation {
@@ -194,6 +253,7 @@ impl Conversation {
             ended_at: None,
             recorded_title: None,
             messages: Vec::new(),
+            marks: Vec::new(),
         }
     }
 
@@ -236,6 +296,66 @@ impl Conversation {
                 self.messages.push(message);
             }
         }
+    }
+
+    /// Starts the record `id` of a source that writes a record again when it changes (Gemini
+    /// CLI). A record already seen last is taken back first, so applying it again replaces it.
+    /// Returns `false` for a record seen earlier than the last one, which is left as it was.
+    pub(crate) fn begin_record(&mut self, id: &str) -> bool {
+        if let Some(index) = self.marks.iter().position(|mark| mark.id == id) {
+            if index + 1 != self.marks.len() {
+                return false;
+            }
+            self.rewind_to(index);
+        }
+        self.marks.push(RecordMark {
+            id: id.to_string(),
+            messages: self.messages.len(),
+            parts: self.messages.last().map_or(0, |m| m.parts.len()),
+        });
+        true
+    }
+
+    /// Takes back the record `id` and every record after it, as when the person rewinds the
+    /// conversation. An unknown id changes nothing.
+    pub(crate) fn rewind(&mut self, id: &str) {
+        if let Some(index) = self.marks.iter().position(|mark| mark.id == id) {
+            self.rewind_to(index);
+        }
+    }
+
+    fn rewind_to(&mut self, index: usize) {
+        let mark = &self.marks[index];
+        self.messages.truncate(mark.messages);
+        if let Some(last) = self.messages.last_mut() {
+            last.parts.truncate(mark.parts);
+        }
+        self.marks.truncate(index);
+    }
+
+    /// Forgets the record marks, for a source read whole.
+    pub(crate) fn forget_records(&mut self) {
+        self.marks.clear();
+    }
+
+    /// Adds a line of text to the last text part if it has the same role, or starts one.
+    pub(crate) fn push_line(&mut self, role: Role, at: Option<DateTime<Utc>>, line: &str) {
+        if let Some(last) = self.messages.last_mut() {
+            if last.role == role {
+                if let Some(Part::Text { text }) = last.parts.last_mut() {
+                    text.push('\n');
+                    text.push_str(line);
+                    return;
+                }
+            }
+        }
+        self.push_part(
+            role,
+            at,
+            Part::Text {
+                text: line.to_string(),
+            },
+        );
     }
 
     /// Marks the tool call with this id as failed, searching from the end.

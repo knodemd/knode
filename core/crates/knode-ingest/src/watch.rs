@@ -12,6 +12,7 @@ use knode_format::Space;
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
 use crate::capture::{Capture, CaptureError, CaptureReport};
+use crate::model::Agent;
 
 /// How a [`Watcher`] batches changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +94,25 @@ impl std::fmt::Debug for Watcher {
 
 impl Watcher {
     /// Watches `roots` recursively and calls `on_changes` from a background thread with each
-    /// batch of changed `.jsonl` files, or [`Changes::Rescan`].
+    /// batch of changed session files (`.jsonl` and `.json` files, Aider history files and the
+    /// OpenCode database), or [`Changes::Rescan`].
     pub fn start<F>(
         roots: &[PathBuf],
+        options: WatchOptions,
+        on_changes: F,
+    ) -> Result<Self, CaptureError>
+    where
+        F: FnMut(Changes) + Send + 'static,
+    {
+        let targets: Vec<(PathBuf, RecursiveMode)> = roots
+            .iter()
+            .map(|root| (root.clone(), RecursiveMode::Recursive))
+            .collect();
+        Self::start_targets(&targets, options, on_changes)
+    }
+
+    fn start_targets<F>(
+        targets: &[(PathBuf, RecursiveMode)],
         options: WatchOptions,
         on_changes: F,
     ) -> Result<Self, CaptureError>
@@ -108,9 +125,9 @@ impl Watcher {
             let _ = events.send(Message::Event(event));
         })?;
         let mut watched = Vec::new();
-        for root in roots {
+        for (root, mode) in targets {
             if root.is_dir() {
-                watcher.watch(root, RecursiveMode::Recursive)?;
+                watcher.watch(root, *mode)?;
                 watched.push(root.clone());
             }
         }
@@ -129,6 +146,10 @@ impl Watcher {
     /// Watches the session folders of `capture` and syncs each batch into `space`, calling
     /// `on_report` with the result of every sync. A rescan runs [`Capture::sync_all`]; a batch
     /// of files runs [`Capture::sync_paths`].
+    ///
+    /// The OpenCode folder is watched without its subfolders, which hold snapshots rather than
+    /// sessions. Aider roots are broad folders of projects and are not watched: the periodic
+    /// rescan ([`WatchOptions::rescan`]) picks up their changes.
     pub fn capture<F>(
         capture: Arc<Mutex<Capture>>,
         space: Arc<Mutex<Space>>,
@@ -138,14 +159,14 @@ impl Watcher {
     where
         F: FnMut(Result<CaptureReport, CaptureError>) + Send + 'static,
     {
-        let roots: Vec<PathBuf> = capture
+        let targets: Vec<(PathBuf, RecursiveMode)> = capture
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .roots()
             .iter()
-            .map(|(_, root)| root.clone())
+            .filter_map(|(agent, root)| Some((root.clone(), watch_mode(*agent)?)))
             .collect();
-        Self::start(&roots, options, move |changes| {
+        Self::start_targets(&targets, options, move |changes| {
             let mut capture = capture.lock().unwrap_or_else(PoisonError::into_inner);
             let mut space = space.lock().unwrap_or_else(PoisonError::into_inner);
             let result = match changes {
@@ -186,8 +207,22 @@ impl Drop for Watcher {
     }
 }
 
+/// How the session folder of an agent is watched, or `None` when it is left to rescans.
+fn watch_mode(agent: Agent) -> Option<RecursiveMode> {
+    match agent {
+        Agent::OpenCode => Some(RecursiveMode::NonRecursive),
+        Agent::Aider => None,
+        _ => Some(RecursiveMode::Recursive),
+    }
+}
+
+/// Whether a changed path may be a session: what [`Capture::sync_paths`] then checks closely.
 fn is_session(path: &Path) -> bool {
-    path.extension() == Some(OsStr::new("jsonl"))
+    let extension = path.extension();
+    extension == Some(OsStr::new("jsonl"))
+        || extension == Some(OsStr::new("json"))
+        || path.file_name() == Some(OsStr::new(crate::aider::HISTORY_FILE))
+        || crate::opencode::is_database_file(path)
 }
 
 /// Collects events into batches and hands them over, until told to stop.
@@ -287,12 +322,17 @@ mod tests {
             thread::spawn(move || batch(receiver, options(), move |c| out.send(c).unwrap()));
         sender.send(event("/r/a.jsonl")).unwrap();
         sender.send(event("/r/b.txt")).unwrap();
+        sender.send(event("/r/opencode/opencode.db-wal")).unwrap();
         sender.send(event("/r/a.jsonl")).unwrap();
         sender.send(event("/r/c.jsonl")).unwrap();
         let got = batches.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(
             got,
-            Changes::Paths(vec!["/r/a.jsonl".into(), "/r/c.jsonl".into()])
+            Changes::Paths(vec![
+                "/r/a.jsonl".into(),
+                "/r/c.jsonl".into(),
+                "/r/opencode/opencode.db-wal".into()
+            ])
         );
         sender.send(Message::Stop).unwrap();
         worker.join().unwrap();

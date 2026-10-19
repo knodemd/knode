@@ -27,7 +27,7 @@ impl Client {
             .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(std::fs::File::create(sb.path("mcp-stderr.log")).unwrap())
             .spawn()
             .unwrap();
         let stdin = child.stdin.take();
@@ -282,4 +282,82 @@ fn the_space_flag_picks_the_space() {
     assert_eq!(space.node_count().unwrap(), 1);
     let work = knode_format::Space::open(sb.space("work")).unwrap();
     assert_eq!(work.node_count().unwrap(), 0);
+}
+
+#[test]
+fn the_tools_go_through_knode_service() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    // knode mcp starts the service again by itself.
+    sb.ok(&["service", "stop"]);
+    let mut client = Client::start(&sb, &[]);
+    client.initialize("2025-06-18");
+    let result = client.call(
+        "write_node",
+        json!({ "title": "Through the service", "body": "One writer for everyone." }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+
+    // The service has the space open and the MCP server as its client.
+    let status = sb.ok(&["service", "status"]);
+    assert!(status.contains("is running"), "{status}");
+    let space = std::fs::canonicalize(sb.space("work")).unwrap();
+    assert!(
+        status.contains(&format!("  {}", space.display())),
+        "{status}"
+    );
+    assert!(status.contains("Clients: 1"), "{status}");
+
+    // A write from the agent is seen by the CLI at once, and the other way round.
+    let found = sb.ok(&["search", "writer"]);
+    assert!(found.contains("Through the service"), "{found}");
+    std::fs::write(
+        sb.path("note.md"),
+        "# From the CLI\n\nImported while the agent works.\n",
+    )
+    .unwrap();
+    sb.ok(&["import", sb.path("note.md").to_str().unwrap()]);
+    let result = client.call("search", json!({ "query": "imported" }));
+    assert!(text(&result).contains("From the CLI"), "{result}");
+    let result = client.call("read_node", json!({ "title": "Through the service" }));
+    assert!(
+        text(&result).contains("One writer for everyone."),
+        "{result}"
+    );
+    client.finish();
+
+    let stderr = std::fs::read_to_string(sb.path("mcp-stderr.log")).unwrap();
+    assert!(!stderr.contains("warning"), "{stderr}");
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    let node = &space.find_by_title("Through the service").unwrap()[0];
+    let node = space.get_node(&node.id).unwrap().unwrap();
+    assert_eq!(node.created_by.actor, "test-client");
+}
+
+#[test]
+#[cfg(unix)]
+fn without_the_service_the_tools_open_the_space_directly() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["service", "stop"]);
+    // The service cannot make its socket in a Knode home it cannot write to.
+    let home = sb.knode_home();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let mut client = Client::start(&sb, &[]);
+    client.initialize("2025-06-18");
+    let result = client.call("write_node", json!({ "title": "Direct" }));
+    assert_eq!(result["isError"], false, "{result}");
+    let result = client.call("read_node", json!({ "title": "Direct" }));
+    assert_eq!(result["isError"], false, "{result}");
+    client.finish();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let stderr = std::fs::read_to_string(sb.path("mcp-stderr.log")).unwrap();
+    assert!(
+        stderr.contains("warning: Knode Service cannot run"),
+        "{stderr}"
+    );
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert_eq!(space.node_count().unwrap(), 1);
 }

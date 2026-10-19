@@ -171,6 +171,16 @@ impl Client {
         self.request(methods::NODE_GET, self.node_params(space.as_ref(), id)?)
     }
 
+    /// The nodes with this title, compared without regard to case or extra spaces, oldest
+    /// first. A `[[link]]` with this title points at the first one.
+    pub fn find_by_title(&self, space: impl AsRef<Path>, title: &str) -> Result<Vec<NodeSummary>> {
+        let params = TitleParams {
+            space: space_path(space.as_ref())?,
+            title: title.to_string(),
+        };
+        self.request(methods::NODE_FIND_BY_TITLE, params)
+    }
+
     /// Changes a node and returns it as it is now.
     pub fn update_node(
         &self,
@@ -243,6 +253,14 @@ impl Client {
     /// The links that point at a node.
     pub fn backlinks(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<Link>> {
         self.request(methods::LINKS_BACK, self.node_params(space.as_ref(), id)?)
+    }
+
+    /// The `[[links]]` in a node's body that name no node yet, as written.
+    pub fn unresolved_links(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<String>> {
+        self.request(
+            methods::LINKS_UNRESOLVED,
+            self.node_params(space.as_ref(), id)?,
+        )
     }
 
     /// Searches titles and text, best match first.
@@ -429,55 +447,137 @@ fn space_path(path: &Path) -> Result<PathBuf> {
     Ok(fs::canonicalize(&path).unwrap_or(path))
 }
 
+/// How long to keep trying to connect after the started service has exited: it may have lost
+/// a race with another service starting at the same time.
+const EXITED_GRACE: Duration = Duration::from_secs(2);
+
+/// A log of the service's messages larger than this is started again.
+const LOG_LIMIT: u64 = 1024 * 1024;
+
 /// Connects to Knode Service, starting it in the background first when it is not running.
 ///
 /// The service is started as `<exe> service run`, in its own process group, with the
-/// environment of this process (so it uses the same `KNODE_HOME`). Waits up to
-/// [`SPAWN_TIMEOUT`] for its socket.
+/// environment of this process (so it uses the same `KNODE_HOME`). Its messages go to
+/// [`LOG_FILE`](crate::LOG_FILE) in the Knode home. Waits up to [`SPAWN_TIMEOUT`] for its
+/// socket.
 pub fn connect_or_spawn(exe: impl AsRef<Path>) -> Result<Client> {
+    let paths = paths::paths()?;
+    let socket = paths.service_socket();
+    if let Ok(client) = Client::connect(&socket) {
+        return Ok(client);
+    }
     let mut command = Command::new(exe.as_ref());
     command.args(["service", "run"]);
-    connect_or_spawn_with(paths::socket_path()?, command, SPAWN_TIMEOUT)
+    let log = open_log(&paths.home.join(crate::LOG_FILE))
+        .map(Stdio::from)
+        .unwrap_or_else(|_| Stdio::null());
+    spawn_and_connect(&socket, command, SPAWN_TIMEOUT, log)
+}
+
+fn open_log(path: &Path) -> std::io::Result<fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let long = fs::metadata(path).is_ok_and(|m| m.len() > LOG_LIMIT);
+    fs::OpenOptions::new()
+        .create(true)
+        .append(!long)
+        .write(true)
+        .truncate(long)
+        .open(path)
 }
 
 /// Like [`connect_or_spawn`], with the socket, the command that starts the service and the
-/// time to wait given by the caller.
+/// time to wait given by the caller. The service's output is discarded.
 pub fn connect_or_spawn_with(
     socket: impl AsRef<Path>,
-    mut command: Command,
+    command: Command,
     timeout: Duration,
 ) -> Result<Client> {
     let socket = socket.as_ref();
     if let Ok(client) = Client::connect(socket) {
         return Ok(client);
     }
+    spawn_and_connect(socket, command, timeout, Stdio::null())
+}
+
+fn spawn_and_connect(
+    socket: &Path,
+    mut command: Command,
+    timeout: Duration,
+    stderr: Stdio,
+) -> Result<Client> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .process_group(0);
     let mut child = command.spawn()?;
     let started = Instant::now();
+    let mut exited: Option<(Instant, std::process::ExitStatus)> = None;
     let mut delay = Duration::from_millis(5);
     loop {
         if let Ok(client) = Client::connect(socket) {
             // Reap the service when it ends, so it never lingers as a zombie of this process.
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
+            if exited.is_none() {
+                thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
             return Ok(client);
         }
+        if exited.is_none() {
+            if let Ok(Some(status)) = child.try_wait() {
+                exited = Some((Instant::now(), status));
+            }
+        }
+        if let Some((at, status)) = exited {
+            // A service that exits early may have lost a race with another one starting at
+            // the same time; give that one a moment, then give up.
+            if at.elapsed() >= EXITED_GRACE {
+                return Err(Error::StartFailed {
+                    status: status.to_string(),
+                });
+            }
+        }
         if started.elapsed() >= timeout {
-            let _ = child.try_wait();
             return Err(Error::StartTimeout {
                 seconds: timeout.as_secs(),
                 socket: socket.to_path_buf(),
             });
         }
-        // A child that exits early may have lost a race with another service starting at the
-        // same time; keep trying to connect until the timeout.
-        let _ = child.try_wait();
         thread::sleep(delay);
         delay = (delay * 2).min(Duration::from_millis(100));
     }
+}
+
+/// Stops the Knode Service listening on `socket`, however it was started: sends it SIGTERM and
+/// waits up to `timeout` until it has closed its spaces and released its lock. A service run
+/// by launchd or systemd stays stopped until the next login. Returns its process id, or `None`
+/// when no service was listening.
+pub fn stop_service(socket: impl AsRef<Path>, timeout: Duration) -> Result<Option<u32>> {
+    let socket = socket.as_ref();
+    let Ok(client) = Client::connect(socket) else {
+        return Ok(None);
+    };
+    let pid = client.status()?.pid;
+    drop(client);
+    let pid_t = libc::pid_t::try_from(pid)
+        .map_err(|_| Error::Protocol(format!("the service sent a bad process id {pid}")))?;
+    // SAFETY: kill has no memory preconditions.
+    if unsafe { libc::kill(pid_t, libc::SIGTERM) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let lock = socket.with_file_name(crate::LOCK_FILE);
+    let started = Instant::now();
+    while socket.exists() || crate::lock::is_held(&lock) {
+        if started.elapsed() >= timeout {
+            return Err(Error::StopTimeout {
+                pid,
+                seconds: timeout.as_secs(),
+            });
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Ok(Some(pid))
 }

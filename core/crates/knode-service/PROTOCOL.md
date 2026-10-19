@@ -70,18 +70,20 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `space.open` | `space` | Space info. |
 | `node.create` | `space`, `title`, `body`?, `kind`? (default `note`), `tags`?, `by` | The node. |
 | `node.get` | `space`, `id` | The node, or `null` when no node has this id. |
+| `node.find_by_title` | `space`, `title` | Node summaries with this title, oldest first. Titles are compared without regard to case or extra spaces; a `[[link]]` with this title points at the first one. |
 | `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `by` | The node as it is now. Fields left out stay as they are. |
 | `node.delete` | `space`, `id`, `by` | `null`. |
 | `link.create` | `space`, `from`, `to`, `kind`? (default `related`), `by` | The link. |
 | `link.delete` | `space`, `from`, `to`, `kind`? (default `related`) | `true` if there was such a link. |
 | `links.from` | `space`, `id` | The links that start from the node. |
 | `links.back` | `space`, `id` | The links that point at the node. |
+| `links.unresolved` | `space`, `id` | The `[[links]]` in the node's text that name no node yet, as written. |
 | `search` | `space`, `query`, `limit`? (default 20, at most 1000) | Search hits, best first. |
 | `recent` | `space`, `limit`? (default 20, at most 1000) | Node summaries, newest change first. |
 | `history` | `space`, `id` | Every version of the node, oldest first. |
 | `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients" }`. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. |
 
 Space info is:
 
@@ -108,6 +110,24 @@ order the writes were made:
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
 
+## Capture
+
+Knode Service captures every Claude Code and Codex conversation into the default space: one
+`conversation` node per session, kept current while the agent writes it. It reads
+`$KNODE_HOME/config.toml` when it starts and again every few seconds:
+
+- `default_space` is the space conversations go to. With none, nothing is captured.
+- `capture = false` turns capture off. It is on when left out.
+- `capture_exclude = ["/path/to/project"]` leaves out the conversations held in these projects
+  and in every folder inside them.
+
+Capture follows `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) and `~/.codex/sessions`
+(or `$CODEX_HOME/sessions`). What it has read is saved in `$KNODE_HOME/capture/state.json`, so
+after a restart it only reads what is new. Its writes are made with the provenance
+`{ "kind": "agent", "actor": "claude-code" | "codex", "session": "<session id>" }`, go through
+the same space as every client's, one at a time, and are announced with `changed` like any other
+write.
+
 ## Errors
 
 Errors are JSON-RPC error objects. `message` is written for people; `data.kind` is a stable name to
@@ -133,7 +153,15 @@ match on.
 
 ## Starting the service
 
-- `knode service run` runs it in the foreground.
-- The `knode` CLI starts it in the background when it is not running.
-- On macOS a launch agent, `~/Library/LaunchAgents/md.knode.service.plist`, starts it at login and
-  keeps it running. On Linux a systemd user unit, `knode.service`, does the same.
+- `knode service run` runs it in the foreground. If a service is already running in the same
+  Knode home it says so and exits successfully.
+- `knode service start` starts it in the background, and every `knode` command that uses a space
+  (including `knode mcp`) does the same when it is not running. A service started this way writes
+  its messages to `$KNODE_HOME/service.log`.
+- `knode service stop` stops it, however it was started; `knode service status` shows its
+  version, process id, open spaces, clients and capture.
+- `knode service install` starts it at login and now: on macOS with a launch agent,
+  `~/Library/LaunchAgents/md.knode.service.plist`, loaded with `launchctl bootstrap`; on Linux
+  with a systemd user unit, `knode.service`, enabled with `systemctl --user enable --now`. The
+  service is started again if it crashes, but not after `knode service stop`.
+  `knode service uninstall` undoes it.

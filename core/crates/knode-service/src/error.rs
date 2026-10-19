@@ -28,6 +28,28 @@ pub enum Error {
     /// The connection to the service closed before the answer came.
     #[error("the connection to Knode Service closed")]
     Disconnected,
+    /// The service that was started exited without listening.
+    #[error("Knode Service could not start ({status})")]
+    StartFailed {
+        /// How it exited.
+        status: String,
+    },
+    /// A program that loads or unloads the login service failed.
+    #[error("`{command}` failed: {message}")]
+    Command {
+        /// The command line.
+        command: String,
+        /// What it said.
+        message: String,
+    },
+    /// The service did not stop in time.
+    #[error("Knode Service (pid {pid}) did not stop within {seconds} seconds")]
+    StopTimeout {
+        /// Its process id.
+        pid: u32,
+        /// How long the caller waited.
+        seconds: u64,
+    },
     /// The service did not start in time.
     #[error("Knode Service did not start within {seconds} seconds at {socket}")]
     StartTimeout {
