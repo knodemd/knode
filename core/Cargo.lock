@@ -687,6 +687,19 @@ name = "knode-sync"
 version = "0.0.0"
 
 [[package]]
+name = "knode-vault"
+version = "0.0.0"
+dependencies = [
+ "knode-format",
+ "knode-md",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
