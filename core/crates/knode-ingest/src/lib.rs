@@ -1,7 +1,7 @@
 //! Capture conversations from AI agents.
 //!
-//! Every conversation with Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode, Amp or Aider
-//! becomes a [`Conversation`]: its agent, project, dates, title and turns, with tool calls
+//! Every conversation with Claude Code, Codex, Gemini CLI, Copilot CLI, OpenCode, Amp, Aider,
+//! Cursor, Windsurf, Cline or Roo Code becomes a [`Conversation`]: its agent, project, dates, title and turns, with tool calls
 //! condensed to one line each and tool output left out. A conversation renders to Markdown with
 //! [`to_markdown`]; its metadata stays structured. [`default_root`] says where each agent keeps
 //! its sessions.
@@ -35,8 +35,10 @@ mod aider;
 mod amp;
 mod capture;
 pub mod claude_code;
+mod cline;
 pub mod codex;
 mod copilot;
+mod cursor;
 mod discover;
 mod filter;
 mod gemini;
@@ -45,11 +47,16 @@ mod opencode;
 mod reader;
 mod render;
 mod text;
+mod vscdb;
 mod watch;
+mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured};
-pub use discover::{AIDER_ROOT_VARIABLE, SessionFile, default_root, discover, discover_all};
+pub use discover::{
+    AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,
+    SessionFile, WINDSURF_ROOT_VARIABLE, default_root, default_roots, discover, discover_all,
+};
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
 pub use reader::{Error, Progress, SessionReader, read_session, read_sessions};
@@ -69,7 +76,13 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &serde_json::Value)
         Agent::GeminiCli => gemini::apply(conversation, record),
         Agent::CopilotCli => copilot::apply(conversation, record),
         // Read whole or as text, never a JSON record at a time.
-        Agent::OpenCode | Agent::Amp | Agent::Aider => {}
+        Agent::OpenCode
+        | Agent::Amp
+        | Agent::Aider
+        | Agent::Cursor
+        | Agent::Windsurf
+        | Agent::Cline
+        | Agent::RooCode => {}
     }
 }
 

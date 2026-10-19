@@ -15,7 +15,7 @@
 use serde_json::Value;
 
 use crate::model::{Conversation, Part, Role, Title, TitleSource, ToolCall};
-use crate::text::{SUMMARY_MAX, any_time, first_str, one_line, str_field};
+use crate::text::{SUMMARY_MAX, any_time, first_str, one_line, percent_decode, str_field};
 
 pub(crate) fn apply_document(conversation: &mut Conversation, thread: &Value) {
     if let Some(id) = first_str(thread, &["id"]) {
@@ -151,28 +151,6 @@ fn summarise(name: &str, input: &Value) -> String {
     first_str(input, keys)
         .map(|text| one_line(text, SUMMARY_MAX))
         .unwrap_or_default()
-}
-
-/// Decodes `%XX` escapes in a URL path.
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if let Some(Ok(byte)) = text
-                .get(i + 1..i + 3)
-                .map(|hex| u8::from_str_radix(hex, 16))
-            {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
