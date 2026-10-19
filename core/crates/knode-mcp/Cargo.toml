@@ -1,0 +1,10 @@
+[package]
+name = "knode-mcp"
+description = "The MCP server agents use to search, read and write a Knode space."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true

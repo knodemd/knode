@@ -1,0 +1,10 @@
+[package]
+name = "knode-ingest"
+description = "Capture conversations from AI agents and import notes and chat exports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
