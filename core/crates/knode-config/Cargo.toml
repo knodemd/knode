@@ -1,0 +1,18 @@
+[package]
+name = "knode-config"
+description = "Where Knode keeps its settings and spaces, and which space to use."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+thiserror = "=2.0.21"
+toml = "=1.1.8"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
