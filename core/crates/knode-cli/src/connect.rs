@@ -88,7 +88,7 @@ fn codex_config() -> Result<PathBuf> {
 
 /// The path agents should run: the `knode` found on PATH when it is this program (a stable
 /// link that survives upgrades), else this program's own path.
-fn knode_path() -> Result<PathBuf> {
+pub(crate) fn knode_path() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("cannot find the knode program")?;
     if let Some(found) = which("knode")
         && same_file(&found, &exe)

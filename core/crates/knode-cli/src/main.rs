@@ -2,6 +2,7 @@
 
 mod connect;
 mod import;
+mod service;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -10,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use knode_config::{Config, Paths, ResolvedSpace, SpaceSource};
 use knode_format::{Manifest, Provenance, Space};
+use knode_mcp::Backend;
 
 /// Knode: one local memory every AI agent shares.
 #[derive(Debug, Parser)]
@@ -65,6 +67,11 @@ enum Command {
     Mcp,
     /// List the spaces Knode knows about.
     Spaces,
+    /// Run, start, stop or inspect Knode Service, or start it at login.
+    Service {
+        #[command(subcommand)]
+        action: service::Action,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,16 +90,19 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init { name, dir, default } => init(&paths, &name, dir, default),
         Command::Search { query, limit, json } => {
-            let space = open_space(&paths, cli.space.as_deref())?;
-            search(&space, &query.join(" "), limit, json)
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            search(backend.as_ref(), &query.join(" "), limit, json)
         }
         Command::Import { path } => {
-            let mut space = open_space(&paths, cli.space.as_deref())?;
-            import::run(&mut space, &path, &person())
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            import::run(backend.as_ref(), &path, &person())
         }
         Command::Connect { agent, print } => connect::run(agent, print),
         Command::Mcp => mcp(&paths, cli.space.as_deref()),
         Command::Spaces => spaces(&paths),
+        Command::Service { action } => service::run(&paths, action),
     }
 }
 
@@ -116,7 +126,8 @@ fn resolve(paths: &Paths, flag: Option<&Path>) -> Result<ResolvedSpace> {
     Ok(knode_config::resolve_space_from_env(flag, &config)?)
 }
 
-fn open_space(paths: &Paths, flag: Option<&Path>) -> Result<Space> {
+/// The space to use, which must exist.
+fn existing_space(paths: &Paths, flag: Option<&Path>) -> Result<PathBuf> {
     let resolved = resolve(paths, flag)?;
     let path = &resolved.path;
     if !path.exists() {
@@ -129,7 +140,7 @@ fn open_space(paths: &Paths, flag: Option<&Path>) -> Result<Space> {
             path.display()
         );
     }
-    Space::open(path).with_context(|| format!("cannot open the space at {}", path.display()))
+    Ok(resolved.path)
 }
 
 fn init(paths: &Paths, name: &str, dir: Option<PathBuf>, make_default: bool) -> Result<()> {
@@ -145,7 +156,7 @@ fn init(paths: &Paths, name: &str, dir: Option<PathBuf>, make_default: bool) -> 
     if path.exists() {
         bail!("{} already exists", path.display());
     }
-    Space::create(&path, name)
+    create_space(&path, name)
         .with_context(|| format!("cannot create the space at {}", path.display()))?;
     println!("Created space \"{name}\" at {}", path.display());
 
@@ -166,8 +177,22 @@ fn init(paths: &Paths, name: &str, dir: Option<PathBuf>, make_default: bool) -> 
     Ok(())
 }
 
-fn search(space: &Space, query: &str, limit: usize, json: bool) -> Result<()> {
-    let hits = space.search(query, limit.max(1))?;
+/// Creates a space through Knode Service, or directly when the service cannot run.
+fn create_space(path: &Path, name: &str) -> Result<()> {
+    match service::connect() {
+        Ok(client) => {
+            client.create_space(path, name)?;
+        }
+        Err(error) => {
+            service::warn_direct(&error);
+            Space::create(path, name)?;
+        }
+    }
+    Ok(())
+}
+
+fn search(backend: &dyn Backend, query: &str, limit: usize, json: bool) -> Result<()> {
+    let hits = backend.search(query, limit.max(1))?;
     if json {
         println!("{}", serde_json::to_string_pretty(&hits)?);
         return Ok(());
@@ -198,11 +223,11 @@ fn search(space: &Space, query: &str, limit: usize, json: bool) -> Result<()> {
 
 fn mcp(paths: &Paths, flag: Option<&Path>) -> Result<()> {
     let backend = match resolve(paths, flag) {
-        Ok(resolved) => knode_mcp::DirectBackend::new(resolved.path),
+        Ok(resolved) => service::backend(&resolved.path)?,
         // The server still starts, so the agent can tell the person what to do.
-        Err(error) => knode_mcp::DirectBackend::unavailable(format!(
+        Err(error) => Box::new(knode_mcp::DirectBackend::unavailable(format!(
             "Knode has no space to use: {error:#}. Ask the user to run `knode init <name>` in a terminal."
-        )),
+        ))),
     };
     knode_mcp::run_stdio(backend).context("the MCP server stopped")
 }

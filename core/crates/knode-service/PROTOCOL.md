@@ -153,7 +153,15 @@ match on.
 
 ## Starting the service
 
-- `knode service run` runs it in the foreground.
-- The `knode` CLI starts it in the background when it is not running.
-- On macOS a launch agent, `~/Library/LaunchAgents/md.knode.service.plist`, starts it at login and
-  keeps it running. On Linux a systemd user unit, `knode.service`, does the same.
+- `knode service run` runs it in the foreground. If a service is already running in the same
+  Knode home it says so and exits successfully.
+- `knode service start` starts it in the background, and every `knode` command that uses a space
+  (including `knode mcp`) does the same when it is not running. A service started this way writes
+  its messages to `$KNODE_HOME/service.log`.
+- `knode service stop` stops it, however it was started; `knode service status` shows its
+  version, process id, open spaces, clients and capture.
+- `knode service install` starts it at login and now: on macOS with a launch agent,
+  `~/Library/LaunchAgents/md.knode.service.plist`, loaded with `launchctl bootstrap`; on Linux
+  with a systemd user unit, `knode.service`, enabled with `systemctl --user enable --now`. The
+  service is started again if it crashes, but not after `knode service stop`.
+  `knode service uninstall` undoes it.

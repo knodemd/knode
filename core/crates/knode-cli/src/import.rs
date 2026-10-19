@@ -5,12 +5,13 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use knode_format::{NewNode, NodeUpdate, Provenance, Space, kinds};
+use knode_format::{NewNode, NodeUpdate, Provenance, kinds};
 use knode_ingest::{Agent, SessionReader, to_markdown};
+use knode_mcp::Backend;
 
 /// Imports `path` into `space`: a folder of Markdown files, one Markdown file, or a Claude Code
 /// or Codex session file.
-pub fn run(space: &mut Space, path: &Path, by: &Provenance) -> Result<()> {
+pub fn run(space: &dyn Backend, path: &Path, by: &Provenance) -> Result<()> {
     let path = crate::absolute(path)?;
     if path.is_dir() {
         let files = markdown_files(&path)?;
@@ -125,7 +126,7 @@ fn first_heading(text: &str) -> Option<String> {
     None
 }
 
-fn import_markdown(space: &mut Space, files: &[PathBuf], by: &Provenance) -> Result<()> {
+fn import_markdown(space: &dyn Backend, files: &[PathBuf], by: &Provenance) -> Result<()> {
     let (mut created, mut unchanged, mut failed) = (0, 0, 0);
     for file in files {
         let text = match fs::read_to_string(file) {
@@ -240,7 +241,7 @@ fn conversation_body(markdown: &str) -> String {
     }
 }
 
-fn import_session(space: &mut Space, path: &Path) -> Result<()> {
+fn import_session(space: &dyn Backend, path: &Path) -> Result<()> {
     let agent = detect_agent(path)?;
     let mut reader = SessionReader::open(agent, path, session_id(agent, path));
     reader
