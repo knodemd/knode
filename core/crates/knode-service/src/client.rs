@@ -13,12 +13,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use knode_format::{
-    HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance,
+    SearchHit,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::agents::{
+    AgentAddParams, AgentInfo, AgentRevokeParams, AuthParams, GrantSetParams, Identity, SpaceGrant,
+};
+use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
 use crate::{Error, Result, paths};
 
@@ -26,6 +31,26 @@ use crate::{Error, Result, paths};
 pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 type Reply = std::result::Result<Value, RpcError>;
+
+/// How a [`Client`] proves who it acts for when it connects.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// The person who owns the Knode home, with the owner token found next to the socket
+    /// (`owner.token`, which only its owner can read). The app and the CLI connect like this.
+    Owner,
+    /// An agent, with its key (`knk_` and 64 hexadecimal digits).
+    Agent(String),
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::Owner => f.write_str("Owner"),
+            // Never print a key.
+            Credential::Agent(_) => f.write_str("Agent(..)"),
+        }
+    }
+}
 
 /// A connection to Knode Service.
 ///
@@ -50,6 +75,7 @@ type Reply = std::result::Result<Value, RpcError>;
 pub struct Client {
     shared: Arc<Shared>,
     reader: Option<thread::JoinHandle<()>>,
+    identity: Option<Identity>,
 }
 
 #[derive(Debug)]
@@ -69,8 +95,57 @@ struct Shared {
 }
 
 impl Client {
-    /// Connects to the service listening on `socket`.
+    /// Connects to the service listening on `socket` as the person who owns the Knode home
+    /// (see [`Credential::Owner`]).
     pub fn connect(socket: impl AsRef<Path>) -> Result<Client> {
+        Client::connect_with(socket, &Credential::Owner)
+    }
+
+    /// Connects to the service listening on `socket` as an agent, with its key.
+    pub fn connect_as_agent(socket: impl AsRef<Path>, key: &str) -> Result<Client> {
+        Client::connect_with(socket, &Credential::Agent(key.to_string()))
+    }
+
+    /// Connects to the service listening on `socket` and authenticates with `credential`.
+    /// Fails with [`Error::Rpc`] when the service refuses the credential, such as an unknown
+    /// or revoked key. A service too old to know `auth` is used as it is.
+    pub fn connect_with(socket: impl AsRef<Path>, credential: &Credential) -> Result<Client> {
+        let socket = socket.as_ref();
+        let mut client = Client::connect_unauthenticated(socket)?;
+        let params = match credential {
+            Credential::Owner => {
+                let token = read_owner_token(&socket.with_file_name(OWNER_TOKEN_FILE))
+                    .ok()
+                    .flatten();
+                match token {
+                    Some(owner) => AuthParams {
+                        owner: Some(owner),
+                        key: None,
+                    },
+                    // No token to show: the service will say what is missing on each call.
+                    None => return Ok(client),
+                }
+            }
+            Credential::Agent(key) => AuthParams {
+                key: Some(key.trim().to_string()),
+                owner: None,
+            },
+        };
+        match client.request::<Identity>(methods::AUTH, params) {
+            Ok(identity) => client.identity = Some(identity),
+            Err(Error::Rpc(e)) if e.code == codes::METHOD_NOT_FOUND => {}
+            Err(e) => return Err(e),
+        }
+        Ok(client)
+    }
+
+    /// Who the service says this connection acts for, once it has authenticated.
+    pub fn identity(&self) -> Option<&Identity> {
+        self.identity.as_ref()
+    }
+
+    /// Connects without authenticating: the service answers nothing but `auth`.
+    pub fn connect_unauthenticated(socket: impl AsRef<Path>) -> Result<Client> {
         let stream = UnixStream::connect(socket.as_ref())?;
         let read = stream.try_clone()?;
         let shared = Arc::new(Shared {
@@ -89,6 +164,7 @@ impl Client {
         Ok(Client {
             shared,
             reader: Some(reader),
+            identity: None,
         })
     }
 
@@ -299,6 +375,56 @@ impl Client {
         })
     }
 
+    /// The agents of this machine, with their keys' fingerprints and their levels in the
+    /// spaces they were given. People only.
+    pub fn agents(&self) -> Result<Vec<AgentInfo>> {
+        self.request(methods::AGENTS_LIST, json!({}))
+    }
+
+    /// Adds an agent with the fingerprint of its new key, or gives an existing agent this new
+    /// key and revokes its old ones. The key itself never goes to the service. People only.
+    pub fn add_agent(
+        &self,
+        name: &str,
+        kind: &str,
+        fingerprint: &str,
+        by: &Provenance,
+    ) -> Result<AgentInfo> {
+        let params = AgentAddParams {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            fingerprint: fingerprint.to_string(),
+            by: by.clone(),
+        };
+        self.request(methods::AGENTS_ADD, params)
+    }
+
+    /// Revokes every key of an agent and takes away its access to every space. People only.
+    pub fn revoke_agent(&self, name: &str, by: &Provenance) -> Result<AgentInfo> {
+        let params = AgentRevokeParams {
+            agent: name.to_string(),
+            by: by.clone(),
+        };
+        self.request(methods::AGENTS_REVOKE, params)
+    }
+
+    /// Sets what an agent may do in a space. People only.
+    pub fn set_grant(
+        &self,
+        agent: &str,
+        space: impl AsRef<Path>,
+        level: GrantLevel,
+        by: &Provenance,
+    ) -> Result<SpaceGrant> {
+        let params = GrantSetParams {
+            agent: agent.to_string(),
+            space: space_path(space.as_ref())?,
+            level,
+            by: by.clone(),
+        };
+        self.request(methods::GRANTS_SET, params)
+    }
+
     /// Starts receiving changes: to one space, or to every space with `None`. Changes made
     /// after this returns are all delivered, in the order they were made.
     ///
@@ -461,17 +587,25 @@ const LOG_LIMIT: u64 = 1024 * 1024;
 /// [`LOG_FILE`](crate::LOG_FILE) in the Knode home. Waits up to [`SPAWN_TIMEOUT`] for its
 /// socket.
 pub fn connect_or_spawn(exe: impl AsRef<Path>) -> Result<Client> {
+    connect_or_spawn_as(exe, &Credential::Owner)
+}
+
+/// Like [`connect_or_spawn`], authenticating with `credential`, such as an agent's key. A
+/// credential the service refuses fails at once with [`Error::Rpc`].
+pub fn connect_or_spawn_as(exe: impl AsRef<Path>, credential: &Credential) -> Result<Client> {
     let paths = paths::paths()?;
     let socket = paths.service_socket();
-    if let Ok(client) = Client::connect(&socket) {
-        return Ok(client);
+    match Client::connect_with(&socket, credential) {
+        Ok(client) => return Ok(client),
+        Err(e @ Error::Rpc(_)) => return Err(e),
+        Err(_) => {}
     }
     let mut command = Command::new(exe.as_ref());
     command.args(["service", "run"]);
     let log = open_log(&paths.home.join(crate::LOG_FILE))
         .map(Stdio::from)
         .unwrap_or_else(|_| Stdio::null());
-    spawn_and_connect(&socket, command, SPAWN_TIMEOUT, log)
+    spawn_and_connect(&socket, command, SPAWN_TIMEOUT, log, credential)
 }
 
 fn open_log(path: &Path) -> std::io::Result<fs::File> {
@@ -498,7 +632,7 @@ pub fn connect_or_spawn_with(
     if let Ok(client) = Client::connect(socket) {
         return Ok(client);
     }
-    spawn_and_connect(socket, command, timeout, Stdio::null())
+    spawn_and_connect(socket, command, timeout, Stdio::null(), &Credential::Owner)
 }
 
 fn spawn_and_connect(
@@ -506,6 +640,7 @@ fn spawn_and_connect(
     mut command: Command,
     timeout: Duration,
     stderr: Stdio,
+    credential: &Credential,
 ) -> Result<Client> {
     command
         .stdin(Stdio::null())
@@ -517,7 +652,12 @@ fn spawn_and_connect(
     let mut exited: Option<(Instant, std::process::ExitStatus)> = None;
     let mut delay = Duration::from_millis(5);
     loop {
-        if let Ok(client) = Client::connect(socket) {
+        let connected = match Client::connect_with(socket, credential) {
+            Ok(client) => Some(client),
+            Err(e @ Error::Rpc(_)) => return Err(e),
+            Err(_) => None,
+        };
+        if let Some(client) = connected {
             // Reap the service when it ends, so it never lingers as a zombie of this process.
             if exited.is_none() {
                 thread::spawn(move || {

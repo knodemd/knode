@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::Result;
+use crate::auth::{self, Auth, Session};
 use crate::capture::{CaptureOptions, CaptureTask};
 use crate::lock::InstanceLock;
 use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
@@ -179,6 +180,7 @@ struct Bound {
     socket: PathBuf,
     home: PathBuf,
     capture: Option<CaptureOptions>,
+    auth: Auth,
 }
 
 impl Bound {
@@ -190,6 +192,7 @@ impl Bound {
                 .create(&config.home)?;
         }
         let lock = InstanceLock::acquire(&config.lock_path())?;
+        let auth = Auth::load(&config.home)?;
         // Holding the lock means no other service is running: a socket left here is stale.
         let socket = config.socket_path();
         match fs::remove_file(&socket) {
@@ -206,6 +209,7 @@ impl Bound {
             socket,
             home: config.home.clone(),
             capture: config.capture.clone(),
+            auth,
         })
     }
 }
@@ -219,9 +223,10 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
         socket,
         home,
         capture,
+        auth,
     } = bound;
     let listener = UnixListener::from_std(listener)?;
-    let state = Arc::new(State::new());
+    let state = Arc::new(State::new(auth));
     let capture = match capture {
         Some(options) => Some(CaptureTask::start(state.clone(), home, options)?),
         None => None,
@@ -278,11 +283,14 @@ pub(crate) struct State {
     closing: AtomicBool,
     /// The space conversations are captured into, while capture runs.
     capturing: Mutex<Option<PathBuf>>,
+    /// The owner token, the agents of this machine and the access log.
+    pub(crate) auth: Auth,
 }
 
 impl State {
-    fn new() -> Self {
+    fn new(auth: Auth) -> Self {
         State {
+            auth,
             spaces: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGE_BUFFER).0,
             clients: AtomicU64::new(0),
@@ -359,7 +367,7 @@ impl State {
         *lock_ignoring_poison(&self.capturing) = space;
     }
 
-    fn status(&self) -> Status {
+    pub(crate) fn status(&self) -> Status {
         let mut spaces: Vec<PathBuf> = lock_ignoring_poison(&self.spaces).keys().cloned().collect();
         spaces.sort();
         Status {
@@ -372,11 +380,11 @@ impl State {
     }
 }
 
-fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn require_absolute(path: &Path) -> Result<(), RpcError> {
+pub(crate) fn require_absolute(path: &Path) -> Result<(), RpcError> {
     if path.is_absolute() {
         Ok(())
     } else {
@@ -387,7 +395,7 @@ fn require_absolute(path: &Path) -> Result<(), RpcError> {
     }
 }
 
-fn params<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, RpcError> {
+pub(crate) fn params<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, RpcError> {
     let params = if params.is_null() {
         Value::Object(Map::new())
     } else {
@@ -397,12 +405,12 @@ fn params<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, RpcErro
         .map_err(|e| RpcError::invalid_params(format!("invalid params for {method}: {e}")))
 }
 
-fn to_value(value: impl Serialize) -> Result<Value, RpcError> {
+pub(crate) fn to_value(value: impl Serialize) -> Result<Value, RpcError> {
     serde_json::to_value(value).map_err(|e| RpcError::new(codes::INTERNAL_ERROR, e.to_string()))
 }
 
 /// Runs one method on the spaces. Blocking: called on a blocking thread.
-fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
+pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
     match method {
         methods::SPACE_CREATE => {
             let p: SpaceCreateParams = params(method, raw)?;
@@ -559,6 +567,7 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
         }
     });
     let filter = Arc::new(Mutex::new(Filter::Nothing));
+    let mut session = Session::default();
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
     let mut reader = BufReader::new(read);
     let mut line = Vec::new();
@@ -590,25 +599,40 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
             }
         };
         let result = match request.method.as_str() {
+            methods::AUTH => auth::handshake(&state, &mut session, request.params),
+            _ if matches!(session, Session::Anonymous) => Err(auth::anonymous()),
             methods::SUBSCRIBE => {
-                subscribe(&state, &filter, &mut forwarder, &outbox, request.params)
+                subscribe(
+                    &state,
+                    &session,
+                    &filter,
+                    &mut forwarder,
+                    &outbox,
+                    request.params,
+                )
+                .await
             }
             methods::UNSUBSCRIBE => {
                 *lock_ignoring_poison(&filter) = Filter::Nothing;
                 Ok(Value::Bool(true))
             }
-            methods::SERVICE_STATUS => to_value(state.status()),
+            methods::SERVICE_STATUS if matches!(session, Session::Person) => {
+                to_value(state.status())
+            }
             _ => {
                 let state = state.clone();
+                let session = session.clone();
                 let method = request.method.clone();
-                tokio::task::spawn_blocking(move || call(&state, &method, request.params))
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(RpcError::new(
-                            codes::INTERNAL_ERROR,
-                            format!("{} failed inside the service: {e}", request.method),
-                        ))
-                    })
+                tokio::task::spawn_blocking(move || {
+                    auth::dispatch(&state, &session, &method, request.params)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    Err(RpcError::new(
+                        codes::INTERNAL_ERROR,
+                        format!("{} failed inside the service: {e}", request.method),
+                    ))
+                })
             }
         };
         if let Some(id) = request.id {
@@ -625,14 +649,22 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
     state.clients.fetch_sub(1, Ordering::Relaxed);
 }
 
-fn subscribe(
-    state: &State,
+async fn subscribe(
+    state: &Arc<State>,
+    session: &Session,
     filter: &Arc<Mutex<Filter>>,
     forwarder: &mut Option<tokio::task::JoinHandle<()>>,
     outbox: &mpsc::Sender<String>,
     raw: Value,
 ) -> Result<Value, RpcError> {
     let p: SubscribeParams = params(methods::SUBSCRIBE, raw)?;
+    let agent = session.agent().cloned();
+    if let (Some(agent), Some(space)) = (&agent, &p.space) {
+        let (state, agent, space) = (state.clone(), agent.clone(), space.clone());
+        tokio::task::spawn_blocking(move || auth::check_subscribe(&state, &agent, &space))
+            .await
+            .map_err(|e| RpcError::new(codes::INTERNAL_ERROR, e.to_string()))??;
+    }
     {
         let mut filter = lock_ignoring_poison(filter);
         match p.space {
@@ -656,12 +688,27 @@ fn subscribe(
         let mut changes = state.changes.subscribe();
         let filter = filter.clone();
         let outbox = outbox.clone();
+        let state = state.clone();
         *forwarder = Some(tokio::spawn(async move {
             loop {
                 let message = match changes.recv().await {
                     Ok(change) => {
                         if !lock_ignoring_poison(&filter).wants(&change) {
                             continue;
+                        }
+                        // An agent hears only about the spaces it may see, checked on each
+                        // change so a lower grant takes effect at once.
+                        if let Some(agent) = &agent {
+                            let (state, agent, space) =
+                                (state.clone(), agent.clone(), change.space.clone());
+                            let visible = tokio::task::spawn_blocking(move || {
+                                auth::can_read(&state, &agent, &space)
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if !visible {
+                                continue;
+                            }
                         }
                         notification(methods::CHANGED, &change)
                     }
