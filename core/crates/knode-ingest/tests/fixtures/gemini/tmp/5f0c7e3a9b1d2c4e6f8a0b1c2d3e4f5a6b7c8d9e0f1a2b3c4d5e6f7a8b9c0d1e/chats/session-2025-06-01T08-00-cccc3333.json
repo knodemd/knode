@@ -1,0 +1,10 @@
+{
+  "sessionId": "cccc3333-1111-4222-8333-444455556666",
+  "projectHash": "5f0c7e3a9b1d2c4e6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e",
+  "startTime": "2025-06-01T08:00:00.000Z",
+  "lastUpdated": "2025-06-01T08:01:00.000Z",
+  "messages": [
+    {"id": "a", "timestamp": "2025-06-01T08:00:10.000Z", "type": "user", "content": "List the files"},
+    {"id": "b", "timestamp": "2025-06-01T08:00:20.000Z", "type": "gemini", "content": "Two files.", "model": "gemini-example", "toolCalls": [{"id": "c", "name": "list_directory", "args": {"dir_path": "."}, "status": "success", "result": []}]}
+  ]
+}

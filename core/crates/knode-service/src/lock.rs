@@ -49,6 +49,22 @@ impl InstanceLock {
     }
 }
 
+/// Whether a service holds the lock at `path` now.
+pub(crate) fn is_held(path: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
+        return false;
+    };
+    // SAFETY: flock only reads the descriptor, which stays open for both calls.
+    unsafe {
+        if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 {
+            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+            false
+        } else {
+            true
+        }
+    }
+}
+
 impl Drop for InstanceLock {
     fn drop(&mut self) {
         let _ = self.file.set_len(0);

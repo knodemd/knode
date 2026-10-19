@@ -50,6 +50,17 @@ pub(crate) fn timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
         .map(|at| at.with_timezone(&Utc))
 }
 
+/// A time given as an RFC 3339 string or as milliseconds since the Unix epoch.
+pub(crate) fn any_time(value: Option<&Value>) -> Option<DateTime<Utc>> {
+    match value? {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|n| n as i64))
+            .and_then(DateTime::from_timestamp_millis),
+        other => timestamp(Some(other)),
+    }
+}
+
 /// A string field of a JSON object.
 pub(crate) fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key)?.as_str()
@@ -83,6 +94,14 @@ mod tests {
         assert!(!starts_with_tag("< not a tag"));
         assert!(!starts_with_tag("<>"));
         assert!(!starts_with_tag("plain text"));
+    }
+
+    #[test]
+    fn reads_times_as_text_or_milliseconds() {
+        let text = serde_json::json!("2026-01-02T03:04:05Z");
+        let millis = serde_json::json!(1_767_323_045_000_i64);
+        assert_eq!(any_time(Some(&text)), any_time(Some(&millis)));
+        assert!(any_time(Some(&serde_json::json!(null))).is_none());
     }
 
     #[test]

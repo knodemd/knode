@@ -1,7 +1,8 @@
 name: release
 
 # Builds the knode binary for every platform when a version tag is pushed, and
-# creates a draft GitHub Release with the archives and their checksums.
+# creates a draft GitHub Release with the archives and their checksums. Publishing the
+# draft runs homebrew.yml, which asks knodemd/homebrew-tap to update.
 # The process is described in the handbook:
 # https://github.com/knodemd/handbook/blob/main/07-releasing.md
 

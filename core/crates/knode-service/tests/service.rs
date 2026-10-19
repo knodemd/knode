@@ -14,7 +14,7 @@ use knode_format::{NewNode, NodeUpdate, Provenance};
 use knode_service::protocol::codes;
 use knode_service::{
     ChangeKind, Client, Config, Error, Event, ServiceHandle, Subscription, connect_or_spawn_with,
-    start,
+    start, stop_service,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -377,14 +377,14 @@ fn connect_or_spawn_starts_the_service() {
     let second = connect_or_spawn_with(&socket, command(), WAIT).unwrap();
     assert_eq!(second.status().unwrap().pid, pid);
 
-    // SIGTERM stops it gracefully: the socket goes away.
-    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-    assert_eq!(rc, 0);
-    let deadline = Instant::now() + WAIT;
-    while socket.exists() {
-        assert!(Instant::now() < deadline, "the service did not stop");
-        thread::sleep(Duration::from_millis(20));
-    }
+    // stop_service stops it gracefully: the socket goes away and the lock is free.
+    drop((client, second));
+    assert_eq!(stop_service(&socket, WAIT).unwrap(), Some(pid));
+    assert!(!socket.exists());
+    assert_eq!(stop_service(&socket, WAIT).unwrap(), None);
+    // So a new one starts at once.
+    let again = start(Config::new(&home)).unwrap();
+    again.stop().unwrap();
 }
 
 #[test]
@@ -394,4 +394,65 @@ fn connect_or_spawn_gives_up_when_nothing_listens() {
     let err = connect_or_spawn_with(socket, Command::new("true"), Duration::from_millis(300))
         .unwrap_err();
     assert!(matches!(err, Error::StartTimeout { .. }), "{err}");
+}
+
+#[test]
+fn finds_nodes_by_title_and_lists_unresolved_links() {
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    let path = fixture.space_path("Titles");
+    client.create_space(&path, "Titles").unwrap();
+    let me = Provenance::person("tester");
+    let first = client
+        .create_node(
+            &path,
+            NewNode::note("Plan", "See [[Roadmap]] and [[Ideas]]."),
+            &me,
+        )
+        .unwrap();
+    let second = client
+        .create_node(&path, NewNode::note("plan", "Another one."), &me)
+        .unwrap();
+    client
+        .create_node(&path, NewNode::note("Ideas", ""), &me)
+        .unwrap();
+
+    let found = client.find_by_title(&path, "  PLAN ").unwrap();
+    let ids: Vec<_> = found.iter().map(|n| n.id).collect();
+    assert_eq!(ids, vec![first.id, second.id]);
+    assert!(client.find_by_title(&path, "Nothing").unwrap().is_empty());
+
+    assert_eq!(
+        client.unresolved_links(&path, &first.id).unwrap(),
+        vec!["Roadmap".to_string()]
+    );
+    assert!(
+        client
+            .unresolved_links(&path, &second.id)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Over the wire, with the documented names.
+    let raw = client
+        .call(
+            "node.find_by_title",
+            json!({ "space": path, "title": "ideas" }),
+        )
+        .unwrap();
+    assert_eq!(raw.as_array().unwrap().len(), 1);
+    assert_eq!(raw[0]["title"], "Ideas");
+    let (code, kind) = rpc_code(client.call("node.find_by_title", json!({ "space": path })));
+    assert_eq!(code, codes::INVALID_PARAMS);
+    assert_eq!(kind.as_deref(), Some("invalid_params"));
+}
+
+#[test]
+fn connect_or_spawn_stops_waiting_when_the_service_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket: &Path = &dir.path().join("service.sock");
+    let started = Instant::now();
+    let err = connect_or_spawn_with(socket, Command::new("false"), WAIT).unwrap_err();
+    assert!(matches!(err, Error::StartFailed { .. }), "{err}");
+    assert!(started.elapsed() < WAIT);
 }

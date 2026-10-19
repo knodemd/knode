@@ -21,6 +21,7 @@ knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }
 knode-mcp = { path = "../knode-mcp", version = "=0.0.0" }
+knode-service = { path = "../knode-service", version = "=0.0.0" }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 toml_edit = "=0.25.17"
 
