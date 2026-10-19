@@ -1,0 +1,285 @@
+//! `knode mcp`, driven by a real client over standard input and output.
+
+mod common;
+
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
+use common::Sandbox;
+use serde_json::{Value, json};
+
+/// An MCP client speaking JSON-RPC, one message per line, to a `knode mcp` child process.
+struct Client {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: mpsc::Receiver<String>,
+    next_id: u64,
+}
+
+impl Client {
+    fn start(sb: &Sandbox, extra: &[&str]) -> Client {
+        let mut child = sb
+            .cmd()
+            .arg("mcp")
+            .args(extra)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let stdout: ChildStdout = child.stdout.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Client {
+            child,
+            stdin,
+            lines,
+            next_id: 1,
+        }
+    }
+
+    fn send(&mut self, message: Value) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(Duration::from_secs(10))
+                .expect("a response from knode mcp");
+            let message: Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("stdout must be JSON-RPC only ({e}): {line}"));
+            assert_eq!(message["jsonrpc"], "2.0", "{message}");
+            if message["id"] == json!(id) {
+                return message;
+            }
+        }
+    }
+
+    fn initialize(&mut self, version: &str) -> Value {
+        let response = self.request(
+            "initialize",
+            json!({
+                "protocolVersion": version,
+                "capabilities": {},
+                "clientInfo": { "name": "test-client", "version": "1.0.0" }
+            }),
+        );
+        self.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        response
+    }
+
+    /// Calls a tool and returns its result, failing on a protocol error.
+    fn call(&mut self, name: &str, arguments: Value) -> Value {
+        let response = self.request(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        );
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"].clone()
+    }
+
+    /// Closes standard input and waits for the server to exit.
+    fn finish(mut self) {
+        drop(self.stdin.take());
+        for _ in 0..100 {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "knode mcp exited with {status}");
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.child.kill();
+        panic!("knode mcp did not exit when its input closed");
+    }
+}
+
+fn text(result: &Value) -> &str {
+    let content = result["content"].as_array().expect("content");
+    assert_eq!(content[0]["type"], "text");
+    content[0]["text"].as_str().unwrap()
+}
+
+#[test]
+fn a_client_uses_every_tool() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let mut client = Client::start(&sb, &[]);
+
+    let init = client.initialize("2025-06-18");
+    let result = &init["result"];
+    assert_eq!(result["protocolVersion"], "2025-06-18", "{init}");
+    assert_eq!(result["serverInfo"]["name"], "knode");
+    assert!(result["capabilities"]["tools"].is_object(), "{init}");
+    assert!(
+        result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("write_node")
+    );
+
+    let tools = client.request("tools/list", json!({}));
+    let tools = tools["result"]["tools"].as_array().unwrap().clone();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        ["search", "read_node", "write_node", "link_nodes", "recent"]
+    );
+    for tool in &tools {
+        assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
+        assert_eq!(tool["outputSchema"]["type"], "object", "{tool}");
+        assert!(tool["description"].as_str().unwrap().len() > 80);
+    }
+
+    // write_node creates, as the client that connected.
+    let result = client.call(
+        "write_node",
+        json!({ "title": "Pricing decision", "body": "We charge **per seat**.", "kind": "decision", "tags": ["business"] }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["result"], "created");
+    let pricing = result["structuredContent"]["node"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text(&result).starts_with("Created decision [[Pricing decision]]"));
+
+    let result = client.call(
+        "write_node",
+        json!({ "title": "Roadmap", "body": "Ship v0.1. See [[Pricing decision]]." }),
+    );
+    let roadmap = result["structuredContent"]["node"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // search
+    let result = client.call("search", json!({ "query": "seat", "limit": 5 }));
+    let hits = result["structuredContent"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "{result}");
+    assert_eq!(hits[0]["node"]["id"], pricing.as_str());
+    assert!(text(&result).contains("**Pricing decision** (decision"));
+
+    // read_node, by id and by title
+    let result = client.call("read_node", json!({ "id": pricing }));
+    let node = &result["structuredContent"]["node"];
+    assert_eq!(node["body"], "We charge **per seat**.");
+    assert_eq!(node["tags"], json!(["business"]));
+    assert_eq!(
+        node["created_by"],
+        json!({ "kind": "agent", "actor": "test-client" })
+    );
+    assert_eq!(
+        result["structuredContent"]["backlinks"][0]["from"],
+        roadmap.as_str()
+    );
+    assert!(text(&result).starts_with("# Pricing decision\n\nWe charge **per seat**."));
+    let result = client.call("read_node", json!({ "title": "roadmap" }));
+    assert_eq!(result["structuredContent"]["node"]["id"], roadmap.as_str());
+
+    // link_nodes, by title and id
+    let result = client.call(
+        "link_nodes",
+        json!({ "from": "Roadmap", "to": pricing, "kind": "part-of" }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["link"]["kind"], "part-of");
+    assert_eq!(
+        result["structuredContent"]["link"]["created_by"]["actor"],
+        "test-client"
+    );
+
+    // write_node updates by id, appending
+    let result = client.call(
+        "write_node",
+        json!({ "id": pricing, "body": "Teams get a discount.", "append": true }),
+    );
+    assert_eq!(result["structuredContent"]["result"], "updated");
+
+    // recent
+    let result = client.call("recent", json!({}));
+    let nodes = result["structuredContent"]["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0]["id"], pricing.as_str());
+    assert_eq!(nodes[0]["updated_by"]["actor"], "test-client");
+
+    // A tool error is a result the model can read, not a protocol error.
+    let result = client.call("read_node", json!({ "title": "Nothing like this" }));
+    assert_eq!(result["isError"], true);
+    assert!(text(&result).contains("Use search"));
+
+    // An unknown tool is a protocol error.
+    let response = client.request("tools/call", json!({ "name": "nope", "arguments": {} }));
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+
+    client.finish();
+
+    // The writes are in the space, made by the agent.
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    let id = knode_format::NodeId::parse(&pricing).unwrap();
+    let node = space.get_node(&id).unwrap().unwrap();
+    assert_eq!(
+        node.body,
+        "We charge **per seat**.\n\nTeams get a discount."
+    );
+    assert_eq!(
+        node.updated_by,
+        knode_format::Provenance::agent("test-client")
+    );
+}
+
+#[test]
+fn negotiates_a_newer_protocol_version() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let mut client = Client::start(&sb, &[]);
+    let init = client.initialize("2025-11-25");
+    assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
+    let tools = client.request("tools/list", json!({}));
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
+    client.finish();
+}
+
+#[test]
+fn without_a_space_the_tools_say_what_to_do() {
+    let sb = Sandbox::new();
+    let mut client = Client::start(&sb, &[]);
+    client.initialize("2025-06-18");
+    let result = client.call("recent", json!({}));
+    assert_eq!(result["isError"], true);
+    assert!(text(&result).contains("knode init <name>"), "{result}");
+    client.finish();
+}
+
+#[test]
+fn the_space_flag_picks_the_space() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "other"]);
+    let other = sb.space("other");
+    let mut client = Client::start(&sb, &["--space", other.to_str().unwrap()]);
+    client.initialize("2025-06-18");
+    client.call("write_node", json!({ "title": "In other" }));
+    client.finish();
+    let space = knode_format::Space::open(&other).unwrap();
+    assert_eq!(space.node_count().unwrap(), 1);
+    let work = knode_format::Space::open(sb.space("work")).unwrap();
+    assert_eq!(work.node_count().unwrap(), 0);
+}
