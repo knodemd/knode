@@ -1,6 +1,6 @@
 [package]
 name = "knode-md"
-description = "Convert .knode spaces to Markdown and back."
+description = "Read the Markdown of .knode nodes: plain text, [[links]] and more."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,3 +8,6 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[dependencies]
+pulldown-cmark = { version = "=0.13.4", default-features = false }
