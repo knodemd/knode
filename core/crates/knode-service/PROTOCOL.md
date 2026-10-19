@@ -4,8 +4,8 @@ Knode Service is the one process that opens `.knode` spaces. The Knode app, the 
 MCP server and capture all talk to it, so a person and several agents can write to the same space
 at the same time and everyone sees each change as it happens.
 
-This document describes the protocol of Knode v0.2; `link.delete` still answers clients of v0.1. Rust programs can use
-`knode_service::Client` instead of speaking it by hand.
+This document describes the protocol of Knode v0.2, which still answers clients of v0.1. Rust
+programs can use `knode_service::Client` instead of speaking it by hand.
 
 ## Transport
 
