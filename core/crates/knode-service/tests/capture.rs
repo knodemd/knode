@@ -30,7 +30,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture { dir, service: None };
         fs::create_dir_all(fixture.claude()).unwrap();
-        fs::create_dir_all(fixture.codex()).unwrap();
+        fs::create_dir_all(fixture.codex().join("2026/01/02")).unwrap();
         drop(Space::create(fixture.space(), "Personal").unwrap());
         let options = CaptureOptions {
             roots: Some(vec![
@@ -124,11 +124,11 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The next `changed` event, skipping none.
-fn next_change(events: &knode_service::Subscription) -> knode_service::Change {
+/// The next `changed` event, which `what` describes.
+fn next_change(events: &knode_service::Subscription, what: &str) -> knode_service::Change {
     match events.recv_timeout(WAIT) {
         Some(Event::Changed(change)) => change,
-        other => panic!("expected a change, got {other:?}"),
+        other => panic!("expected a change for {what}, got {other:?}"),
     }
 }
 
@@ -157,7 +157,7 @@ fn captures_sessions_into_the_default_space_and_announces_them() {
 
     // Naming the default space in config.toml starts capture without a restart.
     fixture.write_config(&format!("capture_exclude = [{PRIVATE:?}]\n"));
-    let created = next_change(&events);
+    let created = next_change(&events, "the first session");
     assert_eq!(created.op, ChangeKind::Create);
     let space = fs::canonicalize(fixture.space()).unwrap();
     assert_eq!(created.space, space);
@@ -180,25 +180,26 @@ fn captures_sessions_into_the_default_space_and_announces_them() {
     let note = client
         .create_node(&space, NewNode::note("Index notes", "Mine."), &me)
         .unwrap();
-    assert_eq!(next_change(&events).node_id, note.id);
+    assert_eq!(next_change(&events, "the note").node_id, note.id);
 
     // The session grows: the watcher updates the same node.
     append(&first, &record(PROJECT, "s-1", "user", 2, "And the blobs?"));
-    let updated = next_change(&events);
+    let updated = next_change(&events, "the appended message");
     assert_eq!(updated.node_id, created.node_id);
     assert_eq!(updated.op, ChangeKind::Update);
     let node = client.get_node(&space, &created.node_id).unwrap().unwrap();
     assert!(node.body.contains("And the blobs?"), "{}", node.body);
 
-    // A new session in another agent's folder is found too.
+    // A new session in another agent's folder is found too. (Its day folder already exists:
+    // a file written into a folder created a moment earlier may only be found by the next
+    // rescan, since the folder is watched once it is seen.)
     let codex_day = fixture.codex().join("2026/01/02");
-    fs::create_dir_all(&codex_day).unwrap();
     let rollout = Path::new(env!("CARGO_MANIFEST_DIR")).join(
         "../knode-ingest/tests/fixtures/codex/sessions/2026/01/02/\
          rollout-2026-01-02T11-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee.jsonl",
     );
     fs::copy(&rollout, codex_day.join(rollout.file_name().unwrap())).unwrap();
-    let codex = next_change(&events);
+    let codex = next_change(&events, "the new Codex session");
     assert_eq!(codex.op, ChangeKind::Create);
     let node = client.get_node(&space, &codex.node_id).unwrap().unwrap();
     assert_eq!(node.created_by.actor, "codex");
