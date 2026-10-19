@@ -389,6 +389,174 @@ pub struct HistoryEntry {
     pub body: String,
     /// The tags of the node.
     pub tags: Vec<String>,
+    /// The change the version belongs to (see [`Space::change`](crate::Space::change)).
+    /// `None` only in spaces written before schema version 3 that were never migrated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_id: Option<ChangeId>,
+    /// When the version puts back an earlier one (an undo or a restore), the `seq` of the
+    /// version whose content it puts back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_from: Option<i64>,
+}
+
+/// The id of a change: its order in the space. It only grows.
+pub type ChangeId = i64;
+
+/// One change: one write that a person or an agent asked for, made in one transaction. What
+/// [`Space::undo`](crate::Space::undo) works on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Change {
+    /// The order of the change in the space; it only grows.
+    pub id: ChangeId,
+    /// When the change was made.
+    pub changed_at: Timestamp,
+    /// Who made the change.
+    pub changed_by: Provenance,
+    /// What was done, such as `node.update` or `undo`. See [`actions`](crate::actions).
+    pub action: String,
+    /// What it was done to: a node id, a folder id, an agent id, a setting key, a fingerprint,
+    /// or empty.
+    pub subject: String,
+    /// For an `undo`, the change it undoes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<ChangeId>,
+    /// Details of the action, a JSON object.
+    pub detail: serde_json::Value,
+}
+
+/// A link made or removed by hand, as kept in the history of links.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkHistoryEntry {
+    /// The order of the row in the space.
+    pub seq: i64,
+    /// The change the row belongs to.
+    pub change_id: ChangeId,
+    /// [`ChangeOp::Create`] when the link was made, [`ChangeOp::Delete`] when it was removed.
+    pub op: ChangeOp,
+    /// The node the link starts from. It may no longer exist.
+    pub from: NodeId,
+    /// The type of link.
+    pub kind: String,
+    /// The node the link points at. It may no longer exist.
+    pub to: NodeId,
+}
+
+/// A change with everything it wrote: the versions of nodes and the links made or removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeDetail {
+    /// The change.
+    pub change: Change,
+    /// The versions of nodes the change wrote, in order.
+    pub versions: Vec<HistoryEntry>,
+    /// The links the change made or removed by hand, in order.
+    pub links: Vec<LinkHistoryEntry>,
+}
+
+/// A folder on disk that feeds the space (schema version 3). Groundwork: the rules and the
+/// routing of capture are applied by Knode Service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    /// The folder's id, a ULID.
+    pub id: String,
+    /// What the folder is: `project`, `notes` or `agent`. See [`folder_kinds`](crate::folder_kinds).
+    pub kind: String,
+    /// Where it is: relative to the home folder as `~/...`, or absolute.
+    pub path: String,
+    /// Whether the folder is read and captured.
+    pub capture: bool,
+    /// The rules of the folder, a JSON object.
+    pub rules: serde_json::Value,
+    /// When it was added.
+    pub created_at: Timestamp,
+    /// Who added it.
+    pub created_by: Provenance,
+    /// When it last changed.
+    pub updated_at: Timestamp,
+    /// Who changed it last.
+    pub updated_by: Provenance,
+}
+
+/// A folder to add or change with [`Space::set_folder`](crate::Space::set_folder).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderSpec {
+    /// The id of the folder to change, or `None` to add a new one (or change the folder with the
+    /// same kind and path).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// What the folder is.
+    pub kind: String,
+    /// Where it is, already recorded as the specification says (`~/...` or absolute).
+    pub path: String,
+    /// Whether the folder is read and captured.
+    pub capture: bool,
+    /// The rules of the folder, a JSON object.
+    #[serde(default = "empty_object")]
+    pub rules: serde_json::Value,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
+}
+
+/// An agent that may have access to the space (schema version 3). Groundwork: Knode Service
+/// checks keys and grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Agent {
+    /// The agent's id, a ULID, the same in every space.
+    pub id: String,
+    /// The agent's name, used as the actor of its changes.
+    pub name: String,
+    /// The program, such as `claude-code` or `codex`.
+    pub kind: String,
+    /// When it was added to this space.
+    pub created_at: Timestamp,
+    /// Who added it.
+    pub created_by: Provenance,
+}
+
+/// The fingerprint of an agent's key. The key itself is never stored in a space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentKey {
+    /// `sha256:` and 64 lower case hexadecimal digits.
+    pub fingerprint: String,
+    /// The agent the key belongs to.
+    pub agent_id: String,
+    /// When the key was made.
+    pub created_at: Timestamp,
+    /// When the key was revoked, or `None` while it is valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<Timestamp>,
+}
+
+/// What an agent may do in a space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrantLevel {
+    /// Nothing: the space is invisible to the agent.
+    None,
+    /// Read only.
+    Read,
+    /// Read and write.
+    Write,
+}
+
+impl GrantLevel {
+    /// The value stored in `grants.level`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GrantLevel::None => "none",
+            GrantLevel::Read => "read",
+            GrantLevel::Write => "write",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Self {
+        match text {
+            "read" => GrantLevel::Read,
+            "write" => GrantLevel::Write,
+            _ => GrantLevel::None,
+        }
+    }
 }
 
 /// A node found by [`Space::search`](crate::Space::search).

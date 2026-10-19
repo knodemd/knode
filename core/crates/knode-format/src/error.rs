@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::NodeId;
+use crate::{ChangeId, NodeId};
 
 /// Everything that can go wrong reading or writing a space.
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +51,40 @@ pub enum Error {
     /// An argument broke a rule of the format, such as an empty title or a bad kind.
     #[error("{0}")]
     Invalid(String),
+    /// No change has this id.
+    #[error("change {0} not found")]
+    ChangeNotFound(ChangeId),
+    /// The change cannot be undone: its action cannot be undone, or the versions it needs were
+    /// purged.
+    #[error("change {change} cannot be undone: {reason}")]
+    CannotUndo {
+        /// The change.
+        change: ChangeId,
+        /// Why not.
+        reason: String,
+    },
+    /// The change was already undone, and that undo has not been undone.
+    #[error("change {change} was already undone by change {undone_by}")]
+    AlreadyUndone {
+        /// The change.
+        change: ChangeId,
+        /// The undo.
+        undone_by: ChangeId,
+    },
+    /// Later changes touched what the change touched; undoing it would overwrite them.
+    #[error(
+        "undoing change {change} would overwrite later changes {}",
+        later.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    )]
+    UndoConflict {
+        /// The change.
+        change: ChangeId,
+        /// The later changes, oldest first.
+        later: Vec<ChangeId>,
+    },
+    /// Only a person may do this, never an agent.
+    #[error("only a person can {0}")]
+    PersonOnly(String),
 }
 
 /// A `Result` whose error is [`Error`].

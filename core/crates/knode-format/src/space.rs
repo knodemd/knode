@@ -9,9 +9,9 @@ use ulid::{Generator, Ulid};
 
 use crate::types::{ActorKind, ChangeOp};
 use crate::{
-    BLOBS_DIR, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry, Link, Manifest,
-    NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties, Provenance, Result, SYNC_DIR,
-    SearchHit, Timestamp, kinds, link_kinds, schema,
+    BLOBS_DIR, ChangeId, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry, Link,
+    Manifest, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties, Provenance, Result,
+    SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, schema,
 };
 
 /// The `settings` key holding the space id, which must match `manifest.json`.
@@ -29,8 +29,8 @@ const SUMMARY_COLUMNS: &str = "n.id, n.kind, n.title, n.created_at, n.updated_at
 pub struct Space {
     path: PathBuf,
     manifest: Manifest,
-    conn: Connection,
-    ids: Generator,
+    pub(crate) conn: Connection,
+    pub(crate) ids: Generator,
 }
 
 impl Space {
@@ -198,67 +198,26 @@ impl Space {
         let tags = clean_tags(&new.tags)?;
         let id = NodeId::from_ulid(next_ulid(&mut self.ids));
         let now = Timestamp::now();
-        let extracted = knode_md::extract(&new.body);
 
         let tx = self.conn.transaction()?;
         let prov = provenance_id(&tx, by)?;
-        tx.execute(
-            "INSERT INTO nodes (id, kind, title, title_key, body, plain, created_at, updated_at,
-                                created_by, updated_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?8)",
-            params![
-                id.to_string(),
-                kind,
-                title,
-                knode_md::title_key(&title),
-                new.body,
-                extracted.plain,
-                now.0,
-                prov
-            ],
-        )?;
-        set_tags(&tx, &id, &tags)?;
-        apply_body_links(&tx, &id, &extracted.links, prov, now)?;
-        resolve_waiting_links(&tx, &id, &title, prov, now)?;
+        let change = add_change(&tx, now, prov, actions::NODE_CREATE, &id.to_string(), None)?;
+        let content = Content {
+            kind,
+            title,
+            body: new.body,
+            tags,
+        };
+        insert_node(&tx, &id, &content, (now, prov), prov, now)?;
         write_properties(&tx, &id, properties, prov, now)?;
-        record(&tx, &id, ChangeOp::Create, prov, now)?;
+        record(&tx, &id, ChangeOp::Create, prov, now, change, None)?;
         tx.commit()?;
         self.require_node(&id)
     }
 
     /// Returns a node, or `None` if no node has this id.
     pub fn get_node(&self, id: &NodeId) -> Result<Option<Node>> {
-        let node = self
-            .conn
-            .query_row(
-                "SELECT n.id, n.kind, n.title, n.body, n.created_at, n.updated_at,
-                        c.actor_kind, c.actor, c.session, c.source,
-                        u.actor_kind, u.actor, u.session, u.source
-                 FROM nodes n
-                 JOIN provenance c ON c.id = n.created_by
-                 JOIN provenance u ON u.id = n.updated_by
-                 WHERE n.id = ?1",
-                [id.to_string()],
-                |row| {
-                    Ok(Node {
-                        id: node_id(row, 0)?,
-                        kind: row.get(1)?,
-                        title: row.get(2)?,
-                        body: row.get(3)?,
-                        tags: Vec::new(),
-                        created_at: Timestamp(row.get(4)?),
-                        updated_at: Timestamp(row.get(5)?),
-                        created_by: provenance(row, 6)?,
-                        updated_by: provenance(row, 10)?,
-                    })
-                },
-            )
-            .optional()?;
-        let Some(mut node) = node else {
-            return Ok(None);
-        };
-        node.tags = tags_of(&self.conn, id)?;
-        Ok(Some(node))
+        read_node(&self.conn, id)
     }
 
     /// Changes a node and returns it as it is now.
@@ -305,92 +264,42 @@ impl Space {
         coalesce: bool,
     ) -> Result<Node> {
         let current = self.require_node(id)?;
-        let kind = match update.kind.as_deref().map(str::trim) {
-            Some(kind) if kind != current.kind => Some(check_name("node kind", kind)?),
-            _ => None,
-        };
-        let title = match update.title.as_deref() {
-            Some(title) => Some(check_title(title)?).filter(|t| *t != current.title),
-            None => None,
-        };
-        let body = update.body.filter(|b| *b != current.body);
-        let tags = match update.tags {
-            Some(tags) => Some(clean_tags(&tags)?).filter(|t| *t != current.tags),
-            None => None,
-        };
-        if kind.is_none() && title.is_none() && body.is_none() && tags.is_none() {
+        let fields = Fields::diff(&current, update)?;
+        if fields.is_empty() {
             return Ok(current);
         }
-
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         let prov = provenance_id(&tx, by)?;
-        if let Some(kind) = &kind {
-            tx.execute(
-                "UPDATE nodes SET kind = ?2 WHERE id = ?1",
-                params![id.to_string(), kind],
-            )?;
-        }
-        if let Some(title) = &title {
-            tx.execute(
-                "UPDATE nodes SET title = ?2, title_key = ?3 WHERE id = ?1",
-                params![id.to_string(), title, knode_md::title_key(title)],
-            )?;
-        }
-        if let Some(body) = &body {
-            let extracted = knode_md::extract(body);
-            tx.execute(
-                "UPDATE nodes SET body = ?2, plain = ?3 WHERE id = ?1",
-                params![id.to_string(), body, extracted.plain],
-            )?;
-            apply_body_links(&tx, id, &extracted.links, prov, now)?;
-        }
-        if let Some(tags) = &tags {
-            set_tags(&tx, id, tags)?;
-        }
-        tx.execute(
-            "UPDATE nodes SET updated_at = ?2, updated_by = ?3 WHERE id = ?1",
-            params![id.to_string(), now.0, prov],
-        )?;
+        let change = add_change(&tx, now, prov, actions::NODE_UPDATE, &id.to_string(), None)?;
+        let write = Write { prov, now, change };
+        apply_fields(&tx, id, &fields, &write)?;
         if coalesce {
             drop_run_snapshot(&tx, id, prov)?;
         }
-        record(&tx, id, ChangeOp::Update, prov, now)?;
-        if let Some(title) = &title {
-            rewrite_backlinks(&tx, id, &current.title, title, prov, now)?;
-            resolve_waiting_links(&tx, id, title, prov, now)?;
-        }
+        record(&tx, id, ChangeOp::Update, prov, now, change, None)?;
+        finish_rename(&tx, id, &current.title, &fields, &write, true)?;
         tx.commit()?;
         self.require_node(id)
     }
 
     /// Deletes a node, its tags and every link from or to it. Its last version stays in the
-    /// history. `[[links]]` to it in other nodes wait as unresolved links, and come back if a
-    /// node with the same title is created.
+    /// history, and the links other than `mentions` it had are kept in the history of links, so
+    /// the delete can be undone with them. `[[links]]` to it in other nodes wait as unresolved
+    /// links, and come back if a node with the same title is created.
     pub fn delete_node(&mut self, id: &NodeId, by: &Provenance) -> Result<()> {
         let node = self.require_node(id)?;
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         let prov = provenance_id(&tx, by)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO unresolved_links (source_id, target_key, target)
-             SELECT source_id, ?2, ?3 FROM links
-             WHERE target_id = ?1 AND kind = ?4 AND source_id <> ?1",
-            params![
-                id.to_string(),
-                knode_md::title_key(&node.title),
-                node.title,
-                link_kinds::MENTIONS
-            ],
-        )?;
-        record(&tx, id, ChangeOp::Delete, prov, now)?;
-        tx.execute("DELETE FROM nodes WHERE id = ?1", [id.to_string()])?;
+        let change = add_change(&tx, now, prov, actions::NODE_DELETE, &id.to_string(), None)?;
+        delete_in(&tx, id, &node.title, &Write { prov, now, change })?;
         tx.commit()?;
         Ok(())
     }
 
     /// Links two nodes with a link of the given kind, such as `related` or `part-of`, and returns
-    /// the link. Linking twice returns the existing link.
+    /// the link. Linking twice returns the existing link and records nothing.
     ///
     /// `mentions` links come only from `[[links]]` in a body and cannot be made by hand.
     pub fn link(
@@ -403,19 +312,20 @@ impl Space {
         let kind = check_link_kind(kind)?;
         self.require_exists(from)?;
         self.require_exists(to)?;
+        let now = Timestamp::now();
         let tx = self.conn.transaction()?;
-        let prov = provenance_id(&tx, by)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO links (source_id, kind, target_id, created_at, created_by)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                from.to_string(),
-                kind,
-                to.to_string(),
-                Timestamp::now().0,
-                prov
-            ],
-        )?;
+        if !link_exists(&tx, from, &kind, to)? {
+            let prov = provenance_id(&tx, by)?;
+            let change = add_change(
+                &tx,
+                now,
+                prov,
+                actions::LINK_CREATE,
+                &from.to_string(),
+                None,
+            )?;
+            insert_link(&tx, from, &kind, to, &Write { prov, now, change })?;
+        }
         tx.commit()?;
         self.query_links(
             "l.source_id = ?1 AND l.kind = ?2 AND l.target_id = ?3",
@@ -425,14 +335,41 @@ impl Space {
         .ok_or_else(|| Error::Invalid("the link could not be read back".into()))
     }
 
-    /// Removes a link made with [`link`](Self::link). Returns whether there was one.
+    /// Removes a link made with [`link`](Self::link), recorded as a change by Knode itself.
+    /// Returns whether there was one.
+    ///
+    /// Prefer [`unlink_by`](Self::unlink_by), which records who removed the link.
     pub fn unlink(&mut self, from: &NodeId, to: &NodeId, kind: &str) -> Result<bool> {
+        self.unlink_by(from, to, kind, &Provenance::system())
+    }
+
+    /// Removes a link made with [`link`](Self::link), recorded as a change by `by`. Returns
+    /// whether there was one; removing a link that is not there records nothing.
+    pub fn unlink_by(
+        &mut self,
+        from: &NodeId,
+        to: &NodeId,
+        kind: &str,
+        by: &Provenance,
+    ) -> Result<bool> {
         let kind = check_link_kind(kind)?;
-        let removed = self.conn.execute(
-            "DELETE FROM links WHERE source_id = ?1 AND kind = ?2 AND target_id = ?3",
-            params![from.to_string(), kind, to.to_string()],
+        let now = Timestamp::now();
+        let tx = self.conn.transaction()?;
+        if !link_exists(&tx, from, &kind, to)? {
+            return Ok(false);
+        }
+        let prov = provenance_id(&tx, by)?;
+        let change = add_change(
+            &tx,
+            now,
+            prov,
+            actions::LINK_DELETE,
+            &from.to_string(),
+            None,
         )?;
-        Ok(removed > 0)
+        remove_link(&tx, from, &kind, to, change)?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// The links that start from a node, oldest first.
@@ -557,28 +494,10 @@ impl Space {
     }
 
     /// Every version of a node, oldest first, including its deletion. Works for deleted nodes.
+    ///
+    /// Each version names the change it belongs to; see [`change`](Self::change).
     pub fn history(&self, id: &NodeId) -> Result<Vec<HistoryEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT h.seq, h.node_id, h.op, h.changed_at, p.actor_kind, p.actor, p.session,
-                    p.source, h.kind, h.title, h.body, h.tags
-             FROM history h JOIN provenance p ON p.id = h.changed_by
-             WHERE h.node_id = ?1 ORDER BY h.seq",
-        )?;
-        let rows = stmt.query_map([id.to_string()], |row| {
-            let tags: String = row.get(11)?;
-            Ok(HistoryEntry {
-                seq: row.get(0)?,
-                node_id: node_id(row, 1)?,
-                op: ChangeOp::parse(&row.get::<_, String>(2)?),
-                changed_at: Timestamp(row.get(3)?),
-                changed_by: provenance(row, 4)?,
-                kind: row.get(8)?,
-                title: row.get(9)?,
-                body: row.get(10)?,
-                tags: serde_json::from_str(&tags).unwrap_or_default(),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        query_history(&self.conn, "h.node_id = ?1", [id.to_string()])
     }
 
     /// Searches titles and text by words, best match first.
@@ -675,11 +594,11 @@ fn generator() -> String {
     format!("knode-format {}", env!("CARGO_PKG_VERSION"))
 }
 
-fn next_ulid(ids: &mut Generator) -> Ulid {
+pub(crate) fn next_ulid(ids: &mut Generator) -> Ulid {
     ids.generate().unwrap_or_else(|_| Ulid::generate())
 }
 
-fn limit_param(limit: usize) -> i64 {
+pub(crate) fn limit_param(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
 }
 
@@ -715,7 +634,7 @@ fn check_title(title: &str) -> Result<String> {
 }
 
 /// Checks a kind name: `[a-z][a-z0-9-]*`, at most 32 characters.
-fn check_name(what: &str, name: &str) -> Result<String> {
+pub(crate) fn check_name(what: &str, name: &str) -> Result<String> {
     let ok = name.len() <= 32
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && name
@@ -774,7 +693,7 @@ fn write_properties(
     Ok(())
 }
 
-fn check_link_kind(kind: &str) -> Result<String> {
+pub(crate) fn check_link_kind(kind: &str) -> Result<String> {
     let kind = kind.trim();
     let kind = if kind.is_empty() {
         link_kinds::RELATED
@@ -806,7 +725,7 @@ fn clean_tags(tags: &[String]) -> Result<Vec<String>> {
     Ok(out.into_iter().collect())
 }
 
-fn node_id(row: &Row<'_>, index: usize) -> rusqlite::Result<NodeId> {
+pub(crate) fn node_id(row: &Row<'_>, index: usize) -> rusqlite::Result<NodeId> {
     let text: String = row.get(index)?;
     NodeId::parse(&text).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(e))
@@ -814,7 +733,7 @@ fn node_id(row: &Row<'_>, index: usize) -> rusqlite::Result<NodeId> {
 }
 
 /// Reads a provenance from four columns: actor_kind, actor, session, source.
-fn provenance(row: &Row<'_>, start: usize) -> rusqlite::Result<Provenance> {
+pub(crate) fn provenance(row: &Row<'_>, start: usize) -> rusqlite::Result<Provenance> {
     let session: String = row.get(start + 2)?;
     let source: String = row.get(start + 3)?;
     Ok(Provenance {
@@ -843,7 +762,7 @@ fn tags_of(conn: &Connection, id: &NodeId) -> Result<Vec<String>> {
 }
 
 /// The row id of a provenance, added if it is new.
-fn provenance_id(tx: &Transaction<'_>, by: &Provenance) -> Result<i64> {
+pub(crate) fn provenance_id(tx: &Transaction<'_>, by: &Provenance) -> Result<i64> {
     let actor = by.actor.trim();
     if actor.is_empty() {
         return Err(Error::Invalid("provenance needs an actor".into()));
@@ -973,14 +892,387 @@ fn resolve_waiting_links(
     Ok(())
 }
 
-/// Rewrites `[[old]]` to `[[new]]` in every node that mentions `id`, recording each change.
+/// The content of a node that its history keeps: kind, title, body and tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Content {
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub tags: Vec<String>,
+}
+
+impl Content {
+    pub(crate) fn of(entry: &HistoryEntry) -> Content {
+        Content {
+            kind: entry.kind.clone(),
+            title: entry.title.clone(),
+            body: entry.body.clone(),
+            tags: entry.tags.clone(),
+        }
+    }
+}
+
+/// The fields an update changes. `None` stays as it is.
+#[derive(Debug, Default)]
+pub(crate) struct Fields {
+    kind: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+impl Fields {
+    /// Checks an update and keeps only the fields that differ from the node.
+    fn diff(current: &Node, update: NodeUpdate) -> Result<Fields> {
+        let kind = match update.kind.as_deref().map(str::trim) {
+            Some(kind) if kind != current.kind => Some(check_name("node kind", kind)?),
+            _ => None,
+        };
+        let title = match update.title.as_deref() {
+            Some(title) => Some(check_title(title)?).filter(|t| *t != current.title),
+            None => None,
+        };
+        let body = update.body.filter(|b| *b != current.body);
+        let tags = match update.tags {
+            Some(tags) => Some(clean_tags(&tags)?).filter(|t| *t != current.tags),
+            None => None,
+        };
+        Ok(Fields {
+            kind,
+            title,
+            body,
+            tags,
+        })
+    }
+
+    /// The fields that take a node to a version of its history, which was checked when written.
+    pub(crate) fn to(current: &Node, content: &Content) -> Fields {
+        Fields {
+            kind: Some(content.kind.clone()).filter(|k| *k != current.kind),
+            title: Some(content.title.clone()).filter(|t| *t != current.title),
+            body: Some(content.body.clone()).filter(|b| *b != current.body),
+            tags: Some(content.tags.clone()).filter(|t| *t != current.tags),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.kind.is_none() && self.title.is_none() && self.body.is_none() && self.tags.is_none()
+    }
+}
+
+/// A write in progress: who makes it, when, and the change it belongs to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Write {
+    pub prov: i64,
+    pub now: Timestamp,
+    pub change: ChangeId,
+}
+
+/// Reads a node, or `None` if no node has this id.
+pub(crate) fn read_node(conn: &Connection, id: &NodeId) -> Result<Option<Node>> {
+    let node = conn
+        .query_row(
+            "SELECT n.id, n.kind, n.title, n.body, n.created_at, n.updated_at,
+                    c.actor_kind, c.actor, c.session, c.source,
+                    u.actor_kind, u.actor, u.session, u.source
+             FROM nodes n
+             JOIN provenance c ON c.id = n.created_by
+             JOIN provenance u ON u.id = n.updated_by
+             WHERE n.id = ?1",
+            [id.to_string()],
+            |row| {
+                Ok(Node {
+                    id: node_id(row, 0)?,
+                    kind: row.get(1)?,
+                    title: row.get(2)?,
+                    body: row.get(3)?,
+                    tags: Vec::new(),
+                    created_at: Timestamp(row.get(4)?),
+                    updated_at: Timestamp(row.get(5)?),
+                    created_by: provenance(row, 6)?,
+                    updated_by: provenance(row, 10)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(mut node) = node else {
+        return Ok(None);
+    };
+    node.tags = tags_of(conn, id)?;
+    Ok(Some(node))
+}
+
+/// Inserts a node with its tags, applies the links of its body and resolves the links waiting
+/// for its title. `created` is when and by whom it was first created.
+pub(crate) fn insert_node(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    content: &Content,
+    created: (Timestamp, i64),
+    prov: i64,
+    now: Timestamp,
+) -> Result<()> {
+    let extracted = knode_md::extract(&content.body);
+    tx.execute(
+        "INSERT INTO nodes (id, kind, title, title_key, body, plain, created_at, updated_at,
+                            created_by, updated_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            id.to_string(),
+            content.kind,
+            content.title,
+            knode_md::title_key(&content.title),
+            content.body,
+            extracted.plain,
+            created.0.0,
+            now.0,
+            created.1,
+            prov
+        ],
+    )?;
+    set_tags(tx, id, &content.tags)?;
+    apply_body_links(tx, id, &extracted.links, prov, now)?;
+    resolve_waiting_links(tx, id, &content.title, prov, now)?;
+    Ok(())
+}
+
+/// Writes the changed fields of a node and its `updated_at` and `updated_by`.
+pub(crate) fn apply_fields(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    fields: &Fields,
+    write: &Write,
+) -> Result<()> {
+    if let Some(kind) = &fields.kind {
+        tx.execute(
+            "UPDATE nodes SET kind = ?2 WHERE id = ?1",
+            params![id.to_string(), kind],
+        )?;
+    }
+    if let Some(title) = &fields.title {
+        tx.execute(
+            "UPDATE nodes SET title = ?2, title_key = ?3 WHERE id = ?1",
+            params![id.to_string(), title, knode_md::title_key(title)],
+        )?;
+    }
+    if let Some(body) = &fields.body {
+        let extracted = knode_md::extract(body);
+        tx.execute(
+            "UPDATE nodes SET body = ?2, plain = ?3 WHERE id = ?1",
+            params![id.to_string(), body, extracted.plain],
+        )?;
+        apply_body_links(tx, id, &extracted.links, write.prov, write.now)?;
+    }
+    if let Some(tags) = &fields.tags {
+        set_tags(tx, id, tags)?;
+    }
+    tx.execute(
+        "UPDATE nodes SET updated_at = ?2, updated_by = ?3 WHERE id = ?1",
+        params![id.to_string(), write.now.0, write.prov],
+    )?;
+    Ok(())
+}
+
+/// After a new title: rewrites the `[[links]]` that point at the node when `rewrite` is set, and
+/// resolves the links waiting for the title.
+pub(crate) fn finish_rename(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    old_title: &str,
+    fields: &Fields,
+    write: &Write,
+    rewrite: bool,
+) -> Result<()> {
+    if let Some(title) = &fields.title {
+        if rewrite {
+            rewrite_backlinks(tx, id, old_title, title, write)?;
+        }
+        resolve_waiting_links(tx, id, title, write.prov, write.now)?;
+    }
+    Ok(())
+}
+
+/// Deletes a node: its mentions wait as unresolved links, its links other than `mentions` go to
+/// the history of links, and its last version to its history.
+pub(crate) fn delete_in(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    title: &str,
+    write: &Write,
+) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO unresolved_links (source_id, target_key, target)
+         SELECT source_id, ?2, ?3 FROM links
+         WHERE target_id = ?1 AND kind = ?4 AND source_id <> ?1",
+        params![
+            id.to_string(),
+            knode_md::title_key(title),
+            title,
+            link_kinds::MENTIONS
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO link_history (change_id, op, source_id, kind, target_id)
+         SELECT ?2, 'delete', source_id, kind, target_id FROM links
+         WHERE (source_id = ?1 OR target_id = ?1) AND kind <> ?3
+         ORDER BY created_at, source_id, kind, target_id",
+        params![id.to_string(), write.change, link_kinds::MENTIONS],
+    )?;
+    record(
+        tx,
+        id,
+        ChangeOp::Delete,
+        write.prov,
+        write.now,
+        write.change,
+        None,
+    )?;
+    tx.execute("DELETE FROM nodes WHERE id = ?1", [id.to_string()])?;
+    Ok(())
+}
+
+/// Whether a link exists.
+pub(crate) fn link_exists(
+    conn: &Connection,
+    from: &NodeId,
+    kind: &str,
+    to: &NodeId,
+) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM links WHERE source_id = ?1 AND kind = ?2 AND target_id = ?3",
+            params![from.to_string(), kind, to.to_string()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Makes a link by hand and records it in the history of links.
+pub(crate) fn insert_link(
+    tx: &Transaction<'_>,
+    from: &NodeId,
+    kind: &str,
+    to: &NodeId,
+    write: &Write,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO links (source_id, kind, target_id, created_at, created_by)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            from.to_string(),
+            kind,
+            to.to_string(),
+            write.now.0,
+            write.prov
+        ],
+    )?;
+    record_link(tx, write.change, ChangeOp::Create, from, kind, to)
+}
+
+/// Removes a link made by hand and records it in the history of links.
+pub(crate) fn remove_link(
+    tx: &Transaction<'_>,
+    from: &NodeId,
+    kind: &str,
+    to: &NodeId,
+    change: ChangeId,
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM links WHERE source_id = ?1 AND kind = ?2 AND target_id = ?3",
+        params![from.to_string(), kind, to.to_string()],
+    )?;
+    record_link(tx, change, ChangeOp::Delete, from, kind, to)
+}
+
+fn record_link(
+    tx: &Transaction<'_>,
+    change: ChangeId,
+    op: ChangeOp,
+    from: &NodeId,
+    kind: &str,
+    to: &NodeId,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO link_history (change_id, op, source_id, kind, target_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![change, op.as_str(), from.to_string(), kind, to.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Adds a row to `changes` and returns its id.
+pub(crate) fn add_change(
+    tx: &Transaction<'_>,
+    now: Timestamp,
+    prov: i64,
+    action: &str,
+    subject: &str,
+    undoes: Option<ChangeId>,
+) -> Result<ChangeId> {
+    add_change_with_detail(tx, now, prov, action, subject, undoes, "{}")
+}
+
+/// Adds a row to `changes` with details, a JSON object, and returns its id.
+pub(crate) fn add_change_with_detail(
+    tx: &Transaction<'_>,
+    now: Timestamp,
+    prov: i64,
+    action: &str,
+    subject: &str,
+    undoes: Option<ChangeId>,
+    detail: &str,
+) -> Result<ChangeId> {
+    tx.execute(
+        "INSERT INTO changes (changed_at, changed_by, action, subject, undoes, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![now.0, prov, action, subject, undoes, detail],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// Columns of a [`HistoryEntry`], with `h` as `history` and `p` as its provenance.
+const HISTORY_COLUMNS: &str = "h.seq, h.node_id, h.op, h.changed_at, p.actor_kind, p.actor, \
+     p.session, p.source, h.kind, h.title, h.body, h.tags, h.change_id, h.restored_from";
+
+/// Rows of `history` that match `filter`, in order.
+pub(crate) fn query_history<P: rusqlite::Params>(
+    conn: &Connection,
+    filter: &str,
+    params: P,
+) -> Result<Vec<HistoryEntry>> {
+    let sql = format!(
+        "SELECT {HISTORY_COLUMNS} FROM history h JOIN provenance p ON p.id = h.changed_by
+         WHERE {filter} ORDER BY h.seq"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(params, |row| {
+        let tags: String = row.get(11)?;
+        Ok(HistoryEntry {
+            seq: row.get(0)?,
+            node_id: node_id(row, 1)?,
+            op: ChangeOp::parse(&row.get::<_, String>(2)?),
+            changed_at: Timestamp(row.get(3)?),
+            changed_by: provenance(row, 4)?,
+            kind: row.get(8)?,
+            title: row.get(9)?,
+            body: row.get(10)?,
+            tags: serde_json::from_str(&tags).unwrap_or_default(),
+            change_id: row.get(12)?,
+            restored_from: row.get(13)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Rewrites `[[old]]` to `[[new]]` in every node that mentions `id`, recording each node's new
+/// version in the same change.
 fn rewrite_backlinks(
     tx: &Transaction<'_>,
     id: &NodeId,
     old: &str,
     new: &str,
-    prov: i64,
-    now: Timestamp,
+    write: &Write,
 ) -> Result<()> {
     let sources: Vec<(String, String)> = {
         let mut stmt = tx.prepare(
@@ -1004,36 +1296,77 @@ fn rewrite_backlinks(
                 source,
                 rewritten,
                 knode_md::plain_text(&rewritten),
-                now.0,
-                prov
+                write.now.0,
+                write.prov
             ],
         )?;
         let source = NodeId::parse(&source)?;
-        record(tx, &source, ChangeOp::Update, prov, now)?;
+        record(
+            tx,
+            &source,
+            ChangeOp::Update,
+            write.prov,
+            write.now,
+            write.change,
+            None,
+        )?;
     }
     Ok(())
 }
 
-/// Removes the newest history row of a node when it is an `update` by `prov`, so the row that
-/// follows replaces it. Being the newest row, no one else has changed the node since.
+/// Removes the newest history row of a node, and its change, when the row is a plain
+/// `node.update` by `prov` that nothing else depends on, so the row that follows replaces it.
+/// Being the newest row, no one else has changed the node since.
+///
+/// The row is kept when its change wrote anything else (a rename's rewritten nodes) or was
+/// undone, so the run ends there.
 fn drop_run_snapshot(tx: &Transaction<'_>, id: &NodeId, prov: i64) -> Result<()> {
-    tx.execute(
-        "DELETE FROM history WHERE seq = (
-             SELECT seq FROM history WHERE node_id = ?1 ORDER BY seq DESC LIMIT 1
-         ) AND op = ?2 AND changed_by = ?3",
-        params![id.to_string(), ChangeOp::Update.as_str(), prov],
-    )?;
+    let newest: Option<(i64, String, i64, Option<ChangeId>)> = tx
+        .query_row(
+            "SELECT seq, op, changed_by, change_id FROM history
+             WHERE node_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((seq, op, changed_by, change)) = newest else {
+        return Ok(());
+    };
+    if op != ChangeOp::Update.as_str() || changed_by != prov {
+        return Ok(());
+    }
+    if let Some(change) = change {
+        let alone: bool = tx.query_row(
+            "SELECT c.action = ?2
+                 AND (SELECT count(*) FROM history WHERE change_id = ?1) = 1
+                 AND NOT EXISTS (SELECT 1 FROM link_history WHERE change_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM changes WHERE undoes = ?1)
+             FROM changes c WHERE c.id = ?1",
+            params![change, actions::NODE_UPDATE],
+            |row| row.get(0),
+        )?;
+        if !alone {
+            return Ok(());
+        }
+        tx.execute("DELETE FROM history WHERE seq = ?1", [seq])?;
+        tx.execute("DELETE FROM changes WHERE id = ?1", [change])?;
+    } else {
+        tx.execute("DELETE FROM history WHERE seq = ?1", [seq])?;
+    }
     Ok(())
 }
 
-/// Adds the current state of a node to its history.
-fn record(
+/// Adds the current state of a node to its history, as part of `change`, and returns the row's
+/// `seq`.
+pub(crate) fn record(
     tx: &Transaction<'_>,
     id: &NodeId,
     op: ChangeOp,
     prov: i64,
     now: Timestamp,
-) -> Result<()> {
+    change: ChangeId,
+    restored_from: Option<i64>,
+) -> Result<i64> {
     let tags: Vec<String> = {
         let mut stmt = tx.prepare_cached("SELECT tag FROM tags WHERE node_id = ?1 ORDER BY tag")?;
         let rows = stmt.query_map([id.to_string()], |row| row.get(0))?;
@@ -1041,11 +1374,20 @@ fn record(
     };
     let tags = serde_json::to_string(&tags).map_err(|e| Error::Invalid(e.to_string()))?;
     tx.execute(
-        "INSERT INTO history (node_id, op, changed_at, changed_by, kind, title, body, tags)
-         SELECT id, ?2, ?3, ?4, kind, title, body, ?5 FROM nodes WHERE id = ?1",
-        params![id.to_string(), op.as_str(), now.0, prov, tags],
+        "INSERT INTO history (node_id, op, changed_at, changed_by, kind, title, body, tags,
+                              change_id, restored_from)
+         SELECT id, ?2, ?3, ?4, kind, title, body, ?5, ?6, ?7 FROM nodes WHERE id = ?1",
+        params![
+            id.to_string(),
+            op.as_str(),
+            now.0,
+            prov,
+            tags,
+            change,
+            restored_from
+        ],
     )?;
-    Ok(())
+    Ok(tx.last_insert_rowid())
 }
 
 #[cfg(test)]
