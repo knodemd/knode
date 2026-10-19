@@ -6,7 +6,10 @@ use crate::{Error, Result};
 
 /// Every migration, in order. Migration `n` (from 1) takes the database from schema version
 /// `n - 1` to `n`; the schema version is SQLite's `user_version`.
-const MIGRATIONS: &[&str] = &[include_str!("sql/0001-initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("sql/0001-initial.sql"),
+    include_str!("sql/0002-properties.sql"),
+];
 
 /// The schema version this library writes: the `user_version` of an up to date `knode.db`.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -72,5 +75,22 @@ mod tests {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .unwrap();
         assert!(matches!(migrate(&mut conn), Err(Error::NewerSchema { .. })));
+    }
+
+    #[test]
+    fn migrates_a_version_1_database_to_the_latest_version() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(version(&conn).unwrap(), SCHEMA_VERSION);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'properties'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1);
     }
 }
