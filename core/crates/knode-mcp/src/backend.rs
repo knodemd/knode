@@ -1,7 +1,8 @@
 //! Where the MCP tools read and write: a [`Backend`].
 //!
-//! [`DirectBackend`] opens the space itself with `knode-format`. A backend that talks to Knode
-//! Service over its socket implements the same trait, so the tools do not change.
+//! [`DirectBackend`] opens the space itself with `knode-format`.
+//! [`ServiceBackend`](crate::ServiceBackend) talks to Knode Service over its socket and
+//! implements the same trait, so the tools do not change.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};

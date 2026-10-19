@@ -649,6 +649,7 @@ name = "knode-mcp"
 version = "0.0.0"
 dependencies = [
  "knode-format",
+ "knode-service",
  "rmcp",
  "serde",
  "serde_json",

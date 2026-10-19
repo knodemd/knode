@@ -2,7 +2,8 @@
 //!
 //! [`KnodeServer`] answers the [Model Context Protocol](https://modelcontextprotocol.io) with
 //! five tools, `search`, `read_node`, `write_node`, `link_nodes` and `recent` (see [`tools`]),
-//! on top of a [`Backend`]. Writes are recorded as made by the agent, named after the client
+//! on top of a [`Backend`]: [`ServiceBackend`] through Knode Service, or [`DirectBackend`],
+//! which opens the space itself when the service cannot run. Writes are recorded as made by the agent, named after the client
 //! that connected, such as `claude-code`.
 //!
 //! ```no_run
@@ -15,6 +16,8 @@
 #![warn(missing_docs)]
 
 pub mod backend;
+#[cfg(unix)]
+mod service;
 pub mod tools;
 
 use std::io;
@@ -30,6 +33,8 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
 pub use backend::{Backend, BackendError, BackendResult, DirectBackend};
+#[cfg(unix)]
+pub use service::ServiceBackend;
 
 /// The name the server gives itself to clients.
 pub const SERVER_NAME: &str = "knode";
