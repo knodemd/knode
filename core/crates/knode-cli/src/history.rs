@@ -99,6 +99,7 @@ fn print_change(change: &Change, subject: &str, version: Option<&HistoryEntry>) 
     if !subject.is_empty() {
         line.push_str(&format!(" {subject}"));
     }
+    let mut line = line.trim_end().to_string();
     line.push_str(&format!("  by {}", who(&change.changed_by)));
     if let Some(version) = version {
         line.push_str(&format!("  version {}", version.seq));
