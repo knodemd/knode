@@ -806,6 +806,19 @@ fn finds_nodes_by_property() {
     );
 }
 
+/// Takes a new, empty space back to schema version 2, as an older Knode wrote it.
+const DOWN_TO_VERSION_2: &str = "
+    DROP TABLE link_history;
+    DROP INDEX history_change;
+    ALTER TABLE history DROP COLUMN restored_from;
+    ALTER TABLE history DROP COLUMN change_id;
+    DROP TABLE changes;
+    DROP TABLE grants;
+    DROP TABLE agent_keys;
+    DROP TABLE agents;
+    DROP TABLE folders;
+";
+
 #[test]
 fn opens_a_version_1_space_and_adds_properties() {
     let (dir, space) = new_space();
@@ -813,6 +826,7 @@ fn opens_a_version_1_space_and_adds_properties() {
     drop(space);
     {
         let conn = db(&path);
+        conn.execute_batch(DOWN_TO_VERSION_2).unwrap();
         conn.execute_batch("DROP TABLE properties").unwrap();
         conn.pragma_update(None, "user_version", 1).unwrap();
     }

@@ -1,13 +1,13 @@
 //! Reading a session file, all at once or a little at a time while the agent writes it.
 
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::discover::SessionFile;
+use crate::discover::{SessionFile, file_version, read_whole};
 use crate::model::{Agent, Conversation};
 
 /// Why a session could not be read.
@@ -55,23 +55,32 @@ impl From<io::Error> for Error {
 /// What one [`SessionReader::poll`] read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
-    /// Records read and applied.
+    /// Records read and applied. A session read whole counts as one record.
     pub records: usize,
-    /// Lines that were not valid JSON and were skipped.
+    /// Lines (or whole files) that were not valid JSON and were skipped.
     pub skipped: usize,
     /// Messages added to the conversation (the last one may also have grown).
     pub new_messages: usize,
-    /// The byte offset reading reached: the end of the last complete line.
+    /// How far reading got: the byte offset of the end of the last complete line, or for a
+    /// session read whole, the version read (see [`SessionFile::len`]).
     pub offset: u64,
 }
 
-/// Reads a session file into a [`Conversation`], line by line, and can continue later from where
-/// it stopped. A last line still being written is left for the next poll.
+/// Reads a session into a [`Conversation`] and can continue later from where it stopped.
+///
+/// Sessions that only grow (Claude Code, Codex, Copilot CLI and Gemini CLI `.jsonl` files, Aider
+/// history files) are read a line at a time; a last line still being written is left for the
+/// next poll. Sessions that are rewritten (Gemini CLI `.json` files, Amp threads, OpenCode
+/// sessions) are read whole again whenever they change.
+///
+/// An Aider history file holds one session per run of Aider: the reader follows the newest, and
+/// hands over the ones that ended with [`SessionReader::take_finished`].
 #[derive(Debug, Clone)]
 pub struct SessionReader {
     path: PathBuf,
     offset: u64,
     conversation: Conversation,
+    finished: Vec<Conversation>,
 }
 
 impl SessionReader {
@@ -92,6 +101,7 @@ impl SessionReader {
             path: path.as_ref().to_path_buf(),
             offset,
             conversation,
+            finished: Vec::new(),
         }
     }
 
@@ -100,7 +110,8 @@ impl SessionReader {
         &self.path
     }
 
-    /// The byte offset reached: the end of the last complete line read.
+    /// How far reading got: the end of the last complete line read, or the version of a
+    /// session read whole.
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -115,9 +126,101 @@ impl SessionReader {
         self.conversation
     }
 
-    /// Reads the lines written since the last poll. Lines that are not valid JSON are skipped,
+    /// The conversations that ended since the last call, oldest first: the earlier sessions of
+    /// an Aider history file. Always empty for other agents.
+    pub fn take_finished(&mut self) -> Vec<Conversation> {
+        std::mem::take(&mut self.finished)
+    }
+
+    /// Reads what was written since the last poll. Lines that are not valid JSON are skipped,
     /// except an unfinished last line, which is read again next time.
     pub fn poll(&mut self) -> Result<Progress, Error> {
+        let agent = self.conversation.agent;
+        if agent == Agent::OpenCode {
+            return self.poll_database();
+        }
+        if read_whole(agent, &self.path) {
+            return self.poll_whole();
+        }
+        let progress = self.poll_lines()?;
+        if agent == Agent::GeminiCli && self.conversation.project.is_none() {
+            self.conversation.project = crate::gemini::project_root(&self.path);
+        }
+        Ok(progress)
+    }
+
+    fn unchanged(&self) -> Progress {
+        Progress {
+            records: 0,
+            skipped: 0,
+            new_messages: 0,
+            offset: self.offset,
+        }
+    }
+
+    /// Reads a session file that is rewritten as it grows, whole, if it changed.
+    fn poll_whole(&mut self) -> Result<Progress, Error> {
+        let version = file_version(&fs::metadata(&self.path)?);
+        if version == self.offset && self.offset != 0 {
+            return Ok(self.unchanged());
+        }
+        let bytes = fs::read(&self.path)?;
+        let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+            // Probably caught halfway through a write: try again next time.
+            let mut progress = self.unchanged();
+            progress.skipped = 1;
+            return Ok(progress);
+        };
+        let agent = self.conversation.agent;
+        let mut conversation = Conversation::new(agent, self.conversation.session_id.clone());
+        match agent {
+            Agent::GeminiCli => {
+                crate::gemini::apply_document(&mut conversation, &document);
+                conversation.project = crate::gemini::project_root(&self.path);
+            }
+            Agent::Amp => crate::amp::apply_document(&mut conversation, &document),
+            _ => {}
+        }
+        conversation.forget_records();
+        Ok(self.replace(conversation, version))
+    }
+
+    /// Reads an OpenCode session from its database, whole, if it changed.
+    fn poll_database(&mut self) -> Result<Progress, Error> {
+        let Some(version) = crate::opencode::version(&self.path)? else {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the OpenCode session was deleted",
+            )));
+        };
+        if version == self.offset && self.offset != 0 {
+            return Ok(self.unchanged());
+        }
+        let mut conversation =
+            Conversation::new(Agent::OpenCode, self.conversation.session_id.clone());
+        crate::opencode::read(&self.path, &mut conversation)?;
+        Ok(self.replace(conversation, version))
+    }
+
+    fn replace(&mut self, conversation: Conversation, version: u64) -> Progress {
+        let before = self.conversation.messages.len();
+        let after = conversation.messages.len();
+        self.conversation = conversation;
+        self.offset = version;
+        Progress {
+            records: 1,
+            skipped: 0,
+            new_messages: after.saturating_sub(before),
+            offset: version,
+        }
+    }
+
+    /// Reads the lines written since the last poll.
+    fn poll_lines(&mut self) -> Result<Progress, Error> {
+        let agent = self.conversation.agent;
+        if agent == Agent::Aider && self.conversation.project.is_none() {
+            self.conversation.project = Some(crate::aider::project_of(&self.path).to_path_buf());
+        }
         let mut file = File::open(&self.path)?;
         let len = file.metadata()?.len();
         if len < self.offset {
@@ -144,7 +247,19 @@ impl SessionReader {
             }
             let complete = line.last() == Some(&b'\n');
             let trimmed = line.trim_ascii();
-            if trimmed.is_empty() {
+            if agent == Agent::Aider {
+                if !complete {
+                    break;
+                }
+                let text = String::from_utf8_lossy(&line);
+                crate::aider::apply_line(
+                    &mut self.conversation,
+                    text.trim_end_matches(['\n', '\r']),
+                    &self.path,
+                    &mut self.finished,
+                );
+                progress.records += 1;
+            } else if trimmed.is_empty() {
                 if !complete {
                     break;
                 }
@@ -161,14 +276,30 @@ impl SessionReader {
             self.offset += read as u64;
         }
         progress.offset = self.offset;
-        progress.new_messages = self.conversation.messages.len() - messages_before;
+        progress.new_messages = self
+            .conversation
+            .messages
+            .len()
+            .saturating_sub(messages_before);
         Ok(progress)
     }
 }
 
-/// Reads a whole session file into a conversation.
+/// Reads a whole session file into a conversation. For an Aider history file, which holds a
+/// session per run, this is the newest; [`read_sessions`] gives them all.
 pub fn read_session(file: &SessionFile) -> Result<Conversation, Error> {
     let mut reader = SessionReader::new(file);
     reader.poll()?;
     Ok(reader.into_conversation())
+}
+
+/// Reads every conversation in a session file, oldest first: one, except for an Aider history
+/// file, which holds one per run of Aider. Conversations with no messages are left out.
+pub fn read_sessions(file: &SessionFile) -> Result<Vec<Conversation>, Error> {
+    let mut reader = SessionReader::new(file);
+    reader.poll()?;
+    let mut conversations = reader.take_finished();
+    conversations.push(reader.into_conversation());
+    conversations.retain(|conversation| !conversation.is_empty());
+    Ok(conversations)
 }
