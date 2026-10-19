@@ -92,12 +92,24 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     fs::write(notes.join("image.png"), [0u8, 1, 2]).unwrap();
 
     let out = sb.ok(&["import", notes.to_str().unwrap()]);
-    assert_eq!(out.trim(), "Imported 2 notes.");
-    let out = sb.ok(&["import", notes.to_str().unwrap()]);
-    assert_eq!(out.trim(), "Imported 0 notes, 2 already there.");
+    let dir = notes.display();
+    assert_eq!(
+        out.trim(),
+        format!(
+            "Imported {dir}: 2 new, 0 updated, 0 unchanged.\nLeft out 1 file that is not Markdown, such as images."
+        )
+    );
+    let out = sb.ok(&["import", notes.to_str().unwrap(), "--vault"]);
+    assert!(
+        out.starts_with(&format!(
+            "Imported the vault {dir}: 0 new, 0 updated, 2 unchanged."
+        )),
+        "{out}"
+    );
 
+    // Titles of a folder come from the file names, as in Obsidian.
     let out = sb.ok(&["search", "seat"]);
-    assert!(out.contains("Pricing decision  (note, "), "{out}");
+    assert!(out.contains("pricing  (note, "), "{out}");
     assert!(out.contains("by tester)"), "{out}");
     assert!(out.contains("ideas  (note, "), "{out}");
 
@@ -105,11 +117,21 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     let hits: Value = serde_json::from_str(&out).unwrap();
     let hits = hits.as_array().unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0]["node"]["title"], "Pricing decision");
+    assert_eq!(hits[0]["node"]["title"], "pricing");
     assert_eq!(hits[0]["node"]["updated_by"]["kind"], "person");
     assert_eq!(hits[0]["node"]["updated_by"]["actor"], "tester");
 
     assert!(sb.ok(&["search", "zebra"]).contains("Nothing matches"));
+
+    // One file keeps its first heading as its title.
+    let single = sb.path("single.md");
+    fs::write(&single, "# Single note\n\nAlone.\n").unwrap();
+    assert_eq!(
+        sb.ok(&["import", single.to_str().unwrap()]).trim(),
+        "Imported 1 note."
+    );
+    let err = sb.fails(&["import", single.to_str().unwrap(), "--vault"]);
+    assert!(err.contains("not a folder"), "{err}");
 
     let err = sb.fails(&["import", sb.path("missing").to_str().unwrap()]);
     assert!(err.contains("does not exist"), "{err}");

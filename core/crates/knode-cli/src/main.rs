@@ -1,7 +1,9 @@
 //! The knode command line.
 
 mod connect;
+mod history;
 mod import;
+mod markdown;
 mod service;
 
 use std::path::{Path, PathBuf};
@@ -50,10 +52,50 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Import a folder of Markdown files, a Markdown file, or a Claude Code or Codex session.
+    /// Import a folder of Markdown files (an export or an Obsidian vault), a Markdown file, or a
+    /// Claude Code or Codex session.
     Import {
         /// A folder, a .md file, or a session .jsonl file.
         path: PathBuf,
+        /// The folder is an Obsidian vault (only changes the wording of the summary).
+        #[arg(long)]
+        vault: bool,
+    },
+    /// Write the space to a folder of Markdown files, one per note, with YAML frontmatter.
+    Export {
+        /// The folder; created if needed. Files Knode did not write are never touched.
+        dir: PathBuf,
+    },
+    /// Show the latest changes to the space, or the history of one node.
+    History {
+        /// A node id or exact title. Leave out for the whole space.
+        node: Option<String>,
+        /// How many changes to show at most.
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
+        /// Print the changes as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Undo a change, by its number from `knode history`.
+    Undo {
+        /// The change.
+        change: i64,
+        /// Undo it even if later changes touched the same notes; they are overwritten.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Put a node back to an earlier version, or recover it after a delete.
+    Restore {
+        /// A node id or exact title.
+        node: String,
+        /// The version, from `knode history <node>`.
+        version: i64,
+    },
+    /// The live Markdown folder: a folder Knode Service keeps current with every note.
+    Markdown {
+        #[command(subcommand)]
+        action: MarkdownAction,
     },
     /// Add Knode to an agent: claude-code, codex, gemini or claude-desktop.
     Connect {
@@ -71,6 +113,19 @@ enum Command {
     Service {
         #[command(subcommand)]
         action: service::Action,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MarkdownAction {
+    /// Show the live Markdown folder, turn it on at <dir>, or turn it off with --off.
+    Folder {
+        /// The folder; created if needed.
+        #[arg(conflicts_with = "off")]
+        dir: Option<PathBuf>,
+        /// Turn the live Markdown folder off. Its files stay as they are.
+        #[arg(long)]
+        off: bool,
     },
 }
 
@@ -94,10 +149,44 @@ fn run(cli: Cli) -> Result<()> {
             let backend = service::backend(&space)?;
             search(backend.as_ref(), &query.join(" "), limit, json)
         }
-        Command::Import { path } => {
+        Command::Import { path, vault } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            if path.is_dir() {
+                markdown::import(&space, &absolute(&path)?, vault, &person())
+            } else if vault {
+                bail!(
+                    "{} is not a folder: --vault takes an Obsidian vault folder",
+                    path.display()
+                )
+            } else {
+                let backend = service::backend(&space)?;
+                import::run(backend.as_ref(), &path, &person())
+            }
+        }
+        Command::Export { dir } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            markdown::export(&absolute(&space)?, &dir)
+        }
+        Command::History { node, limit, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
             let backend = service::backend(&space)?;
-            import::run(backend.as_ref(), &path, &person())
+            history::history(backend.as_ref(), node.as_deref(), limit, json)
+        }
+        Command::Undo { change, force } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            history::undo(backend.as_ref(), change, force, &person())
+        }
+        Command::Restore { node, version } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            history::restore(backend.as_ref(), &node, version, &person())
+        }
+        Command::Markdown {
+            action: MarkdownAction::Folder { dir, off },
+        } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            markdown::folder(&space, dir.as_deref(), off, &person())
         }
         Command::Connect { agent, print } => connect::run(agent, print),
         Command::Mcp => mcp(&paths, cli.space.as_deref()),

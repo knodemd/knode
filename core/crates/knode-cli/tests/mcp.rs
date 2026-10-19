@@ -140,7 +140,15 @@ fn a_client_uses_every_tool() {
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
-        ["search", "read_node", "write_node", "link_nodes", "recent"]
+        [
+            "search",
+            "read_node",
+            "write_node",
+            "link_nodes",
+            "recent",
+            "history",
+            "undo"
+        ]
     );
     for tool in &tools {
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
@@ -220,6 +228,31 @@ fn a_client_uses_every_tool() {
     assert_eq!(nodes[0]["id"], pricing.as_str());
     assert_eq!(nodes[0]["updated_by"]["actor"], "test-client");
 
+    // history and undo: the agent takes back a note of its own.
+    client.call(
+        "write_node",
+        json!({ "title": "Scratch", "body": "Not needed." }),
+    );
+    let result = client.call("history", json!({ "limit": 1 }));
+    assert_eq!(result["isError"], false, "{result}");
+    let change = &result["structuredContent"]["changes"][0];
+    assert_eq!(change["subject_title"], "Scratch");
+    let result = client.call("undo", json!({ "change": change["id"] }));
+    assert_eq!(result["isError"], false, "{result}");
+    assert!(
+        text(&result).contains("the node it created was deleted"),
+        "{result}"
+    );
+    let result = client.call("history", json!({ "node": pricing }));
+    assert_eq!(
+        result["structuredContent"]["changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "{result}"
+    );
+
     // A tool error is a result the model can read, not a protocol error.
     let result = client.call("read_node", json!({ "title": "Nothing like this" }));
     assert_eq!(result["isError"], true);
@@ -253,7 +286,7 @@ fn negotiates_a_newer_protocol_version() {
     let init = client.initialize("2025-11-25");
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
     let tools = client.request("tools/list", json!({}));
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
     client.finish();
 }
 

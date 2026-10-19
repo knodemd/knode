@@ -595,6 +595,7 @@ dependencies = [
  "knode-ingest",
  "knode-mcp",
  "knode-service",
+ "knode-vault",
  "serde_json",
  "tempfile",
  "toml_edit",

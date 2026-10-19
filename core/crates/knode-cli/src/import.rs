@@ -1,4 +1,5 @@
-//! `knode import`: Markdown files and agent sessions into a space.
+//! `knode import`: a Markdown file or an agent session into a space. Folders are imported by
+//! [`crate::markdown::import`].
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -9,17 +10,10 @@ use knode_format::{NewNode, NodeUpdate, Provenance, kinds};
 use knode_ingest::{Agent, SessionReader, to_markdown};
 use knode_mcp::Backend;
 
-/// Imports `path` into `space`: a folder of Markdown files, one Markdown file, or a Claude Code
-/// or Codex session file.
+/// Imports `path` into `space`: one Markdown file, or a Claude Code or Codex session file.
 pub fn run(space: &dyn Backend, path: &Path, by: &Provenance) -> Result<()> {
     let path = crate::absolute(path)?;
-    if path.is_dir() {
-        let files = markdown_files(&path)?;
-        if files.is_empty() {
-            bail!("{} has no Markdown (.md) files", path.display());
-        }
-        import_markdown(space, &files, by)
-    } else if path.is_file() {
+    if path.is_file() {
         match extension(&path).as_deref() {
             Some("md" | "markdown") => import_markdown(space, &[path], by),
             Some("jsonl") => import_session(space, &path),
@@ -38,34 +32,6 @@ fn extension(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
-}
-
-/// The Markdown files under `dir`, sorted, leaving out hidden files and folders such as
-/// `.git` or `.obsidian`.
-fn markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let entries =
-            fs::read_dir(&dir).with_context(|| format!("cannot read {}", dir.display()))?;
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_file()
-                && matches!(extension(&path).as_deref(), Some("md" | "markdown"))
-            {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 /// The title of a Markdown note: its first heading, else the file name without extension.

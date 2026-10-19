@@ -69,6 +69,18 @@ pub fn backend(path: &Path) -> Result<Box<dyn Backend>> {
     })
 }
 
+/// Knode Service, started if needed, or `None` after a warning when it cannot run: the caller
+/// then opens the space itself.
+pub fn client() -> Option<Client> {
+    match connect() {
+        Ok(client) => Some(client),
+        Err(error) => {
+            warn_direct(&error);
+            None
+        }
+    }
+}
+
 /// Tells the person that the space is opened directly because the service cannot run.
 pub fn warn_direct(error: &knode_service::Error) {
     eprintln!(
