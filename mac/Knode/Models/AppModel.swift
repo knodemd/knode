@@ -38,6 +38,8 @@ final class AppModel {
     @ObservationIgnored private let searchDelay: Duration
     @ObservationIgnored private let saveDelay: Duration
     @ObservationIgnored private var pendingSearch: Task<Void, Never>?
+    @ObservationIgnored private var pendingReload: Task<Void, Never>?
+    @ObservationIgnored private var changesTask: Task<Void, Never>?
 
     /// - Parameters:
     ///   - store: where spaces are read and written: the Knode core in the app.
@@ -56,6 +58,12 @@ final class AppModel {
         self.searchDelay = searchDelay
         self.saveDelay = saveDelay
         recentSpaceURLs = recentSpaces?.urls ?? []
+        let changes = store.changes()
+        changesTask = Task { [weak self] in
+            for await change in changes {
+                await self?.apply(change)
+            }
+        }
     }
 
     // MARK: Spaces
@@ -187,6 +195,38 @@ final class AppModel {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: Changes made by others
+
+    /// Shows a change someone else made, such as an agent writing through Knode Service: the list
+    /// reloads, and the open note too when it changed and has no unsaved edits.
+    func apply(_ change: SpaceChange) async {
+        guard change.space == selectedSpaceID else { return }
+        scheduleReload()
+        guard let editor, change.nodeID == editor.nodeID || change.kind == .reload else { return }
+        do {
+            let node = try await store(for: change.space).node(editor.nodeID, in: change.space)
+            // The app's own saves come back as changes too: those are already shown.
+            guard self.editor === editor, !editor.hasUnsavedChanges, node.updatedAt > editor.updatedAt else { return }
+            let reloaded = NoteEditorModel(node: node, spaceID: change.space, store: store(for: change.space), saveDelay: saveDelay)
+            reloaded.onSave = { [weak self] node in self?.didSave(node) }
+            self.editor = reloaded
+        } catch SpaceStoreError.nodeNotFound {
+            if self.editor === editor { self.editor = nil }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Reloads the list once for a burst of changes.
+    private func scheduleReload() {
+        guard pendingReload == nil else { return }
+        pendingReload = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            self?.pendingReload = nil
+            await self?.reload()
         }
     }
 

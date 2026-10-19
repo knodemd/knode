@@ -6,27 +6,59 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXAggregateTarget section */
+		0186492479B2DF4548D8923D /* KnodeCLI */ = {
+			isa = PBXAggregateTarget;
+			buildConfigurationList = DE2CADCF6DF91CBFA599F2B6 /* Build configuration list for PBXAggregateTarget "KnodeCLI" */;
+			buildPhases = (
+				F6955431E0D133FA30751426 /* Build knode */,
+			);
+			dependencies = (
+			);
+			name = KnodeCLI;
+			packageProductDependencies = (
+			);
+			productName = KnodeCLI;
+		};
+/* End PBXAggregateTarget section */
+
 /* Begin PBXBuildFile section */
 		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
+		0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */; };
+		14A610A8D3A990E112010D52 /* knode in CopyFiles */ = {isa = PBXBuildFile; fileRef = 990084E95F9E098F6F742836 /* knode */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17772215D1051C90CE7039B0 /* RecentSpaces.swift */; };
 		1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16065546A150F910F6A236AD /* SpacePanels.swift */; };
 		2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = F62D33407D7A83E40E34FE2B /* AppIcon.icns */; };
 		2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D00F921E755F4E322D2982 /* ContentView.swift */; };
+		2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */; };
+		3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */; };
 		3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */; };
 		47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F73AC1170815F22E83004BB /* MarkdownBlock.swift */; };
+		48C3E71EDC41554C0E4F5F41 /* FakeKnodeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9789760F309094F157FE9CFB /* FakeKnodeService.swift */; };
+		51119B5A2FE748B40390C313 /* CommandLineToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */; };
 		612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */; };
+		66FD330E3841BD85C870EE01 /* Broadcast.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B65FED5CAA2B40891950D07 /* Broadcast.swift */; };
 		6F9C14E6DD8BF4CC863DEAAB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589D1B5A99FDE143376F1AB3 /* Assets.xcassets */; };
+		768470D298ACA52E6BF9EE3A /* CommandLineToolInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6D81D9BBE595AB5EF4BA6CE /* CommandLineToolInstaller.swift */; };
+		7C68451349E0DE4142AD3108 /* FileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B41F891EB0BD14B62D79D3 /* FileSystem.swift */; };
 		7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BD7995016E9A8B78A2D927 /* AppModel.swift */; };
+		939F05CFA6C43BEB0D8797CD /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */; };
 		956BCF38E4C1789D6B2108FB /* CoreSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */; };
+		9B0C0A19C2A9A1B9D246E890 /* ServiceSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */; };
 		9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */; };
 		A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B7EDA91000979E88901A77 /* SpaceStore.swift */; };
+		B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */; };
 		B3818CFEA923224F7F4E56C5 /* KnodeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BAC4197CE15CF9B7F4529DB /* KnodeCore.swift */; };
 		C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */; };
+		C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */; };
+		CA94681234A819BD84980698 /* KnodeHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211628B1070B636AB469C990 /* KnodeHome.swift */; };
+		CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */; };
 		CEFADFD00FD50BC5A7D28D33 /* KnodeBrand in Frameworks */ = {isa = PBXBuildFile; productRef = 5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */; };
 		D3C05D6D4DD91324A42637C9 /* CoreSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */; };
 		DB16242C01E6D130B62D3344 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D250CA89BC07524A87D4A6 /* Models.swift */; };
 		E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */; };
 		E8614B23865DF10714A3454F /* libKnodeCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 629294654D2A167C069EEF94 /* libKnodeCore.a */; };
+		EB452D1354DFB49F4C074616 /* CommandLineTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */; };
 		EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -45,32 +77,68 @@
 			remoteGlobalIDString = 95A8661D22178656057D6562;
 			remoteInfo = Knode;
 		};
+		6B21A75DF90E3DC3E5828D5F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 778FFC6DA636488F963D493D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0186492479B2DF4548D8923D;
+			remoteInfo = KnodeCLI;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		077C05B99D572E5479A5FA7C /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				14A610A8D3A990E112010D52 /* knode in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KnodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		16065546A150F910F6A236AD /* SpacePanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacePanels.swift; sourceTree = "<group>"; };
 		17772215D1051C90CE7039B0 /* RecentSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentSpaces.swift; sourceTree = "<group>"; };
+		211628B1070B636AB469C990 /* KnodeHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeHome.swift; sourceTree = "<group>"; };
+		283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingSpaceStore.swift; sourceTree = "<group>"; };
 		2BAC4197CE15CF9B7F4529DB /* KnodeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KnodeCore.swift; path = build/KnodeCore/KnodeCore.swift; sourceTree = "<group>"; };
 		2F73AC1170815F22E83004BB /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
 		346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeApp.swift; sourceTree = "<group>"; };
+		3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
+		3B65FED5CAA2B40891950D07 /* Broadcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Broadcast.swift; sourceTree = "<group>"; };
 		54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorModel.swift; sourceTree = "<group>"; };
 		589D1B5A99FDE143376F1AB3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		59B41F891EB0BD14B62D79D3 /* FileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystem.swift; sourceTree = "<group>"; };
+		5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeCommand.swift; sourceTree = "<group>"; };
 		629294654D2A167C069EEF94 /* libKnodeCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libKnodeCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineTool.swift; sourceTree = "<group>"; };
 		766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSpaceStore.swift; sourceTree = "<group>"; };
 		7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStoreTests.swift; sourceTree = "<group>"; };
 		84B7EDA91000979E88901A77 /* SpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceStore.swift; sourceTree = "<group>"; };
 		95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		95BDD689D2D618AB825F4B13 /* NoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteView.swift; sourceTree = "<group>"; };
 		96D250CA89BC07524A87D4A6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		9789760F309094F157FE9CFB /* FakeKnodeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeKnodeService.swift; sourceTree = "<group>"; };
+		990084E95F9E098F6F742836 /* knode */ = {isa = PBXFileReference; name = knode; path = build/KnodeCLI/knode; sourceTree = "<group>"; };
 		9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStore.swift; sourceTree = "<group>"; };
 		A2BD7995016E9A8B78A2D927 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockTests.swift; sourceTree = "<group>"; };
 		AE6E4A2F4819EE2F22C0756B /* KnodeBrand */ = {isa = PBXFileReference; lastKnownFileType = folder; name = KnodeBrand; path = "../brand/12 Code/swift/KnodeBrand"; sourceTree = SOURCE_ROOT; };
 		B9D00F921E755F4E322D2982 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceMenu.swift; sourceTree = "<group>"; };
 		C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSpaceStoreTests.swift; sourceTree = "<group>"; };
+		C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceMonitor.swift; sourceTree = "<group>"; };
+		C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceSpaceStore.swift; sourceTree = "<group>"; };
 		D1EAFF9DAC325C9B0B21945F /* Knode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Knode.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
+		E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolTests.swift; sourceTree = "<group>"; };
+		F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceSpaceStoreTests.swift; sourceTree = "<group>"; };
 		F62D33407D7A83E40E34FE2B /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = AppIcon.icns; path = "../brand/07 App Icon/macOS/AppIcon.icns"; sourceTree = "<group>"; };
+		F6D81D9BBE595AB5EF4BA6CE /* CommandLineToolInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolInstaller.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,6 +166,7 @@
 			isa = PBXGroup;
 			children = (
 				728F5149D953E20288E38B18 /* Knode */,
+				CB472C2EE52FFB81EF3048F0 /* KnodeCLI */,
 				D82D2E95A830F5FCDF3CDE7F /* KnodeCore */,
 				A5E23F349B3EFF883D816035 /* KnodeTests */,
 				529B43B6A0B8A4634D220332 /* Packages */,
@@ -119,9 +188,20 @@
 			children = (
 				B9D00F921E755F4E322D2982 /* ContentView.swift */,
 				95BDD689D2D618AB825F4B13 /* NoteView.swift */,
+				BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */,
 				16065546A150F910F6A236AD /* SpacePanels.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		63605920B57DFBDB3D500497 /* CommandLineTool */ = {
+			isa = PBXGroup;
+			children = (
+				682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */,
+				F6D81D9BBE595AB5EF4BA6CE /* CommandLineToolInstaller.swift */,
+				59B41F891EB0BD14B62D79D3 /* FileSystem.swift */,
+			);
+			path = CommandLineTool;
 			sourceTree = "<group>";
 		};
 		6869DCD595CA0ABEB945C1CA /* Products */ = {
@@ -139,8 +219,10 @@
 			children = (
 				589D1B5A99FDE143376F1AB3 /* Assets.xcassets */,
 				346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */,
+				63605920B57DFBDB3D500497 /* CommandLineTool */,
 				BF6415D44EC381BCE4A0E5B3 /* Markdown */,
 				C66AD3A997986DE0D5BCD859 /* Models */,
+				F7D3DE97C03D5977158EDDAE /* Service */,
 				F5DB68D172C71D490F3AFE7A /* Store */,
 				5A9EC62E57A231B237475B00 /* Views */,
 			);
@@ -151,9 +233,12 @@
 			isa = PBXGroup;
 			children = (
 				95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */,
+				E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */,
 				7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */,
+				9789760F309094F157FE9CFB /* FakeKnodeService.swift */,
 				A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */,
 				C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */,
+				F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */,
 			);
 			path = KnodeTests;
 			sourceTree = "<group>";
@@ -175,6 +260,14 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
+		CB472C2EE52FFB81EF3048F0 /* KnodeCLI */ = {
+			isa = PBXGroup;
+			children = (
+				990084E95F9E098F6F742836 /* knode */,
+			);
+			name = KnodeCLI;
+			sourceTree = "<group>";
+		};
 		D82D2E95A830F5FCDF3CDE7F /* KnodeCore */ = {
 			isa = PBXGroup;
 			children = (
@@ -186,13 +279,28 @@
 		F5DB68D172C71D490F3AFE7A /* Store */ = {
 			isa = PBXGroup;
 			children = (
+				3B65FED5CAA2B40891950D07 /* Broadcast.swift */,
 				9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */,
 				96D250CA89BC07524A87D4A6 /* Models.swift */,
 				766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */,
 				17772215D1051C90CE7039B0 /* RecentSpaces.swift */,
+				283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */,
 				84B7EDA91000979E88901A77 /* SpaceStore.swift */,
 			);
 			path = Store;
+			sourceTree = "<group>";
+		};
+		F7D3DE97C03D5977158EDDAE /* Service */ = {
+			isa = PBXGroup;
+			children = (
+				DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */,
+				5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */,
+				211628B1070B636AB469C990 /* KnodeHome.swift */,
+				3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */,
+				C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */,
+				C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */,
+			);
+			path = Service;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -241,6 +349,7 @@
 			buildPhases = (
 				8340D0F44146AF2466ACD28C /* Sources */,
 				FFE2EDFE52E8047C6335954C /* Resources */,
+				077C05B99D572E5479A5FA7C /* CopyFiles */,
 				3E79938F245BD411D0EE4B99 /* Frameworks */,
 				3EBA76DB20C1DB317004A352 /* Document Icon */,
 			);
@@ -248,6 +357,7 @@
 			);
 			dependencies = (
 				5B76216972BDA42B9BCE782A /* PBXTargetDependency */,
+				EA207FA0B9643BE4A3CA7CC7 /* PBXTargetDependency */,
 			);
 			name = Knode;
 			packageProductDependencies = (
@@ -266,6 +376,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					0186492479B2DF4548D8923D = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
 					3258EA555C58D8612C5FE378 = {
 						DevelopmentTeam = "";
 						ProvisioningStyle = Manual;
@@ -300,6 +414,7 @@
 				95A8661D22178656057D6562 /* Knode */,
 				3258EA555C58D8612C5FE378 /* KnodeCore */,
 				70B2CD96FD0E7DB48E22C589 /* KnodeTests */,
+				0186492479B2DF4548D8923D /* KnodeCLI */,
 			);
 		};
 /* End PBXProject section */
@@ -377,6 +492,27 @@
 			shellPath = /bin/sh;
 			shellScript = "ditto \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
+		F6955431E0D133FA30751426 /* Build knode */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/scripts/knode-cli-inputs.xcfilelist",
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/build-knode-cli.sh",
+			);
+			name = "Build knode";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/build/KnodeCLI/knode",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/scripts/build-knode-cli.sh\" \"$SCRIPT_OUTPUT_FILE_0\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -393,9 +529,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */,
+				51119B5A2FE748B40390C313 /* CommandLineToolTests.swift in Sources */,
 				956BCF38E4C1789D6B2108FB /* CoreSpaceStoreTests.swift in Sources */,
+				48C3E71EDC41554C0E4F5F41 /* FakeKnodeService.swift in Sources */,
 				EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */,
 				C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */,
+				9B0C0A19C2A9A1B9D246E890 /* ServiceSpaceStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -404,15 +543,27 @@
 			buildActionMask = 2147483647;
 			files = (
 				7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */,
+				66FD330E3841BD85C870EE01 /* Broadcast.swift in Sources */,
+				EB452D1354DFB49F4C074616 /* CommandLineTool.swift in Sources */,
+				768470D298ACA52E6BF9EE3A /* CommandLineToolInstaller.swift in Sources */,
 				2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */,
 				D3C05D6D4DD91324A42637C9 /* CoreSpaceStore.swift in Sources */,
+				7C68451349E0DE4142AD3108 /* FileSystem.swift in Sources */,
+				C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */,
 				612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */,
+				0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */,
+				CA94681234A819BD84980698 /* KnodeHome.swift in Sources */,
 				47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */,
 				DB16242C01E6D130B62D3344 /* Models.swift in Sources */,
 				9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */,
 				0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */,
 				3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */,
 				19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */,
+				3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */,
+				939F05CFA6C43BEB0D8797CD /* ServiceConnection.swift in Sources */,
+				B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */,
+				2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */,
+				CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */,
 				1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */,
 				A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */,
 			);
@@ -430,6 +581,11 @@
 			isa = PBXTargetDependency;
 			target = 95A8661D22178656057D6562 /* Knode */;
 			targetProxy = 4B3419241EB387375C606EC1 /* PBXContainerItemProxy */;
+		};
+		EA207FA0B9643BE4A3CA7CC7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0186492479B2DF4548D8923D /* KnodeCLI */;
+			targetProxy = 6B21A75DF90E3DC3E5828D5F /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -454,6 +610,13 @@
 				PRODUCT_BUNDLE_IDENTIFIER = md.knode.Knode;
 				PRODUCT_NAME = Knode;
 				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		0B9AAA2A46EEEC64B1611B3C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 			};
 			name = Debug;
 		};
@@ -656,6 +819,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
+				OTHER_CODE_SIGN_FLAGS = "$(inherited) --options=runtime";
 				OTHER_LDFLAGS = (
 					"$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a",
 					"-ObjC",
@@ -663,6 +827,13 @@
 				PRODUCT_BUNDLE_IDENTIFIER = md.knode.Knode;
 				PRODUCT_NAME = Knode;
 				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		DCBE497EACC43AF4C4C10D43 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 			};
 			name = Release;
 		};
@@ -709,6 +880,15 @@
 			buildConfigurations = (
 				E64BECD2F35C79F32273EAD1 /* Debug */,
 				4E845DB615E742E49C204000 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DE2CADCF6DF91CBFA599F2B6 /* Build configuration list for PBXAggregateTarget "KnodeCLI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0B9AAA2A46EEEC64B1611B3C /* Debug */,
+				DCBE497EACC43AF4C4C10D43 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -76,6 +76,11 @@ public final class CoreSpaceStore: SpaceStore {
         return hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) }
     }
 
+    /// Closes the space: the core lets go of its files.
+    public func close(_ space: Space.ID) {
+        _ = spaces.withLock { $0.removeValue(forKey: space) }
+    }
+
     // MARK: Helpers
 
     private func register(_ core: KnodeSpace) async throws -> Space {

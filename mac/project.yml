@@ -36,9 +36,20 @@ targets:
       - path: "../brand/07 App Icon/macOS/AppIcon.icns"
         buildPhase: resources
         group: Resources
+      # The knode command, built by the KnodeCLI target, copied to Contents/Helpers and signed
+      # with the app.
+      - path: build/KnodeCLI/knode
+        optional: true
+        group: KnodeCLI
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Helpers
+        attributes: [CodeSignOnCopy]
     dependencies:
       - package: KnodeBrand
       - target: KnodeCore
+      - target: KnodeCLI
     info:
       path: Knode/Info.plist
     settings:
@@ -50,6 +61,11 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         OTHER_LDFLAGS: "$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+      configs:
+        # The hardened runtime for the knode command in Contents/Helpers too, which Xcode signs
+        # on copy. Not in Debug, where Xcode turns the hardened runtime off for ad-hoc builds.
+        Release:
+          OTHER_CODE_SIGN_FLAGS: "$(inherited) --options=runtime"
     postBuildScripts:
       - name: Document Icon
         basedOnDependencyAnalysis: true
@@ -101,6 +117,25 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Knode.app/Contents/MacOS/Knode"
         BUNDLE_LOADER: "$(TEST_HOST)"
+# The knode command (core/crates/knode-cli) for Apple silicon and Intel, built by
+# scripts/build-knode-cli.sh into the ignored build/ folder; the Knode target embeds it.
+aggregateTargets:
+  KnodeCLI:
+    settings:
+      base:
+        # The script runs cargo, which reads and writes outside the declared files.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    buildScripts:
+      - name: Build knode
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/scripts/build-knode-cli.sh"
+        inputFileLists:
+          - "$(SRCROOT)/scripts/knode-cli-inputs.xcfilelist"
+        outputFiles:
+          - "$(SRCROOT)/build/KnodeCLI/knode"
+        script: |
+          "$SRCROOT/scripts/build-knode-cli.sh" "$SCRIPT_OUTPUT_FILE_0"
 schemes:
   Knode:
     build:
