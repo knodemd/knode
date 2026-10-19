@@ -41,7 +41,9 @@
 
 #![warn(missing_docs)]
 
+mod access;
 mod error;
+mod history;
 mod manifest;
 mod schema;
 mod space;
@@ -52,8 +54,9 @@ pub use manifest::{FORMAT_VERSION, Manifest};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{
-    ActorKind, ChangeOp, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate,
-    Properties, Provenance, SearchHit, Timestamp,
+    ActorKind, Agent, AgentKey, Change, ChangeDetail, ChangeId, ChangeOp, Folder, FolderSpec,
+    GrantLevel, HistoryEntry, Link, LinkHistoryEntry, NewNode, Node, NodeId, NodeSummary,
+    NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
 };
 
 /// The extension of a space package.
@@ -115,4 +118,64 @@ pub mod link_kinds {
     pub const PART_OF: &str = "part-of";
     /// The source node was made from the target, such as a summary of a conversation.
     pub const DERIVED_FROM: &str = "derived-from";
+}
+
+/// The actions of changes the format defines (schema version 3). A reader keeps and shows actions
+/// it does not know.
+pub mod actions {
+    /// A node was created, with its properties, links and tags.
+    pub const NODE_CREATE: &str = "node.create";
+    /// A node's kind, title, body or tags changed.
+    pub const NODE_UPDATE: &str = "node.update";
+    /// A node was deleted.
+    pub const NODE_DELETE: &str = "node.delete";
+    /// A node was put back to an earlier version, or recovered after a delete.
+    pub const NODE_RESTORE: &str = "node.restore";
+    /// A node and its history were erased.
+    pub const NODE_PURGE: &str = "node.purge";
+    /// A link was made by hand.
+    pub const LINK_CREATE: &str = "link.create";
+    /// A link was removed by hand.
+    pub const LINK_DELETE: &str = "link.delete";
+    /// A change was undone.
+    pub const UNDO: &str = "undo";
+    /// Many nodes were written at once.
+    pub const IMPORT: &str = "import";
+    /// A setting of the space changed.
+    pub const SETTINGS_SET: &str = "settings.set";
+    /// A folder was added or changed.
+    pub const FOLDER_SET: &str = "folder.set";
+    /// A folder was removed.
+    pub const FOLDER_REMOVE: &str = "folder.remove";
+    /// An agent was added to the space.
+    pub const AGENT_ADD: &str = "agent.add";
+    /// A key of an agent was added.
+    pub const AGENT_KEY_ADD: &str = "agent.key.add";
+    /// A key of an agent was revoked.
+    pub const AGENT_KEY_REVOKE: &str = "agent.key.revoke";
+    /// The grant of an agent was set.
+    pub const GRANT_SET: &str = "grant.set";
+    /// A migration rewrote data.
+    pub const MIGRATE: &str = "migrate";
+}
+
+/// The folder kinds the format defines (schema version 3). Folders of other kinds are kept and
+/// not acted on.
+pub mod folder_kinds {
+    /// A folder people and agents work in; conversations held in it are captured into the space.
+    pub const PROJECT: &str = "project";
+    /// A folder of Markdown files imported into the space.
+    pub const NOTES: &str = "notes";
+    /// A folder where an agent keeps its sessions.
+    pub const AGENT: &str = "agent";
+}
+
+/// The settings keys the format defines.
+pub mod setting_keys {
+    /// The id of the space, as in `manifest.json`. Never changes.
+    pub const SPACE_ID: &str = "space.id";
+    /// The icon of the space: one emoji (schema version 3).
+    pub const SPACE_ICON: &str = "space.icon";
+    /// `on` or `off`: whether captured conversations are written to the space (schema version 3).
+    pub const CAPTURE_ENABLED: &str = "capture.enabled";
 }
