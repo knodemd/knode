@@ -1,6 +1,6 @@
 import Foundation
 
-/// An in-memory `SpaceStore` with example notes, so the app runs before the Rust core reaches Swift.
+/// An in-memory `SpaceStore` with example notes, for SwiftUI previews, tests and the example space.
 ///
 /// It never reads or writes the `.knode` package: opening one shows example nodes, and every change
 /// stays in memory until the app quits.
@@ -104,7 +104,7 @@ extension PreviewSpaceStore {
                 """
                 # Welcome to Knode
 
-                > This is an **example note**. The real notes of your space appear here once the Knode core is connected.
+                > This is an **example note**. Nothing in the example space is saved: open or create a space to keep your notes.
 
                 Knode is one memory that every AI agent shares through MCP, and this app is where you see it and organise it.
 

@@ -9,7 +9,7 @@ extension UTType {
 /// The open and save panels for `.knode` packages.
 @MainActor
 enum SpacePanels {
-    /// A space that does not exist on disk, for trying the app with example notes.
+    /// Where the example space appears to live. It is never written: its notes stay in memory.
     static let exampleURL = URL(filePath: NSTemporaryDirectory()).appending(path: "Example.knode")
 
     static func chooseSpace() -> URL? {
