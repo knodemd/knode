@@ -3,9 +3,9 @@ import SwiftUI
 
 @main
 struct KnodeApp: App {
-    // The Rust core reaches Swift through UniFFI later (knodemd/knode#11); until then the app runs
-    // on example data kept in memory.
-    @State private var model = AppModel(store: PreviewSpaceStore(), isPreview: true)
+    // Spaces are read and written by the Rust core (core/crates/knode-ffi); only the example space
+    // lives in memory.
+    @State private var model = AppModel(store: CoreSpaceStore(), recentSpaces: RecentSpaces())
 
     init() {
         KnodeFonts.register()
@@ -20,9 +20,14 @@ struct KnodeApp: App {
                     Task { await model.openSpace(at: url) }
                 }
                 .task {
-                    // `-KnodeOpenExample YES` opens the example space and its newest note at launch.
-                    if UserDefaults.standard.bool(forKey: "KnodeOpenExample"), model.spaces.isEmpty {
-                        await model.openSpace(at: SpacePanels.exampleURL)
+                    guard model.spaces.isEmpty else { return }
+                    // `-KnodeOpenSpace <path>` opens a space at launch; `-KnodeOpenExample YES`
+                    // opens the example space. Either way the newest note opens too.
+                    if let path = UserDefaults.standard.string(forKey: "KnodeOpenSpace") {
+                        await model.openSpace(at: URL(filePath: path, directoryHint: .isDirectory))
+                        await model.openNode(model.nodes.first?.id)
+                    } else if UserDefaults.standard.bool(forKey: "KnodeOpenExample") {
+                        await model.openExampleSpace()
                         await model.openNode(model.nodes.first?.id)
                     }
                 }
@@ -52,6 +57,17 @@ struct SpaceCommands: Commands {
                 if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
             }
             .keyboardShortcut("o")
+
+            Menu("Open Recent") {
+                ForEach(model.recentSpaceURLs, id: \.self) { url in
+                    Button(url.deletingPathExtension().lastPathComponent) {
+                        Task { await model.openSpace(at: url) }
+                    }
+                }
+                Divider()
+                Button("Clear Menu", systemImage: "trash") { model.clearRecentSpaces() }
+                    .disabled(model.recentSpaceURLs.isEmpty)
+            }
         }
     }
 }

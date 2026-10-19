@@ -77,12 +77,23 @@ public enum SpaceStoreError: Error, Equatable, LocalizedError {
     case spaceNotFound(Space.ID)
     case nodeNotFound(Node.ID)
     case notASpace(URL)
+    case alreadyExists(URL)
+    /// The space was written by a newer version of Knode, or its files do not agree.
+    case unsupported(String)
+    /// A value broke a rule of the format, such as an empty title.
+    case invalid(String)
+    /// A file or the database could not be read or written.
+    case storage(String)
 
     public var errorDescription: String? {
         switch self {
         case .spaceNotFound: "This space is not open."
         case .nodeNotFound: "This note no longer exists."
         case .notASpace(let url): "\(url.lastPathComponent) is not a Knode space."
+        case .alreadyExists(let url): "\(url.lastPathComponent) already exists."
+        case .unsupported(let message): "This space can't be opened: \(message)."
+        case .invalid(let message): message.prefix(1).uppercased() + message.dropFirst() + "."
+        case .storage(let message): "The space could not be read or saved: \(message)."
         }
     }
 }

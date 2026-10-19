@@ -10,7 +10,6 @@ import Testing
         let clock = TestClock()
         return AppModel(
             store: PreviewSpaceStore(now: { clock.now() }),
-            isPreview: true,
             searchDelay: .zero,
             saveDelay: .seconds(60)
         )
@@ -113,5 +112,55 @@ import Testing
         await model.createSpace(at: URL(filePath: "/tmp/Work.knode"))
         #expect(model.selectedSpace?.name == "Work")
         #expect(model.nodes.isEmpty)
+    }
+
+    @Test func theExampleSpaceLivesInTheExampleStore() async throws {
+        let clock = TestClock()
+        // A main store with no examples, to tell the two apart.
+        let model = AppModel(
+            store: PreviewSpaceStore(seedExamples: false, now: { clock.now() }),
+            exampleStore: PreviewSpaceStore(now: { clock.now() }),
+            searchDelay: .zero,
+            saveDelay: .seconds(60)
+        )
+        await model.openExampleSpace()
+        #expect(model.isShowingExample)
+        #expect(model.nodes.count == 4)
+        let example = try #require(model.selectedSpaceID)
+
+        await model.openSpace(at: url)
+        #expect(!model.isShowingExample)
+        #expect(model.nodes.isEmpty)
+
+        await model.selectSpace(example)
+        #expect(model.isShowingExample)
+        await model.createNode()
+        #expect(model.nodes.count == 5)
+    }
+
+    @Test func remembersRecentSpacesButNotTheExample() async throws {
+        let suite = "KnodeTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = FileManager.default.temporaryDirectory.appending(path: suite, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let spaceURL = folder.appending(path: "Work.knode", directoryHint: .isDirectory)
+
+        let model = AppModel(
+            store: CoreSpaceStore(person: "Ada"),
+            recentSpaces: RecentSpaces(defaults: defaults),
+            searchDelay: .zero,
+            saveDelay: .seconds(60)
+        )
+        await model.createSpace(at: spaceURL)
+        await model.openExampleSpace()
+        #expect(model.recentSpaceURLs.map(\.lastPathComponent) == ["Work.knode"])
+
+        // A new window of the app finds it again.
+        let next = AppModel(store: CoreSpaceStore(person: "Ada"), recentSpaces: RecentSpaces(defaults: defaults))
+        #expect(next.recentSpaceURLs == model.recentSpaceURLs)
+
+        model.clearRecentSpaces()
+        #expect(model.recentSpaceURLs.isEmpty)
     }
 }

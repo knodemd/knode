@@ -17,6 +17,11 @@ settings:
     DEVELOPMENT_TEAM: ""
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_STRICT_CONCURRENCY: complete
+    # The Rust core, built by scripts/build-xcframework.sh. Xcode reads the library and the
+    # KnodeCoreFFI module map straight from the XCFramework: it only accepts an XCFramework
+    # dependency that exists before the build starts, and this one is made during the build.
+    KNODE_CORE_SLICE: "$(SRCROOT)/build/KnodeCore/KnodeCore.xcframework/macos-arm64_x86_64"
+    SWIFT_INCLUDE_PATHS: "$(inherited) $(KNODE_CORE_SLICE)/Headers"
 packages:
   KnodeBrand:
     path: "../brand/12 Code/swift/KnodeBrand"
@@ -33,6 +38,7 @@ targets:
         group: Resources
     dependencies:
       - package: KnodeBrand
+      - target: KnodeCore
     info:
       path: Knode/Info.plist
     settings:
@@ -42,6 +48,7 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
+        OTHER_LDFLAGS: "$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     postBuildScripts:
       - name: Document Icon
@@ -53,6 +60,34 @@ targets:
           - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/KnodeDocument.icns"
         script: |
           "$SCRIPT_INPUT_FILE_0" "$SRCROOT/../brand/07 App Icon/Document" "$SCRIPT_OUTPUT_FILE_0"
+  # The Swift bindings of the Rust core (core/crates/knode-ffi). Before it builds,
+  # scripts/build-xcframework.sh builds the core and generates KnodeCore.swift; both live in the
+  # ignored build/ folder and are never committed.
+  KnodeCore:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: build/KnodeCore/KnodeCore.swift
+        optional: true
+        group: KnodeCore
+    settings:
+      base:
+        PRODUCT_NAME: KnodeCore
+        # The script runs cargo, which reads and writes outside the declared files.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: Build Knode Core
+        basedOnDependencyAnalysis: true
+        inputFiles:
+          - "$(SRCROOT)/scripts/build-xcframework.sh"
+        inputFileLists:
+          - "$(SRCROOT)/scripts/knode-core-inputs.xcfilelist"
+        outputFiles:
+          - "$(SRCROOT)/build/KnodeCore/KnodeCore.xcframework/macos-arm64_x86_64/libknode_ffi.a"
+          - "$(SRCROOT)/build/KnodeCore/KnodeCore.xcframework/macos-arm64_x86_64/Headers/KnodeCoreFFI/KnodeCoreFFI.h"
+          - "$(SRCROOT)/build/KnodeCore/KnodeCore.swift"
+        script: |
+          "$SRCROOT/scripts/build-xcframework.sh" "$SRCROOT/build/KnodeCore"
   KnodeTests:
     type: bundle.unit-test
     platform: macOS
