@@ -147,7 +147,7 @@ public actor ServiceSpaceStore: SpaceStore {
         }
     }
 
-    private func call<Result: Decodable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil) async throws -> Result {
+    private func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil) async throws -> Result {
         do {
             return try await connected().call(method, params, as: type)
         } catch ServiceError.remote(_, let kind, let message) {

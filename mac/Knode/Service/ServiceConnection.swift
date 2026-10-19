@@ -113,7 +113,7 @@ public final class ServiceConnection: Sendable {
 
     /// Sends `method` with `params` and waits for its result, decoded as `Result`. Use an optional
     /// `Result` for methods that may answer `null`.
-    public func call<Result: Decodable>(_ method: String, _ params: [String: JSONValue] = [:], as type: Result.Type = Result.self) async throws -> Result {
+    public func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue] = [:], as type: Result.Type = Result.self) async throws -> Result {
         let line = try await send(method, params)
         let response: Response<Result>
         do {
