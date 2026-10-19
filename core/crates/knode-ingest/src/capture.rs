@@ -11,7 +11,7 @@ use knode_format::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::discover::{SessionFile, default_root, discover, session_file};
+use crate::discover::{SessionFile, changed_sessions, default_root, discover};
 use crate::filter::ProjectFilter;
 use crate::model::{Agent, Conversation};
 use crate::reader::{self, SessionReader};
@@ -205,7 +205,7 @@ impl Capture {
             Err(error) if error.kind() == io::ErrorKind::NotFound => State::default(),
             Err(error) => return Err(CaptureError::State(error)),
         };
-        let roots = [Agent::ClaudeCode, Agent::Codex]
+        let roots = Agent::ALL
             .into_iter()
             .filter_map(|agent| default_root(agent).map(|root| (agent, root)))
             .collect();
@@ -257,49 +257,63 @@ impl Capture {
         &self.state_path
     }
 
-    /// Reads every session file in the session folders and writes what changed, then saves the
+    /// Reads every session in the session folders and writes what changed, then saves the
     /// state. Use it once at start, to catch up, and from time to time to find what the
-    /// watcher missed. Files that are gone are forgotten; their nodes stay.
+    /// watcher missed. Files that are gone are forgotten; their nodes stay. A session folder
+    /// that cannot be listed (or an OpenCode database that cannot be read) is reported in
+    /// [`CaptureReport::failed`] and the others are still read.
     pub fn sync_all(&mut self, space: &mut Space) -> Result<CaptureReport, CaptureError> {
         let mut files = Vec::new();
+        let mut unlisted = Vec::new();
         for (agent, root) in &self.roots {
-            files.extend(discover(*agent, root).map_err(CaptureError::Discover)?);
+            match discover(*agent, root) {
+                Ok(found) => files.extend(found),
+                Err(error) => unlisted.push((root.clone(), error.to_string())),
+            }
         }
         let present: std::collections::BTreeSet<&Path> =
             files.iter().map(|f| f.path.as_path()).collect();
         let roots = &self.roots;
         self.state.files.retain(|path, _| {
             present.contains(path.as_path())
+                || unlisted.iter().any(|(root, _)| path.starts_with(root))
                 || !roots.iter().any(|(_, root)| path.starts_with(root))
         });
-        self.sync_files(space, &files)
+        let mut report = self.sync_files(space, &files)?;
+        report.failed.extend(unlisted);
+        Ok(report)
     }
 
     /// Reads the given paths, such as the ones a [`Watcher`](crate::Watcher) reported, and
     /// writes what changed, then saves the state. Paths that are not session files under one of
-    /// the session folders are ignored; removed files are forgotten.
+    /// the session folders are ignored; removed files are forgotten. A change to the OpenCode
+    /// database checks every OpenCode session, and reads the ones that changed.
     pub fn sync_paths<P: AsRef<Path>>(
         &mut self,
         space: &mut Space,
         paths: &[P],
     ) -> Result<CaptureReport, CaptureError> {
         let mut files = Vec::new();
+        let mut unlisted = Vec::new();
         for path in paths {
             let Some((agent, root, path)) = self.locate(path.as_ref()) else {
                 continue;
             };
-            match session_file(agent, &root, &path) {
-                Some(file) => files.push(file),
-                None => {
+            match changed_sessions(agent, &root, &path) {
+                Ok(found) if !found.is_empty() => files.extend(found),
+                Ok(_) => {
                     if !path.exists() {
                         self.state.files.remove(&path);
                     }
                 }
+                Err(error) => unlisted.push((path, error.to_string())),
             }
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files.dedup_by(|a, b| a.path == b.path);
-        self.sync_files(space, &files)
+        let mut report = self.sync_files(space, &files)?;
+        report.failed.extend(unlisted);
+        Ok(report)
     }
 
     /// Writes the state file now. Syncs save it themselves.
@@ -415,7 +429,11 @@ impl Capture {
                 return Ok(());
             }
         }
-        let node = previous.as_ref().and_then(|state| state.node);
+        let previous_session = previous
+            .as_ref()
+            .and_then(|state| state.conversation.as_ref())
+            .map(|conversation| conversation.session_id.clone());
+        let mut node = previous.as_ref().and_then(|state| state.node);
         let mut reader = match previous {
             Some(FileState {
                 offset,
@@ -436,8 +454,30 @@ impl Capture {
             }
             Err(error) => return self.read_failed(file, error, report),
         };
+        // The sessions that ended in the file (an Aider history file holds one per run) are
+        // written once, as they end.
+        for finished in reader.take_finished() {
+            if finished.is_empty() || !self.filter.allows(&finished) {
+                continue;
+            }
+            if previous_session.as_deref() == Some(finished.session_id.as_str()) {
+                if let Written::Changed(captured) =
+                    write_conversation(space, &finished, &file.path, node)?
+                {
+                    report.changes.push(captured);
+                }
+            } else if let Written::Changed(captured) =
+                write_conversation(space, &finished, &file.path, None)?
+            {
+                report.changes.push(captured);
+            }
+        }
         let conversation = reader.conversation();
         let offset = reader.offset();
+        if previous_session.is_some_and(|id| id != conversation.session_id) {
+            // The file moved on to another session: its node is not this one.
+            node = None;
+        }
 
         if !self.filter.allows(conversation) {
             self.state.files.insert(

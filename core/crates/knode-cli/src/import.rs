@@ -217,7 +217,6 @@ fn session_id(agent: Agent, path: &Path) -> String {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     match agent {
-        Agent::ClaudeCode => stem,
         Agent::Codex => {
             let tail = stem
                 .len()
@@ -228,6 +227,7 @@ fn session_id(agent: Agent, path: &Path) -> String {
                 _ => stem,
             }
         }
+        _ => stem,
     }
 }
 

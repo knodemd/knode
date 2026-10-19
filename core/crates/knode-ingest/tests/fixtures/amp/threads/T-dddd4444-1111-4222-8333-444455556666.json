@@ -1,0 +1,21 @@
+{
+  "v": 12,
+  "id": "T-dddd4444-1111-4222-8333-444455556666",
+  "created": 1767358800000,
+  "title": "Rename the config module",
+  "env": {"initial": {"trees": [{"displayName": "project", "uri": "file:///Users/example/my%20project"}]}},
+  "messages": [
+    {"role": "user", "messageId": 0, "content": [{"type": "text", "text": "Rename config.rs to settings.rs"}], "meta": {"sentAt": 1767358801000}},
+    {"role": "assistant", "messageId": 1, "content": [
+      {"type": "thinking", "thinking": "Private reasoning that is never kept"},
+      {"type": "text", "text": "Renaming it."},
+      {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"cmd": "git mv src/config.rs src/settings.rs"}},
+      {"type": "tool_use", "id": "toolu_2", "name": "edit_file", "input": {"path": "/Users/example/my project/src/lib.rs"}}
+    ], "usage": {"model": "amp-example-model"}},
+    {"role": "user", "messageId": 2, "content": [
+      {"type": "tool_result", "toolUseID": "toolu_1", "run": {"status": "done", "result": {"output": "never kept"}}},
+      {"type": "tool_result", "toolUseID": "toolu_2", "run": {"status": "error", "error": "no match"}}
+    ]},
+    {"role": "assistant", "messageId": 3, "content": [{"type": "text", "text": "Renamed; one edit failed."}]}
+  ]
+}

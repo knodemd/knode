@@ -1,0 +1,14 @@
+{"sessionId":"aaaa1111-1111-4222-8333-444455556666","projectHash":"0000000000000000000000000000000000000000000000000000000000000000","startTime":"2026-01-02T10:00:00.000Z","lastUpdated":"2026-01-02T10:00:00.000Z","kind":"main"}
+{"id":"m1","timestamp":"2026-01-02T10:00:01.000Z","type":"user","content":[{"text":"Why is the test slow?"}]}
+{"$set":{"lastUpdated":"2026-01-02T10:00:01.000Z"}}
+{"id":"m2","timestamp":"2026-01-02T10:00:05.000Z","type":"gemini","content":"","thoughts":[{"subject":"Looking","description":"Checking the test","timestamp":"2026-01-02T10:00:04.000Z"}],"tokens":{"input":10,"output":5,"total":15},"model":"gemini-example"}
+{"id":"m2","timestamp":"2026-01-02T10:00:05.000Z","type":"gemini","content":"","toolCalls":[{"id":"t0","name":"update_topic","args":{"title":"Slow test"},"status":"success","result":[]},{"id":"t1","name":"run_shell_command","args":{"command":"cargo test --release","description":"Run the tests"},"status":"error","result":[{"functionResponse":{"id":"t1","name":"run_shell_command","response":{"output":"secret output that is never kept"}}}]}],"model":"gemini-example"}
+{"id":"m2","timestamp":"2026-01-02T10:00:05.000Z","type":"gemini","content":"","toolCalls":[{"id":"t0","name":"update_topic","args":{"title":"Slow test"},"status":"success","result":[]},{"id":"t1","name":"run_shell_command","args":{"command":"cargo test --release","description":"Run the tests"},"status":"error","result":[]},{"id":"t2","name":"read_file","args":{"file_path":"/Users/example/project/tests/slow.rs"},"status":"success","result":[]}],"model":"gemini-example"}
+{"id":"m3","timestamp":"2026-01-02T10:00:09.000Z","type":"gemini","content":"It sleeps for two seconds.","model":"gemini-example"}
+{"id":"m4","timestamp":"2026-01-02T10:00:20.000Z","type":"user","content":"Remove it"}
+{"id":"m5","timestamp":"2026-01-02T10:00:21.000Z","type":"gemini","content":"Wrong turn.","model":"gemini-example"}
+{"$rewindTo":"m4"}
+{"id":"m6","timestamp":"2026-01-02T10:00:30.000Z","type":"info","content":"Request cancelled."}
+{"id":"m7","timestamp":"2026-01-02T10:00:40.000Z","type":"user","content":"Make it fast","displayContent":[{"text":"Make it fast"}]}
+{"id":"m8","timestamp":"2026-01-02T10:00:45.000Z","type":"gemini","content":"Done: the sleep is gone.","model":"gemini-example-2"}
+{"$set":{"lastUpdated":"2026-01-02T10:00:45.000Z","summary":"Speed up the slow test"}}

@@ -57,20 +57,24 @@ impl ProjectFilter {
     }
 
     /// A cheap check before reading a file: `false` when the file surely belongs to an excluded
-    /// project. Only Claude Code names its folders after the project, and only exact matches are
-    /// known from the name, so `true` still needs [`ProjectFilter::allows`] once the file is read.
+    /// project. Claude Code names its folders after the project, but only exact matches are
+    /// known from the name; an Aider history file sits in its project. For other agents, and
+    /// when the answer is `true`, [`ProjectFilter::allows`] still decides once the file is read.
     pub fn may_allow_file(&self, file: &SessionFile) -> bool {
-        if file.agent != Agent::ClaudeCode {
-            return true;
+        match file.agent {
+            Agent::ClaudeCode => {
+                let Some(dir) = file.path.parent().and_then(Path::file_name) else {
+                    return true;
+                };
+                let dir = dir.to_string_lossy();
+                !self
+                    .excluded
+                    .iter()
+                    .any(|excluded| project_dir_name(excluded) == dir)
+            }
+            Agent::Aider => self.allows_project(crate::aider::project_of(&file.path)),
+            _ => true,
         }
-        let Some(dir) = file.path.parent().and_then(Path::file_name) else {
-            return true;
-        };
-        let dir = dir.to_string_lossy();
-        !self
-            .excluded
-            .iter()
-            .any(|excluded| project_dir_name(excluded) == dir)
     }
 }
 
