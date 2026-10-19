@@ -8,17 +8,25 @@ public actor PreviewSpaceStore: SpaceStore {
     private struct Entry {
         var space: Space
         var nodes: [Node.ID: Node]
+        /// Every version of every node, oldest first.
+        var versions: [NoteVersion] = []
+        /// The changes undone, and not redone.
+        var undone: Set<Int64> = []
     }
 
     private var spaces: [Space.ID: Entry] = [:]
     private let now: @Sendable () -> Date
     private let seedExamples: Bool
+    private let author: Author
+    private var sequence: Int64 = 0
 
     /// - Parameters:
     ///   - seedExamples: fill every opened space with the example nodes.
+    ///   - person: who changes are made by.
     ///   - now: the clock, replaceable in tests.
-    public init(seedExamples: Bool = true, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(seedExamples: Bool = true, person: String = "You", now: @escaping @Sendable () -> Date = { Date() }) {
         self.seedExamples = seedExamples
+        self.author = Author(kind: .person, name: person)
         self.now = now
     }
 
@@ -34,7 +42,13 @@ public actor PreviewSpaceStore: SpaceStore {
         if let open = spaces.values.first(where: { $0.space.url == url }) { return open.space }
         let space = Space(id: ULID.make(at: now()), name: url.deletingPathExtension().lastPathComponent, url: url)
         let nodes = seedExamples ? Self.examples(endingAt: now()) : []
-        spaces[space.id] = Entry(space: space, nodes: Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) }))
+        var entry = Entry(space: space, nodes: Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) }))
+        for (index, node) in nodes.sorted(by: { $0.createdAt < $1.createdAt }).enumerated() {
+            // The examples are written by an agent, as captured notes would be.
+            let by = index.isMultiple(of: 2) ? Author(kind: .agent, name: "claude-code", session: "example") : author
+            entry.versions.append(version(of: node, .create, by: by))
+        }
+        spaces[space.id] = entry
         return space
     }
 
@@ -54,16 +68,91 @@ public actor PreviewSpaceStore: SpaceStore {
         let date = now()
         let node = Node(id: ULID.make(at: date), title: title, body: body, createdAt: date, updatedAt: date)
         spaces[space]?.nodes[node.id] = node
+        spaces[space]?.versions.append(version(of: node, .create, by: author))
         return node
     }
 
     public func updateNode(_ id: Node.ID, in space: Space.ID, title: String?, body: String?) async throws -> Node {
         var node = try await self.node(id, in: space)
+        let before = node
         if let title { node.title = title }
         if let body { node.body = body }
+        guard node != before else { return node }
         node.updatedAt = now()
         spaces[space]?.nodes[id] = node
+        spaces[space]?.versions.append(version(of: node, .update, by: author))
         return node
+    }
+
+    public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw SpaceStoreError.invalid("a space needs a name") }
+        _ = try entry(space)
+        spaces[space]?.space.name = name
+        return try entry(space).space
+    }
+
+    public func icon(of space: Space.ID) async throws -> String? {
+        try entry(space).space.icon
+    }
+
+    public func setIcon(_ icon: String?, of space: Space.ID) async throws {
+        let icon = try SpaceIcon.normalized(icon)
+        _ = try entry(space)
+        spaces[space]?.space.icon = icon
+    }
+
+    public func closeSpace(_ space: Space.ID) async {
+        spaces[space] = nil
+    }
+
+    public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
+        try entry(space).versions.filter { $0.nodeID == node }.reversed()
+    }
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        let entry = try entry(space)
+        guard let old = entry.versions.first(where: { $0.nodeID == node && $0.seq == version }) else {
+            throw SpaceStoreError.invalid("node \(node) has no version \(version)")
+        }
+        return try put(old, in: space, restoredFrom: old.seq)
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        let entry = try entry(space)
+        guard let undone = entry.versions.first(where: { $0.changeID == change }) else {
+            throw SpaceStoreError.invalid("change \(change) not found")
+        }
+        guard !entry.undone.contains(change) else { throw SpaceStoreError.cannotUndo("change \(change) was already undone") }
+        let mine = entry.versions.filter { $0.nodeID == undone.nodeID }
+        let later = mine.filter { $0.seq > undone.seq }.compactMap(\.changeID)
+        if !later.isEmpty, !force {
+            throw SpaceStoreError.undoConflict(change: change, later: later, message: "undoing change \(change) would overwrite later changes")
+        }
+        guard let before = mine.last(where: { $0.seq < undone.seq }) else {
+            throw SpaceStoreError.cannotUndo("undoing the creation of a note deletes it")
+        }
+        _ = try put(before, in: space, restoredFrom: before.seq)
+        spaces[space]?.undone.insert(change)
+    }
+
+    /// Writes an old version back as a new one.
+    private func put(_ old: NoteVersion, in space: Space.ID, restoredFrom: Int64) throws -> Node {
+        guard var node = try entry(space).nodes[old.nodeID] else { throw SpaceStoreError.nodeNotFound(old.nodeID) }
+        guard node.title != old.title || node.body != old.body else { return node }
+        node.title = old.title
+        node.body = old.body
+        node.updatedAt = now()
+        spaces[space]?.nodes[node.id] = node
+        var restored = version(of: node, .update, by: author)
+        restored.restoredFrom = restoredFrom
+        spaces[space]?.versions.append(restored)
+        return node
+    }
+
+    private func version(of node: Node, _ operation: NoteVersion.Operation, by author: Author) -> NoteVersion {
+        sequence += 1
+        return NoteVersion(seq: sequence, nodeID: node.id, operation: operation, changeID: sequence, changedAt: node.updatedAt, author: author, title: node.title, body: node.body)
     }
 
     public func search(_ query: String, in space: Space.ID) async throws -> [NodeSummary] {

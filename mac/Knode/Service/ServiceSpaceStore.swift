@@ -105,6 +105,41 @@ public actor ServiceSpaceStore: SpaceStore {
         return hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) }
     }
 
+    public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
+        let path = try path(space)
+        let history = try await call("history", ["space": .string(path), "id": .string(node)], as: [WireHistoryEntry].self, node: node)
+        return history.reversed().map(NoteVersion.init)
+    }
+
+    public func closeSpace(_ space: Space.ID) async {
+        close(space)
+    }
+
+    // Knode Service has no methods yet to rename a space, change its settings, restore a version
+    // or undo a change: `RoutingSpaceStore` does those with the core in the app.
+
+    public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
+        throw Self.notYet
+    }
+
+    public func icon(of space: Space.ID) async throws -> String? {
+        throw Self.notYet
+    }
+
+    public func setIcon(_ icon: String?, of space: Space.ID) async throws {
+        throw Self.notYet
+    }
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        throw Self.notYet
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        throw Self.notYet
+    }
+
+    static let notYet = SpaceStoreError.unsupported("Knode Service cannot do this yet")
+
     // MARK: Connection
 
     /// The open connection, or a new one subscribed to every change.
@@ -222,6 +257,25 @@ struct WireHit: Decodable, Sendable {
     var snippet: String
 }
 
+struct WireProvenance: Decodable, Sendable {
+    var kind: String
+    var actor: String
+    var session: String?
+    var source: String?
+}
+
+struct WireHistoryEntry: Decodable, Sendable {
+    var seq: Int64
+    var nodeId: String
+    var op: String
+    var changedAt: Int64
+    var changedBy: WireProvenance
+    var title: String
+    var body: String
+    var changeId: Int64?
+    var restoredFrom: Int64?
+}
+
 struct Changed: Decodable, Sendable {
     var space: String
     var nodeId: String
@@ -243,5 +297,26 @@ extension Node {
 extension NodeSummary {
     init(_ summary: WireSummary, excerpt: String) {
         self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt))
+    }
+}
+
+extension NoteVersion {
+    init(_ entry: WireHistoryEntry) {
+        self.init(
+            seq: entry.seq,
+            nodeID: entry.nodeId,
+            operation: Operation(rawValue: entry.op) ?? .update,
+            changeID: entry.changeId,
+            restoredFrom: entry.restoredFrom,
+            changedAt: Date(unixMilliseconds: entry.changedAt),
+            author: Author(
+                kind: Author.Kind(rawValue: entry.changedBy.kind) ?? .system,
+                name: entry.changedBy.actor,
+                session: entry.changedBy.session,
+                source: entry.changedBy.source
+            ),
+            title: entry.title,
+            body: entry.body
+        )
     }
 }

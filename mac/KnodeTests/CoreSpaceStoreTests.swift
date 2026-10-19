@@ -126,3 +126,66 @@ import Testing
         #expect(recents.urls.isEmpty)
     }
 }
+
+/// History, rename and icon through the Rust core.
+@Suite final class CoreHistoryTests {
+    let folder: URL
+
+    init() throws {
+        folder = FileManager.default.temporaryDirectory.appending(path: "KnodeTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    @Test func renamesAndKeepsAnIcon() async throws {
+        let url = folder.appending(path: "Work.knode", directoryHint: .isDirectory)
+        let store = CoreSpaceStore(person: "Ada")
+        let space = try await store.createSpace(at: url, name: "Work")
+        #expect(space.icon == nil)
+        #expect(try await store.renameSpace(space.id, to: "Job").name == "Job")
+        try await store.setIcon("💼", of: space.id)
+        #expect(try await store.icon(of: space.id) == "💼")
+        await #expect(throws: SpaceStoreError.self) { try await store.setIcon("no", of: space.id) }
+        await store.closeSpace(space.id)
+
+        let reopened = try await CoreSpaceStore(person: "Ada").openSpace(at: url)
+        #expect(reopened.name == "Job")
+        #expect(reopened.icon == "💼")
+        #expect(SpaceManifest.name(at: url) == "Job")
+    }
+
+    @Test func historyRestoreAndUndo() async throws {
+        let store = CoreSpaceStore(person: "Ada")
+        let space = try await store.createSpace(at: folder.appending(path: "H.knode", directoryHint: .isDirectory), name: "H")
+        let node = try await store.createNode(in: space.id, title: "Garden", body: "One")
+        _ = try await store.updateNode(node.id, in: space.id, title: nil, body: "Two")
+        _ = try await store.updateNode(node.id, in: space.id, title: nil, body: "Three")
+
+        let history = try await store.history(of: node.id, in: space.id)
+        #expect(history.map(\.body) == ["Three", "Two", "One"])
+        #expect(history.map(\.operation) == [.update, .update, .create])
+        #expect(history.allSatisfy { $0.author == Author(kind: .person, name: "Ada") && $0.changeID != nil })
+
+        // Undoing the middle change conflicts with the last one, and says which.
+        do {
+            try await store.undo(change: history[1].changeID!, in: space.id, force: false)
+            Issue.record("expected a conflict")
+        } catch let SpaceStoreError.undoConflict(change, later, message) {
+            #expect(change == history[1].changeID)
+            #expect(later == [history[0].changeID!])
+            #expect(!message.isEmpty)
+        }
+        try await store.undo(change: history[0].changeID!, in: space.id, force: false)
+        #expect(try await store.node(node.id, in: space.id).body == "Two")
+        await #expect(throws: SpaceStoreError.self) {
+            try await store.undo(change: history[0].changeID!, in: space.id, force: false)
+        }
+
+        let restored = try await store.restore(node.id, to: history[2].seq, in: space.id)
+        #expect(restored.body == "One")
+        #expect(try await store.history(of: node.id, in: space.id).first?.restoredFrom == history[2].seq)
+    }
+}

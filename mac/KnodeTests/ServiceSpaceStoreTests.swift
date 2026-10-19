@@ -166,6 +166,54 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(await iterator.next()?.kind == .reload)
     }
 
+    @Test func historyComesFromTheService() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.createSpace(at: url, name: "Test")
+        let node = try await store.createNode(in: space.id, title: "Plan", body: "One")
+        _ = try await store.updateNode(node.id, in: space.id, title: nil, body: "Two")
+        let history = try await store.history(of: node.id, in: space.id)
+        #expect(history.map(\.operation) == [.update, .create])
+        #expect(history.first?.author == Author(kind: .agent, name: "claude-code", session: "5f1c2a"))
+        #expect(history.last?.author == Author(kind: .person, name: "Ada"))
+        #expect(history.first?.changeID == 2)
+        #expect(service.requests.contains("history"))
+    }
+
+    @Test func routingRestoresAndRenamesWithTheCoreWhileTheServiceHoldsTheSpace() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "KnodeTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let spaceURL = folder.appending(path: "Real.knode", directoryHint: .isDirectory)
+        // A real package with a note and two versions, as the service would have written it.
+        let core = CoreSpaceStore(person: "Ada")
+        let made = try await core.createSpace(at: spaceURL, name: "Real")
+        let node = try await core.createNode(in: made.id, title: "Plan", body: "One")
+        _ = try await core.updateNode(node.id, in: made.id, title: nil, body: "Two")
+        let first = try #require(try await core.history(of: node.id, in: made.id).last)
+        core.close(made.id)
+
+        let store = RoutingSpaceStore(service: ServiceSpaceStore(socketURL: service.socketURL, person: "Ada"), core: core)
+        let space = try await store.openSpace(at: spaceURL)
+        #expect(await store.backend(of: space.id) == .service)
+
+        let renamed = try await store.renameSpace(space.id, to: "Renamed")
+        #expect(renamed.name == "Renamed")
+        try await store.setIcon("🧪", of: space.id)
+        #expect(try await store.icon(of: space.id) == "🧪")
+        let restored = try await store.restore(node.id, to: first.seq, in: space.id)
+        #expect(restored.body == "One")
+        // The service still holds the space, and the core let go of it.
+        #expect(await store.backend(of: space.id) == .service)
+        #expect(!core.isOpen(space.id))
+        #expect(!service.requests.contains("node.update"))
+
+        // Opened again through the service, it shows the new name and icon.
+        await store.closeSpace(space.id)
+        let again = try await store.openSpace(at: spaceURL)
+        #expect(again.name == "Renamed")
+        #expect(again.icon == "🧪")
+    }
+
     // MARK: App
 
     @MainActor
