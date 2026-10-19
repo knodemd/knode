@@ -4,7 +4,9 @@
 //! cargo run -p knode-format --example example_space -- path/to/Example.knode
 //! ```
 
-use knode_format::{NewNode, NodeUpdate, Provenance, Space, kinds, link_kinds};
+use knode_format::{
+    NewNode, NodeUpdate, Properties, Provenance, Space, kinds, link_kinds, property_keys,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
@@ -45,7 +47,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &me,
     )?;
 
-    let conversation = space.create_node(
+    let conversation_properties = Properties::from(
+        [
+            (property_keys::CONVERSATION_AGENT, "claude-code"),
+            (
+                property_keys::CONVERSATION_SESSION,
+                "3f1c9a52-6d0e-4b8e-9a51-2c7d1e0b4f6a",
+            ),
+            (
+                property_keys::CONVERSATION_PROJECT,
+                "~/Projects/garden-planner",
+            ),
+            (property_keys::CONVERSATION_BRANCH, "main"),
+            (
+                property_keys::CONVERSATION_STARTED_AT,
+                "2026-10-20T09:02:11.000Z",
+            ),
+            (
+                property_keys::CONVERSATION_ENDED_AT,
+                "2026-10-20T09:08:45.000Z",
+            ),
+        ]
+        .map(|(key, value)| (key.to_string(), value.to_string())),
+    );
+    let conversation = space.create_node_with_properties(
         NewNode::note(
             "Conversation: choosing the database",
             "**Ada:** Should the garden planner use Postgres or SQLite?\n\n\
@@ -58,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_kind(kinds::CONVERSATION)
         .with_tags(["database"]),
+        &conversation_properties,
         &claude,
     )?;
 

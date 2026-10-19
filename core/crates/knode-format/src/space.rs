@@ -10,8 +10,8 @@ use ulid::{Generator, Ulid};
 use crate::types::{ActorKind, ChangeOp};
 use crate::{
     BLOBS_DIR, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry, Link, Manifest,
-    NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance, Result, SYNC_DIR, SearchHit,
-    Timestamp, kinds, link_kinds, schema,
+    NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties, Provenance, Result, SYNC_DIR,
+    SearchHit, Timestamp, kinds, link_kinds, schema,
 };
 
 /// The `settings` key holding the space id, which must match `manifest.json`.
@@ -177,6 +177,18 @@ impl Space {
     /// node with that title exists. `[[links]]` in other nodes waiting for this title are
     /// resolved now.
     pub fn create_node(&mut self, new: NewNode, by: &Provenance) -> Result<Node> {
+        self.create_node_with_properties(new, &Properties::new(), by)
+    }
+
+    /// Creates a node with its properties in one transaction, and returns it. See
+    /// [`create_node`](Self::create_node) and [`set_properties`](Self::set_properties).
+    pub fn create_node_with_properties(
+        &mut self,
+        new: NewNode,
+        properties: &Properties,
+        by: &Provenance,
+    ) -> Result<Node> {
+        check_properties(properties)?;
         let kind = if new.kind.trim().is_empty() {
             kinds::NOTE.to_string()
         } else {
@@ -208,6 +220,7 @@ impl Space {
         set_tags(&tx, &id, &tags)?;
         apply_body_links(&tx, &id, &extracted.links, prov, now)?;
         resolve_waiting_links(&tx, &id, &title, prov, now)?;
+        write_properties(&tx, &id, properties, prov, now)?;
         record(&tx, &id, ChangeOp::Create, prov, now)?;
         tx.commit()?;
         self.require_node(&id)
@@ -416,6 +429,91 @@ impl Space {
         )
     }
 
+    /// Sets properties of a node, adding new keys and replacing the values of existing ones;
+    /// keys not named stay as they are. Returns whether anything changed.
+    ///
+    /// Properties are structured metadata, such as the agent and session of a conversation (see
+    /// [`property_keys`](crate::property_keys)). A key is lower case letters, digits, `_`, `.`
+    /// and `-`, starting with a letter, at most 64 characters. Properties are not part of the
+    /// node's history, and setting them does not change its `updated_at`; each one keeps when
+    /// and by whom it was last set.
+    pub fn set_properties(
+        &mut self,
+        id: &NodeId,
+        properties: &Properties,
+        by: &Provenance,
+    ) -> Result<bool> {
+        check_properties(properties)?;
+        self.require_exists(id)?;
+        let current = self.properties(id)?;
+        let changed: Properties = properties
+            .iter()
+            .filter(|(key, value)| current.get(*key) != Some(*value))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        let tx = self.conn.transaction()?;
+        let prov = provenance_id(&tx, by)?;
+        write_properties(&tx, id, &changed, prov, Timestamp::now())?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Sets one property of a node. Returns whether it changed. See
+    /// [`set_properties`](Self::set_properties).
+    pub fn set_property(
+        &mut self,
+        id: &NodeId,
+        key: &str,
+        value: &str,
+        by: &Provenance,
+    ) -> Result<bool> {
+        let properties = Properties::from([(key.to_string(), value.to_string())]);
+        self.set_properties(id, &properties, by)
+    }
+
+    /// Removes a property of a node. Returns whether there was one.
+    pub fn remove_property(&mut self, id: &NodeId, key: &str) -> Result<bool> {
+        let removed = self.conn.execute(
+            "DELETE FROM properties WHERE node_id = ?1 AND key = ?2",
+            params![id.to_string(), key],
+        )?;
+        Ok(removed > 0)
+    }
+
+    /// The properties of a node, by key. Empty for a node without properties or with no such id.
+    pub fn properties(&self, id: &NodeId) -> Result<Properties> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key, value FROM properties WHERE node_id = ?1")?;
+        let rows = stmt.query_map([id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// One property of a node, or `None` if it is not set.
+    pub fn property(&self, id: &NodeId, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM properties WHERE node_id = ?1 AND key = ?2",
+                params![id.to_string(), key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The nodes whose property `key` is exactly `value`, oldest first. Uses an index, so it is
+    /// fast in any space, such as finding the conversation of an agent session.
+    pub fn find_by_property(&self, key: &str, value: &str) -> Result<Vec<NodeSummary>> {
+        self.query_summaries(
+            "JOIN properties p ON p.node_id = n.id WHERE p.key = ?1 AND p.value = ?2 \
+             ORDER BY n.seq",
+            params![key, value],
+        )
+    }
+
     /// The nodes changed most recently, newest first.
     pub fn recent(&self, limit: usize) -> Result<Vec<NodeSummary>> {
         self.query_summaries(
@@ -596,6 +694,50 @@ fn check_name(what: &str, name: &str) -> Result<String> {
             "a {what} is lower case letters, digits and -, starting with a letter: {name:?}"
         )))
     }
+}
+
+/// Checks a property key: `[a-z][a-z0-9_.-]*`, at most 64 characters.
+fn check_property_key(key: &str) -> Result<()> {
+    let ok = key.len() <= 64
+        && key.starts_with(|c: char| c.is_ascii_lowercase())
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "a property key is lower case letters, digits, _, . and -, starting with a letter: \
+             {key:?}"
+        )))
+    }
+}
+
+fn check_properties(properties: &Properties) -> Result<()> {
+    properties
+        .keys()
+        .try_for_each(|key| check_property_key(key))
+}
+
+/// Adds or replaces properties of a node.
+fn write_properties(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    properties: &Properties,
+    prov: i64,
+    now: Timestamp,
+) -> Result<()> {
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO properties (node_id, key, value, updated_at, updated_by)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (node_id, key) DO UPDATE SET
+             value = excluded.value, updated_at = excluded.updated_at,
+             updated_by = excluded.updated_by",
+    )?;
+    for (key, value) in properties {
+        stmt.execute(params![id.to_string(), key, value, now.0, prov])?;
+    }
+    Ok(())
 }
 
 fn check_link_kind(kind: &str) -> Result<String> {
@@ -882,6 +1024,12 @@ mod tests {
         assert!(check_name("kind", "part-of").is_ok());
         assert!(check_name("kind", "Note").is_err());
         assert!(check_name("kind", "1note").is_err());
+        assert!(check_property_key("conversation.started_at").is_ok());
+        assert!(check_property_key("a-b_c.d1").is_ok());
+        assert!(check_property_key("Agent").is_err());
+        assert!(check_property_key("1a").is_err());
+        assert!(check_property_key("").is_err());
+        assert!(check_property_key(&"a".repeat(65)).is_err());
         assert!(check_link_kind("mentions").is_err());
         assert_eq!(check_link_kind("").unwrap(), "related");
     }

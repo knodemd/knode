@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use knode_format::{
-    ActorKind, ChangeOp, Error, Manifest, NewNode, NodeUpdate, Provenance, SCHEMA_VERSION, Space,
-    kinds, link_kinds,
+    ActorKind, ChangeOp, Error, Manifest, NewNode, NodeUpdate, Properties, Provenance,
+    SCHEMA_VERSION, Space, kinds, link_kinds, property_keys,
 };
 use tempfile::TempDir;
 
@@ -521,6 +521,206 @@ fn typed_links_by_hand() {
         space.link(&a.id, &b.id, "related", &me()),
         Err(Error::NotFound(_))
     ));
+}
+
+// Properties
+
+fn conversation_properties(session: &str) -> Properties {
+    Properties::from([
+        (
+            property_keys::CONVERSATION_AGENT.into(),
+            "claude-code".into(),
+        ),
+        (property_keys::CONVERSATION_SESSION.into(), session.into()),
+        (
+            property_keys::CONVERSATION_PROJECT.into(),
+            "/Users/example/project".into(),
+        ),
+    ])
+}
+
+#[test]
+fn creates_a_node_with_properties() {
+    let (_dir, mut space) = new_space();
+    let node = space
+        .create_node_with_properties(
+            NewNode::note("Chat", "Hello").with_kind(kinds::CONVERSATION),
+            &conversation_properties("s-1"),
+            &claude(),
+        )
+        .unwrap();
+    assert_eq!(
+        space.properties(&node.id).unwrap(),
+        conversation_properties("s-1")
+    );
+    assert_eq!(
+        space
+            .property(&node.id, property_keys::CONVERSATION_SESSION)
+            .unwrap()
+            .as_deref(),
+        Some("s-1")
+    );
+    assert_eq!(space.property(&node.id, "missing").unwrap(), None);
+    // Properties are metadata: the body has no frontmatter and the history has one version.
+    assert_eq!(space.get_node(&node.id).unwrap().unwrap().body, "Hello");
+    assert_eq!(space.history(&node.id).unwrap().len(), 1);
+}
+
+#[test]
+fn sets_replaces_and_removes_properties() {
+    let (_dir, mut space) = new_space();
+    let node = space.create_node(NewNode::note("A", ""), &me()).unwrap();
+    let before = space.get_node(&node.id).unwrap().unwrap();
+
+    assert!(
+        space
+            .set_property(&node.id, "status", "draft", &me())
+            .unwrap()
+    );
+    assert!(
+        !space
+            .set_property(&node.id, "status", "draft", &me())
+            .unwrap()
+    );
+    assert!(
+        space
+            .set_property(&node.id, "status", "done", &claude())
+            .unwrap()
+    );
+    assert!(
+        space
+            .set_properties(&node.id, &conversation_properties("s-2"), &claude())
+            .unwrap()
+    );
+    let properties = space.properties(&node.id).unwrap();
+    assert_eq!(properties.len(), 4);
+    assert_eq!(properties["status"], "done");
+
+    assert!(space.remove_property(&node.id, "status").unwrap());
+    assert!(!space.remove_property(&node.id, "status").unwrap());
+    assert_eq!(
+        space.properties(&node.id).unwrap(),
+        conversation_properties("s-2")
+    );
+
+    // Setting properties leaves the node and its history as they were.
+    let after = space.get_node(&node.id).unwrap().unwrap();
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(space.history(&node.id).unwrap().len(), 1);
+
+    // Who set each property is kept.
+    let actor: String = db(space.path())
+        .query_row(
+            "SELECT p.actor FROM properties x JOIN provenance p ON p.id = x.updated_by
+             WHERE x.key = ?1",
+            [property_keys::CONVERSATION_AGENT],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(actor, "claude-code");
+}
+
+#[test]
+fn rejects_bad_property_keys_and_missing_nodes() {
+    let (_dir, mut space) = new_space();
+    let node = space.create_node(NewNode::note("A", ""), &me()).unwrap();
+    for key in ["", "Agent", "1a", "a b", "a/b"] {
+        assert!(matches!(
+            space.set_property(&node.id, key, "x", &me()),
+            Err(Error::Invalid(_))
+        ));
+    }
+    let bad = Properties::from([("Bad".to_string(), "x".to_string())]);
+    assert!(
+        space
+            .create_node_with_properties(NewNode::note("B", ""), &bad, &me())
+            .is_err()
+    );
+    assert!(space.find_by_title("B").unwrap().is_empty());
+
+    space.delete_node(&node.id, &me()).unwrap();
+    assert!(matches!(
+        space.set_property(&node.id, "status", "x", &me()),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn finds_nodes_by_property() {
+    let (_dir, mut space) = new_space();
+    let first = space
+        .create_node_with_properties(
+            NewNode::note("One", ""),
+            &conversation_properties("s-1"),
+            &claude(),
+        )
+        .unwrap();
+    let second = space
+        .create_node_with_properties(
+            NewNode::note("Two", ""),
+            &conversation_properties("s-2"),
+            &claude(),
+        )
+        .unwrap();
+    let found = space
+        .find_by_property(property_keys::CONVERSATION_SESSION, "s-2")
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, second.id);
+    let both = space
+        .find_by_property(property_keys::CONVERSATION_AGENT, "claude-code")
+        .unwrap();
+    assert_eq!(
+        both.iter().map(|n| n.id).collect::<Vec<_>>(),
+        [first.id, second.id]
+    );
+    assert!(
+        space
+            .find_by_property(property_keys::CONVERSATION_SESSION, "s-3")
+            .unwrap()
+            .is_empty()
+    );
+
+    // The lookup uses the index.
+    let plan: String = db(space.path())
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT node_id FROM properties WHERE key = 'a' AND value = 'b'",
+            [],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("properties_key_value"), "{plan}");
+
+    // Deleting a node deletes its properties.
+    space.delete_node(&first.id, &me()).unwrap();
+    assert!(space.properties(&first.id).unwrap().is_empty());
+    assert_eq!(
+        space
+            .find_by_property(property_keys::CONVERSATION_AGENT, "claude-code")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn opens_a_version_1_space_and_adds_properties() {
+    let (dir, space) = new_space();
+    let path = space.path().to_path_buf();
+    drop(space);
+    {
+        let conn = db(&path);
+        conn.execute_batch("DROP TABLE properties").unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    let mut space = Space::open(&path).unwrap();
+    let version: u32 = db(&path)
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    let node = space.create_node(NewNode::note("A", ""), &me()).unwrap();
+    assert!(space.set_property(&node.id, "status", "x", &me()).unwrap());
+    drop(dir);
 }
 
 // Search

@@ -24,7 +24,12 @@
 //! To follow a file while the agent writes it, keep a [`SessionReader`] and call
 //! [`SessionReader::poll`] when the file changes, or store its conversation and offset and
 //! continue later with [`SessionReader::resume`].
+//!
+//! To keep a space current, [`Capture`] writes one `conversation` node per session and updates
+//! it as the session grows, saving what it has read in a state file; [`Watcher`] follows the
+//! session folders and hands [`Capture`] the files that changed.
 
+mod capture;
 pub mod claude_code;
 pub mod codex;
 mod discover;
@@ -33,12 +38,15 @@ mod model;
 mod reader;
 mod render;
 mod text;
+mod watch;
 
+pub use capture::{Capture, CaptureError, CaptureReport, Captured};
 pub use discover::{SessionFile, default_root, discover, discover_all};
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
 pub use reader::{Error, Progress, SessionReader, read_session};
 pub use render::{derive_title, to_markdown};
+pub use watch::{Changes, WatchOptions, Watcher};
 
 /// The version of this crate.
 pub fn version() -> &'static str {

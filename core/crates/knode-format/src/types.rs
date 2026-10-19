@@ -1,5 +1,6 @@
 //! The values stored in a space.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -312,6 +313,10 @@ pub struct NodeUpdate {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
 }
+
+/// The properties of a node: structured metadata by key, such as the agent and session of a
+/// conversation. See [`property_keys`](crate::property_keys).
+pub type Properties = BTreeMap<String, String>;
 
 /// A typed link from one node to another.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
