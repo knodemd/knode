@@ -9,13 +9,15 @@ use knode_format::{
     link_kinds,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
 use crate::names::{stem_of, title_from_stem};
 use crate::property_keys as keys;
 use crate::{Result, STYLE_VAULT, io_error, tags, time};
 
 /// A file [`import`] did not bring in, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Skipped {
     /// The file, relative to the folder, with `/` between folders.
     pub path: String,
@@ -24,7 +26,7 @@ pub struct Skipped {
 }
 
 /// What [`import`] did. Paths are relative to the folder, with `/` between folders.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportReport {
     /// The files that became new nodes.
     pub created: Vec<String>,

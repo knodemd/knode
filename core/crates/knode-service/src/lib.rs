@@ -31,6 +31,7 @@ mod client;
 mod error;
 mod install;
 mod lock;
+pub mod markdown;
 mod paths;
 pub mod protocol;
 mod server;
@@ -46,7 +47,7 @@ pub use install::{
 };
 pub use knode_ingest::{Agent, WatchOptions};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
-pub use protocol::{Change, ChangeKind, Event, RpcError, SpaceInfo, Status};
+pub use protocol::{Change, ChangeKind, Event, MarkdownFolder, RpcError, SpaceInfo, Status};
 pub use server::{Config, ServiceHandle, run, start};
 
 /// The version of this crate.

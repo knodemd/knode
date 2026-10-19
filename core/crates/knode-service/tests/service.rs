@@ -199,7 +199,7 @@ fn every_subscriber_hears_each_write() {
         .unwrap();
     assert!(
         writer
-            .unlink(&a, &source.id, &target.id, "related")
+            .unlink(&a, &source.id, &target.id, "related", &me)
             .unwrap()
     );
     // Renaming the target rewrites the source's body: both change.

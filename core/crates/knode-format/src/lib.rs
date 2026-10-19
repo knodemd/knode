@@ -178,4 +178,7 @@ pub mod setting_keys {
     pub const SPACE_ICON: &str = "space.icon";
     /// `on` or `off`: whether captured conversations are written to the space (schema version 3).
     pub const CAPTURE_ENABLED: &str = "capture.enabled";
+    /// The live Markdown folder of the space: a path recorded as folders are (`~/...` or
+    /// absolute) where Knode Service keeps a `.md` file of every node. Off when absent.
+    pub const MARKDOWN_FOLDER: &str = "markdown.folder";
 }

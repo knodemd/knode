@@ -674,6 +674,7 @@ dependencies = [
  "knode-config",
  "knode-format",
  "knode-ingest",
+ "knode-vault",
  "libc",
  "serde",
  "serde_json",

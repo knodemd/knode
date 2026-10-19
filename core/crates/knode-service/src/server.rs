@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
-use knode_format::{NewNode, NodeId, Space, link_kinds};
+use knode_format::{ChangeId, ChangeOp, NewNode, NodeId, Provenance, Space, actions, link_kinds};
+use knode_vault::LiveFolder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -31,6 +32,8 @@ use crate::protocol::*;
 const CHANGE_BUFFER: usize = 1024;
 /// How many outgoing messages wait for a slow connection.
 const OUTBOX: usize = 256;
+/// How often the service writes the live Markdown folders whose changes are due.
+const LIVE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 /// How often the service checks that its socket is still there. A service whose socket was
 /// removed cannot be reached, so it stops.
 const SOCKET_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
@@ -228,10 +231,20 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
     };
     let mut connections = JoinSet::new();
     let mut check = tokio::time::interval(SOCKET_CHECK);
+    let mut live = tokio::time::interval(LIVE_TICK);
+    live.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut flushing: Option<tokio::task::JoinHandle<()>> = None;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            _ = live.tick() => {
+                // One flush at a time: a slow folder never piles up work.
+                if flushing.as_ref().is_none_or(|f| f.is_finished()) {
+                    let state = state.clone();
+                    flushing = Some(tokio::task::spawn_blocking(move || state.flush_live(false)));
+                }
+            }
             _ = check.tick() => {
                 if !socket.exists() {
                     eprintln!("Knode Service: {} was removed; stopping", socket.display());
@@ -257,8 +270,11 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
     if let Some(capture) = capture {
         tokio::task::spawn_blocking(move || capture.stop()).await?;
     }
+    if let Some(flushing) = flushing {
+        let _ = flushing.await;
+    }
     // Writes already running finish in their blocking threads; wait for them before closing
-    // the spaces and releasing the lock.
+    // the spaces and releasing the lock. Live Markdown folders are written one last time.
     tokio::task::spawn_blocking(move || state.close()).await?;
     drop(lock);
     Ok(())
@@ -278,6 +294,9 @@ pub(crate) struct State {
     closing: AtomicBool,
     /// The space conversations are captured into, while capture runs.
     capturing: Mutex<Option<PathBuf>>,
+    /// The live Markdown folder of each open space that has one, by canonical path of the
+    /// space. Always locked after the space, never before.
+    live: Mutex<HashMap<PathBuf, LiveFolder>>,
 }
 
 impl State {
@@ -288,6 +307,7 @@ impl State {
             clients: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             capturing: Mutex::new(None),
+            live: Mutex::new(HashMap::new()),
         }
     }
 
@@ -301,8 +321,88 @@ impl State {
             return Ok(space.clone());
         }
         let space = Arc::new(Mutex::new(Space::open(&key)?));
+        // Hold the space while its live folder catches up, so no change is made before.
+        let guard = lock_ignoring_poison(&space);
         spaces.insert(key, space.clone());
+        drop(spaces);
+        self.start_live(&guard);
+        drop(guard);
         Ok(space)
+    }
+
+    /// Starts the live Markdown folder of an open space, if it has one, writing the whole space
+    /// to it, or stops the one it had. Called with the space locked.
+    fn start_live(&self, space: &Space) {
+        let folder = match crate::markdown::live_folder(space) {
+            Ok(folder) => folder,
+            Err(e) => {
+                eprintln!(
+                    "Knode Service: cannot read the Markdown folder of {}: {e}",
+                    space.path().display()
+                );
+                return;
+            }
+        };
+        let mut live = lock_ignoring_poison(&self.live);
+        let key = space.path().to_path_buf();
+        if let Some(mut old) = live.remove(&key) {
+            if folder.path.as_deref() == Some(old.dir()) {
+                live.insert(key, old);
+                return;
+            }
+            if let Err(e) = old.flush(space) {
+                eprintln!(
+                    "Knode Service: cannot write the Markdown folder {}: {e}",
+                    old.dir().display()
+                );
+            }
+        }
+        let Some(dir) = folder.path else {
+            return;
+        };
+        if let Some(warning) = &folder.warning {
+            eprintln!("Knode Service: {warning}");
+        }
+        let started = LiveFolder::open(&dir).and_then(|mut live| {
+            live.resync(space)?;
+            Ok(live)
+        });
+        match started {
+            Ok(folder) => {
+                live.insert(key, folder);
+            }
+            Err(e) => eprintln!(
+                "Knode Service: cannot write the Markdown folder {}: {e}",
+                dir.display()
+            ),
+        }
+    }
+
+    /// Writes the live Markdown folders: those whose changes are due, or all of them with
+    /// `all`. A failed write keeps its changes for the next time.
+    fn flush_live(&self, all: bool) {
+        let keys: Vec<PathBuf> = lock_ignoring_poison(&self.live).keys().cloned().collect();
+        for key in keys {
+            let Some(space) = lock_ignoring_poison(&self.spaces).get(&key).cloned() else {
+                continue;
+            };
+            let space = lock_ignoring_poison(&space);
+            let mut live = lock_ignoring_poison(&self.live);
+            let Some(folder) = live.get_mut(&key) else {
+                continue;
+            };
+            let result = if all {
+                folder.flush(&space).map(Some)
+            } else {
+                folder.flush_if_due(&space)
+            };
+            if let Err(e) = result {
+                eprintln!(
+                    "Knode Service: cannot write the Markdown folder {}: {e}",
+                    folder.dir().display()
+                );
+            }
+        }
     }
 
     /// The map of open spaces, locked, unless the service is stopping.
@@ -317,8 +417,10 @@ impl State {
         Ok(spaces)
     }
 
-    /// Stops opening spaces and closes the open ones, waiting for writes in progress.
+    /// Stops opening spaces and closes the open ones, waiting for writes in progress, after
+    /// writing what is left to their live Markdown folders.
     fn close(&self) {
+        self.flush_live(true);
         let spaces = {
             let mut spaces = lock_ignoring_poison(&self.spaces);
             self.closing.store(true, Ordering::SeqCst);
@@ -346,12 +448,64 @@ impl State {
 
     /// Announces a change to the space opened at `space`.
     pub(crate) fn notify_path(&self, space: &Path, node_id: NodeId, op: ChangeKind) {
+        if let Some(folder) = lock_ignoring_poison(&self.live).get_mut(space) {
+            let op = match op {
+                ChangeKind::Create => ChangeOp::Create,
+                ChangeKind::Delete => ChangeOp::Delete,
+                ChangeKind::Update | ChangeKind::Link | ChangeKind::Unlink => ChangeOp::Update,
+            };
+            folder.record(node_id, op);
+        }
         // No receivers is not an error: nobody is subscribed.
         let _ = self.changes.send(Change {
             space: space.to_path_buf(),
             node_id,
             op,
         });
+    }
+
+    /// Announces every node written by the changes made after `after`, oldest first: for the
+    /// writes that touch many nodes, such as an undo or an import.
+    fn notify_since(&self, space: &Space, after: ChangeId) -> Result<(), RpcError> {
+        let mut changes = Vec::new();
+        let mut before = None;
+        'pages: loop {
+            let page = space.changes(MAX_LIMIT, before)?;
+            let Some(last) = page.last() else { break };
+            before = Some(last.id);
+            for change in page {
+                if change.id <= after {
+                    break 'pages;
+                }
+                changes.push(change);
+            }
+        }
+        for change in changes.into_iter().rev() {
+            let Some(detail) = space.change(change.id)? else {
+                continue;
+            };
+            for version in &detail.versions {
+                let op = match version.op {
+                    ChangeOp::Create => ChangeKind::Create,
+                    ChangeOp::Update => ChangeKind::Update,
+                    ChangeOp::Delete => ChangeKind::Delete,
+                };
+                self.notify(space, version.node_id, op);
+            }
+            for link in &detail.links {
+                let op = match link.op {
+                    ChangeOp::Create => ChangeKind::Link,
+                    _ => ChangeKind::Unlink,
+                };
+                self.notify(space, link.from, op);
+            }
+            if change.action == actions::NODE_PURGE {
+                if let Ok(id) = NodeId::parse(&change.subject) {
+                    self.notify(space, id, ChangeKind::Delete);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Records the space capture writes to, or that capture stopped.
@@ -385,6 +539,22 @@ fn require_absolute(path: &Path) -> Result<(), RpcError> {
             path.display()
         )))
     }
+}
+
+fn require_absolute_dir(dir: &Path) -> Result<(), RpcError> {
+    if dir.is_absolute() {
+        Ok(())
+    } else {
+        Err(RpcError::invalid_params(format!(
+            "dir must be an absolute path: {}",
+            dir.display()
+        )))
+    }
+}
+
+/// The id of the newest change of the space, or 0 when it has none.
+fn last_change(space: &Space) -> Result<ChangeId, RpcError> {
+    Ok(space.changes(1, None)?.first().map_or(0, |c| c.id))
 }
 
 fn params<T: DeserializeOwned>(method: &str, params: Value) -> Result<T, RpcError> {
@@ -486,7 +656,8 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             let p: LinkDeleteParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
-            let removed = space.unlink(&p.from, &p.to, &p.kind)?;
+            let by = p.by.unwrap_or_else(Provenance::system);
+            let removed = space.unlink_by(&p.from, &p.to, &p.kind, &by)?;
             if removed {
                 state.notify(&space, p.from, ChangeKind::Unlink);
             }
@@ -517,6 +688,84 @@ fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
             to_value(space.recent(p.limit.min(MAX_LIMIT))?)
+        }
+        methods::CHANGES => {
+            let p: ChangesParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            let limit = p.limit.min(MAX_LIMIT);
+            match (&p.subject, p.before) {
+                (Some(_), Some(_)) => Err(RpcError::invalid_params(
+                    "changes takes subject or before, not both",
+                )),
+                (Some(subject), None) => to_value(space.changes_of(subject, limit)?),
+                (None, before) => to_value(space.changes(limit, before)?),
+            }
+        }
+        methods::CHANGE => {
+            let p: ChangeParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(space.change(p.id)?)
+        }
+        methods::UNDO => {
+            let p: UndoParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let change = space.undo(p.change, &p.by, p.force)?;
+            state.notify_since(&space, mark)?;
+            to_value(change)
+        }
+        methods::RESTORE => {
+            let p: RestoreParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let node = space.restore(&p.id, p.version, &p.by)?;
+            state.notify_since(&space, mark)?;
+            to_value(node)
+        }
+        methods::PURGE => {
+            let p: NodeDeleteParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let change = space.purge(&p.id, &p.by)?;
+            state.notify_since(&space, mark)?;
+            to_value(change)
+        }
+        methods::VAULT_EXPORT => {
+            let p: VaultExportParams = params(method, raw)?;
+            require_absolute_dir(&p.dir)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(knode_vault::export(&space, &p.dir)?)
+        }
+        methods::VAULT_IMPORT => {
+            let p: VaultImportParams = params(method, raw)?;
+            require_absolute_dir(&p.dir)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let report = knode_vault::import(&mut space, &p.dir, &p.by);
+            // What was written before a failure is announced too.
+            state.notify_since(&space, mark)?;
+            to_value(report?)
+        }
+        methods::MARKDOWN_FOLDER_GET => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(crate::markdown::live_folder(&space)?)
+        }
+        methods::MARKDOWN_FOLDER_SET => {
+            let p: MarkdownFolderSetParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let folder = crate::markdown::set_live_folder(&mut space, p.folder.as_deref(), &p.by)?;
+            state.start_live(&space);
+            to_value(folder)
         }
         _ => Err(RpcError::new(
             codes::METHOD_NOT_FOUND,

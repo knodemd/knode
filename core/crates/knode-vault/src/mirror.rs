@@ -17,7 +17,7 @@ use crate::property_keys as keys;
 use crate::{Error, FILES_MAP, Result, STATE_DIR, STYLE_VAULT, io_error, tags};
 
 /// What [`export`] (or a [`LiveFolder`](crate::LiveFolder) sync) did to the folder.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportReport {
     /// The files written, relative to the folder, with `/` between folders.
     pub written: Vec<String>,
