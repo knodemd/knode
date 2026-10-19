@@ -1,8 +1,39 @@
 # Knode for Mac
 
-Knode for Mac, in SwiftUI: open a space, browse its notes newest first, read and edit a note in
-Markdown with a live preview, and search. A menu bar item shows Knode Service, and the app carries
-the `knode` command inside.
+Knode for Mac, in SwiftUI: keep several spaces and switch between them, browse a space's notes
+newest first, read and edit a note in Markdown with a live preview, search, and see the history of a
+note: who changed it, when, and what. A menu bar item shows Knode Service, and the app carries the
+`knode` command inside.
+
+## Spaces
+
+The sidebar lists every space you created or opened, like libraries in Apple Music, until you
+remove it from the list (which never touches its files). The list is kept in the app's settings;
+the first time, it holds the default space, the recent spaces and the spaces in `~/Knode`.
+
+- **New Space…** (Shift-Command-N) asks for a name and a folder, `~/Knode` by default, and can make
+  the new space the default one.
+- Command-1 to Command-9 switch to the first nine spaces; clicking a space opens it.
+- The **Space** menu and the context menu of a space rename it (its name in `manifest.json`; the
+  package keeps its file name), choose its icon (one emoji, the `space.icon` setting of the space),
+  make it the default space for agents and capture, show it in the Finder, or remove it from the
+  list.
+- The default space is `default_space` in `$KNODE_HOME/config.toml`, the one the `knode` command,
+  the MCP server and capture use. The sidebar marks it with a sparkle.
+
+## History
+
+**Show History** (Command-Y) opens the history of the open note beside it: every version, newest
+first, with the person or agent who made it (and the agent's session), when, and how many lines it
+added and removed. Choosing a version compares it with the note as it is now, line by line or side
+by side, and offers:
+
+- **Restore This Version**: the whole note goes back to that version, written as a new version, so
+  nothing is lost.
+- **Undo This Change**: only what that change did is undone. When later changes touched the same
+  note the core refuses, and the app says so and asks before undoing it anyway.
+
+Unsaved edits are saved before a restore or an undo.
 
 The app talks to a space through the `SpaceStore` protocol (`Knode/Store/SpaceStore.swift`):
 
@@ -17,6 +48,11 @@ The app talks to a space through the `SpaceStore` protocol (`Knode/Store/SpaceSt
   space.
 
 Every change the app makes is recorded as made by the macOS user.
+
+Knode Service has no methods yet to rename a space, change its settings, restore a version or undo
+a change. For those, `RoutingSpaceStore` opens the space with the core in the app for the call, even
+while the service holds it (SQLite allows both), and the app reloads what it shows. The history
+itself is read through the service when it runs.
 
 ## Menu bar and the knode command
 
@@ -95,12 +131,12 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 
 | Path | What it holds |
 |---|---|
-| `Knode/Store` | `SpaceStore`, the models, `CoreSpaceStore`, `RoutingSpaceStore`, `PreviewSpaceStore` and the recent spaces |
+| `Knode/Store` | `SpaceStore`, the models, `CoreSpaceStore`, `RoutingSpaceStore`, `PreviewSpaceStore`, the list of spaces (`SpaceLibrary`), the recent spaces and the default space (`KnodeSettings`) |
 | `Knode/Service` | The socket client, `ServiceSpaceStore`, the menu bar status and the `knode` runner |
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
-| `Knode/Models` | `AppModel` (spaces, list, search) and `NoteEditorModel` (one open note) |
+| `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) and `NoteHistoryModel` (its history) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
-| `Knode/Views` | The window, the note editor, the menu bar menu and the open and save panels |
+| `Knode/Views` | The window, the note editor, the history, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |
 | `project.yml` | The [XcodeGen](https://github.com/yonaskolb/XcodeGen) source of `Knode.xcodeproj` |

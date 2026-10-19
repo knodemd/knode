@@ -23,13 +23,16 @@ enum SpacePanels {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    static func chooseNewSpace() -> URL? {
-        let panel = NSSavePanel()
-        panel.title = "New Space"
-        panel.prompt = "Create"
-        panel.nameFieldStringValue = "My Space.knode"
-        panel.allowedContentTypes = [.knodeSpace]
+    /// A folder, such as where a new space goes.
+    static func chooseFolder(startingAt folder: URL) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Folder"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = folder
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

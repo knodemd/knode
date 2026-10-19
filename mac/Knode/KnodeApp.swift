@@ -18,7 +18,9 @@ struct KnodeApp: App {
             if running { Task { await store.serviceDidStart() } }
         }
         service.start()
-        _model = State(initialValue: AppModel(store: store, recentSpaces: RecentSpaces()))
+        // While tests run in the app, the list of spaces stays in memory.
+        let testing = ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
+        _model = State(initialValue: AppModel(store: store, recentSpaces: RecentSpaces(), library: testing ? nil : SpaceLibrary(), settings: CoreKnodeSettings()))
         _service = State(initialValue: service)
     }
 
@@ -90,7 +92,7 @@ struct SpaceCommands: Commands {
             .disabled(model.selectedSpaceID == nil)
 
             Button("New Space…", systemImage: "plus.square.on.square") {
-                if let url = SpacePanels.chooseNewSpace() { Task { await model.createSpace(at: url) } }
+                model.sheet = .newSpace
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
@@ -109,6 +111,33 @@ struct SpaceCommands: Commands {
                 Button("Clear Menu", systemImage: "trash") { model.clearRecentSpaces() }
                     .disabled(model.recentSpaceURLs.isEmpty)
             }
+        }
+
+        CommandMenu("Space") {
+            let items = model.sidebarSpaces
+            ForEach(Array(items.prefix(9).enumerated()), id: \.element.id) { index, item in
+                Button {
+                    Task { await model.selectSpace(number: index + 1) }
+                } label: {
+                    Text(item.icon.map { "\($0) \(item.name)" } ?? item.name)
+                }
+                .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            }
+            if !items.isEmpty { Divider() }
+            if let selected = items.first(where: { $0.url == model.selectedSpaceURL }) {
+                SpaceMenuItems(item: selected)
+                    .environment(model)
+            } else {
+                Text("No Space Selected")
+            }
+        }
+
+        CommandGroup(after: .sidebar) {
+            Button(model.isShowingHistory ? "Hide History" : "Show History", systemImage: "clock.arrow.circlepath") {
+                model.toggleHistory()
+            }
+            .keyboardShortcut("y")
+            .disabled(model.editor == nil)
         }
     }
 }
