@@ -99,6 +99,13 @@ impl Sandbox {
     }
 }
 
+impl Drop for Sandbox {
+    /// Stops the Knode Service a command may have started in the background.
+    fn drop(&mut self) {
+        let _ = self.cmd().args(["service", "stop"]).output();
+    }
+}
+
 pub fn ingest_fixture(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../knode-ingest/tests/fixtures")
