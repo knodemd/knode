@@ -242,6 +242,73 @@ fn a_growing_session_updates_the_same_node() {
     assert_eq!(ignored.files, 0);
 }
 
+/// Record `n` of a long session: a message at second `n` with its own id.
+fn numbered_record(role: &str, n: u32, text: &str) -> String {
+    let mut line: serde_json::Value =
+        serde_json::from_str(&record(PROJECT, SESSION, role, 5, text)).unwrap();
+    line["uuid"] = json!(format!("{role}-n{n}"));
+    line["timestamp"] = json!(format!(
+        "2026-01-02T11:{:02}:{:02}.000Z",
+        n / 60 % 60,
+        n % 60
+    ));
+    format!("{line}\n")
+}
+
+#[test]
+fn a_session_followed_live_keeps_a_bounded_history() {
+    let mut home = Home::new();
+    let path = start_session(&home, PROJECT, SESSION);
+    let mut capture = home.capture();
+    let id = only_change(&capture.sync_all(&mut home.space).unwrap()).node_id;
+    let me = knode_format::Provenance::person("Example Person");
+
+    let mut grow = |home: &mut Home, from: u32| {
+        for n in from..from + 50 {
+            append(&path, &numbered_record("user", n, &format!("Question {n}")));
+            let report = capture.sync_paths(&mut home.space, &[&path]).unwrap();
+            assert_eq!(only_change(&report).op, ChangeOp::Update);
+        }
+    };
+    grow(&mut home, 0);
+    let seen_by_me = home.space.get_node(&id).unwrap().unwrap();
+    home.space
+        .update_node(
+            &id,
+            knode_format::NodeUpdate {
+                tags: Some(vec!["kept".into()]),
+                ..Default::default()
+            },
+            &me,
+        )
+        .unwrap();
+    grow(&mut home, 50);
+
+    let history = home.space.history(&id).unwrap();
+    let ops: Vec<_> = history.iter().map(|h| (h.op, h.changed_by.kind)).collect();
+    assert_eq!(
+        ops,
+        [
+            (ChangeOp::Create, ActorKind::Agent),
+            (ChangeOp::Update, ActorKind::Agent),
+            (ChangeOp::Update, ActorKind::Person),
+            (ChangeOp::Update, ActorKind::Agent),
+        ],
+        "100 updates keep one row per run, and the person's edit in between"
+    );
+    // The version the person changed is the one before their row, ready to restore.
+    assert_eq!(history[1].body, seen_by_me.body);
+    assert!(history[1].body.contains("Question 49"));
+    assert!(!history[1].body.contains("Question 50"));
+    assert_eq!(history[2].tags, ["kept"]);
+    assert_eq!(history[2].body, seen_by_me.body);
+    // The newest row is the node as it is now.
+    let now = home.space.get_node(&id).unwrap().unwrap();
+    assert!(now.body.contains("Question 99"));
+    assert_eq!(history[3].body, now.body);
+    assert_eq!(history[3].tags, now.tags);
+}
+
 #[test]
 fn continues_from_the_saved_state_after_a_restart() {
     let mut home = Home::new();
