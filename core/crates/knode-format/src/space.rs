@@ -273,6 +273,37 @@ impl Space {
         update: NodeUpdate,
         by: &Provenance,
     ) -> Result<Node> {
+        self.write_update(id, update, by, false)
+    }
+
+    /// Changes a node like [`update_node`](Self::update_node), keeping one history row for a run
+    /// of updates by the same agent session, such as a conversation that capture keeps current
+    /// while it grows.
+    ///
+    /// When `by` is an agent with a session and the newest history row of the node is an
+    /// `update` with exactly the same provenance, that row is replaced by one with the node as
+    /// it is now, instead of a new row being added. A row written by anyone else (a person,
+    /// another agent or session, a rename) ends the run, so it and the version before it stay.
+    /// `create` and `delete` rows are never replaced. Any other provenance behaves exactly like
+    /// [`update_node`](Self::update_node).
+    pub fn update_node_coalescing(
+        &mut self,
+        id: &NodeId,
+        update: NodeUpdate,
+        by: &Provenance,
+    ) -> Result<Node> {
+        let coalesce = by.kind == ActorKind::Agent
+            && by.session.as_deref().is_some_and(|s| !s.trim().is_empty());
+        self.write_update(id, update, by, coalesce)
+    }
+
+    fn write_update(
+        &mut self,
+        id: &NodeId,
+        update: NodeUpdate,
+        by: &Provenance,
+        coalesce: bool,
+    ) -> Result<Node> {
         let current = self.require_node(id)?;
         let kind = match update.kind.as_deref().map(str::trim) {
             Some(kind) if kind != current.kind => Some(check_name("node kind", kind)?),
@@ -321,6 +352,9 @@ impl Space {
             "UPDATE nodes SET updated_at = ?2, updated_by = ?3 WHERE id = ?1",
             params![id.to_string(), now.0, prov],
         )?;
+        if coalesce {
+            drop_run_snapshot(&tx, id, prov)?;
+        }
         record(&tx, id, ChangeOp::Update, prov, now)?;
         if let Some(title) = &title {
             rewrite_backlinks(&tx, id, &current.title, title, prov, now)?;
@@ -977,6 +1011,18 @@ fn rewrite_backlinks(
         let source = NodeId::parse(&source)?;
         record(tx, &source, ChangeOp::Update, prov, now)?;
     }
+    Ok(())
+}
+
+/// Removes the newest history row of a node when it is an `update` by `prov`, so the row that
+/// follows replaces it. Being the newest row, no one else has changed the node since.
+fn drop_run_snapshot(tx: &Transaction<'_>, id: &NodeId, prov: i64) -> Result<()> {
+    tx.execute(
+        "DELETE FROM history WHERE seq = (
+             SELECT seq FROM history WHERE node_id = ?1 ORDER BY seq DESC LIMIT 1
+         ) AND op = ?2 AND changed_by = ?3",
+        params![id.to_string(), ChangeOp::Update.as_str(), prov],
+    )?;
     Ok(())
 }
 

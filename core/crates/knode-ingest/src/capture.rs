@@ -161,6 +161,9 @@ struct State {
 /// [`Conversation::title`]; the agent, session, project, branch, model and times are
 /// properties. Every write has the provenance
 /// `Provenance::agent(<agent id>).with_session(<session id>).with_source(<file path>)`.
+/// Updates use [`Space::update_node_coalescing`], so a session followed live keeps one history
+/// row for each run of updates instead of one for every batch; an edit by anyone else in
+/// between stays in the history with the version it changed.
 ///
 /// What was read from each file (its offset and conversation so far) is saved in a JSON state
 /// file after every sync, so after a restart only new lines are read. A file that was cut or
@@ -618,7 +621,9 @@ fn write_conversation(
         .ok_or(knode_format::Error::NotFound(id))?;
     let text_changed = current.title != title || current.body != body;
     if text_changed {
-        space.update_node(
+        // One history row per run of updates from the session: the transcript only grows, so
+        // the newest version holds every earlier one.
+        space.update_node_coalescing(
             &id,
             NodeUpdate {
                 title: Some(title),
