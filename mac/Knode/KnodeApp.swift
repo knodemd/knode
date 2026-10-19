@@ -55,7 +55,7 @@ struct KnodeApp: App {
         }
 
         MenuBarExtra {
-            ServiceMenu(monitor: service)
+            ServiceMenu(monitor: service, model: model)
         } label: {
             KnodeMenuBarIcon.image(paused: !service.isRunning)
                 .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")

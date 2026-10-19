@@ -19,7 +19,8 @@ the first time, it holds the default space, the recent spaces and the spaces in 
   make it the default space for agents and capture, show it in the Finder, or remove it from the
   list.
 - The default space is `default_space` in `$KNODE_HOME/config.toml`, the one the `knode` command,
-  the MCP server and capture use. The sidebar marks it with a sparkle.
+  the MCP server and capture use. The sidebar marks it with a sparkle, and **Space for Agents** in
+  the menu bar menu switches it without restarting Knode Service.
 
 ## History
 
