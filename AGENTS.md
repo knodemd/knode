@@ -9,3 +9,5 @@ Knode: your second brain for AI. A Rust core with native apps around it.
   never edit files inside it here.
 - Everything in this repository is in English. Conventional Commits, one issue per change, pull
   requests only. See the [handbook](https://github.com/knodemd/handbook).
+- A change users see (a command, an MCP tool, the app, the format) comes with a pull request in
+  [knodemd/docs](https://github.com/knodemd/docs), linked from this one.
