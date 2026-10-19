@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/knode-format",
+    "crates/knode-md",
+    "crates/knode-ingest",
+    "crates/knode-service",
+    "crates/knode-mcp",
+    "crates/knode-sync",
+    "crates/knode-ffi",
+    "crates/knode-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/knodemd/knode"
+homepage = "https://knode.md"
+authors = ["Knode, a project by aaangelmartin"]

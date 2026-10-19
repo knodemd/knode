@@ -1,0 +1,15 @@
+# Rust
+core/target/
+# Apple
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.build/
+*.xcframework
+core/bindings/swift/
+core/bindings/kotlin/
+# Web
+node_modules/
+dist/
+# System
+.DS_Store
