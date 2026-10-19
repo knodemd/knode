@@ -10,6 +10,11 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+knode-format = { path = "../knode-format", version = "=0.0.0" }
+notify = "=8.2.0"
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+
+[dev-dependencies]
+tempfile = "=3.27.0"

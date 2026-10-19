@@ -82,6 +82,24 @@ pub fn discover_all() -> io::Result<Vec<SessionFile>> {
     Ok(files)
 }
 
+/// The session file at `path`, if it is one `discover(agent, root)` would list: a `.jsonl` file
+/// at the right depth under `root` that exists. `None` for anything else, such as a Claude Code
+/// subagent transcript or a file that was removed.
+pub(crate) fn session_file(agent: Agent, root: &Path, path: &Path) -> Option<SessionFile> {
+    let relative = path.strip_prefix(root).ok()?;
+    let depth = relative.components().count();
+    let shaped = match agent {
+        Agent::ClaudeCode => depth == 2,
+        Agent::Codex => (1..=CODEX_DEPTH).contains(&depth),
+    };
+    if !shaped {
+        return None;
+    }
+    let mut found = Vec::new();
+    push_if_session(agent, path.to_path_buf(), &mut found);
+    found.pop()
+}
+
 fn walk(agent: Agent, dir: &Path, depth: usize, files: &mut Vec<SessionFile>) -> io::Result<()> {
     for path in read_dir(dir)? {
         if path.is_dir() {
@@ -144,6 +162,19 @@ fn trailing_uuid(stem: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognises_session_paths_by_depth() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/projects");
+        let main = root.join("-Users-example-project/0f8e2c1a-1111-4222-8333-444455556666.jsonl");
+        let sub = root.join(
+            "-Users-example-project/0f8e2c1a-1111-4222-8333-444455556666/subagents/agent-0001.jsonl",
+        );
+        assert!(session_file(Agent::ClaudeCode, &root, &main).is_some());
+        assert!(session_file(Agent::ClaudeCode, &root, &sub).is_none());
+        assert!(session_file(Agent::ClaudeCode, &root, &root.join("x/missing.jsonl")).is_none());
+        assert!(session_file(Agent::ClaudeCode, Path::new("/elsewhere"), &main).is_none());
+    }
 
     #[test]
     fn finds_the_uuid_at_the_end_of_codex_names() {
