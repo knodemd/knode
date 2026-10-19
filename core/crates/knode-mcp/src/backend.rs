@@ -1,7 +1,8 @@
 //! Where the MCP tools read and write: a [`Backend`].
 //!
-//! [`DirectBackend`] opens the space itself with `knode-format`. A backend that talks to Knode
-//! Service over its socket implements the same trait, so the tools do not change.
+//! [`DirectBackend`] opens the space itself with `knode-format`.
+//! [`ServiceBackend`](crate::ServiceBackend) talks to Knode Service over its socket and
+//! implements the same trait, so the tools do not change.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -170,5 +171,44 @@ impl Backend for DirectBackend {
 
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         self.with(|s| s.recent(limit))
+    }
+}
+
+/// A boxed backend is a backend, so the backend can be picked at run time.
+impl<B: Backend + ?Sized> Backend for Box<B> {
+    fn search(&self, query: &str, limit: usize) -> BackendResult<Vec<SearchHit>> {
+        (**self).search(query, limit)
+    }
+
+    fn get_node(&self, id: &NodeId) -> BackendResult<Option<Node>> {
+        (**self).get_node(id)
+    }
+
+    fn find_by_title(&self, title: &str) -> BackendResult<Vec<NodeSummary>> {
+        (**self).find_by_title(title)
+    }
+
+    fn create_node(&self, new: NewNode, by: &Provenance) -> BackendResult<Node> {
+        (**self).create_node(new, by)
+    }
+
+    fn update_node(&self, id: &NodeId, update: NodeUpdate, by: &Provenance) -> BackendResult<Node> {
+        (**self).update_node(id, update, by)
+    }
+
+    fn link(&self, from: &NodeId, to: &NodeId, kind: &str, by: &Provenance) -> BackendResult<Link> {
+        (**self).link(from, to, kind, by)
+    }
+
+    fn links_from(&self, id: &NodeId) -> BackendResult<Vec<Link>> {
+        (**self).links_from(id)
+    }
+
+    fn backlinks(&self, id: &NodeId) -> BackendResult<Vec<Link>> {
+        (**self).backlinks(id)
+    }
+
+    fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
+        (**self).recent(limit)
     }
 }
