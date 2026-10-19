@@ -15,7 +15,7 @@ an app.
 | Crate | What it does |
 |---|---|
 | `knode-format` | Reads and writes `.knode` spaces: nodes, links, provenance, history, search |
-| `knode-md` | Converts a space to Markdown and back |
+| `knode-md` | Reads node Markdown (plain text and links), exports and imports spaces, and keeps the live `.md` folder |
 | `knode-ingest` | Captures agent conversations; imports notes and chat exports |
 | `knode-service` | The one process that opens spaces, for the app and the agents |
 | `knode-mcp` | The MCP server agents use |
