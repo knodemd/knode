@@ -1,0 +1,1 @@
+{"parentUuid": null, "isSidechain": false, "userType": "external", "cwd": "/Users/example/private", "sessionId": "7a7a7a7a-1111-4222-8333-444455556666", "version": "9.9.9", "gitBranch": "main", "type": "user", "uuid": "u-0.000", "timestamp": "2026-01-03T09:00:00.000Z", "aFieldFromTheFuture": {"nested": [1, 2]}, "message": {"role": "user", "content": "A private question"}}
