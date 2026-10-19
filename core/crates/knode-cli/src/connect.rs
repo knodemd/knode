@@ -1,4 +1,8 @@
-//! `knode connect`: add the Knode MCP server to an agent.
+//! `knode connect`: give an agent its own key and add the Knode MCP server to it.
+//!
+//! The agent gets a key of its own, kept in the machine's credential store (never in the
+//! agent's settings), and, the first time, write access to the default space only. Its MCP
+//! server runs `knode mcp --agent <name>`, which reads the key from the store.
 //!
 //! Claude Code and Codex are configured with their own commands when they are installed.
 //! Otherwise, and for Gemini CLI and Claude Desktop, their settings file is edited: only the
@@ -12,6 +16,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
+use knode_config::Paths;
+use knode_format::GrantLevel;
+use knode_service::keys::{KeyStore, default_key_store, fingerprint, generate_key};
 use serde_json::{Value, json};
 
 /// The name of the MCP server in every agent's settings.
@@ -27,22 +34,94 @@ pub enum Agent {
     /// Codex, through `codex mcp add` or ~/.codex/config.toml.
     Codex,
     /// Gemini CLI, through ~/.gemini/settings.json.
+    #[value(alias = "gemini-cli")]
     Gemini,
     /// Claude Desktop, through claude_desktop_config.json.
     ClaudeDesktop,
 }
 
-pub fn run(agent: Agent, print: bool) -> Result<()> {
+impl Agent {
+    /// The agent's name in Knode, the actor of its changes, and its kind.
+    pub fn name(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "claude-code",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini-cli",
+            Agent::ClaudeDesktop => "claude-desktop",
+        }
+    }
+
+    /// What to type after `knode connect` for it.
+    pub fn arg(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "claude-code",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini",
+            Agent::ClaudeDesktop => "claude-desktop",
+        }
+    }
+
+    pub const ALL: [Agent; 4] = [
+        Agent::ClaudeCode,
+        Agent::Codex,
+        Agent::Gemini,
+        Agent::ClaudeDesktop,
+    ];
+
+    /// The agent with this name or `knode connect` argument.
+    pub fn find(name: &str) -> Option<Agent> {
+        Agent::ALL
+            .into_iter()
+            .find(|a| a.name() == name || a.arg() == name)
+    }
+}
+
+/// The arguments the agent runs `knode` with.
+fn mcp_args(agent: Agent, space: Option<&Path>) -> Vec<String> {
+    let mut args = vec!["mcp".to_string(), "--agent".into(), agent.name().into()];
+    if let Some(space) = space {
+        args.push("--space".into());
+        args.push(space.to_string_lossy().into_owned());
+    }
+    args
+}
+
+/// `knode connect <agent>`. `space` is the space given with `--space`, if any; the agent gets
+/// access to it, or to the default space, the first time.
+pub fn run(paths: &Paths, agent: Agent, print: bool, space: Option<&Path>) -> Result<()> {
     let knode = knode_path()?;
+    let flag = space.map(crate::absolute).transpose()?;
+    let args = mcp_args(agent, flag.as_deref());
+    let target = crate::resolve(paths, flag.as_deref())
+        .ok()
+        .map(|r| r.path)
+        .filter(|p| p.exists());
+    if print {
+        println!(
+            "Would give {} its own key, kept in {}.",
+            agent.name(),
+            store(paths).describe()
+        );
+        if let Some(space) = &target {
+            println!(
+                "Would let it read and write {} if it has no access yet.",
+                space.display()
+            );
+        }
+        println!();
+    } else {
+        issue_key(paths, agent, target.as_deref())?;
+    }
     match agent {
-        Agent::ClaudeCode => claude_code(&knode, print),
-        Agent::Codex => codex(&knode, print),
+        Agent::ClaudeCode => claude_code(&knode, &args, print),
+        Agent::Codex => codex(&knode, &args, print),
         Agent::Gemini => {
             let file = home()?.join(".gemini/settings.json");
             json_settings(
                 "Gemini CLI",
                 &file,
                 &knode,
+                &args,
                 print,
                 "Start a new Gemini CLI session",
             )
@@ -51,10 +130,134 @@ pub fn run(agent: Agent, print: bool) -> Result<()> {
             "Claude Desktop",
             &claude_desktop_config()?,
             &knode,
+            &args,
             print,
             "Quit and reopen Claude Desktop",
         ),
     }
+}
+
+/// The credential store of this machine.
+pub fn store(paths: &Paths) -> Box<dyn KeyStore> {
+    default_key_store(&paths.home)
+}
+
+/// Makes sure the agent has a valid key in the credential store and in Knode Service, and,
+/// when it has no access to any space, gives it write access to `space`. Prints what it can do.
+fn issue_key(paths: &Paths, agent: Agent, space: Option<&Path>) -> Result<()> {
+    let client = crate::service::connect().context("Knode Service could not start")?;
+    let store = store(paths);
+    let name = agent.name();
+    let known = client.agents()?.into_iter().find(|a| a.name == name);
+    let stored = store
+        .get(name)
+        .with_context(|| format!("cannot read the key of {name} from {}", store.describe()))?;
+    let valid = match (&known, &stored) {
+        (Some(known), Some(key)) => {
+            let fingerprint = fingerprint(key);
+            known
+                .keys
+                .iter()
+                .any(|k| k.fingerprint == fingerprint && k.revoked_at.is_none())
+        }
+        _ => false,
+    };
+    let info = if valid {
+        known.expect("a valid key belongs to a known agent")
+    } else {
+        let key = generate_key().context("cannot make a key")?;
+        store
+            .set(name, &key)
+            .with_context(|| format!("cannot keep the key of {name} in {}", store.describe()))?;
+        let info = client.add_agent(name, name, &fingerprint(&key), &crate::person())?;
+        println!(
+            "Gave {name} its own key, kept in {}. Its old keys, if any, no longer work.",
+            store.describe()
+        );
+        info
+    };
+    let has_access = info
+        .spaces
+        .iter()
+        .any(|s| s.level.is_some_and(|l| l > GrantLevel::None));
+    if !has_access {
+        match space {
+            Some(space) => {
+                client.set_grant(name, space, GrantLevel::Write, &crate::person())?;
+            }
+            None => {
+                println!(
+                    "There is no space yet, so {name} cannot see anything. Create one with                      `knode init <name>`, then `knode agents grant {name} <space> write`."
+                );
+                return Ok(());
+            }
+        }
+    }
+    let info = client
+        .agents()?
+        .into_iter()
+        .find(|a| a.name == name)
+        .context("the agent was not saved")?;
+    crate::agents::print_access(&info);
+    println!(
+        "It cannot see any other space. Change this with `knode agents grant {name} <space> \
+         none|read|write`."
+    );
+    Ok(())
+}
+
+/// The agents whose settings run `knode mcp` without an agent key: set up before keys. They
+/// stop working until they are connected again.
+pub fn without_key() -> Vec<Agent> {
+    let mut found = Vec::new();
+    let json_args = |file: &Path| -> Option<Vec<String>> {
+        let text = fs::read_to_string(file).ok()?;
+        let value: Value = serde_json::from_str(&text).ok()?;
+        let args = value
+            .get("mcpServers")?
+            .get(SERVER)?
+            .get("args")?
+            .as_array()?;
+        Some(
+            args.iter()
+                .filter_map(|a| a.as_str().map(str::to_string))
+                .collect(),
+        )
+    };
+    let unkeyed =
+        |args: Option<Vec<String>>| args.is_some_and(|a| !a.iter().any(|a| a == "--agent"));
+    if let Ok(home) = home() {
+        let mut claude = vec![home.join(".claude.json")];
+        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+            claude.push(PathBuf::from(dir).join(".claude.json"));
+        }
+        if claude.iter().any(|f| unkeyed(json_args(f))) {
+            found.push(Agent::ClaudeCode);
+        }
+        let codex = codex_config().ok().and_then(|file| {
+            let doc: toml_edit::DocumentMut = fs::read_to_string(file).ok()?.parse().ok()?;
+            let args = doc
+                .get("mcp_servers")?
+                .get(SERVER)?
+                .get("args")?
+                .as_array()?;
+            Some(
+                args.iter()
+                    .filter_map(|a| a.as_str().map(str::to_string))
+                    .collect(),
+            )
+        });
+        if unkeyed(codex) {
+            found.push(Agent::Codex);
+        }
+        if unkeyed(json_args(&home.join(".gemini/settings.json"))) {
+            found.push(Agent::Gemini);
+        }
+    }
+    if claude_desktop_config().is_ok_and(|f| unkeyed(json_args(&f))) {
+        found.push(Agent::ClaudeDesktop);
+    }
+    found
 }
 
 fn home() -> Result<PathBuf> {
@@ -167,8 +370,8 @@ fn run_program(program: &Path, args: &[&OsStr], shown: &str) -> Result<()> {
     Ok(())
 }
 
-fn claude_code(knode: &Path, print: bool) -> Result<()> {
-    let args: Vec<&OsStr> = [
+fn claude_code(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
+    let mut args: Vec<&OsStr> = [
         OsStr::new("mcp"),
         OsStr::new("add"),
         OsStr::new("--scope"),
@@ -176,9 +379,9 @@ fn claude_code(knode: &Path, print: bool) -> Result<()> {
         OsStr::new(SERVER),
         OsStr::new("--"),
         knode.as_os_str(),
-        OsStr::new("mcp"),
     ]
     .to_vec();
+    args.extend(mcp.iter().map(OsStr::new));
     let line = shell_line("claude", &args);
     if print {
         println!("Would run:\n\n  {line}");
@@ -195,28 +398,41 @@ fn claude_code(knode: &Path, print: bool) -> Result<()> {
         .output()
         .with_context(|| "cannot run `claude mcp get knode`".to_string())?;
     if existing.status.success() {
-        println!(
-            "Knode is already in Claude Code. To add it again, run \
-             `claude mcp remove --scope user knode` first."
-        );
-        return Ok(());
+        let shown = String::from_utf8_lossy(&existing.stdout);
+        if shown.contains(&mcp.join(" ")) {
+            println!("Knode is already in Claude Code.");
+            return Ok(());
+        }
+        // Set up before agent keys, or for another space: replace it.
+        let remove = [
+            OsStr::new("mcp"),
+            OsStr::new("remove"),
+            OsStr::new("--scope"),
+            OsStr::new("user"),
+            OsStr::new(SERVER),
+        ];
+        run_program(
+            &claude,
+            &remove,
+            &shell_line("claude", remove.iter().copied()),
+        )?;
     }
     run_program(&claude, &args, &line)?;
     println!("Added Knode to Claude Code. Start a new Claude Code session to use it.");
     Ok(())
 }
 
-fn codex(knode: &Path, print: bool) -> Result<()> {
+fn codex(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
     if let Some(codex) = which("codex") {
-        let args: Vec<&OsStr> = [
+        let mut args: Vec<&OsStr> = [
             OsStr::new("mcp"),
             OsStr::new("add"),
             OsStr::new(SERVER),
             OsStr::new("--"),
             knode.as_os_str(),
-            OsStr::new("mcp"),
         ]
         .to_vec();
+        args.extend(mcp.iter().map(OsStr::new));
         let line = shell_line("codex", &args);
         if print {
             println!("Would run:\n\n  {line}");
@@ -228,7 +444,7 @@ fn codex(knode: &Path, print: bool) -> Result<()> {
     }
     let file = codex_config()?;
     let current = read_optional(&file)?;
-    let updated = codex_toml(current.as_deref().unwrap_or(""), knode)
+    let updated = codex_toml(current.as_deref().unwrap_or(""), knode, mcp)
         .with_context(|| format!("{} is not valid TOML; fix it and try again", file.display()))?;
     finish_edit(
         "Codex",
@@ -240,9 +456,9 @@ fn codex(knode: &Path, print: bool) -> Result<()> {
     )
 }
 
-/// `config.toml` for Codex with `[mcp_servers.knode]` running `knode mcp`, or `None` when it
-/// already does.
-fn codex_toml(text: &str, knode: &Path) -> Result<Option<String>> {
+/// `config.toml` for Codex with `[mcp_servers.knode]` running `knode` with `mcp`, or `None`
+/// when it already does.
+fn codex_toml(text: &str, knode: &Path, mcp: &[String]) -> Result<Option<String>> {
     let mut doc: toml_edit::DocumentMut = text.parse()?;
     let command = knode.to_string_lossy().into_owned();
     let servers = doc
@@ -263,7 +479,7 @@ fn codex_toml(text: &str, knode: &Path) -> Result<Option<String>> {
                 .and_then(|a| a.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str()).collect());
             s.get("command").and_then(|c| c.as_str()) == Some(command.as_str())
-                && args.as_deref() == Some(&["mcp"][..])
+                && args.is_some_and(|a| a.iter().eq(mcp.iter()))
         });
     if same {
         return Ok(None);
@@ -271,22 +487,31 @@ fn codex_toml(text: &str, knode: &Path) -> Result<Option<String>> {
     let mut table = toml_edit::Table::new();
     table.insert("command", toml_edit::value(command));
     let mut args = toml_edit::Array::new();
-    args.push("mcp");
+    for arg in mcp {
+        args.push(arg.as_str());
+    }
     table.insert("args", toml_edit::value(args));
     servers.insert(SERVER, toml_edit::Item::Table(table));
     Ok(Some(doc.to_string()))
 }
 
-fn json_settings(name: &str, file: &Path, knode: &Path, print: bool, restart: &str) -> Result<()> {
+fn json_settings(
+    name: &str,
+    file: &Path,
+    knode: &Path,
+    mcp: &[String],
+    print: bool,
+    restart: &str,
+) -> Result<()> {
     let current = read_optional(file)?;
-    let updated = json_config(current.as_deref().unwrap_or(""), knode)
+    let updated = json_config(current.as_deref().unwrap_or(""), knode, mcp)
         .with_context(|| format!("cannot add Knode to {}", file.display()))?;
     finish_edit(name, file, current, updated, print, restart)
 }
 
-/// The settings with `mcpServers.knode` running `knode mcp`, or `None` when they already do.
-/// Everything else is kept, in the same order.
-fn json_config(text: &str, knode: &Path) -> Result<Option<String>> {
+/// The settings with `mcpServers.knode` running `knode` with `mcp`, or `None` when they already
+/// do. Everything else is kept, in the same order.
+fn json_config(text: &str, knode: &Path, mcp: &[String]) -> Result<Option<String>> {
     let mut root: Value = if text.trim().is_empty() {
         json!({})
     } else {
@@ -300,7 +525,7 @@ fn json_config(text: &str, knode: &Path) -> Result<Option<String>> {
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .context("\"mcpServers\" is not a JSON object; fix it and try again")?;
-    let entry = json!({ "command": knode.to_string_lossy(), "args": ["mcp"] });
+    let entry = json!({ "command": knode.to_string_lossy(), "args": mcp });
     if servers.get(SERVER) == Some(&entry) {
         return Ok(None);
     }
@@ -390,44 +615,55 @@ mod tests {
         );
     }
 
+    fn mcp() -> Vec<String> {
+        mcp_args(Agent::Gemini, None)
+    }
+
     #[test]
     fn json_keeps_other_servers_and_order() {
         let knode = Path::new("/bin/knode");
+        let mcp = &mcp();
         let text = r#"{"theme": "dark", "mcpServers": {"other": {"command": "x"}}, "a": 1}"#;
-        let out = json_config(text, knode).unwrap().unwrap();
+        let out = json_config(text, knode, mcp).unwrap().unwrap();
         let value: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["mcpServers"]["other"]["command"], "x");
         assert_eq!(value["mcpServers"]["knode"]["command"], "/bin/knode");
-        assert_eq!(value["mcpServers"]["knode"]["args"], json!(["mcp"]));
+        assert_eq!(
+            value["mcpServers"]["knode"]["args"],
+            json!(["mcp", "--agent", "gemini-cli"])
+        );
         let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["theme", "mcpServers", "a"]);
-        assert_eq!(json_config(&out, knode).unwrap(), None);
-        assert!(json_config("", knode).unwrap().is_some());
-        assert!(json_config("[1]", knode).is_err());
-        assert!(json_config("{nope", knode).is_err());
-        assert!(json_config(r#"{"mcpServers": 3}"#, knode).is_err());
+        assert_eq!(json_config(&out, knode, mcp).unwrap(), None);
+        assert!(json_config("", knode, mcp).unwrap().is_some());
+        assert!(json_config("[1]", knode, mcp).is_err());
+        assert!(json_config("{nope", knode, mcp).is_err());
+        assert!(json_config(r#"{"mcpServers": 3}"#, knode, mcp).is_err());
     }
 
     #[test]
     fn toml_keeps_the_rest_of_the_file() {
         let knode = Path::new("/bin/knode");
+        let mcp = &mcp_args(Agent::Codex, None);
         let text = "# my settings\nmodel = \"o3\"\n\n[mcp_servers.other]\ncommand = \"x\"\n";
-        let out = codex_toml(text, knode).unwrap().unwrap();
+        let out = codex_toml(text, knode, mcp).unwrap().unwrap();
         assert!(out.starts_with("# my settings\nmodel = \"o3\"\n"), "{out}");
         assert!(
             out.contains("[mcp_servers.other]\ncommand = \"x\""),
             "{out}"
         );
         assert!(
-            out.contains("[mcp_servers.knode]\ncommand = \"/bin/knode\"\nargs = [\"mcp\"]"),
+            out.contains(
+                "[mcp_servers.knode]\ncommand = \"/bin/knode\"\nargs = [\"mcp\", \"--agent\", \"codex\"]"
+            ),
             "{out}"
         );
-        assert_eq!(codex_toml(&out, knode).unwrap(), None);
-        let fresh = codex_toml("", knode).unwrap().unwrap();
+        assert_eq!(codex_toml(&out, knode, mcp).unwrap(), None);
+        let fresh = codex_toml("", knode, mcp).unwrap().unwrap();
         assert_eq!(
             fresh,
-            "[mcp_servers.knode]\ncommand = \"/bin/knode\"\nargs = [\"mcp\"]\n"
+            "[mcp_servers.knode]\ncommand = \"/bin/knode\"\nargs = [\"mcp\", \"--agent\", \"codex\"]\n"
         );
-        assert!(codex_toml("mcp_servers = 3", knode).is_err());
+        assert!(codex_toml("mcp_servers = 3", knode, mcp).is_err());
     }
 }

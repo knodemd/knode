@@ -21,10 +21,15 @@ struct Client {
 
 impl Client {
     fn start(sb: &Sandbox, extra: &[&str]) -> Client {
+        Client::start_with_env(sb, extra, &[])
+    }
+
+    fn start_with_env(sb: &Sandbox, extra: &[&str], env: &[(&str, &str)]) -> Client {
         let mut child = sb
             .cmd()
             .arg("mcp")
             .args(extra)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(std::fs::File::create(sb.path("mcp-stderr.log")).unwrap())
@@ -121,7 +126,8 @@ fn text(result: &Value) -> &str {
 fn a_client_uses_every_tool() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
-    let mut client = Client::start(&sb, &[]);
+    let agent = sb.connect_agent();
+    let mut client = Client::start(&sb, &["--agent", agent]);
 
     let init = client.initialize("2025-06-18");
     let result = &init["result"];
@@ -184,7 +190,7 @@ fn a_client_uses_every_tool() {
     assert_eq!(node["tags"], json!(["business"]));
     assert_eq!(
         node["created_by"],
-        json!({ "kind": "agent", "actor": "test-client" })
+        json!({ "kind": "agent", "actor": "gemini-cli" })
     );
     assert_eq!(
         result["structuredContent"]["backlinks"][0]["from"],
@@ -203,7 +209,7 @@ fn a_client_uses_every_tool() {
     assert_eq!(result["structuredContent"]["link"]["kind"], "part-of");
     assert_eq!(
         result["structuredContent"]["link"]["created_by"]["actor"],
-        "test-client"
+        "gemini-cli"
     );
 
     // write_node updates by id, appending
@@ -218,7 +224,8 @@ fn a_client_uses_every_tool() {
     let nodes = result["structuredContent"]["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 2);
     assert_eq!(nodes[0]["id"], pricing.as_str());
-    assert_eq!(nodes[0]["updated_by"]["actor"], "test-client");
+    // Recorded under the name of the agent its key belongs to, not the client's own name.
+    assert_eq!(nodes[0]["updated_by"]["actor"], "gemini-cli");
 
     // A tool error is a result the model can read, not a protocol error.
     let result = client.call("read_node", json!({ "title": "Nothing like this" }));
@@ -241,7 +248,7 @@ fn a_client_uses_every_tool() {
     );
     assert_eq!(
         node.updated_by,
-        knode_format::Provenance::agent("test-client")
+        knode_format::Provenance::agent("gemini-cli")
     );
 }
 
@@ -274,9 +281,12 @@ fn the_space_flag_picks_the_space() {
     sb.ok(&["init", "work"]);
     sb.ok(&["init", "other"]);
     let other = sb.space("other");
-    let mut client = Client::start(&sb, &["--space", other.to_str().unwrap()]);
+    let agent = sb.connect_agent();
+    sb.ok(&["agents", "grant", agent, "other", "write"]);
+    let mut client = Client::start(&sb, &["--agent", agent, "--space", other.to_str().unwrap()]);
     client.initialize("2025-06-18");
-    client.call("write_node", json!({ "title": "In other" }));
+    let result = client.call("write_node", json!({ "title": "In other" }));
+    assert_eq!(result["isError"], false, "{result}");
     client.finish();
     let space = knode_format::Space::open(&other).unwrap();
     assert_eq!(space.node_count().unwrap(), 1);
@@ -288,9 +298,10 @@ fn the_space_flag_picks_the_space() {
 fn the_tools_go_through_knode_service() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
+    let agent = sb.connect_agent();
     // knode mcp starts the service again by itself.
     sb.ok(&["service", "stop"]);
-    let mut client = Client::start(&sb, &[]);
+    let mut client = Client::start(&sb, &["--agent", agent]);
     client.initialize("2025-06-18");
     let result = client.call(
         "write_node",
@@ -331,33 +342,109 @@ fn the_tools_go_through_knode_service() {
     let space = knode_format::Space::open(sb.space("work")).unwrap();
     let node = &space.find_by_title("Through the service").unwrap()[0];
     let node = space.get_node(&node.id).unwrap().unwrap();
-    assert_eq!(node.created_by.actor, "test-client");
+    assert_eq!(node.created_by.actor, "gemini-cli");
 }
 
 #[test]
 #[cfg(unix)]
-fn without_the_service_the_tools_open_the_space_directly() {
+fn without_the_service_agents_reach_nothing() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
+    let agent = sb.connect_agent();
     sb.ok(&["service", "stop"]);
     // The service cannot make its socket in a Knode home it cannot write to.
     let home = sb.knode_home();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
-    let mut client = Client::start(&sb, &[]);
+    let mut client = Client::start(&sb, &["--agent", agent]);
     client.initialize("2025-06-18");
     let result = client.call("write_node", json!({ "title": "Direct" }));
-    assert_eq!(result["isError"], false, "{result}");
-    let result = client.call("read_node", json!({ "title": "Direct" }));
-    assert_eq!(result["isError"], false, "{result}");
-    client.finish();
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-    let stderr = std::fs::read_to_string(sb.path("mcp-stderr.log")).unwrap();
+    assert_eq!(result["isError"], true, "{result}");
     assert!(
-        stderr.contains("warning: Knode Service cannot run"),
-        "{stderr}"
+        text(&result).contains("Knode Service cannot run"),
+        "{result}"
     );
+    client.finish();
+    // An agent never opens a space by itself, so nothing bypassed its grants.
     let space = knode_format::Space::open(sb.space("work")).unwrap();
-    assert_eq!(space.node_count().unwrap(), 1);
+    assert_eq!(space.node_count().unwrap(), 0);
+}
+
+#[test]
+fn an_agent_set_up_without_a_key_is_told_to_connect_again() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    // As `knode connect` set agents up before keys: `knode mcp` and nothing else.
+    let mut client = Client::start(&sb, &[]);
+    client.initialize("2025-06-18");
+    let result = client.call("recent", json!({}));
+    assert_eq!(result["isError"], true);
+    assert!(text(&result).contains("its own key"), "{result}");
+    assert!(text(&result).contains("knode connect"), "{result}");
+    client.finish();
+
+    // An agent name whose key is not on this machine.
+    let mut client = Client::start(&sb, &["--agent", "codex"]);
+    client.initialize("2025-06-18");
+    let result = client.call("recent", json!({}));
+    assert!(text(&result).contains("knode connect codex"), "{result}");
+    client.finish();
+
+    // A key the service does not know.
+    let mut child = Client::start_with_env(
+        &sb,
+        &[],
+        &[(
+            "KNODE_AGENT_KEY",
+            "knk_0000000000000000000000000000000000000000000000000000000000000000",
+        )],
+    );
+    child.initialize("2025-06-18");
+    let result = child.call("recent", json!({}));
+    assert!(
+        text(&result).contains("Knode refused this agent"),
+        "{result}"
+    );
+    child.finish();
+}
+
+#[test]
+fn grants_and_revocation_reach_the_tools() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let agent = sb.connect_agent();
+
+    // Write on the default space only: the personal space is invisible.
+    let personal = sb.space("personal");
+    let mut client = Client::start(
+        &sb,
+        &["--agent", agent, "--space", personal.to_str().unwrap()],
+    );
+    client.initialize("2025-06-18");
+    let result = client.call("recent", json!({}));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(
+        text(&result).contains("cannot open the Knode space"),
+        "{result}"
+    );
+    client.finish();
+
+    // Read only: reading works, writing does not.
+    sb.ok(&["agents", "grant", "gemini", "work", "read"]);
+    let mut client = Client::start(&sb, &["--agent", agent]);
+    client.initialize("2025-06-18");
+    let result = client.call("recent", json!({}));
+    assert_eq!(result["isError"], false, "{result}");
+    let result = client.call("write_node", json!({ "title": "Nope" }));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(text(&result).contains("only read"), "{result}");
+
+    // Revoked: the next call of the running server is refused.
+    sb.ok(&["agents", "revoke", "gemini"]);
+    let result = client.call("recent", json!({}));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(text(&result).contains("knode connect"), "{result}");
+    client.finish();
 }
