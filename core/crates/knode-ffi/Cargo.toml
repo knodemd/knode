@@ -8,3 +8,23 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib"]
+
+[[bin]]
+# Generates the Swift bindings: `cargo run -p knode-ffi --features bindgen --bin uniffi-bindgen`.
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+knode-format = { path = "../knode-format", version = "=0.0.0" }
+thiserror = "=2.0.21"
+uniffi = "=0.32.2"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
