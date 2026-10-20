@@ -296,6 +296,25 @@ impl NewNode {
     }
 }
 
+/// A node written elsewhere, such as in another space, to create with
+/// [`Space::import_node`](crate::Space::import_node) keeping its id, dates and provenance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedNode {
+    /// The id the node keeps.
+    pub id: NodeId,
+    /// Its kind, title, body and tags.
+    #[serde(flatten)]
+    pub node: NewNode,
+    /// When it was created.
+    pub created_at: Timestamp,
+    /// When it last changed; not earlier than `created_at`.
+    pub updated_at: Timestamp,
+    /// Who created it.
+    pub created_by: Provenance,
+    /// Who changed it last.
+    pub updated_by: Provenance,
+}
+
 /// The changes to make with [`Space::update_node`](crate::Space::update_node). Fields left as
 /// `None` stay as they are.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

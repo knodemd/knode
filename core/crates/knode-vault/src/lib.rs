@@ -46,7 +46,14 @@
 //! kind: decision
 //! tags: [format, v0]
 //! created: 2026-10-20T09:30:00.000Z
+//! created_by:
+//!   kind: person
+//!   actor: Ada
 //! updated: 2026-10-20T10:02:13.511Z
+//! updated_by:
+//!   kind: agent
+//!   actor: claude-code
+//!   session: 8f14e45f
 //! links:
 //!   derived-from: [01JB7Q2A0B1C2D3E4F5G6H7J8K]
 //! properties:
@@ -55,8 +62,13 @@
 //! The body, as stored, with [[links]] by current title.
 //! ```
 //!
-//! `title` is written only when the file name does not read back as the title. `links` holds the
-//! typed links made by hand (every kind but `mentions`, which come from the body).
+//! `title` is written only when the file name does not read back as the title. `created_by` and
+//! `updated_by` are the provenance of the node, with `session` and `source` when it has them;
+//! `updated_by` is left out when it is the same as `created_by`. `links` holds the typed links
+//! made by hand (every kind but `mentions`, which come from the body).
+//!
+//! Importing the folder into another space keeps the id, dates and provenance of every node, so
+//! exporting the copy gives the same files.
 //!
 //! # Notes from other apps
 //!
@@ -102,14 +114,16 @@ pub mod property_keys {
     /// The frontmatter entries of the file Knode does not read, exactly as written.
     pub const FRONTMATTER: &str = "markdown.frontmatter";
     /// The `id` of the file, when it is not the id of the node: the node was imported from
-    /// another space. Export writes it as the id, so the same note keeps one id in every copy.
+    /// another space by an earlier version of Knode, which could not keep ids. Export writes it
+    /// as the id, so the same note keeps one id in every copy. Read, no longer written: imports
+    /// now keep the id of the file.
     pub const ID: &str = "markdown.id";
-    /// The `created` of the file, for a node with [`ID`].
+    /// The `created` of the file, for a node with [`ID`]. Read, no longer written.
     pub const CREATED: &str = "markdown.created";
-    /// The `updated` of the file, for a node with [`ID`].
+    /// The `updated` of the file, for a node with [`ID`]. Read, no longer written.
     pub const UPDATED: &str = "markdown.updated";
     /// When the node was written from that file: while the node's `updated_at` is still this,
-    /// export writes [`UPDATED`] as `updated`.
+    /// export writes [`UPDATED`] as `updated`. Read, no longer written.
     pub const WRITTEN: &str = "markdown.written";
 
     /// The prefix of every key above.

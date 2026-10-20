@@ -69,6 +69,18 @@ pub fn backend(path: &Path) -> Result<Box<dyn Backend>> {
     })
 }
 
+/// Knode Service, started if needed, or `None` after a warning when it cannot run: the caller
+/// then opens the space itself.
+pub fn client() -> Option<Client> {
+    match connect() {
+        Ok(client) => Some(client),
+        Err(error) => {
+            warn_direct(&error);
+            None
+        }
+    }
+}
+
 /// The backend of `knode mcp` for an agent with its key: always Knode Service, which checks
 /// the agent's grants on every call. An agent never opens a space directly. When the service
 /// refuses the key or cannot run, every tool says what to do instead.

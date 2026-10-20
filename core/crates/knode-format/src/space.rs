@@ -9,9 +9,9 @@ use ulid::{Generator, Ulid};
 
 use crate::types::{ActorKind, ChangeOp};
 use crate::{
-    BLOBS_DIR, ChangeId, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry, Link,
-    Manifest, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties, Provenance, Result,
-    SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, schema,
+    BLOBS_DIR, ChangeId, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry,
+    ImportedNode, Link, Manifest, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties,
+    Provenance, Result, SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, schema,
 };
 use crate::{LinkDirection, attachments, links};
 
@@ -210,6 +210,77 @@ impl Space {
             tags,
         };
         insert_node(&tx, &id, &content, (now, prov), prov, now)?;
+        write_properties(&tx, &id, properties, prov, now)?;
+        record(&tx, &id, ChangeOp::Create, prov, now, change, None)?;
+        tx.commit()?;
+        self.require_node(&id)
+    }
+
+    /// Creates a node written elsewhere, keeping its id, `created_at`, `updated_at`,
+    /// `created_by` and `updated_by`, with its properties, and returns it. For imports and
+    /// sync only: everything else creates nodes with [`create_node`](Self::create_node).
+    ///
+    /// The write itself is made by `by`, now: the `node.create` change and the `create` row of
+    /// the history are those of `by`, so the history says who brought the node into this
+    /// space and when, while the node says who wrote it and when. The body is read like any
+    /// other (see [`create_node`](Self::create_node)).
+    ///
+    /// Fails with [`Error::Invalid`] when a node with this id exists (update it instead) or
+    /// `updated_at` is earlier than `created_at`. An id that only the history still has, such
+    /// as a node deleted here, is created again as a recovered node would be.
+    pub fn import_node(
+        &mut self,
+        imported: ImportedNode,
+        properties: &Properties,
+        by: &Provenance,
+    ) -> Result<Node> {
+        check_properties(properties)?;
+        let ImportedNode {
+            id,
+            node: new,
+            created_at,
+            updated_at,
+            created_by,
+            updated_by,
+        } = imported;
+        if updated_at < created_at {
+            return Err(Error::Invalid(format!(
+                "node {id} cannot be updated ({updated_at}) before it was created ({created_at})"
+            )));
+        }
+        let kind = if new.kind.trim().is_empty() {
+            kinds::NOTE.to_string()
+        } else {
+            check_name("node kind", new.kind.trim())?
+        };
+        let title = check_title(&new.title)?;
+        let tags = clean_tags(&new.tags)?;
+        if read_node(&self.conn, &id)?.is_some() {
+            return Err(Error::Invalid(format!(
+                "node {id} already exists; update it instead"
+            )));
+        }
+        let now = Timestamp::now();
+
+        let tx = self.conn.transaction()?;
+        let prov = provenance_id(&tx, by)?;
+        let created_prov = provenance_id(&tx, &created_by)?;
+        let updated_prov = provenance_id(&tx, &updated_by)?;
+        let change = add_change(&tx, now, prov, actions::NODE_CREATE, &id.to_string(), None)?;
+        let content = Content {
+            kind,
+            title,
+            body: new.body,
+            tags,
+        };
+        insert_node(
+            &tx,
+            &id,
+            &content,
+            (created_at, created_prov),
+            updated_prov,
+            updated_at,
+        )?;
         write_properties(&tx, &id, properties, prov, now)?;
         record(&tx, &id, ChangeOp::Create, prov, now, change, None)?;
         tx.commit()?;

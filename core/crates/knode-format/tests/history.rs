@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use knode_format::{
-    ActorKind, ChangeOp, Error, FolderSpec, GrantLevel, NewNode, NodeUpdate, Provenance,
-    SCHEMA_VERSION, Space, actions, folder_kinds, link_kinds, setting_keys,
+    ActorKind, ChangeOp, Error, FolderSpec, GrantLevel, ImportedNode, NewNode, NodeId, NodeUpdate,
+    Properties, Provenance, SCHEMA_VERSION, Space, Timestamp, actions, folder_kinds, link_kinds,
+    setting_keys,
 };
 use tempfile::TempDir;
 
@@ -792,4 +793,108 @@ fn agents_keys_and_grants() {
             "agent.key.revoke"
         ]
     );
+}
+
+// Imports
+
+fn imported(id: NodeId, title: &str, body: &str) -> ImportedNode {
+    ImportedNode {
+        id,
+        node: NewNode::note(title, body).with_tags(["Plan"]),
+        created_at: Timestamp(1_700_000_000_000),
+        updated_at: Timestamp(1_700_000_500_000),
+        created_by: claude(),
+        updated_by: Provenance::person("Grace").with_source("~/notes"),
+    }
+}
+
+#[test]
+fn imports_a_node_keeping_its_id_dates_and_provenance() {
+    let (_dir, mut space) = new_space();
+    let waiting = space
+        .create_node(NewNode::note("Waiting", "see [[Plan]]"), &ada())
+        .unwrap();
+    let id = NodeId::parse("01JB7Q9W8K3M2N4P5R6S7T8V9X").unwrap();
+    let props = Properties::from([("source.url".to_string(), "https://x.y".to_string())]);
+    let importer = Provenance::person("Ada").with_source("~/export");
+    let node = space
+        .import_node(
+            imported(id, "Plan", "Ship. See [[Waiting]]."),
+            &props,
+            &importer,
+        )
+        .unwrap();
+    assert_eq!(node.id, id);
+    assert_eq!(node.tags, ["plan"]);
+    assert_eq!(node.created_at, Timestamp(1_700_000_000_000));
+    assert_eq!(node.updated_at, Timestamp(1_700_000_500_000));
+    assert_eq!(node.created_by, claude());
+    assert_eq!(node.updated_by.actor, "Grace");
+    assert_eq!(space.properties(&id).unwrap(), props);
+
+    // The body's links are read, and links waiting for its title resolve.
+    assert_eq!(space.links_from(&id).unwrap()[0].to, waiting.id);
+    assert_eq!(space.links_from(&waiting.id).unwrap()[0].to, id);
+
+    // The history and the change are those of the import, made now by the importer.
+    let change = space.changes(1, None).unwrap().remove(0);
+    assert_eq!(change.action, actions::NODE_CREATE);
+    assert_eq!(change.subject, id.to_string());
+    assert_eq!(change.changed_by, importer);
+    assert!(change.changed_at > node.updated_at);
+    let history = space.history(&id).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].op, ChangeOp::Create);
+    assert_eq!(history[0].changed_by, importer);
+    assert_eq!(history[0].change_id, Some(change.id));
+
+    // Undoing the import removes the node.
+    space.undo(change.id, &ada(), false).unwrap();
+    assert!(space.get_node(&id).unwrap().is_none());
+}
+
+#[test]
+fn imports_refuse_ids_in_use_and_dates_out_of_order() {
+    let (_dir, mut space) = new_space();
+    let node = space.create_node(NewNode::note("A", ""), &ada()).unwrap();
+    let before = last_change(&space);
+    let err = space
+        .import_node(imported(node.id, "B", ""), &Properties::new(), &ada())
+        .unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)), "{err}");
+
+    let id = NodeId::parse("01JB7Q9W8K3M2N4P5R6S7T8V9X").unwrap();
+    let mut backwards = imported(id, "B", "");
+    backwards.updated_at = Timestamp(backwards.created_at.0 - 1);
+    assert!(matches!(
+        space.import_node(backwards, &Properties::new(), &ada()),
+        Err(Error::Invalid(_))
+    ));
+    let mut bad_kind = imported(id, "B", "");
+    bad_kind.node.kind = "Not A Kind".into();
+    assert!(
+        space
+            .import_node(bad_kind, &Properties::new(), &ada())
+            .is_err()
+    );
+    assert_eq!(
+        last_change(&space),
+        before,
+        "a refused import writes nothing"
+    );
+    assert!(space.get_node(&id).unwrap().is_none());
+
+    // An id only the history has, such as a node deleted here, is created again.
+    space.delete_node(&node.id, &ada()).unwrap();
+    let back = space
+        .import_node(imported(node.id, "A", "again"), &Properties::new(), &ada())
+        .unwrap();
+    assert_eq!(back.body, "again");
+    let ops: Vec<ChangeOp> = space
+        .history(&node.id)
+        .unwrap()
+        .into_iter()
+        .map(|h| h.op)
+        .collect();
+    assert_eq!(ops, [ChangeOp::Create, ChangeOp::Delete, ChangeOp::Create]);
 }

@@ -116,3 +116,43 @@ fn a_missing_space_is_unavailable() {
         ServiceBackend::new("/x.knode", || Client::connect("/nonexistent/service.sock")).is_err()
     );
 }
+
+#[test]
+fn history_and_undo_go_through_the_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = dir.path().join("Work.knode");
+    Client::connect(&socket)
+        .unwrap()
+        .create_space(&space, "Work")
+        .unwrap();
+    let backend = backend_for(socket, space);
+
+    run(
+        &backend,
+        "write_node",
+        json!({"title": "Plan", "body": "One."}),
+    );
+    run(
+        &backend,
+        "write_node",
+        json!({"title": "Plan", "body": "Two."}),
+    );
+    let out = run(&backend, "history", json!({"node": "Plan"}));
+    assert!(!out.is_error, "{}", out.text);
+    let update = out.structured.unwrap()["changes"][0]["id"]
+        .as_i64()
+        .unwrap();
+    let out = run(&backend, "undo", json!({"change": update}));
+    assert!(!out.is_error, "{}", out.text);
+    let plan = backend.find_by_title("Plan").unwrap()[0].id;
+    assert_eq!(backend.get_node(&plan).unwrap().unwrap().body, "One.");
+
+    // Errors of the service reach the agent as tool errors that say what to do.
+    let out = run(&backend, "undo", json!({"change": update}));
+    assert!(out.is_error);
+    assert!(out.text.contains("already undone"), "{}", out.text);
+    assert_eq!(backend.history(&plan).unwrap().len(), 3);
+    service.stop().unwrap();
+}
