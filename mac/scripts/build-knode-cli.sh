@@ -9,10 +9,9 @@
 # the output is never committed.
 set -eu
 
-mac_dir="$(cd "$(dirname "$0")/.." && pwd)"
-core_dir="$mac_dir/../core"
+mac_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
+core_dir="$(cd "$mac_dir/../core" && pwd -P)"
 output="${1:-$mac_dir/build/KnodeCLI/knode}"
-inputs="$mac_dir/scripts/knode-cli-inputs.xcfilelist"
 
 # Xcode runs scripts without the login shell's PATH.
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
@@ -24,19 +23,8 @@ fi
 cd "$core_dir"
 
 # Xcode only reruns this script when a file in the input list changes, so the list must name
-# every source file of the crates of this workspace that knode-cli is built from.
-crates="$(cargo tree --locked --quiet --package knode-cli --edges normal,build --prefix none \
-    | sed -n "s|.*(${core_dir%/}/\(crates/[^)]*\)).*|\1|p" | sort -u)"
-missing=0
-# shellcheck disable=SC2086
-for file in $(find $crates -path '*/target' -prune -o -type f \
-    \( -path '*/src/*' -o -name Cargo.toml -o -name build.rs \) -print | sort); do
-    if ! grep -qxF "\$(SRCROOT)/../core/$file" "$inputs"; then
-        echo "error: core/$file is missing from mac/scripts/knode-cli-inputs.xcfilelist" >&2
-        missing=1
-    fi
-done
-[ "$missing" -eq 0 ] || exit 1
+# every source file of the crates of this workspace it is built from.
+"$mac_dir/scripts/update-inputs.sh" --check cli
 
 # The same build folder as the core of the app, apart from core/target.
 export CARGO_TARGET_DIR="$mac_dir/build/cargo"
