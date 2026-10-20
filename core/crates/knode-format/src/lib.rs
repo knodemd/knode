@@ -58,7 +58,7 @@ mod views;
 pub use attachments::{Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, blob_url_hash};
 pub use error::{Error, Result};
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
-pub use loro::SYNC_NODES_DIR;
+pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
