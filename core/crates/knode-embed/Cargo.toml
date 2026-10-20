@@ -35,4 +35,5 @@ tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
 
 [dev-dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tempfile = "=3.27.0"
