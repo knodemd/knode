@@ -129,7 +129,7 @@ struct KButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: size == .small ? 6 : 8) {
-                if let icon { KIcon(icon, size: size == .large ? .md : .sm) }
+                if let icon { KIcon(icon, size: size == .large ? .md : .sm).accessibilityHidden(true) }
                 Text(title)
             }
         }
