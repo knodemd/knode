@@ -60,6 +60,42 @@ pub enum KnodeError {
         /// What went wrong.
         message: String,
     },
+    /// No change has this id.
+    #[error("change {id} not found")]
+    ChangeNotFound {
+        /// The id that was asked for.
+        id: i64,
+    },
+    /// The change cannot be undone: its action cannot be undone, the versions it needs were
+    /// purged, or it was already undone.
+    #[error("{message}")]
+    CannotUndo {
+        /// Why not, written for people.
+        message: String,
+    },
+    /// Later changes touched what the change touched: undoing it would overwrite them. Ask the
+    /// person before undoing it again with `force`.
+    #[error("{message}")]
+    UndoConflict {
+        /// The change.
+        change: i64,
+        /// The later changes, oldest first.
+        later: Vec<i64>,
+        /// What would be overwritten, written for people.
+        message: String,
+    },
+    /// Only a person may do this, never an agent.
+    #[error("{message}")]
+    PersonOnly {
+        /// What was refused, written for people.
+        message: String,
+    },
+    /// The Knode settings (`config.toml`) could not be found, read or written.
+    #[error("{message}")]
+    Config {
+        /// What went wrong.
+        message: String,
+    },
 }
 
 impl From<format::Error> for KnodeError {
@@ -74,6 +110,25 @@ impl From<format::Error> for KnodeError {
             },
             E::NotFound(id) => KnodeError::NotFound { id: id.to_string() },
             E::Invalid(message) => KnodeError::Invalid { message },
+            E::ChangeNotFound(id) => KnodeError::ChangeNotFound { id },
+            e @ (E::CannotUndo { .. } | E::AlreadyUndone { .. }) => KnodeError::CannotUndo {
+                message: e.to_string(),
+            },
+            E::UndoConflict { change, later } => {
+                let message = E::UndoConflict {
+                    change,
+                    later: later.clone(),
+                }
+                .to_string();
+                KnodeError::UndoConflict {
+                    change,
+                    later,
+                    message,
+                }
+            }
+            e @ E::PersonOnly(_) => KnodeError::PersonOnly {
+                message: e.to_string(),
+            },
             e @ (E::UnsupportedFormat { .. }
             | E::NewerSchema { .. }
             | E::MismatchedSpace { .. }) => KnodeError::Unsupported {
@@ -287,6 +342,104 @@ impl From<format::Link> for Link {
     }
 }
 
+/// What a version in the history of a node did to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ChangeOp {
+    /// The node was created.
+    Create,
+    /// The node was changed.
+    Update,
+    /// The node was deleted.
+    Delete,
+}
+
+impl From<format::ChangeOp> for ChangeOp {
+    fn from(op: format::ChangeOp) -> Self {
+        match op {
+            format::ChangeOp::Create => ChangeOp::Create,
+            format::ChangeOp::Update => ChangeOp::Update,
+            format::ChangeOp::Delete => ChangeOp::Delete,
+        }
+    }
+}
+
+/// One version of a node: the node as it was right after a change (for a delete, right before
+/// it), and who made the change and when.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HistoryEntry {
+    /// The order of the version in the space; it only grows.
+    pub seq: i64,
+    /// The node.
+    pub node_id: String,
+    /// What the change did to the node.
+    pub op: ChangeOp,
+    /// When the change was made, in Unix milliseconds.
+    pub changed_at: i64,
+    /// Who made the change.
+    pub changed_by: Provenance,
+    /// What the node was.
+    pub kind: String,
+    /// The title.
+    pub title: String,
+    /// The text, in Markdown.
+    pub body: String,
+    /// The tags.
+    pub tags: Vec<String>,
+    /// The change the version belongs to, which [`KnodeSpace::undo`] takes. `None` only in
+    /// spaces written before schema version 3 that were never migrated.
+    pub change_id: Option<i64>,
+    /// When the version puts back an earlier one (an undo or a restore), the `seq` of that one.
+    pub restored_from: Option<i64>,
+}
+
+impl From<format::HistoryEntry> for HistoryEntry {
+    fn from(h: format::HistoryEntry) -> Self {
+        HistoryEntry {
+            seq: h.seq,
+            node_id: h.node_id.to_string(),
+            op: h.op.into(),
+            changed_at: h.changed_at.as_millis(),
+            changed_by: h.changed_by.into(),
+            kind: h.kind,
+            title: h.title,
+            body: h.body,
+            tags: h.tags,
+            change_id: h.change_id,
+            restored_from: h.restored_from,
+        }
+    }
+}
+
+/// One change: one write that a person or an agent asked for.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Change {
+    /// The order of the change in the space; it only grows.
+    pub id: i64,
+    /// When the change was made, in Unix milliseconds.
+    pub changed_at: i64,
+    /// Who made the change.
+    pub changed_by: Provenance,
+    /// What was done, such as `node.update`, `node.restore` or `undo`.
+    pub action: String,
+    /// What it was done to: a node id, a setting key, or empty.
+    pub subject: String,
+    /// For an `undo`, the change it undoes.
+    pub undoes: Option<i64>,
+}
+
+impl From<format::Change> for Change {
+    fn from(c: format::Change) -> Self {
+        Change {
+            id: c.id,
+            changed_at: c.changed_at.as_millis(),
+            changed_by: c.changed_by.into(),
+            action: c.action,
+            subject: c.subject,
+            undoes: c.undoes,
+        }
+    }
+}
+
 /// An open `.knode` space. Safe to share between threads: calls take turns.
 #[derive(uniffi::Object)]
 pub struct KnodeSpace {
@@ -393,6 +546,54 @@ impl KnodeSpace {
         let links = self.lock().backlinks(&id)?;
         Ok(links.into_iter().map(Link::from).collect())
     }
+
+    /// Renames the space: changes `name` in `manifest.json`. The package folder keeps its name.
+    pub fn rename(&self, name: String) -> Result<SpaceInfo> {
+        self.lock().rename(&name)?;
+        self.info()
+    }
+
+    /// A setting of the space, such as `space.icon`, or `None` when it is not set.
+    pub fn setting(&self, key: String) -> Result<Option<String>> {
+        Ok(self.lock().setting(&key)?)
+    }
+
+    /// Sets a setting of the space, or removes it with `None`, and records the change. Returns
+    /// whether anything changed. Only a person can change settings.
+    pub fn set_setting(&self, key: String, value: Option<String>, by: Provenance) -> Result<bool> {
+        Ok(self
+            .lock()
+            .set_setting(&key, value.as_deref(), &by.into())?)
+    }
+
+    /// Every version of a node, oldest first, including its deletion. Works for deleted nodes.
+    pub fn history(&self, id: String) -> Result<Vec<HistoryEntry>> {
+        let id = parse_id(&id)?;
+        let history = self.lock().history(&id)?;
+        Ok(history.into_iter().map(HistoryEntry::from).collect())
+    }
+
+    /// The changes made to a node, newest first, at most `limit`.
+    pub fn changes_of(&self, id: String, limit: u32) -> Result<Vec<Change>> {
+        let id = parse_id(&id)?;
+        let changes = self.lock().changes_of(&id.to_string(), limit as usize)?;
+        Ok(changes.into_iter().map(Change::from).collect())
+    }
+
+    /// Puts a node back to one of its versions (`seq` of an entry of its history) and returns
+    /// it. A deleted node comes back with the same id. Restoring the version the node already
+    /// has writes nothing.
+    pub fn restore(&self, id: String, seq: i64, by: Provenance) -> Result<Node> {
+        let id = parse_id(&id)?;
+        Ok(self.lock().restore(&id, seq, &by.into())?.into())
+    }
+
+    /// Undoes a change and returns the change that undoes it. Fails with
+    /// [`KnodeError::UndoConflict`] when later changes touched the same nodes, unless `force`
+    /// is set: confirm with the person first.
+    pub fn undo(&self, change: i64, by: Provenance, force: bool) -> Result<Change> {
+        Ok(self.lock().undo(change, &by.into(), force)?.into())
+    }
 }
 
 impl KnodeSpace {
@@ -407,6 +608,61 @@ impl KnodeSpace {
         // a transaction), so a poisoned lock is still safe to use.
         self.space.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+fn config_error(error: knode_config::Error) -> KnodeError {
+    KnodeError::Config {
+        message: error.to_string(),
+    }
+}
+
+fn config_paths() -> Result<knode_config::Paths> {
+    knode_config::Paths::from_env().map_err(config_error)
+}
+
+/// The default space for agents, capture and commands: `default_space` in
+/// `$KNODE_HOME/config.toml`, or `None` when there is none.
+#[uniffi::export]
+pub fn default_space() -> Result<Option<String>> {
+    default_space_in(&config_paths()?)
+}
+
+/// Sets `default_space` in `$KNODE_HOME/config.toml`, or removes it with `None`. Every other
+/// setting in the file is kept.
+#[uniffi::export]
+pub fn set_default_space(path: Option<String>) -> Result<()> {
+    set_default_space_in(&config_paths()?, path)
+}
+
+/// The folder where new spaces go by default, `~/Knode`.
+#[uniffi::export]
+pub fn spaces_folder() -> Result<String> {
+    Ok(config_paths()?.spaces_dir.display().to_string())
+}
+
+/// The `.knode` packages in the default spaces folder, sorted by path.
+#[uniffi::export]
+pub fn spaces_in_folder() -> Result<Vec<String>> {
+    spaces_in_folder_of(&config_paths()?)
+}
+
+fn default_space_in(paths: &knode_config::Paths) -> Result<Option<String>> {
+    let config = knode_config::Config::load(paths).map_err(config_error)?;
+    Ok(config
+        .default_space
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.display().to_string()))
+}
+
+fn set_default_space_in(paths: &knode_config::Paths, path: Option<String>) -> Result<()> {
+    let mut config = knode_config::Config::load(paths).map_err(config_error)?;
+    config.default_space = path.filter(|p| !p.is_empty()).map(Into::into);
+    config.save(paths).map_err(config_error)
+}
+
+fn spaces_in_folder_of(paths: &knode_config::Paths) -> Result<Vec<String>> {
+    let spaces = paths.spaces_in_dir().map_err(config_error)?;
+    Ok(spaces.iter().map(|p| p.display().to_string()).collect())
 }
 
 fn parse_id(id: &str) -> Result<NodeId> {

@@ -28,6 +28,28 @@ public protocol SpaceStore: Sendable {
     /// Full-text search over titles and bodies, best match first.
     func search(_ query: String, in space: Space.ID) async throws -> [NodeSummary]
 
+    /// Renames the space: its name in `manifest.json`. The package keeps its file name.
+    func renameSpace(_ space: Space.ID, to name: String) async throws -> Space
+
+    /// The icon of the space (`space.icon`), or `nil` when it has none.
+    func icon(of space: Space.ID) async throws -> String?
+
+    /// Sets the icon of the space, one emoji, or removes it with `nil`.
+    func setIcon(_ icon: String?, of space: Space.ID) async throws
+
+    /// Stops using the space. Nothing on disk changes.
+    func closeSpace(_ space: Space.ID) async
+
+    /// Every version of a node, newest first, with who changed it and when.
+    func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion]
+
+    /// Puts a node back to one of its versions (`NoteVersion.seq`) and returns it.
+    func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node
+
+    /// Undoes a change (`NoteVersion.changeID`). Fails with `SpaceStoreError.undoConflict` when
+    /// later changes touched the same notes, unless `force` is set: ask the person first.
+    func undo(change: Int64, in space: Space.ID, force: Bool) async throws
+
     /// Changes made to open spaces by someone else, such as an agent writing through Knode
     /// Service, as they happen. A store that sees no one else's changes returns a stream that ends
     /// at once.

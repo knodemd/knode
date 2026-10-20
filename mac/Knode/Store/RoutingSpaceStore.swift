@@ -75,6 +75,44 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space) { store in try await store.search(query, in: space) }
     }
 
+    public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
+        try await route(space) { store in try await store.history(of: node, in: space) }
+    }
+
+    // Knode Service has no methods yet to rename a space, change its settings, restore or undo:
+    // these go straight to the space through the core in the app, which SQLite allows next to the
+    // service. The service does not announce them to its other clients.
+
+    public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
+        let renamed = try await direct(space) { core in try await core.renameSpace(space, to: name) }
+        return renamed
+    }
+
+    public func icon(of space: Space.ID) async throws -> String? {
+        try await direct(space) { core in try await core.icon(of: space) }
+    }
+
+    public func setIcon(_ icon: String?, of space: Space.ID) async throws {
+        try await direct(space) { core in try await core.setIcon(icon, of: space) }
+    }
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        try await direct(space) { core in try await core.restore(node, to: version, in: space) }
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        try await direct(space) { core in try await core.undo(change: change, in: space, force: force) }
+    }
+
+    public func closeSpace(_ space: Space.ID) async {
+        guard let entry = open.removeValue(forKey: space) else { return }
+        if entry.backend == .service {
+            await service.close(space)
+        } else {
+            core.close(space)
+        }
+    }
+
     // MARK: Routing
 
     private func store(_ backend: Backend) -> any SpaceStore {
@@ -84,7 +122,7 @@ public actor RoutingSpaceStore: SpaceStore {
     /// Opens or creates a space through the service, or through the core when the service is not
     /// running.
     private func openWith(_ open: (any SpaceStore) async throws -> Space) async throws -> Space {
-        let space: Space
+        var space: Space
         let backend: Backend
         do {
             space = try await open(service)
@@ -94,7 +132,25 @@ public actor RoutingSpaceStore: SpaceStore {
             backend = .core
         }
         if let url = space.url { self.open[space.id] = (url, backend) }
+        if backend == .service, let url = space.url {
+            // The service reads the manifest once; the app may have renamed the space since.
+            space.name = SpaceManifest.name(at: url) ?? space.name
+            space.icon = try? await icon(of: space.id)
+        }
         return space
+    }
+
+    /// Runs a call with the core in the app, opening the space there for the call when the
+    /// service holds it.
+    private func direct<T: Sendable>(_ space: Space.ID, _ work: (CoreSpaceStore) async throws -> T) async throws -> T {
+        guard let entry = open[space] else { throw SpaceStoreError.spaceNotFound(space) }
+        if entry.backend == .core { return try await work(core) }
+        let wasOpen = core.isOpen(space)
+        _ = try await core.openSpace(at: entry.url)
+        defer {
+            if !wasOpen, self.open[space]?.backend != .core { core.close(space) }
+        }
+        return try await work(core)
     }
 
     /// Runs a call on the store that holds the space. If the service stopped meanwhile, the space

@@ -76,6 +76,57 @@ public final class CoreSpaceStore: SpaceStore {
         return hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) }
     }
 
+    public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
+        let core = try self.core(space)
+        let info = try await run { try core.rename(name: name) }
+        return spaces.withLock { spaces in
+            spaces[space]?.space.name = info.name
+            return spaces[space]?.space ?? Space(id: info.id, name: info.name)
+        }
+    }
+
+    public func icon(of space: Space.ID) async throws -> String? {
+        let core = try self.core(space)
+        let value = try await run { try core.setting(key: SpaceIcon.settingKey) }
+        // A value that is not one emoji is kept as it is, and shown as no icon.
+        return value.flatMap { SpaceIcon.isEmoji($0) ? $0 : nil }
+    }
+
+    public func setIcon(_ icon: String?, of space: Space.ID) async throws {
+        let icon = try SpaceIcon.normalized(icon)
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.setSetting(key: SpaceIcon.settingKey, value: icon, by: author) }
+        spaces.withLock { $0[space]?.space.icon = icon }
+    }
+
+    public func closeSpace(_ space: Space.ID) async {
+        close(space)
+    }
+
+    public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
+        let core = try self.core(space)
+        let history = try await run { try core.history(id: node) }
+        return history.reversed().map(NoteVersion.init)
+    }
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        let core = try self.core(space)
+        let author = author
+        return Node(try await run { try core.restore(id: node, seq: version, by: author) })
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.undo(change: change, by: author, force: force) }
+    }
+
+    /// Whether the core holds the space now.
+    func isOpen(_ space: Space.ID) -> Bool {
+        spaces.withLock { $0[space] != nil }
+    }
+
     /// Closes the space: the core lets go of its files.
     public func close(_ space: Space.ID) {
         _ = spaces.withLock { $0.removeValue(forKey: space) }
@@ -85,7 +136,8 @@ public final class CoreSpaceStore: SpaceStore {
 
     private func register(_ core: KnodeSpace) async throws -> Space {
         let info = try await run { try core.info() }
-        let space = Space(id: info.id, name: info.name, url: URL(filePath: info.path, directoryHint: .isDirectory).standardizedFileURL)
+        let icon = try await run { try core.setting(key: SpaceIcon.settingKey) }.flatMap { SpaceIcon.isEmoji($0) ? $0 : nil }
+        let space = Space(id: info.id, name: info.name, url: URL(filePath: info.path, directoryHint: .isDirectory).standardizedFileURL, icon: icon)
         return spaces.withLock { spaces in
             // The same space opened twice, through another path: keep the first.
             if let open = spaces[space.id] { return open.space }
@@ -121,6 +173,11 @@ public final class CoreSpaceStore: SpaceStore {
         case .Unsupported(let message): SpaceStoreError.unsupported(message)
         case .Invalid(let message): SpaceStoreError.invalid(message)
         case .Storage(let message): SpaceStoreError.storage(message)
+        case .ChangeNotFound(let id): SpaceStoreError.invalid("change \(id) not found")
+        case .CannotUndo(let message): SpaceStoreError.cannotUndo(message)
+        case .UndoConflict(let change, let later, let message): SpaceStoreError.undoConflict(change: change, later: later, message: message)
+        case .PersonOnly(let message): SpaceStoreError.personOnly(message)
+        case .Config(let message): SpaceStoreError.config(message)
         }
     }
 }
@@ -149,5 +206,37 @@ extension Node {
 extension NodeSummary {
     init(_ node: KnodeCore.NodeSummary, excerpt: String) {
         self.init(id: node.id, title: node.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: node.updatedAt))
+    }
+}
+
+extension Author {
+    init(_ provenance: Provenance) {
+        let kind: Kind = switch provenance.kind {
+        case .person: .person
+        case .agent: .agent
+        case .system: .system
+        }
+        self.init(kind: kind, name: provenance.actor, session: provenance.session, source: provenance.source)
+    }
+}
+
+extension NoteVersion {
+    init(_ entry: HistoryEntry) {
+        let operation: Operation = switch entry.op {
+        case .create: .create
+        case .update: .update
+        case .delete: .delete
+        }
+        self.init(
+            seq: entry.seq,
+            nodeID: entry.nodeId,
+            operation: operation,
+            changeID: entry.changeId,
+            restoredFrom: entry.restoredFrom,
+            changedAt: Date(unixMilliseconds: entry.changedAt),
+            author: Author(entry.changedBy),
+            title: entry.title,
+            body: entry.body
+        )
     }
 }

@@ -1,6 +1,8 @@
 # The files build-xcframework.sh is built from: Xcode reruns it when one of them changes.
 # build-xcframework.sh fails when a file is missing here.
 $(SRCROOT)/../core/Cargo.lock
+$(SRCROOT)/../core/crates/knode-config/Cargo.toml
+$(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
