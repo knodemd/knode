@@ -8,22 +8,11 @@ struct DeletedNotesBanner: View {
 
     var body: some View {
         let count = deleted.waiting.count
-        HStack(spacing: 8) {
-            Label {
-                Text(count == 1 ? "1 note was deleted from the Markdown folder" : "\(count) notes were deleted from the Markdown folder")
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "folder.badge.minus")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Review", systemImage: "list.bullet", action: review)
-                .controlSize(.small)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+        KBanner(.warning, title: count == 1 ? "1 note was deleted from the Markdown folder" : "\(count) notes were deleted from the Markdown folder", actions: {
+            KButton("Review", icon: .list, size: .small, action: review)
+        })
+        .padding(.horizontal, KSpace.x2)
+        .padding(.vertical, KSpace.x1)
     }
 }
 
@@ -31,90 +20,95 @@ struct DeletedNotesBanner: View {
 /// in Knode too, keep it (its file is written again), or decide later.
 struct DeletedNotesSheet: View {
     let deleted: DeletedNotesModel
-    @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
 
     var body: some View {
         let notes = deleted.waiting
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Deleted from the Markdown Folder")
-                .font(.headline)
-            Text("These files were deleted from the live Markdown folder. Their notes are still in Knode, and are not written to the folder until you decide.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        KSheetSurface(width: 560) {
+            KSheetTitle(kicker: "Markdown folder", title: "Deleted from the Markdown folder",
+                        message: "These files were deleted from the live Markdown folder. Their notes are still in Knode, and are not written to the folder until you decide.",
+                        close: close)
 
             if notes.isEmpty {
-                ContentUnavailableView("Nothing to Decide", systemImage: "checkmark.circle", description: Text("Every note is in step with the folder."))
-                    .frame(minHeight: 120)
-            } else {
-                List(notes) { note in
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(note.title.isEmpty ? "Untitled" : note.title)
-                            Text(note.path)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        Button("Keep", systemImage: "arrow.uturn.backward") {
-                            Task { await deleted.keep([note.id]) }
-                        }
-                        .help("Keep the note and write its file again")
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            Task { await deleted.delete([note.id]) }
-                        }
-                        .help("Delete the note in Knode too. You can undo it.")
-                        Button("Later", systemImage: "clock") {
-                            deleted.decideLater([note.id])
-                        }
-                        .help("Decide later")
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                KCard(padding: 0) {
+                    KEmptyState(icon: .done, title: "Nothing to decide", message: "Every note is in step with the folder.")
+                        .frame(height: 200)
                 }
-                .frame(minHeight: 160)
+            } else {
+                KCard(padding: KSpace.x2) {
+                    KScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(notes) { note in
+                                KRow {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(note.title.isEmpty ? "Untitled" : note.title).font(KFont.ui(13, .semibold)).lineLimit(1)
+                                        Text(note.path)
+                                            .font(KFont.mono(11))
+                                            .foregroundStyle(theme.muted)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    KIconButton(.undo, title: "Keep the note and write its file again", size: .small) {
+                                        Task { await deleted.keep([note.id]) }
+                                    }
+                                    KIconButton(.delete, title: "Delete the note in Knode too. You can undo it.", size: .small) {
+                                        Task { await deleted.delete([note.id]) }
+                                    }
+                                    KIconButton(.history, title: "Decide later", size: .small) {
+                                        deleted.decideLater([note.id])
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(minHeight: 160, maxHeight: 280)
+                }
             }
 
             if !deleted.lastDeleted.isEmpty {
-                HStack {
+                HStack(spacing: KSpace.x2) {
                     Text(deleted.lastDeleted.count == 1 ? "Deleted 1 note." : "Deleted \(deleted.lastDeleted.count) notes.")
-                        .foregroundStyle(.secondary)
-                    Button("Undo", systemImage: "arrow.uturn.backward") {
+                        .font(KFont.ui(13))
+                        .foregroundStyle(theme.muted)
+                    KButton("Undo", icon: .undo, kind: .ghost, size: .small) {
                         Task { await deleted.undoDelete() }
                     }
                 }
-                .font(.callout)
             }
             if let message = deleted.errorMessage {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                KErrorText(message)
             }
 
-            HStack {
-                Button("Decide Later", systemImage: "clock") {
+            HStack(spacing: KSpace.x2) {
+                KButton("Decide later", icon: .history, kind: .ghost) {
                     deleted.decideLater(notes.map(\.id))
-                    dismiss()
+                    close()
                 }
                 Spacer()
-                Button("Delete All in Knode", systemImage: "trash", role: .destructive) {
+                KButton("Delete all in Knode", icon: .delete, kind: .destructive) {
                     Task { await deleted.delete(notes.map(\.id)) }
                 }
                 .disabled(notes.isEmpty)
-                Button("Keep All", systemImage: "arrow.uturn.backward") {
+                Button {
                     Task {
                         await deleted.keep(notes.map(\.id))
-                        dismiss()
+                        close()
                     }
+                } label: {
+                    HStack(spacing: 8) { KIcon(.undo, size: .sm); Text("Keep all") }
                 }
+                .buttonStyle(KButtonStyle(kind: .primary))
                 .keyboardShortcut(.defaultAction)
                 .disabled(notes.isEmpty)
             }
             .disabled(deleted.isWorking)
         }
-        .padding(20)
-        .frame(width: 520)
+        .knodeTheme()
+    }
+
+    private func close() {
+        model.isShowingDeletedNotes = false
     }
 }

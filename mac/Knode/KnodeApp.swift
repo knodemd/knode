@@ -76,7 +76,9 @@ struct KnodeApp: App {
                 .environment(model)
                 .environment(agents)
                 .environment(searchIndex)
+                .environment(service)
         }
+        .windowResizability(.contentSize)
 
         #if DEBUG
         Window("Design Gallery", id: DesignGallery.windowID) {
@@ -92,6 +94,7 @@ struct KnodeApp: App {
             KnodeMenuBarIcon.image(paused: !service.isRunning)
                 .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
