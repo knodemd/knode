@@ -59,6 +59,13 @@ belongs to, newest first.
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
 
+#### Fixed
+
+- **Obsidian links written as paths**: `[[Work/Projects/Plan]]`, `[[Projects/Plan.md]]` and other
+  endings of a file's path now link to the note imported from that file, as in Obsidian, so
+  vaults with several notes of the same name, such as a `README` in each folder, keep their
+  links. Titles are tried first, as before.
+
 ### v0.2 - Spaces and permissions
 
 #### Added
