@@ -76,7 +76,6 @@ struct KnodeApp: App {
                 .environment(searchIndex)
                 .environment(service)
         }
-        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
         #if DEBUG
