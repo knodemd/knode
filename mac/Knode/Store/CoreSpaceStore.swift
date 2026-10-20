@@ -15,12 +15,14 @@ public final class CoreSpaceStore: SpaceStore {
 
     private let spaces = Mutex<[Space.ID: (space: Space, core: KnodeSpace)]>([:])
     private let author: Provenance
+    public let person: String
     private let queue = DispatchQueue(label: "md.knode.core", qos: .userInitiated, attributes: .concurrent)
 
     /// - Parameter person: who the app writes as, recorded in the provenance of every change.
     ///   The full name of the macOS user by default.
     public init(person: String = CoreSpaceStore.currentUserName) {
         author = Provenance(kind: .person, actor: person, session: nil, source: nil)
+        self.person = person
     }
 
     /// The full name of the macOS user, or the account name if it has none.
@@ -114,6 +116,12 @@ public final class CoreSpaceStore: SpaceStore {
         let core = try self.core(space)
         let author = author
         return Node(try await run { try core.restore(id: node, seq: version, by: author) })
+    }
+
+    public func changes(of node: Node.ID, in space: Space.ID, limit: Int) async throws -> [ChangeRecord] {
+        let core = try self.core(space)
+        let limit = UInt32(clamping: limit)
+        return try await run { try core.changesOf(id: node, limit: limit) }.map(ChangeRecord.init)
     }
 
     public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
@@ -217,6 +225,19 @@ extension Author {
         case .system: .system
         }
         self.init(kind: kind, name: provenance.actor, session: provenance.session, source: provenance.source)
+    }
+}
+
+extension ChangeRecord {
+    init(_ change: KnodeCore.Change) {
+        self.init(
+            id: change.id,
+            changedAt: Date(unixMilliseconds: change.changedAt),
+            author: Author(change.changedBy),
+            action: change.action,
+            subject: change.subject,
+            undoes: change.undoes
+        )
     }
 }
 

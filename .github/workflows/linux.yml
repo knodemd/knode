@@ -33,9 +33,14 @@ jobs:
             runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+            # knode-embed's matrix maths (gemm) needs the FP16 extension to build on aarch64
+            # Linux. It is not part of the knode binary yet, so it is left out here instead of
+            # building everything for FP16, which older ARM boards lack (knodemd/knode#108).
+            exclude: knode-embed
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
+      EXCLUDE: ${{ matrix.exclude }}
     defaults:
       run:
         working-directory: core
@@ -49,10 +54,10 @@ jobs:
           rustc --version
 
       - name: Build the workspace
-        run: cargo build --locked --workspace --all-targets
+        run: cargo build --locked --workspace --all-targets ${EXCLUDE:+--exclude "$EXCLUDE"}
 
       - name: Test the workspace
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace ${EXCLUDE:+--exclude "$EXCLUDE"}
 
       - name: Build the release binary
         run: cargo build --release --locked -p knode-cli --target "$TARGET"

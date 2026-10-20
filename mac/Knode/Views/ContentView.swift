@@ -29,6 +29,7 @@ struct ContentView: View {
             case .newSpace: NewSpaceSheet()
             case .rename(let url): RenameSpaceSheet(url: url)
             case .icon(let url): SpaceIconSheet(url: url)
+            case .access(let url): SpaceAccessSheet(url: url)
             }
         }
         .tint(KnodeColor.indigo)
@@ -146,6 +147,8 @@ struct SpaceMenuItems: View {
             .disabled(item.isMissing)
         if !item.isExample {
             Divider()
+            Button("Agent Access…", systemImage: "lock.shield") { model.sheet = .access(item.url) }
+                .disabled(item.isMissing)
             if item.isDefault {
                 Button("Stop Using for Agents and Capture", systemImage: "sparkles") { model.setDefaultSpace(nil) }
             } else {

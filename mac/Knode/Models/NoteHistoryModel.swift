@@ -22,8 +22,11 @@ final class NoteHistoryModel {
     /// An undo the core refused because later changes would be overwritten, waiting for the
     /// person to confirm it.
     struct Conflict: Equatable {
-        var version: NoteVersion
+        /// The change to undo.
+        var change: Int64
         var message: String
+        /// True when it redoes a change: it undoes an undo.
+        var isRedo = false
     }
 
     let nodeID: Node.ID
@@ -118,15 +121,67 @@ final class NoteHistoryModel {
     func undo(_ version: NoteVersion, force: Bool = false) async {
         guard let change = version.changeID else { return }
         await willChange?()
+        await undo(change: change, force: force, isRedo: false)
+    }
+
+    /// Undoes the last change the person made to this note (`LastChange.undoTarget`), after saving
+    /// what is in the editor. Returns false when there is nothing of theirs to undo.
+    @discardableResult
+    func undoLastChange() async -> Bool {
+        await undoOrRedoLastChange(isRedo: false)
+    }
+
+    /// Redoes the change the person undid last in this note, by undoing that undo
+    /// (`LastChange.redoTarget`). Returns false when there is nothing to redo.
+    @discardableResult
+    func redoLastChange() async -> Bool {
+        await undoOrRedoLastChange(isRedo: true)
+    }
+
+    /// Undoes the change of a conflict the person confirmed, overwriting the later changes.
+    func confirmForcedUndo(_ conflict: Conflict) async {
+        self.conflict = nil
+        await willChange?()
+        await undo(change: conflict.change, force: true, isRedo: conflict.isRedo)
+    }
+
+    private func undoOrRedoLastChange(isRedo: Bool) async -> Bool {
+        await willChange?()
+        let changes: [ChangeRecord]
+        do {
+            changes = try await store.changes(of: nodeID, in: spaceID, limit: LastChange.limit)
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+        let person = store.person
+        let target = isRedo ? LastChange.redoTarget(in: changes, by: person) : LastChange.undoTarget(in: changes, by: person)
+        guard let target else { return false }
+        // Stepping back through one's own undos is never a conflict: the later changes the core
+        // names are then only this person's undone edits and undos, so nothing is overwritten.
+        await undo(change: target.id, force: false, isRedo: isRedo) { later in
+            LastChange.areOwnUndoSteps(later, in: changes, by: person)
+        }
+        return true
+    }
+
+    /// Undoes a change. On a conflict, `forceWhen` may decide to go ahead; otherwise `conflict`
+    /// asks the person.
+    private func undo(change: Int64, force: Bool, isRedo: Bool, forceWhen: (([Int64]) -> Bool)? = nil) async {
         do {
             try await store.undo(change: change, in: spaceID, force: force)
             conflict = nil
             selectedVersionID = nil
+            errorMessage = nil
             await load()
             await didChange?()
         } catch let error as SpaceStoreError {
-            if case .undoConflict(_, _, let message) = error, !force {
-                conflict = Conflict(version: version, message: error.errorDescription ?? message)
+            if case .undoConflict(_, let later, let message) = error, !force {
+                if let forceWhen, forceWhen(later) {
+                    await undo(change: change, force: true, isRedo: isRedo)
+                } else {
+                    conflict = Conflict(change: change, message: error.errorDescription ?? message, isRedo: isRedo)
+                }
             } else {
                 errorMessage = error.localizedDescription
             }
@@ -134,11 +189,77 @@ final class NoteHistoryModel {
             errorMessage = error.localizedDescription
         }
     }
+}
 
-    /// Undoes the change of a conflict the person confirmed, overwriting the later changes.
-    func confirmForcedUndo(_ conflict: Conflict) async {
-        self.conflict = nil
-        await undo(conflict.version, force: true)
+/// Which change "Undo Last Change" and "Redo Last Change" work on, in one note.
+///
+/// The rule: undo takes the newest edit or restore of the note made by this person (the name the
+/// app writes as) that is not undone now. Redo takes the newest undo of this person's that is in
+/// effect and undid one of their edits, as long as they have not edited the note since; it
+/// undoes that undo. Changes made by agents, or by Knode, are never picked: they are undone from
+/// the history panel. Creating a note is not undone this way, as that would delete it.
+///
+/// When anyone else changed the note after the picked change, the person is asked first, as in
+/// the history panel. Their own undone edits and undos in between do not count.
+enum LastChange {
+    /// How many changes of a note are read to decide.
+    static let limit = 1000
+
+    private static let edits: Set<String> = [ChangeRecord.Action.update, ChangeRecord.Action.restore]
+
+    /// The change to undo, from the changes of a note, newest first.
+    static func undoTarget(in changes: [ChangeRecord], by person: String) -> ChangeRecord? {
+        let undone = UndoState(changes)
+        return changes.first { isMine($0, person) && edits.contains($0.action) && !undone.isUndone($0.id) }
+    }
+
+    /// The undo to undo, which redoes what it undid, from the changes of a note, newest first.
+    static func redoTarget(in changes: [ChangeRecord], by person: String) -> ChangeRecord? {
+        let undone = UndoState(changes)
+        let byID = Dictionary(changes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for change in changes where isMine(change, person) {
+            if edits.contains(change.action) {
+                // A new edit since the undo: there is nothing to redo, as in any editor.
+                if !undone.isUndone(change.id) { return nil }
+                continue
+            }
+            guard change.action == ChangeRecord.Action.undo, !undone.isUndone(change.id),
+                  let target = change.undoes.flatMap({ byID[$0] }), edits.contains(target.action)
+            else { continue }
+            return change
+        }
+        return nil
+    }
+
+    /// Whether the later changes an undo would overwrite are only steps of this person's own
+    /// undo and redo: their edits that are undone now, and their undos.
+    static func areOwnUndoSteps(_ later: [Int64], in changes: [ChangeRecord], by person: String) -> Bool {
+        let undone = UndoState(changes)
+        let byID = Dictionary(changes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return !later.isEmpty && later.allSatisfy { id in
+            guard let change = byID[id], isMine(change, person) else { return false }
+            return change.action == ChangeRecord.Action.undo || undone.isUndone(id)
+        }
+    }
+
+    private static func isMine(_ change: ChangeRecord, _ person: String) -> Bool {
+        change.author.kind == .person && change.author.name == person
+    }
+
+    /// Which changes are undone now: those with an undo that is itself not undone.
+    private struct UndoState {
+        private var undos: [Int64: [Int64]] = [:]
+
+        init(_ changes: [ChangeRecord]) {
+            for change in changes where change.action == ChangeRecord.Action.undo {
+                if let target = change.undoes { undos[target, default: []].append(change.id) }
+            }
+        }
+
+        func isUndone(_ id: Int64, depth: Int = 0) -> Bool {
+            guard depth < 64 else { return false }
+            return (undos[id] ?? []).contains { !isUndone($0, depth: depth + 1) }
+        }
     }
 }
 
