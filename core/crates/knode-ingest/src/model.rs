@@ -43,10 +43,18 @@ pub enum Agent {
     /// (`rooveterinaryinc.roo-cline/tasks`).
     #[serde(rename = "roo-code")]
     RooCode,
+    /// Claude on the web and in the Claude apps, imported from a claude.ai data export.
+    ClaudeAi,
+    /// ChatGPT, imported from a ChatGPT data export.
+    #[serde(rename = "chatgpt")]
+    ChatGpt,
+    /// Gemini on the web and in the Gemini apps, imported from Google Takeout.
+    GeminiWeb,
 }
 
 impl Agent {
-    /// Every agent, in a stable order.
+    /// Every agent capture reads sessions from, in a stable order. Agents whose conversations
+    /// only come from an export are in [`Agent::EXPORTED`].
     pub const ALL: [Agent; 11] = [
         Agent::ClaudeCode,
         Agent::Codex,
@@ -60,6 +68,10 @@ impl Agent {
         Agent::Cline,
         Agent::RooCode,
     ];
+
+    /// The agents whose conversations are imported from a data export (see
+    /// [`import_export`](crate::import_export)), in a stable order.
+    pub const EXPORTED: [Agent; 3] = [Agent::ClaudeAi, Agent::ChatGpt, Agent::GeminiWeb];
 
     /// A stable identifier, suitable for storage.
     pub fn id(self) -> &'static str {
@@ -75,12 +87,18 @@ impl Agent {
             Agent::Windsurf => "windsurf",
             Agent::Cline => "cline",
             Agent::RooCode => "roo-code",
+            Agent::ClaudeAi => "claude-ai",
+            Agent::ChatGpt => "chatgpt",
+            Agent::GeminiWeb => "gemini-web",
         }
     }
 
     /// The agent with this [`Agent::id`].
     pub fn from_id(id: &str) -> Option<Agent> {
-        Agent::ALL.into_iter().find(|agent| agent.id() == id)
+        Agent::ALL
+            .into_iter()
+            .chain(Agent::EXPORTED)
+            .find(|agent| agent.id() == id)
     }
 
     /// The name people know the agent by.
@@ -97,6 +115,9 @@ impl Agent {
             Agent::Windsurf => "Windsurf",
             Agent::Cline => "Cline",
             Agent::RooCode => "Roo Code",
+            Agent::ClaudeAi => "Claude",
+            Agent::ChatGpt => "ChatGPT",
+            Agent::GeminiWeb => "Gemini",
         }
     }
 }
