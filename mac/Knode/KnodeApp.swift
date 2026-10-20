@@ -13,7 +13,7 @@ struct KnodeApp: App {
     @State private var searchIndex: SearchIndexModel
 
     init() {
-        KnodeFonts.register()
+        KFont.register()
         let store = RoutingSpaceStore()
         let command: @MainActor () -> KnodeCommand = { KnodeCommand(executable: CommandLineTool.forThisApp.executable()) }
         let service = ServiceMonitor(command: command)
@@ -60,6 +60,9 @@ struct KnodeApp: App {
         .defaultSize(width: 1200, height: 760)
         .commands {
             SpaceCommands(model: model)
+            #if DEBUG
+            DesignGalleryCommands()
+            #endif
             CommandGroup(after: .appInfo) {
                 Button("Install Command Line Tool…", systemImage: "terminal") { appDelegate.installer.install() }
                 Button("Uninstall Command Line Tool…", systemImage: "trash") { appDelegate.installer.uninstall() }
@@ -72,6 +75,13 @@ struct KnodeApp: App {
                 .environment(agents)
                 .environment(searchIndex)
         }
+
+        #if DEBUG
+        Window("Design Gallery", id: DesignGallery.windowID) {
+            DesignGallery()
+        }
+        .defaultSize(width: 1040, height: 820)
+        #endif
 
         MenuBarExtra {
             ServiceMenu(monitor: service, model: model, searchIndex: searchIndex)

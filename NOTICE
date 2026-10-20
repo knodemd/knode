@@ -5,3 +5,7 @@ Knode is a project by aaangelmartin (https://aaangelmartin.com).
 The code is licensed under Apache 2.0 (LICENSE). The Knode brand it uses (the names Knode and .knode,
 the logo, the icons and the Knode Block and Knode Line typefaces, in brand/) is not: it follows the
 Knode Brand License, https://github.com/knodemd/brand-license
+
+The Mac app bundles the Geist and Geist Mono typefaces, Copyright 2024 The Geist Project Authors
+(https://github.com/vercel/geist-font), under the SIL Open Font License 1.1
+(mac/Knode/DesignSystem/Fonts/OFL-Geist.txt).
