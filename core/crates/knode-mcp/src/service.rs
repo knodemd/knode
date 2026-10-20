@@ -5,12 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use knode_format::{
-    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit,
+    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    View,
 };
 use knode_service::{Client, Error};
 
-use crate::backend::{Backend, BackendError, BackendResult};
+use crate::backend::{
+    Backend, BackendError, BackendResult, BodyDoc, LocalFolder, ReadVersions, Written,
+    append_splice,
+};
 
 type Connect = dyn Fn() -> knode_service::Result<Client> + Send + Sync;
 
@@ -24,6 +28,7 @@ pub struct ServiceBackend {
     space: PathBuf,
     connect: Box<Connect>,
     client: Mutex<Option<Arc<Client>>>,
+    read: ReadVersions,
 }
 
 impl fmt::Debug for ServiceBackend {
@@ -47,6 +52,7 @@ impl ServiceBackend {
             space: space.into(),
             connect: Box::new(connect),
             client: Mutex::new(Some(Arc::new(client))),
+            read: ReadVersions::default(),
         })
     }
 
@@ -104,6 +110,10 @@ impl ServiceBackend {
                     "not_found" | "invalid" | "invalid_params" | "cannot_undo" | "already_undone"
                     | "undo_conflict",
                 ) => BackendError::Invalid(rpc.message),
+                Some("unknown_version") => BackendError::Invalid(format!(
+                    "{}. Read the node again with read_node and pass its version",
+                    rpc.message
+                )),
                 // The service refused the agent's key: tell the person how to connect it again.
                 Some("unauthenticated") => BackendError::Unavailable(format!(
                     "Knode refused this agent: {}. Ask the user to run `knode connect <agent>` \
@@ -194,5 +204,123 @@ impl Backend for ServiceBackend {
 
     fn knows_the_agent(&self) -> bool {
         true
+    }
+
+    fn open_body(&self, id: &NodeId) -> BackendResult<Option<BodyDoc>> {
+        let open = self.with(|c, s| c.open_doc(s, id))?;
+        self.read.set(id, open.version.clone());
+        Ok(Some(BodyDoc {
+            text: open.text,
+            version: open.version,
+        }))
+    }
+
+    fn write_body(
+        &self,
+        id: &NodeId,
+        update: NodeUpdate,
+        version: Option<&str>,
+        by: &Provenance,
+    ) -> BackendResult<Written> {
+        let version = version.map(str::to_string).or_else(|| self.read.get(id));
+        let (node, edited) =
+            self.with(|c, s| c.update_node_from(s, id, update.clone(), version.as_deref(), by))?;
+        let merged = match edited {
+            Some(edited) => {
+                self.read.set(id, edited.seen.clone());
+                edited.version != edited.seen
+            }
+            None => false,
+        };
+        Ok(Written { node, merged })
+    }
+
+    fn append_body(&self, id: &NodeId, extra: &str, by: &Provenance) -> BackendResult<Written> {
+        let open = self.with(|c, s| c.open_doc(s, id))?;
+        let splice = append_splice(&open.text, extra);
+        let splice = knode_service::DocSplice {
+            at: splice.at,
+            delete: splice.delete,
+            insert: splice.insert,
+        };
+        self.with(|c, s| {
+            c.edit_doc(
+                s,
+                id,
+                Some(&open.version),
+                std::slice::from_ref(&splice),
+                by,
+            )
+        })?;
+        let node = self
+            .get_node(id)?
+            .ok_or_else(|| BackendError::Invalid(format!("no node with id {id}")))?;
+        Ok(Written {
+            node,
+            merged: false,
+        })
+    }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        self.with(|c, s| c.link_kinds(s))
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        self.with(|c, s| c.set_link_kind(s, spec, by))
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        self.with(|c, s| c.remove_link_kind(s, kind, by))
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        self.with(|c, s| c.node_links(s, id))
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        self.with(|c, s| c.views(s))
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        self.with(|c, s| c.canvas_board(s, node))
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        self.with(|c, s| c.attachments(s, id))
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        self.with(|c, s| c.read_attachment(s, id, name))
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        self.with(|c, s| c.attach(s, id, name, bytes, by))
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        self.with(|c, s| c.attach_file(s, id, path, by))
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        self.with(|c, s| {
+            Ok(c.folders(s)?
+                .into_iter()
+                .map(|f| LocalFolder {
+                    kind: f.folder.kind,
+                    capture: f.folder.capture,
+                    path: f.local,
+                })
+                .collect())
+        })
     }
 }

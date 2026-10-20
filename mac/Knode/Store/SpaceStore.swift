@@ -105,10 +105,17 @@ public struct SpaceChange: Sendable, Hashable {
     /// The node that changed; `nil` for `reload` and the changes to the space itself.
     public var nodeID: Node.ID?
     public var kind: Kind
+    /// For a body written through its document by Knode Service: the version of the document
+    /// now. An open editor that has another version catches up.
+    public var version: String?
+    /// Who made the change, when the store knows.
+    public var author: Author?
 
-    public init(space: Space.ID, nodeID: Node.ID?, kind: Kind) {
+    public init(space: Space.ID, nodeID: Node.ID?, kind: Kind, version: String? = nil, author: Author? = nil) {
         self.space = space
         self.nodeID = nodeID
         self.kind = kind
+        self.version = version
+        self.author = author
     }
 }

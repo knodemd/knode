@@ -156,3 +156,265 @@ fn history_and_undo_go_through_the_service() {
     assert_eq!(backend.history(&plan).unwrap().len(), 3);
     service.stop().unwrap();
 }
+
+fn space_with_service() -> (
+    tempfile::TempDir,
+    knode_service::ServiceHandle,
+    PathBuf,
+    PathBuf,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = dir.path().join("Work.knode");
+    Client::connect(&socket)
+        .unwrap()
+        .create_space(&space, "Work")
+        .unwrap();
+    (dir, service, socket, space)
+}
+
+#[test]
+fn a_rewrite_from_an_old_version_merges_with_what_the_person_typed() {
+    let (_dir, _service, socket, space) = space_with_service();
+    let backend = backend_for(socket.clone(), space.clone());
+    let person = Client::connect(&socket).unwrap();
+    let ada = knode_format::Provenance::person("Ada");
+    let out = run(
+        &backend,
+        "write_node",
+        json!({"title": "Plan", "body": "Ship v0.3."}),
+    );
+    let id = out.structured.unwrap()["node"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = knode_format::NodeId::parse(&id).unwrap();
+
+    let read = run(&backend, "read_node", json!({"id": id}));
+    let version = read.structured.unwrap()["version"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(read.text.contains("- version: `"), "{}", read.text);
+
+    // The person types while the agent works on its rewrite.
+    let open = person.open_doc(&space, &node_id).unwrap();
+    let typed = knode_service::DocSplice {
+        at: 0,
+        delete: 0,
+        insert: "Soon: ".into(),
+    };
+    person
+        .edit_doc(&space, &node_id, Some(&open.version), &[typed], &ada)
+        .unwrap();
+
+    let out = run(
+        &backend,
+        "write_node",
+        json!({"id": id, "body": "Ship v0.3 on Friday.", "version": version}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("merged"), "{}", out.text);
+    assert_eq!(out.structured.unwrap()["merged"], true);
+    let body = |b: &ServiceBackend| b.get_node(&node_id).unwrap().unwrap().body;
+    assert_eq!(body(&backend), "Soon: Ship v0.3 on Friday.");
+
+    // Without a version, the one the agent read last is used.
+    let read = run(&backend, "read_node", json!({"id": id}));
+    assert!(!read.is_error);
+    let open = person.open_doc(&space, &node_id).unwrap();
+    let typed = knode_service::DocSplice {
+        at: 0,
+        delete: 0,
+        insert: "Now. ".into(),
+    };
+    person
+        .edit_doc(&space, &node_id, Some(&open.version), &[typed], &ada)
+        .unwrap();
+    let out = run(
+        &backend,
+        "write_node",
+        json!({"id": id, "body": "Soon: Ship v0.3 on Friday. Then rest."}),
+    );
+    assert_eq!(out.structured.unwrap()["merged"], true);
+    assert_eq!(body(&backend), "Now. Soon: Ship v0.3 on Friday. Then rest.");
+
+    // Appending adds to the end of the text as it is now.
+    let out = run(
+        &backend,
+        "write_node",
+        json!({"id": id, "body": "Notes.", "append": true}),
+    );
+    assert_eq!(out.structured.unwrap()["merged"], false);
+    assert_eq!(
+        body(&backend),
+        "Now. Soon: Ship v0.3 on Friday. Then rest.\n\nNotes."
+    );
+}
+
+#[test]
+fn two_agents_rewriting_and_a_person_typing_lose_nothing() {
+    let (_dir, _service, socket, space) = space_with_service();
+    let setup = backend_for(socket.clone(), space.clone());
+    let out = run(
+        &setup,
+        "write_node",
+        json!({"title": "Log", "body": "# Log"}),
+    );
+    let id = out.structured.unwrap()["node"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let node_id = knode_format::NodeId::parse(&id).unwrap();
+    let rounds = 10;
+
+    let agents: Vec<_> = ["claude-code", "codex"]
+        .into_iter()
+        .map(|name| {
+            let backend = backend_for(socket.clone(), space.clone());
+            let id = id.clone();
+            std::thread::spawn(move || {
+                for i in 0..rounds {
+                    let read =
+                        tools::call(&backend, name, "read_node", args(json!({"id": id}))).unwrap();
+                    let text = read.structured.unwrap()["node"]["body"]
+                        .as_str()
+                        .unwrap()
+                        .to_string();
+                    let out = tools::call(
+                        &backend,
+                        name,
+                        "write_node",
+                        args(json!({"id": id, "body": format!("{text}\n- {name} {i}")})),
+                    )
+                    .unwrap();
+                    assert!(!out.is_error, "{}", out.text);
+                }
+            })
+        })
+        .collect();
+    let person = Client::connect(&socket).unwrap();
+    let ada = knode_format::Provenance::person("Ada");
+    let mut base = person.open_doc(&space, &node_id).unwrap().version;
+    for i in 0..rounds {
+        let typed = knode_service::DocSplice {
+            at: 0,
+            delete: 0,
+            insert: format!("p{i} "),
+        };
+        let edited = person
+            .edit_doc(&space, &node_id, Some(&base), &[typed], &ada)
+            .unwrap();
+        base = edited.seen;
+    }
+    for agent in agents {
+        agent.join().unwrap();
+    }
+    let body = setup.get_node(&node_id).unwrap().unwrap().body;
+    for i in 0..rounds {
+        assert!(body.contains(&format!("p{i} ")), "{body}");
+        assert!(body.contains(&format!("- claude-code {i}")), "{body}");
+        assert!(body.contains(&format!("- codex {i}")), "{body}");
+    }
+}
+
+#[test]
+fn canvases_kinds_and_attachments_go_through_the_service_as_the_agent() {
+    use knode_format::{GrantLevel, LinkKindSpec, NewNode, Provenance};
+    use knode_service::FolderInput;
+    use knode_service::keys::{fingerprint, generate_key};
+
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .join("Work.knode");
+    let person = Client::connect(&socket).unwrap();
+    let me = Provenance::person("Ada");
+    person.create_space(&space, "Work").unwrap();
+    let notes = std::fs::canonicalize(dir.path()).unwrap().join("notes");
+    std::fs::create_dir(&notes).unwrap();
+    std::fs::write(notes.join("sketch.svg"), "<svg/>").unwrap();
+    person
+        .set_folder(
+            &space,
+            &FolderInput {
+                id: None,
+                kind: "notes".into(),
+                path: notes.to_string_lossy().into_owned(),
+                capture: true,
+                rules: json!({}),
+            },
+            &me,
+        )
+        .unwrap();
+    person
+        .set_link_kind(
+            &space,
+            &LinkKindSpec::symmetric("sibling-of", "sibling of"),
+            &me,
+        )
+        .unwrap();
+    let canvas = person.create_canvas(&space, "Launch", "", &me).unwrap();
+    let plan = person
+        .create_node(&space, NewNode::note("Plan", ""), &me)
+        .unwrap();
+    person
+        .set_positions(
+            &space,
+            &canvas.id,
+            &[knode_service::PositionInput::at(plan.id, 0.0, 0.0)],
+            &me,
+        )
+        .unwrap();
+
+    let key = generate_key().unwrap();
+    person
+        .add_agent("claude-code", "claude-code", &fingerprint(&key), &me)
+        .unwrap();
+    person
+        .set_grant("claude-code", &space, GrantLevel::Write, &me)
+        .unwrap();
+    let agent = {
+        let socket = socket.clone();
+        ServiceBackend::new(space.clone(), move || {
+            Client::connect_as_agent(&socket, &key)
+        })
+        .unwrap()
+    };
+
+    let out = run(&agent, "link_kinds", json!({}));
+    assert!(
+        out.text.contains("`sibling-of`: sibling of (both ways)"),
+        "{}",
+        out.text
+    );
+    let out = run(&agent, "read_canvas", json!({ "canvas": "Launch" }));
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("[[Plan]] (note"), "{}", out.text);
+
+    let path = notes.join("sketch.svg");
+    let out = run(
+        &agent,
+        "attach_file",
+        json!({ "node": "Plan", "path": path.to_string_lossy() }),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let attachment = &out.structured.unwrap()["attachment"];
+    assert_eq!(attachment["created_by"]["actor"], "claude-code");
+    let out = run(
+        &agent,
+        "read_attachment",
+        json!({ "node": "Plan", "name": "sketch.svg" }),
+    );
+    assert_eq!(out.structured.unwrap()["text"], "<svg/>");
+    // The agent never names a file to the service: attaching by path is for people.
+    let refused = agent.attach_file(&plan.id, &path, &me);
+    assert!(
+        matches!(refused, Err(BackendError::Invalid(_))),
+        "{refused:?}"
+    );
+    service.stop().unwrap();
+}

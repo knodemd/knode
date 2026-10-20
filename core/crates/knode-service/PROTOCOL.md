@@ -54,13 +54,22 @@ grant takes effect on the next call:
   its changes are not sent to the agent.
 - With `read`, `space.open`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
-  `markdown.folder.get` and `subscribe` are allowed; writes fail with `forbidden`.
-- With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
-  `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
-  the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
-- Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
-  `purge`, `markdown.folder.set` and every other method are for people only and fail with
+  `markdown.folder.get`, `doc.open`, `doc.updates` and `subscribe` are allowed; writes fail with
   `forbidden`.
+- With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
+  `undo`, `restore`, `vault.import` and `doc.edit` are allowed too. An agent may only `undo` a change made by
+  the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
+- The methods for link kinds, views, canvases and attachments follow the same levels: with
+  `read`, `link_kinds.list`, `links.of`, `links.back_labeled`, `views.list`, `view.get`, `graph`,
+  `canvas.board`, `positions.list`, `groups.list`, `attachments.list` and `attachment.read`; with
+  `write`, `link_kind.set`, `link_kind.remove`, `view.set`, `view.remove`, `view.viewport.set`,
+  `canvas.create`, `positions.set`, `positions.remove`, `group.set`, `group.remove`,
+  `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path` and
+  `conversations.import` name files on this machine and are for people only.
+- Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
+  `purge`, `markdown.folder.set`, `doc.peer`, `doc.merge` and every other method are for people
+  only and fail with `forbidden`. (The authorship of merged Loro updates comes from their peers,
+  not from the key, so agents edit with `doc.edit` and `node.update` instead.)
 - An agent's changes are recorded with `kind` `agent` and, as `actor`, the name of the agent its
   key belongs to, whatever `by` says. `session` and `source` are kept.
 
@@ -125,7 +134,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `node.create` | `space`, `title`, `body`?, `kind`? (default `note`), `tags`?, `by` | The node. |
 | `node.get` | `space`, `id` | The node, or `null` when no node has this id. |
 | `node.find_by_title` | `space`, `title` | Node summaries with this title, oldest first. Titles are compared without regard to case or extra spaces; a `[[link]]` with this title points at the first one. |
-| `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `by` | The node as it is now. Fields left out stay as they are. |
+| `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `version`?, `by` | The node as it is now. Fields left out stay as they are. With `version` (from `doc.open`), the new `body` is merged with what others wrote since; see Editing together. When the body was written through its document, the node also has `version` and `seen`. |
 | `node.delete` | `space`, `id`, `by` | `null`. |
 | `link.create` | `space`, `from`, `to`, `kind`? (default `related`), `by` | The link. |
 | `link.delete` | `space`, `from`, `to`, `kind`? (default `related`), `by`? | `true` if there was such a link. `by` is recorded as who removed it; left out (by clients older than v0.2), the change is recorded as Knode's own, `system`. |
@@ -144,7 +153,12 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `vault.import` | `space`, `dir` (absolute), `by` | `{ "created", "updated", "unchanged", "skipped", "attachments", "links" }`. Reads every `.md` file under `dir`, written by `vault.export` or from an Obsidian vault. `skipped` lists `{ "path", "reason" }`. |
 | `markdown.folder.get` | `space` | The live Markdown folder: `{ "folder", "path", "warning"? }`. |
 | `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
-| `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
+| `doc.open` | `space`, `id` | `{ "text", "version" }`: the body and the version of its document, made from the body the first time. See Editing together. |
+| `doc.edit` | `space`, `id`, `version`?, `splices` or `text`, `by` | `{ "version", "seen", "text"? }`. Edits the body at `version`, merged with what others wrote since. |
+| `doc.peer` | `space`, `by` | `{ "peer" }`: a new Loro peer id, in decimal, for an editor that keeps its own copy of documents. People only. |
+| `doc.merge` | `space`, `id`, `update` (base64) | `{ "version" }`. Merges Loro updates made as recorded peers. People only. |
+| `doc.updates` | `space`, `id`, `since`? | `{ "update", "version" }`: the Loro updates made since the version `since` (the whole document without it), in base64. |
+| `subscribe` | `space`?, `updates`? (default `false`) | `true`. Starts `changed` notifications; see below. With `updates`, those of body writes carry the Loro updates. |
 | `unsubscribe` | none | `true`. Stops them. |
 | `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. An agent only sees the spaces it may read. |
 | `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
@@ -191,6 +205,52 @@ Space info is:
   "format": 0, "created_at": "2026-10-20T09:30:00.000Z", "nodes": 42 }
 ```
 
+### Link kinds, views, canvases and attachments
+
+These methods read and write what schema version 4 of the
+[.knode specification](https://github.com/knodemd/format) adds: kinds of link with labels (section
+18.1), graph views and canvases with the positions and groups of their nodes (section 18.2), and
+files attached to nodes (section 20). Their shapes are those of the specification.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `link_kinds.list` | `space` | Every kind of link a link can be made with: the built-in kinds, then the space's own, by name. Each is `{ "kind", "label", "inverse_label", "direction", "description", "built_in" }`, with `created_at`, `created_by`, `updated_at` and `updated_by` for a kind the space defines. `direction` is `directed` or `symmetric`. |
+| `link_kind.set` | `space`, `kind`, `label`, `inverse_label`?, `direction`? (default `directed`), `description`?, `by` | The kind. Defines it or changes its labels. Built-in kinds cannot be changed, and the direction of a kind cannot change while links have it (`invalid`). `link.create` takes only built-in and defined kinds. |
+| `link_kind.remove` | `space`, `kind`, `by` | `true` if the space defined such a kind. Fails with `invalid` while links have it. |
+| `links.of` | `space`, `id` | The links of the node as a reader shows them: going out, then coming in, each `{ "link", "outgoing", "node", "title", "label", "direction" }`, where `node` and `title` are the other end and `label` is how the link reads from this node (the kind's label going out, its inverse label coming in). A symmetric link between two nodes is shown once. |
+| `links.back_labeled` | `space`, `id` | The backlinks of the node, of every kind, in the shape of `links.of`. |
+| `views.list` | `space` | The graph views and the canvases whose node exists, oldest first: `{ "id", "kind", "name", "node_id"?, "settings", "created_at", "created_by", "updated_at", "updated_by" }`. `kind` is `graph` or `canvas`; a canvas has the `node_id` of its node and is named by its title. `settings` holds `viewport` (`{ "x", "y", "zoom" }`) and, for a graph view, `filter`. |
+| `view.get` | `space`, `id` | The view, or `null`. |
+| `view.set` | `space`, `id`?, `name`, `filter`?, `by` | The graph view: created without `id`, renamed or filtered with it. `filter` is an object with any of `node_kinds`, `tags`, `actors` (lists of text), `since`, `until` (RFC 3339) and `link_kinds`; a node is shown when it passes every key given. Left out, the view shows the whole space. |
+| `view.remove` | `space`, `id`, `by` | `true` if there was such a graph view. A canvas is removed by deleting its node. |
+| `view.viewport.set` | `space`, `id`, `x`, `y`, `zoom`, `by` | `null`. Saves the part of the view on screen. Adds no change and is not announced. |
+| `graph` | `space`, `view`?, `filter`? | `{ "nodes", "edges", "positions", "link_kinds" }`: the nodes `filter` keeps (`{ "id", "kind", "title", "tags", "created_at", "updated_at", "created_by", "updated_by" }`, newest change first), the links between them (`{ "from", "to", "kind" }`), the positions saved in `view` for the nodes shown, and every kind of link. Without `filter` the view's own applies; with neither, the whole space. |
+| `canvas.create` | `space`, `title`, `body`?, `tags`?, `by` | The canvas view. Creates a node of kind `canvas` (its title names the canvas, its body says what it is for) and its view, as one `node.create` change. |
+| `canvas.board` | `space`, `id` (the canvas node) | `{ "view", "title", "body", "items", "groups", "edges", "link_kinds" }`, or `null` when the node is not a canvas. `items` are the nodes on it, back to front: `{ "position", "kind", "title", "excerpt" }`; `edges` the links between them. |
+| `positions.list` | `space`, `view` | The positions of the nodes of the view that exist, back to front: `{ "view_id", "node_id", "x", "y", "width"?, "height"?, "z", "display", "group_id"?, "updated_at", "updated_by" }`. `x` and `y` are the centre, in points, `y` growing down; `display` is `open` or `collapsed`. |
+| `positions.set` | `space`, `view`, `positions` (a list of `{ "node_id", "x", "y", "width"?, "height"?, "z"?, "display"?, "group_id"? }`), `by` | `null`. Places the nodes in one write. `width` and `height` go together. Groups are only on a canvas. |
+| `positions.remove` | `space`, `view`, `nodes` (node ids) | How many of the nodes were in the view. The nodes are not deleted. |
+| `groups.list` | `space`, `view` | The groups of a canvas: `{ "id", "view_id", "label", "x", "y", "width", "height", "display", "updated_at", "updated_by" }`. |
+| `group.set` | `space`, `view`, `id`?, `label`?, `x`, `y`, `width`, `height`, `display`?, `by` | The group: added without `id`, changed with it. |
+| `group.remove` | `space`, `view`, `id` | `true` if the canvas had such a group. Its nodes stay on the canvas, outside any group. |
+| `attachments.list` | `space`, `id` | The files attached to the node, oldest first: `{ "node_id", "name", "hash", "size", "media_type", "created_at", "created_by" }`. `![[name]]` in the node's body shows the file. |
+| `attachment.read` | `space`, `id`, `name` | `{ "attachment", "content" }` with the bytes in base64, or `null` when the node has no attachment with this name. Files larger than 10 MiB fail with `invalid`: a person opens them from `attachment.path`. |
+| `attachment.add` | `space`, `id`, `name`, `content` (base64, at most 10 MiB of bytes), `by` | The attachment. Stores the bytes once, by their SHA-256, and attaches them under `name`; a name the node already uses for other content gets ` 2`, ` 3`... Attaching the same content under the same name again changes nothing. |
+| `attachment.add_file` | `space`, `id`, `path` (absolute), `by` | The attachment of the file at `path`, under its file name, up to 100 MB. People only. |
+| `attachment.remove` | `space`, `id`, `name`, `by` | `true` if there was such an attachment. The file stays in the space until a person purges unused files. |
+| `attachment.path` | `space`, `id`, `name` | Where the attachment's file is on this machine, or `null`. Never write to it. People only. |
+
+Link kinds, attachments added and removed, and graph views created, renamed, filtered or removed
+are changes in the history (`link_kind.set`, `link_kind.remove`, `attachment.add`,
+`attachment.remove`, `view.set`, `view.remove`). Viewports, positions and groups carry their own
+provenance and add no change.
+
+### Data exports
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `conversations.import` | `space`, `path` (absolute: a `.zip` as downloaded, or the folder it was extracted to), `by` | `{ "format", "agent", "created", "updated", "projects", "unchanged", "empty", "skipped" }`. Imports a Claude, ChatGPT or Google Takeout (Gemini Apps) data export: one `conversation` node per conversation, found again by its agent and session, so importing the same export twice writes nothing new. `agent` is `claude-ai`, `chatgpt` or `gemini-web`; `skipped` lists `{ "item", "reason" }`. A path that is not such an export fails with `invalid`. People only. |
+
 ## Changes
 
 After `subscribe`, the connection receives a `changed` notification after each write, in the
@@ -204,14 +264,25 @@ order the writes were made:
   space. Every change made after the answer to `subscribe` is delivered.
 - When a space is renamed, or its settings or folders change, the connection receives a `space`
   notification instead, with `what` set to `renamed` (and the new `name`), `settings` (and the
-  `key`) or `folders` (and the `folder` id):
+  `key`) or `folders` (and the `folder` id). When a kind of link is defined, changed or removed,
+  `what` is `link_kinds` (and the `link_kind`); when a graph view or a canvas is created, changed
+  or removed, or nodes or groups are placed on it, `what` is `views` (and the `view` id). Saving
+  a viewport is not announced:
 
   ```json
   {"jsonrpc":"2.0","method":"space","params":{"space":"/Users/ada/Knode/Personal.knode","what":"settings","key":"space.icon"}}
   ```
 - `op` is `create`, `update`, `delete`, `link` (a link from `node_id` was made) or `unlink` (one
-  was removed). Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
+  was removed). Attaching a file to a node or removing one sends `update` for the node; creating
+  a canvas sends `create` for its node. Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
   to the new title.
+- A body written through its document (see Editing together) sends `changed` with `op`
+  `update` and also `version`, the version of the document now, and `by`, who wrote it; with
+  `updates` set in `subscribe`, also `update`, the Loro updates of the write in base64:
+
+  ```json
+  {"jsonrpc":"2.0","method":"changed","params":{"space":"/Users/ada/Knode/Personal.knode","node_id":"01K83N6V4W5D2XQJ0Y7RZ9T1AB","op":"update","version":"{\"7318201936571142\":52}","by":{"kind":"agent","actor":"claude-code"}}}
+  ```
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
@@ -220,6 +291,42 @@ Changes have the shape of the `changes` table of the [.knode specification](http
 (section 17): `{ "id", "changed_at", "changed_by", "action", "subject", "undoes"?, "detail" }`.
 A write that touches many nodes, such as an undo or an import, sends a `changed` notification for
 each node it wrote.
+
+## Editing together
+
+A person and agents can edit the same body at once. Their edits merge with
+[Loro](https://loro.dev), as section 21 of the [.knode specification](https://github.com/knodemd/format)
+describes, instead of one overwriting the other. Titles, kinds and tags are short values written
+whole, as before.
+
+- **Versions.** `doc.open` returns the body and the `version` of its document, a string to pass
+  back unchanged (a JSON object from Loro peer ids to counts, such as `{"7318201936571142":52}`).
+  An edit says which version it was made on, and what others wrote since is kept.
+- **An editor** opens the body with `doc.open` and sends what the person types as `doc.edit`
+  `splices`, `[{ "at", "delete", "insert" }]`, applied in order to the text at `version`.
+  Positions and lengths count Unicode scalar values (Rust `char`s), not bytes or UTF-16 units.
+  The answer has `version`, the version of the document now, and `seen`, the version of the text
+  the editor has: what it had, with its edit, without what others wrote since. The editor bases
+  its next edit on `seen`. When others wrote meanwhile, `version` differs from `seen` and `text`
+  is the body now: an editor with no edit waiting shows it and goes on from `version`; one with
+  edits waiting sends them first, based on `seen`, and catches up from that answer. A `doc.edit`
+  with no splices only catches up.
+- **An agent** that rewrites the whole text sends `node.update` with the `body` and the `version`
+  it read, or `doc.edit` with `text`: the new text is diffed from the text at `version`, so edits
+  made since are kept.
+- **Old clients.** `node.update` without `version` writes the body as before. When the node already
+  has a document, the body is written through it, replacing the current text, and open editors
+  follow.
+- **Typing.** Every `doc.edit` is one change, with its own history row. Editors gather keystrokes
+  for a moment (the Knode app sends them 300 ms after the last one, at most every second while
+  typing goes on) and send them before showing anyone else's edit.
+- **Editors with their own copy** of a document, such as one made with the Loro library, ask for
+  a peer with `doc.peer`, load the document with `doc.updates`, make their edits as that peer and
+  send them with `doc.merge`; `subscribe` with `updates` gives them everyone else's.
+- **Errors.** An edit based on a version the document does not have fails with
+  `unknown_version`: open it again. Undo and restore write the body without Loro, and the
+  document is brought in step before the next edit (section 21.5). `purge` removes the node's
+  document; `node.delete` keeps it, for an undo.
 
 ## Markdown
 
@@ -299,7 +406,9 @@ match on.
 | -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
 | -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
 | -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
-| -32024 | `folder` | A folder of Markdown files could not be read or written. |
+| -32024 | `folder` | A folder of Markdown files, or a data export, could not be read or written. |
+| -32030 | `unknown_version` | An edit was based on a version of a document the service does not have. Open it again with `doc.open`. |
+| -32031 | `missing_history` | Loro updates depend on edits the document does not have yet. Send them from an earlier version. |
 
 ```json
 {"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"node 01K83N6V4W5D2XQJ0Y7RZ9T1AB not found","data":{"kind":"not_found"}}}

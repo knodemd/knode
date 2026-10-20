@@ -4,13 +4,16 @@
 //! [`ServiceBackend`](crate::ServiceBackend) talks to Knode Service over its socket and
 //! implements the same trait, so the tools do not change.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use knode_format::{
-    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit, Space,
+    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    Space, View, view_kinds,
 };
+use knode_sync::{BodyEdit, Docs, Splice, Version};
 
 /// What can go wrong in a backend. Every error is shown to the agent as a tool error, so the
 /// message must say what to do about it.
@@ -36,9 +39,82 @@ impl From<knode_format::Error> for BackendError {
             | knode_format::Error::CannotUndo { .. }
             | knode_format::Error::AlreadyUndone { .. }
             | knode_format::Error::UndoConflict { .. }
+            | knode_format::Error::LinkKindInUse { .. }
             | knode_format::Error::PersonOnly(_) => BackendError::Invalid(error.to_string()),
             other => BackendError::Failed(other.to_string()),
         }
+    }
+}
+
+impl From<knode_sync::Error> for BackendError {
+    fn from(error: knode_sync::Error) -> Self {
+        match error {
+            knode_sync::Error::Format(e) => e.into(),
+            knode_sync::Error::NotFound(_) | knode_sync::Error::Invalid(_) => {
+                BackendError::Invalid(error.to_string())
+            }
+            knode_sync::Error::UnknownVersion(_) => BackendError::Invalid(format!(
+                "{error}. Read the node again with read_node and pass its version"
+            )),
+            other => BackendError::Failed(other.to_string()),
+        }
+    }
+}
+
+/// A node's body opened for editing together: its text and the version of its document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyDoc {
+    /// The body.
+    pub text: String,
+    /// The version of the body's document: pass it back when writing what was read.
+    pub version: String,
+}
+
+/// What writing a node did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Written {
+    /// The node as it is now.
+    pub node: Node,
+    /// Whether others had changed the body since the version the edit was based on, and the edit
+    /// was merged with their changes instead of replacing them.
+    pub merged: bool,
+}
+
+/// The versions an agent has read, by node, so a body it rewrites later is merged from what it
+/// read even when it does not pass the version back.
+#[derive(Debug, Default)]
+pub(crate) struct ReadVersions(Mutex<HashMap<NodeId, String>>);
+
+impl ReadVersions {
+    pub(crate) fn get(&self, id: &NodeId) -> Option<String> {
+        self.lock().get(id).cloned()
+    }
+
+    pub(crate) fn set(&self, id: &NodeId, version: String) {
+        self.lock().insert(*id, version);
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<NodeId, String>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// The splice that appends `extra` to `text` after a blank line, or replaces a blank text: in
+/// characters, as [`Splice`] counts them.
+pub(crate) fn append_splice(text: &str, extra: &str) -> Splice {
+    let len = text.chars().count();
+    if text.trim().is_empty() {
+        return Splice {
+            at: 0,
+            delete: len,
+            insert: extra.to_string(),
+        };
+    }
+    let kept = text.trim_end().chars().count();
+    Splice {
+        at: kept,
+        delete: len - kept,
+        insert: format!("\n\n{extra}"),
     }
 }
 
@@ -84,6 +160,109 @@ pub trait Backend: Send + Sync + 'static {
     fn knows_the_agent(&self) -> bool {
         false
     }
+    /// `doc.open`: a node's body and the version of its document, remembered as the version
+    /// this agent read. `None` from a backend that does not merge bodies.
+    fn open_body(&self, _id: &NodeId) -> BackendResult<Option<BodyDoc>> {
+        Ok(None)
+    }
+    /// `node.update` with the version of the body read: a new body is merged with what others
+    /// wrote since `version` (or since the version this agent last read, when `None`) instead of
+    /// replacing it.
+    fn write_body(
+        &self,
+        id: &NodeId,
+        update: NodeUpdate,
+        _version: Option<&str>,
+        by: &Provenance,
+    ) -> BackendResult<Written> {
+        Ok(Written {
+            node: self.update_node(id, update, by)?,
+            merged: false,
+        })
+    }
+    /// Adds `extra` to the end of a node's body, after a blank line, merged with what others
+    /// write at the same time.
+    fn append_body(&self, id: &NodeId, extra: &str, by: &Provenance) -> BackendResult<Written> {
+        let current = self
+            .get_node(id)?
+            .ok_or_else(|| BackendError::Invalid(format!("no node with id {id}")))?;
+        let splice = append_splice(&current.body, extra);
+        let mut body: Vec<char> = current.body.chars().collect();
+        body.splice(splice.at..splice.at + splice.delete, splice.insert.chars());
+        let update = NodeUpdate {
+            body: Some(body.into_iter().collect()),
+            ..Default::default()
+        };
+        Ok(Written {
+            node: self.update_node(id, update, by)?,
+            merged: false,
+        })
+    }
+    /// `link_kinds.list`: every kind of link the space knows.
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>>;
+    /// `link_kind.set`: defines a kind of link, or changes its labels.
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind>;
+    /// `link_kind.remove`: removes a kind of link the space defined.
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool>;
+    /// `links.of`: the links of a node, going out then coming in, with their labels.
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>>;
+    /// `views.list`: the graph views and canvases, a canvas named by its node's title.
+    fn views(&self) -> BackendResult<Vec<View>>;
+    /// `canvas.board`: a canvas with its nodes, groups and links, or `None`.
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>>;
+    /// `attachments.list`: the files attached to a node.
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>>;
+    /// `attachment.read`: an attachment with its bytes, or `None`.
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>>;
+    /// `attachment.add`: attaches bytes to a node under a name.
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment>;
+    /// `attachment.add_file`: attaches a file on this machine. Only a person may, through Knode
+    /// Service.
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment>;
+    /// `folders.list`: the folders that feed the space, where they are on this machine.
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>>;
+}
+
+/// A folder that feeds the space, as this machine sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFolder {
+    /// `project`, `notes` or `agent`.
+    pub kind: String,
+    /// Whether the folder is captured and read.
+    pub capture: bool,
+    /// The folder on this machine, or `None` when its path cannot be resolved here.
+    pub path: Option<PathBuf>,
+}
+
+/// A folder recorded as `~/...` or absolute, on this machine.
+pub(crate) fn resolve_folder(path: &str) -> Option<PathBuf> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+        return Some(PathBuf::from(home).join(rest));
+    }
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+/// A view with a canvas named by its node's title.
+fn named(space: &Space, mut view: View) -> knode_format::Result<View> {
+    if view.kind == view_kinds::CANVAS
+        && let Some(node) = view.node_id
+        && let Some(found) = space.get_node(&node)?
+    {
+        view.name = found.title;
+    }
+    Ok(view)
 }
 
 /// A backend that opens the space directly with `knode-format`.
@@ -94,6 +273,9 @@ pub trait Backend: Send + Sync + 'static {
 pub struct DirectBackend {
     target: Target,
     space: Mutex<Option<Space>>,
+    /// The Loro documents of the bodies this agent edits; locked after the space.
+    docs: Mutex<Docs>,
+    read: ReadVersions,
 }
 
 #[derive(Debug)]
@@ -108,6 +290,8 @@ impl DirectBackend {
         DirectBackend {
             target: Target::Path(path.into()),
             space: Mutex::new(None),
+            docs: Mutex::default(),
+            read: ReadVersions::default(),
         }
     }
 
@@ -117,6 +301,8 @@ impl DirectBackend {
         DirectBackend {
             target: Target::Missing(message.into()),
             space: Mutex::new(None),
+            docs: Mutex::default(),
+            read: ReadVersions::default(),
         }
     }
 
@@ -125,6 +311,8 @@ impl DirectBackend {
         DirectBackend {
             target: Target::Path(space.path().to_path_buf()),
             space: Mutex::new(Some(space)),
+            docs: Mutex::default(),
+            read: ReadVersions::default(),
         }
     }
 
@@ -136,7 +324,25 @@ impl DirectBackend {
         }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Space) -> knode_format::Result<T>) -> BackendResult<T> {
+    pub(crate) fn with<T>(
+        &self,
+        f: impl FnOnce(&mut Space) -> knode_format::Result<T>,
+    ) -> BackendResult<T> {
+        self.with_space(|space| Ok(f(space)?))
+    }
+
+    /// Runs `f` with the space and the Loro documents.
+    fn with_docs<T>(
+        &self,
+        f: impl FnOnce(&mut Space, &mut Docs) -> BackendResult<T>,
+    ) -> BackendResult<T> {
+        self.with_space(|space| {
+            let mut docs = self.docs.lock().unwrap_or_else(|p| p.into_inner());
+            f(space, &mut docs)
+        })
+    }
+
+    fn with_space<T>(&self, f: impl FnOnce(&mut Space) -> BackendResult<T>) -> BackendResult<T> {
         let path = match &self.target {
             Target::Path(path) => path,
             Target::Missing(message) => return Err(BackendError::Unavailable(message.clone())),
@@ -155,7 +361,7 @@ impl DirectBackend {
             *guard = Some(space);
         }
         let space = guard.as_mut().expect("the space was just opened");
-        Ok(f(space)?)
+        f(space)
     }
 }
 
@@ -218,6 +424,166 @@ impl Backend for DirectBackend {
 
     fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
         self.with(|s| s.restore(id, version, by))
+    }
+
+    fn open_body(&self, id: &NodeId) -> BackendResult<Option<BodyDoc>> {
+        let open = self.with_docs(|space, docs| Ok(docs.open_doc(space, id)?))?;
+        let version = open.version.to_json();
+        self.read.set(id, version.clone());
+        Ok(Some(BodyDoc {
+            text: open.text,
+            version,
+        }))
+    }
+
+    fn write_body(
+        &self,
+        id: &NodeId,
+        mut update: NodeUpdate,
+        version: Option<&str>,
+        by: &Provenance,
+    ) -> BackendResult<Written> {
+        let base = match version.map(str::to_string).or_else(|| self.read.get(id)) {
+            Some(version) => Some(Version::from_json(&version).map_err(|_| {
+                BackendError::Invalid(format!(
+                    "{version} is not a version read_node gave. Read the node again and pass its \
+                     version, or leave version out"
+                ))
+            })?),
+            None => None,
+        };
+        let Some(body) = update.body.take() else {
+            return Ok(Written {
+                node: self.update_node(id, update, by)?,
+                merged: false,
+            });
+        };
+        let written = self.with_docs(|space, docs| {
+            // The short fields first: a bad title fails before the body is written.
+            space.update_node(id, update, by)?;
+            let has_doc = Docs::has_doc(space, id);
+            if base.is_none() && !has_doc {
+                let update = NodeUpdate {
+                    body: Some(body),
+                    ..Default::default()
+                };
+                return Ok((space.update_node(id, update, by)?, None));
+            }
+            let edit = match base {
+                Some(base) => BodyEdit::text(body).based_on(base),
+                None => BodyEdit::text(body),
+            };
+            let written = docs.apply_local_edit(space, id, edit, by)?;
+            Ok((written.node, Some((written.version, written.seen))))
+        })?;
+        Ok(match written {
+            (node, Some((version, seen))) => {
+                self.read.set(id, seen.to_json());
+                Written {
+                    node,
+                    merged: version != seen,
+                }
+            }
+            (node, None) => Written {
+                node,
+                merged: false,
+            },
+        })
+    }
+
+    fn append_body(&self, id: &NodeId, extra: &str, by: &Provenance) -> BackendResult<Written> {
+        let written = self.with_docs(|space, docs| {
+            let open = docs.open_doc(space, id)?;
+            let splice = append_splice(&open.text, extra);
+            let edit = BodyEdit::splices(vec![splice]).based_on(open.version);
+            Ok(docs.apply_local_edit(space, id, edit, by)?)
+        })?;
+        Ok(Written {
+            node: written.node,
+            merged: false,
+        })
+    }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        self.with(|s| s.link_kinds())
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        self.with(|s| s.set_link_kind(spec, by))
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        self.with(|s| s.remove_link_kind(kind, by))
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        self.with(|s| s.node_links(id))
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        self.with(|s| {
+            let views = s.views()?;
+            views.into_iter().map(|v| named(s, v)).collect()
+        })
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        self.with(|s| {
+            Ok(s.canvas_board(node)?.map(|mut board| {
+                board.view.name = board.title.clone();
+                board
+            }))
+        })
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        self.with(|s| s.attachments(id))
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        self.with(|s| {
+            let Some(attachment) = s.attachment(id, name)? else {
+                return Ok(None);
+            };
+            let bytes = s.read_blob(&attachment.hash)?.ok_or_else(|| {
+                knode_format::Error::Invalid(format!(
+                    "the file of {} is not on this machine yet",
+                    attachment.name
+                ))
+            })?;
+            Ok(Some((attachment, bytes)))
+        })
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        self.with(|s| s.attach(id, name, bytes, by))
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        self.with(|s| s.attach_file(id, path, by))
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        self.with(|s| {
+            Ok(s.folders()?
+                .into_iter()
+                .map(|f| LocalFolder {
+                    path: resolve_folder(&f.path),
+                    kind: f.kind,
+                    capture: f.capture,
+                })
+                .collect())
+        })
     }
 }
 
@@ -285,5 +651,77 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn knows_the_agent(&self) -> bool {
         (**self).knows_the_agent()
+    }
+
+    fn open_body(&self, id: &NodeId) -> BackendResult<Option<BodyDoc>> {
+        (**self).open_body(id)
+    }
+
+    fn write_body(
+        &self,
+        id: &NodeId,
+        update: NodeUpdate,
+        version: Option<&str>,
+        by: &Provenance,
+    ) -> BackendResult<Written> {
+        (**self).write_body(id, update, version, by)
+    }
+
+    fn append_body(&self, id: &NodeId, extra: &str, by: &Provenance) -> BackendResult<Written> {
+        (**self).append_body(id, extra, by)
+    }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        (**self).link_kinds()
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        (**self).set_link_kind(spec, by)
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        (**self).remove_link_kind(kind, by)
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        (**self).node_links(id)
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        (**self).views()
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        (**self).canvas_board(node)
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        (**self).attachments(id)
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        (**self).read_attachment(id, name)
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        (**self).attach(id, name, bytes, by)
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        (**self).attach_file(id, path, by)
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        (**self).folders()
     }
 }
