@@ -38,6 +38,11 @@ struct NoteView: View {
             }
         }
         .background(PaperBackground())
+        .background {
+            if let history = model.history {
+                Color.clear.modifier(UndoConflictAlert(history: history))
+            }
+        }
         .inspector(isPresented: $model.isShowingHistory) {
             if let history = model.history {
                 HistoryPanel(history: history)
@@ -91,7 +96,7 @@ struct NoteView: View {
                 if editor.hasUnsavedChanges {
                     Text("Saving").foregroundStyle(.tertiary)
                 }
-                if let error = editor.errorMessage {
+                if let error = editor.errorMessage ?? model.history?.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
             }

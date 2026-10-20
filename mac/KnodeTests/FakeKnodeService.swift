@@ -34,6 +34,14 @@ final class FakeKnodeService: @unchecked Sendable {
     private var clock: Int64 = 1_792_489_800_000
     private var counter = 0
     private(set) var requests: [String] = []
+    /// The params of the last request of each method.
+    private(set) var lastParams: [String: [String: Any]] = [:]
+    /// What `changes` answers for each subject, newest first.
+    private var changeLog: [String: [[String: Any]]] = [:]
+    /// Changes whose undo fails with `undo_conflict` unless forced, with their later changes.
+    private var conflicts: [Int64: [Int64]] = [:]
+    /// The agents `agents.list` answers with.
+    private var agents: [[String: Any]] = []
 
     init() throws {
         // Unix socket paths are short: keep the folder name short.
@@ -84,6 +92,31 @@ final class FakeKnodeService: @unchecked Sendable {
         lock.withLock { spaces[path]?.nodes[id] }
     }
 
+    func params(of method: String) -> [String: Any]? {
+        lock.withLock { lastParams[method] }
+    }
+
+    /// Sets what `changes` answers for a subject, newest first.
+    func setChanges(_ changes: [[String: Any]], for subject: String) {
+        lock.withLock { changeLog[subject] = changes }
+    }
+
+    /// Makes the undo of a change fail with `undo_conflict` unless it is forced.
+    func setConflict(undoing change: Int64, later: [Int64]) {
+        lock.withLock { conflicts[change] = later }
+    }
+
+    /// Adds an agent with one valid key and the given levels by space path.
+    func addAgent(_ name: String, levels: [String: String]) {
+        lock.withLock {
+            agents.append([
+                "id": nextID(), "name": name, "kind": name, "created_at": clock,
+                "keys": [["fingerprint": "sha256:2d8e7ee0d1fd2f7fa95d62fff7405c54a6c86833c447fe84c53f2de800dfb3a1", "created_at": clock, "revoked_at": NSNull()]],
+                "spaces": levels.sorted { $0.key < $1.key }.map { ["space": $0.key, "level": $0.value] },
+            ])
+        }
+    }
+
     // MARK: Serving
 
     private func acceptLoop() {
@@ -123,12 +156,14 @@ final class FakeKnodeService: @unchecked Sendable {
         var notification: (space: String, node: String, op: String)?
         let answer: [String: Any] = lock.withLock {
             requests.append(method)
+            lastParams[method] = params
             do {
                 let (result, change) = try respond(method, params, client: client)
                 notification = change
                 return ["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result]
             } catch let error as RPCError {
-                return ["jsonrpc": "2.0", "id": id ?? NSNull(), "error": ["code": error.code, "message": error.message, "data": ["kind": error.kind]]]
+                let data = error.data.merging(["kind": error.kind]) { $1 }
+                return ["jsonrpc": "2.0", "id": id ?? NSNull(), "error": ["code": error.code, "message": error.message, "data": data]]
             } catch {
                 return ["jsonrpc": "2.0", "id": id ?? NSNull(), "error": ["code": -32603, "message": "\(error)"]]
             }
@@ -141,6 +176,7 @@ final class FakeKnodeService: @unchecked Sendable {
         var code: Int
         var kind: String
         var message: String
+        var data: [String: Any] = [:]
     }
 
     /// Answers one request; the caller holds the lock.
@@ -204,6 +240,50 @@ final class FakeKnodeService: @unchecked Sendable {
                 ])
             }
             return (versions, nil)
+        case "changes":
+            _ = try space()
+            return (changeLog[params["subject"] as? String ?? ""] ?? [], nil)
+        case "undo":
+            _ = try space()
+            let change = (params["change"] as? NSNumber)?.int64Value ?? 0
+            let force = params["force"] as? Bool ?? false
+            if let later = conflicts[change], !force {
+                throw RPCError(code: -32022, kind: "undo_conflict", message: "undoing change \(change) would overwrite later changes", data: ["later": later])
+            }
+            clock += 1
+            let by = params["by"] as? [String: Any] ?? [:]
+            return (["id": 900 + change, "changed_at": clock, "changed_by": by, "action": "undo", "subject": "", "undoes": change, "detail": [String: Any]()], nil)
+        case "restore":
+            let id = params["id"] as? String ?? ""
+            guard var node = try space().nodes[id] else { throw RPCError(code: -32001, kind: "not_found", message: "node \(id) not found") }
+            clock += 1
+            node.body = "Restored \((params["version"] as? NSNumber)?.int64Value ?? 0)"
+            node.updatedAt = clock
+            spaces[path]?.nodes[id] = node
+            return (node.json, (path, id, "update"))
+        case "agents.list":
+            return (agents, nil)
+        case "grants.set":
+            let name = params["agent"] as? String ?? ""
+            let level = params["level"] as? String ?? ""
+            guard let index = agents.firstIndex(where: { $0["name"] as? String == name }) else {
+                throw RPCError(code: -32004, kind: "invalid", message: "no agent named \(name)")
+            }
+            var grants = (agents[index]["spaces"] as? [[String: Any]] ?? []).filter { $0["space"] as? String != path }
+            grants.append(["space": path, "level": level])
+            agents[index]["spaces"] = grants
+            return (["space": path, "level": level], nil)
+        case "agents.revoke":
+            let name = params["agent"] as? String ?? ""
+            guard let index = agents.firstIndex(where: { $0["name"] as? String == name }) else {
+                throw RPCError(code: -32004, kind: "invalid", message: "no agent named \(name)")
+            }
+            clock += 1
+            let keys = (agents[index]["keys"] as? [[String: Any]] ?? []).map { $0.merging(["revoked_at": clock]) { $1 } }
+            let grants = (agents[index]["spaces"] as? [[String: Any]] ?? []).map { $0.merging(["level": "none"]) { $1 } }
+            agents[index]["keys"] = keys
+            agents[index]["spaces"] = grants
+            return (agents[index], nil)
         case "recent":
             let nodes = try space().nodes.values.sorted { $0.updatedAt > $1.updatedAt }
             return (nodes.map { ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by] }, nil)

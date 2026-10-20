@@ -105,6 +105,38 @@ public struct NoteVersion: Identifiable, Hashable, Sendable {
     }
 }
 
+/// One change to a space: one write a person or an agent asked for. An undo is a change too, and
+/// undoing an undo redoes the change it undid.
+public struct ChangeRecord: Identifiable, Hashable, Sendable {
+    /// What a change did, as the core names it (`node.update`, `undo`, ...).
+    public enum Action {
+        public static let create = "node.create"
+        public static let update = "node.update"
+        public static let delete = "node.delete"
+        public static let restore = "node.restore"
+        public static let undo = "undo"
+    }
+
+    /// The order of the change in the space; it only grows. `SpaceStore.undo` takes it.
+    public var id: Int64
+    public var changedAt: Date
+    public var author: Author
+    public var action: String
+    /// What it was done to: a node id, a setting key, or empty.
+    public var subject: String
+    /// For an undo, the change it undoes.
+    public var undoes: Int64?
+
+    public init(id: Int64, changedAt: Date, author: Author, action: String, subject: String, undoes: Int64? = nil) {
+        self.id = id
+        self.changedAt = changedAt
+        self.author = author
+        self.action = action
+        self.subject = subject
+        self.undoes = undoes
+    }
+}
+
 /// A node: one note in a space. Its text is Markdown (decision 0006).
 public struct Node: Identifiable, Hashable, Sendable {
     public typealias ID = String
@@ -175,7 +207,7 @@ public enum SpaceStoreError: Error, Equatable, LocalizedError {
     case undoConflict(change: Int64, later: [Int64], message: String)
     /// The change cannot be undone, or was already undone.
     case cannotUndo(String)
-    /// Only a person may do this.
+    /// Only a person may do this, or an agent may not do it in this space.
     case personOnly(String)
     /// The Knode settings (`config.toml`) could not be read or written.
     case config(String)

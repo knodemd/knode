@@ -16,6 +16,9 @@ struct ServiceMenu: View {
         }
         Divider()
         spaceForAgents
+        SettingsLink {
+            Label("Agents and Access…", systemImage: "lock.shield")
+        }
         Divider()
         Button("Open Knode", systemImage: "macwindow") {
             openWindow(id: "main")

@@ -7,6 +7,9 @@ import Foundation
 /// and `PreviewSpaceStore` with example notes in memory. Every method is async so a store never blocks
 /// the main thread.
 public protocol SpaceStore: Sendable {
+    /// Who the store writes as: the name of the person in the provenance of every change.
+    var person: String { get }
+
     /// Creates a new, empty `.knode` package at `url` and opens it.
     func createSpace(at url: URL, name: String) async throws -> Space
 
@@ -45,6 +48,10 @@ public protocol SpaceStore: Sendable {
 
     /// Puts a node back to one of its versions (`NoteVersion.seq`) and returns it.
     func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node
+
+    /// The changes made to a node, newest first, at most `limit`: its edits, restores and the undos
+    /// of them, with who made each.
+    func changes(of node: Node.ID, in space: Space.ID, limit: Int) async throws -> [ChangeRecord]
 
     /// Undoes a change (`NoteVersion.changeID`). Fails with `SpaceStoreError.undoConflict` when
     /// later changes touched the same notes, unless `force` is set: ask the person first.
