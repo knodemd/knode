@@ -444,7 +444,13 @@ impl Engine {
             if self.stopping() {
                 return;
             }
-            self.inner().dirty.remove(&path);
+            {
+                let mut inner = self.inner();
+                inner.dirty.remove(&path);
+                if let Some(space) = inner.spaces.get_mut(&path) {
+                    space.indexing = true;
+                }
+            }
             if let Err(message) = self.index_space(state, &embedder, &path, force) {
                 let mut inner = self.inner();
                 if let Some(space) = inner.spaces.get_mut(&path) {
@@ -487,7 +493,6 @@ impl Engine {
             self.set_space(path, |s| {
                 s.nodes = nodes;
                 s.waiting = waiting;
-                s.indexing = waiting > 0;
                 s.error = None;
             });
             model
