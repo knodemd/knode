@@ -207,7 +207,9 @@ fn access(method: &str) -> Access {
         | methods::CHANGES
         | methods::CHANGE
         | methods::VAULT_EXPORT
-        | methods::MARKDOWN_FOLDER_GET => Access::Read,
+        | methods::MARKDOWN_FOLDER_GET
+        | methods::DOC_OPEN
+        | methods::DOC_UPDATES => Access::Read,
         methods::NODE_CREATE
         | methods::NODE_UPDATE
         | methods::NODE_DELETE
@@ -215,10 +217,13 @@ fn access(method: &str) -> Access {
         | methods::LINK_DELETE
         | methods::UNDO
         | methods::RESTORE
-        | methods::VAULT_IMPORT => Access::Write,
+        | methods::VAULT_IMPORT
+        | methods::DOC_EDIT => Access::Write,
         methods::SERVICE_STATUS => Access::Status,
         // Creating and renaming spaces, changing settings and folders, managing agents, purge,
-        // the live Markdown folder and anything not listed here are for people only.
+        // the live Markdown folder, Loro peers and updates (`doc.peer`, `doc.merge`, whose
+        // authorship comes from the peers, not the key) and anything not listed here are for
+        // people only.
         _ => Access::PersonOnly,
     }
 }

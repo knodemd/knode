@@ -34,6 +34,7 @@ pub mod agents;
 mod auth;
 mod capture;
 mod client;
+mod coedit;
 mod error;
 mod install;
 pub mod keys;
@@ -58,7 +59,10 @@ pub use install::{
 };
 pub use knode_ingest::{Agent, WatchOptions};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
-pub use protocol::{Change, ChangeKind, Event, MarkdownFolder, RpcError, SpaceInfo, Status};
+pub use protocol::{
+    Change, ChangeKind, DocEdited, DocSplice, DocText, Event, MarkdownFolder, RpcError, SpaceInfo,
+    Status,
+};
 pub use server::{Config, ServiceHandle, run, start};
 pub use spaces::{FolderInfo, FolderInput, SpaceEvent, SpaceEventKind};
 

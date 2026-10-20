@@ -1851,9 +1851,11 @@ dependencies = [
 name = "knode-service"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "knode-config",
  "knode-format",
  "knode-ingest",
+ "knode-sync",
  "knode-vault",
  "libc",
  "security-framework",
