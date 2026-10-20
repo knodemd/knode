@@ -13,6 +13,7 @@ use crate::{
     ImportedNode, Link, Manifest, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties,
     Provenance, Result, SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, schema,
 };
+use crate::{LinkDirection, attachments, links};
 
 /// The `settings` key holding the space id, which must match `manifest.json`.
 const SPACE_ID_KEY: &str = "space.id";
@@ -372,7 +373,10 @@ impl Space {
     /// Links two nodes with a link of the given kind, such as `related` or `part-of`, and returns
     /// the link. Linking twice returns the existing link and records nothing.
     ///
-    /// `mentions` links come only from `[[links]]` in a body and cannot be made by hand.
+    /// The kind must be built in (see [`link_kinds`]) or defined by the space with
+    /// [`set_link_kind`](Self::set_link_kind); an empty kind means `related`. `mentions` links
+    /// come only from `[[links]]` in a body and cannot be made by hand. For a symmetric kind,
+    /// such as `related`, linking B to A when A is already linked to B returns that link.
     pub fn link(
         &mut self,
         from: &NodeId,
@@ -383,6 +387,19 @@ impl Space {
         let kind = check_link_kind(kind)?;
         self.require_exists(from)?;
         self.require_exists(to)?;
+        let direction = links::direction_of(&self.conn, &kind)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "unknown link kind {kind:?}: define it first with a label (see set_link_kind)"
+            ))
+        })?;
+        let (from, to) = if direction == LinkDirection::Symmetric
+            && !link_exists(&self.conn, from, &kind, to)?
+            && link_exists(&self.conn, to, &kind, from)?
+        {
+            (to, from)
+        } else {
+            (from, to)
+        };
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         if !link_exists(&tx, from, &kind, to)? {
@@ -415,7 +432,8 @@ impl Space {
     }
 
     /// Removes a link made with [`link`](Self::link), recorded as a change by `by`. Returns
-    /// whether there was one; removing a link that is not there records nothing.
+    /// whether there was one; removing a link that is not there records nothing. For a symmetric
+    /// kind, the link between the two nodes is removed whichever way it was made.
     pub fn unlink_by(
         &mut self,
         from: &NodeId,
@@ -424,6 +442,15 @@ impl Space {
         by: &Provenance,
     ) -> Result<bool> {
         let kind = check_link_kind(kind)?;
+        let symmetric = links::direction_of(&self.conn, &kind)? == Some(LinkDirection::Symmetric);
+        let (from, to) = if symmetric
+            && !link_exists(&self.conn, from, &kind, to)?
+            && link_exists(&self.conn, to, &kind, from)?
+        {
+            (to, from)
+        } else {
+            (from, to)
+        };
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         if !link_exists(&tx, from, &kind, to)? {
@@ -633,7 +660,11 @@ impl Space {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    fn query_links<P: rusqlite::Params>(&self, filter: &str, params: P) -> Result<Vec<Link>> {
+    pub(crate) fn query_links<P: rusqlite::Params>(
+        &self,
+        filter: &str,
+        params: P,
+    ) -> Result<Vec<Link>> {
         let sql = format!(
             "SELECT l.source_id, s.title, l.target_id, t.title, l.kind, l.created_at,
                     p.actor_kind, p.actor, p.session, p.source
@@ -691,7 +722,7 @@ fn fts_query(query: &str) -> Option<String> {
     Some(out.join(" "))
 }
 
-fn check_title(title: &str) -> Result<String> {
+pub(crate) fn check_title(title: &str) -> Result<String> {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
         return Err(Error::Invalid("a node needs a title".into()));
@@ -779,7 +810,7 @@ pub(crate) fn check_link_kind(kind: &str) -> Result<String> {
     check_name("link kind", kind)
 }
 
-fn clean_tags(tags: &[String]) -> Result<Vec<String>> {
+pub(crate) fn clean_tags(tags: &[String]) -> Result<Vec<String>> {
     let mut out = BTreeSet::new();
     for tag in tags {
         let tag = tag.trim().trim_start_matches('#').trim().to_lowercase();
@@ -865,7 +896,7 @@ fn set_tags(tx: &Transaction<'_>, id: &NodeId, tags: &[String]) -> Result<()> {
 }
 
 /// The node a `[[link]]` target names: a node id, or else the oldest node with that title.
-fn resolve(tx: &Transaction<'_>, target: &str) -> Result<Option<String>> {
+pub(crate) fn resolve(tx: &Connection, target: &str) -> Result<Option<String>> {
     if let Ok(id) = NodeId::parse(target) {
         let found: Option<String> = tx
             .query_row(
@@ -899,7 +930,13 @@ fn apply_body_links(
     let source = id.to_string();
     let mut targets = BTreeSet::new();
     let mut waiting = Vec::new();
+    // From schema version 4, a destination that is the name of one of the node's attachments
+    // points at the file: no link and no unresolved link.
+    let attached = attachments::attachment_names(tx, id)?;
     for link in links {
+        if attached.contains(link.destination.as_str()) {
+            continue;
+        }
         let mut found = resolve(tx, &link.destination)?;
         if found.is_none() && link.heading.is_some() {
             found = resolve(tx, &link.target)?;
@@ -941,6 +978,26 @@ fn apply_body_links(
              VALUES (?1, ?2, ?3)",
             params![source, knode_md::title_key(&target), target],
         )?;
+    }
+    Ok(())
+}
+
+/// Reads a node's body again for its `[[links]]`, after its attachments changed.
+pub(crate) fn refresh_body_links(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    prov: i64,
+    now: Timestamp,
+) -> Result<()> {
+    let body: Option<String> = tx
+        .query_row(
+            "SELECT body FROM nodes WHERE id = ?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(body) = body {
+        apply_body_links(tx, id, &knode_md::wiki_links(&body), prov, now)?;
     }
     Ok(())
 }

@@ -808,6 +808,18 @@ fn finds_nodes_by_property() {
 
 /// Takes a new, empty space back to schema version 2, as an older Knode wrote it.
 const DOWN_TO_VERSION_2: &str = "
+    DROP TRIGGER loro_docs_body;
+    DROP TRIGGER embedding_chunks_stale;
+    DROP TABLE loro_peers;
+    DROP TABLE loro_docs;
+    DROP TABLE attachments;
+    DROP TABLE blobs;
+    DROP TABLE embedding_chunks;
+    DROP TABLE embedding_models;
+    DROP TABLE positions;
+    DROP TABLE view_groups;
+    DROP TABLE views;
+    DROP TABLE link_kinds;
     DROP TABLE link_history;
     DROP INDEX history_change;
     ALTER TABLE history DROP COLUMN restored_from;
