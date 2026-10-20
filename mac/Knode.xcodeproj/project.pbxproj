@@ -23,6 +23,7 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		001B0DE99DAAD94BBFB88631 /* CoeditingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E33D3DE941D342079440E3D /* CoeditingStore.swift */; };
 		04CD4BCC76073DDF9FFC6734 /* MapModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60E9377B4A8DB922AB54BB00 /* MapModelTests.swift */; };
 		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
 		0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */; };
@@ -38,6 +39,7 @@
 		2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */; };
 		3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */; };
 		3851D559E1B10C85221D333D /* MapStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9CD836D628011CD6A0F9CD /* MapStyle.swift */; };
+		38DB2D0CD47FF33720E2533E /* TextDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E1C1DDBBBA4387B79447DE /* TextDiff.swift */; };
 		3D5C44AA169C751B90369AEE /* NoteLinksPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */; };
 		3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */; };
 		47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F73AC1170815F22E83004BB /* MarkdownBlock.swift */; };
@@ -60,6 +62,7 @@
 		988B886901C3336334E15D89 /* SpaceSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70CA6018A73437BB26BFF198 /* SpaceSheets.swift */; };
 		9B0C0A19C2A9A1B9D246E890 /* ServiceSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */; };
 		9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */; };
+		9C4696B80F90A05C17A65589 /* CoeditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9D1C0708969EFCA606BD604 /* CoeditingTests.swift */; };
 		9C47AFD1C86B4824AEC210DA /* GraphModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1225C214D55D9FEA8921B609 /* GraphModel.swift */; };
 		A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B7EDA91000979E88901A77 /* SpaceStore.swift */; };
 		A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */; };
@@ -71,6 +74,7 @@
 		C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */; };
 		C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */; };
 		CA94681234A819BD84980698 /* KnodeHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211628B1070B636AB469C990 /* KnodeHome.swift */; };
+		CA953378C19A1D1063C4BAFA /* MarkdownSourceEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F3A8F99C8B903DAB9D50F49 /* MarkdownSourceEditor.swift */; };
 		CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */; };
 		CC974D315B95BBE0AC44FEA5 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4192875931DFC4D972A9798 /* AgentsView.swift */; };
 		CD473464C026AC496B53A46D /* MapStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE610E1D3B3FAC0ED8BEA05 /* MapStore.swift */; };
@@ -116,6 +120,7 @@
 /* Begin PBXFileReference section */
 		05A860B482EA0900CE4C3451 /* NoteHistoryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteHistoryModel.swift; sourceTree = "<group>"; };
 		0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteLinksModel.swift; sourceTree = "<group>"; };
+		0E33D3DE941D342079440E3D /* CoeditingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoeditingStore.swift; sourceTree = "<group>"; };
 		0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KnodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1225C214D55D9FEA8921B609 /* GraphModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphModel.swift; sourceTree = "<group>"; };
 		12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteLinksPanel.swift; sourceTree = "<group>"; };
@@ -139,6 +144,7 @@
 		59B41F891EB0BD14B62D79D3 /* FileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystem.swift; sourceTree = "<group>"; };
 		5E42F5167CB3D3CA4D109EF3 /* GraphLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphLayout.swift; sourceTree = "<group>"; };
 		5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeCommand.swift; sourceTree = "<group>"; };
+		5F3A8F99C8B903DAB9D50F49 /* MarkdownSourceEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownSourceEditor.swift; sourceTree = "<group>"; };
 		60E9377B4A8DB922AB54BB00 /* MapModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapModelTests.swift; sourceTree = "<group>"; };
 		629294654D2A167C069EEF94 /* libKnodeCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libKnodeCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineTool.swift; sourceTree = "<group>"; };
@@ -175,7 +181,9 @@
 		DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolTests.swift; sourceTree = "<group>"; };
 		E67C963230A136E45F1B79A9 /* SpaceFoldersModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFoldersModel.swift; sourceTree = "<group>"; };
+		E9D1C0708969EFCA606BD604 /* CoeditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoeditingTests.swift; sourceTree = "<group>"; };
 		ED6EF144F0296362C21D0881 /* CanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasView.swift; sourceTree = "<group>"; };
+		F1E1C1DDBBBA4387B79447DE /* TextDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextDiff.swift; sourceTree = "<group>"; };
 		F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceSpaceStoreTests.swift; sourceTree = "<group>"; };
 		F62D33407D7A83E40E34FE2B /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = AppIcon.icns; path = "../brand/07 App Icon/macOS/AppIcon.icns"; sourceTree = "<group>"; };
 		F6D81D9BBE595AB5EF4BA6CE /* CommandLineToolInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolInstaller.swift; sourceTree = "<group>"; };
@@ -268,6 +276,7 @@
 				589D1B5A99FDE143376F1AB3 /* Assets.xcassets */,
 				346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */,
 				63605920B57DFBDB3D500497 /* CommandLineTool */,
+				9BC6D90434B243ACD5237460 /* Editor */,
 				BF6415D44EC381BCE4A0E5B3 /* Markdown */,
 				C66AD3A997986DE0D5BCD859 /* Models */,
 				F7D3DE97C03D5977158EDDAE /* Service */,
@@ -277,11 +286,21 @@
 			path = Knode;
 			sourceTree = "<group>";
 		};
+		9BC6D90434B243ACD5237460 /* Editor */ = {
+			isa = PBXGroup;
+			children = (
+				5F3A8F99C8B903DAB9D50F49 /* MarkdownSourceEditor.swift */,
+				F1E1C1DDBBBA4387B79447DE /* TextDiff.swift */,
+			);
+			path = Editor;
+			sourceTree = "<group>";
+		};
 		A5E23F349B3EFF883D816035 /* KnodeTests */ = {
 			isa = PBXGroup;
 			children = (
 				761FAA02E01D6B1D80506E59 /* AgentsModelTests.swift */,
 				95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */,
+				E9D1C0708969EFCA606BD604 /* CoeditingTests.swift */,
 				E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */,
 				F8926EABF62A6AC5BE0BB8B1 /* CoreMapStoreTests.swift */,
 				7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */,
@@ -334,6 +353,7 @@
 			isa = PBXGroup;
 			children = (
 				3B65FED5CAA2B40891950D07 /* Broadcast.swift */,
+				0E33D3DE941D342079440E3D /* CoeditingStore.swift */,
 				9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */,
 				935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */,
 				BEE610E1D3B3FAC0ED8BEA05 /* MapStore.swift */,
@@ -611,6 +631,7 @@
 			files = (
 				17F17199E352C0F5CCE1B6DB /* AgentsModelTests.swift in Sources */,
 				E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */,
+				9C4696B80F90A05C17A65589 /* CoeditingTests.swift in Sources */,
 				51119B5A2FE748B40390C313 /* CommandLineToolTests.swift in Sources */,
 				0C47D34BC488A8D0D242E212 /* CoreMapStoreTests.swift in Sources */,
 				956BCF38E4C1789D6B2108FB /* CoreSpaceStoreTests.swift in Sources */,
@@ -637,6 +658,7 @@
 				66FD330E3841BD85C870EE01 /* Broadcast.swift in Sources */,
 				2828A910729438B595879406 /* CanvasModel.swift in Sources */,
 				597F5EE2180ACD2E1831921D /* CanvasView.swift in Sources */,
+				001B0DE99DAAD94BBFB88631 /* CoeditingStore.swift in Sources */,
 				EB452D1354DFB49F4C074616 /* CommandLineTool.swift in Sources */,
 				768470D298ACA52E6BF9EE3A /* CommandLineToolInstaller.swift in Sources */,
 				2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */,
@@ -654,6 +676,7 @@
 				CD473464C026AC496B53A46D /* MapStore.swift in Sources */,
 				3851D559E1B10C85221D333D /* MapStyle.swift in Sources */,
 				47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */,
+				CA953378C19A1D1063C4BAFA /* MarkdownSourceEditor.swift in Sources */,
 				DB16242C01E6D130B62D3344 /* Models.swift in Sources */,
 				9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */,
 				FBD3A639C5337FFAABD6F099 /* NoteHistoryModel.swift in Sources */,
@@ -675,6 +698,7 @@
 				1ED9D30924C082C7D4785F2C /* SpacePanels.swift in Sources */,
 				988B886901C3336334E15D89 /* SpaceSheets.swift in Sources */,
 				A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */,
+				38DB2D0CD47FF33720E2533E /* TextDiff.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

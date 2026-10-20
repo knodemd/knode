@@ -208,6 +208,27 @@ extension ServiceError {
     }
 }
 
+// MARK: - Editing together
+
+// Bodies are edited together only while Knode Service holds the space. Without it the core in the
+// app writes them whole, as before, and these calls fail with `SpaceStoreError.notCoediting`.
+extension RoutingSpaceStore: CoeditingStore {
+    public func openBody(_ node: Node.ID, in space: Space.ID) async throws -> BodyDocument {
+        try await route(space) { store in
+            guard let service = store as? ServiceSpaceStore else { throw SpaceStoreError.notCoediting }
+            return try await service.openBody(node, in: space)
+        }
+    }
+
+    public func editBody(_ node: Node.ID, in space: Space.ID, version: String, splices: [TextSplice]) async throws -> BodyEditResult {
+        // Not run again after the service stops mid-call: the edit may have been written.
+        try await route(space, retry: false) { store in
+            guard let service = store as? ServiceSpaceStore else { throw SpaceStoreError.notCoediting }
+            return try await service.editBody(node, in: space, version: version, splices: splices)
+        }
+    }
+}
+
 // MARK: - Map
 
 // Knode Service has no methods yet for link kinds, labelled links, views, positions or canvases:
