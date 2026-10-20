@@ -3,9 +3,9 @@ name: core
 on:
   push:
     branches: [main]
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths: ["core/**", "mac/scripts/**", ".github/workflows/core.yml"]
   pull_request:
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths: ["core/**", "mac/scripts/**", ".github/workflows/core.yml"]
 
 permissions:
   contents: read
@@ -30,3 +30,5 @@ jobs:
       # knode-format without sqlite-vec: spaces still open and search by words.
       - run: cargo clippy -p knode-format --no-default-features --all-targets -- -D warnings
       - run: cargo test -p knode-format --no-default-features
+      - name: Mac build input lists are up to date
+        run: ../mac/scripts/update-inputs.sh --check

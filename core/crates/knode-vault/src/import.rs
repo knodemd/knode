@@ -1,20 +1,22 @@
 //! Reading a folder of `.md` files into a space: [`import`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
 
 use knode_format::{
-    ActorKind, ImportedNode, NewNode, NodeId, NodeUpdate, Properties, Provenance, Space, Timestamp,
-    link_kinds,
+    ActorKind, ImportedNode, LinkKindSpec, MAX_ATTACHMENT_SIZE, NewNode, NodeId, NodeUpdate,
+    Properties, Provenance, Space, Timestamp, link_kinds,
 };
 
 use serde::{Deserialize, Serialize};
 
+use crate::attachments::{files_to_blob_urls, wiki_names};
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
-use crate::names::{stem_of, title_from_stem};
+use crate::mirror::{read_attachment_map, read_link_kinds};
+use crate::names::{folder_of, join, stem_of, title_from_stem};
 use crate::property_keys as keys;
-use crate::{Result, STYLE_VAULT, io_error, tags, time};
+use crate::{Error, LINK_KINDS_FILE, Result, STATE_DIR, STYLE_VAULT, io_error, tags, time};
 
 /// A file [`import`] did not bring in, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,10 +38,20 @@ pub struct ImportReport {
     pub unchanged: usize,
     /// The `.md` files that could not be imported.
     pub skipped: Vec<Skipped>,
-    /// Files that are not notes, such as images and PDFs, left for attachments.
+    /// Files that are not notes, such as images and PDFs, that no note uses: left out.
     pub attachments: Vec<String>,
+    /// The files attached to the notes that use them (or already attached).
+    #[serde(default)]
+    pub attached: Vec<String>,
     /// How many typed links from the `links` of the files were made or already existed.
     pub links: usize,
+    /// The kinds of link the space did not define and the import defined.
+    #[serde(default)]
+    pub link_kinds: Vec<String>,
+    /// The typed links of the files that could not be made, by the file they are in, and why:
+    /// a target the space does not have, or a kind that cannot be defined.
+    #[serde(default)]
+    pub unlinked: Vec<Skipped>,
 }
 
 /// Reads every `.md` file under `dir` into `space`, written by `by`.
@@ -61,8 +73,19 @@ pub struct ImportReport {
 ///   frontmatter is kept as it is, to be written back on export.
 /// - The path of the file, folders included, is kept in the property
 ///   [`markdown.path`](crate::property_keys::PATH).
+/// - A file a note embeds or links to by name (`![[beds.svg]]`, `[[beds.svg]]`) that is next to
+///   the note is attached to its node under that name, and so are the attachments
+///   `.knode/files.json` lists for the note (a folder written by [`export`](crate::export)),
+///   whose file names in Markdown links become `knode:blob/<hash>` again. An attachment with that
+///   name and other content is replaced. Attached files are listed in
+///   [`attached`](ImportReport::attached), the other files in
+///   [`attachments`](ImportReport::attachments).
+/// - A kind of link the space does not define is defined: as `.knode/link-kinds.json` describes
+///   it (a folder written by [`export`](crate::export)), else directed, with its name as its
+///   label. Kinds defined so are listed in [`link_kinds`](ImportReport::link_kinds); links that
+///   cannot be made, in [`unlinked`](ImportReport::unlinked).
 ///
-/// Typed links are added, never removed. A file that cannot be read or breaks a rule of the
+/// Typed links and attachments are added, never removed. A file that cannot be read or breaks a rule of the
 /// format (such as a bad kind) is skipped and listed in [`skipped`](ImportReport::skipped); the
 /// rest is imported.
 pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Result<ImportReport> {
@@ -70,8 +93,11 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
     let mut notes = Vec::new();
     let mut report = ImportReport::default();
     walk(dir, "", &mut notes, &mut report.attachments)?;
+    let files: HashSet<String> = report.attachments.iter().cloned().collect();
+    let exported = read_attachment_map(dir);
+    let mut attached: BTreeSet<String> = BTreeSet::new();
 
-    let mut pending_links: Vec<(NodeId, String, Vec<String>)> = Vec::new();
+    let mut pending_links: Vec<(String, NodeId, String, Vec<String>)> = Vec::new();
     for rel in notes {
         let full = dir.join(&rel);
         let text = match fs::read_to_string(&full) {
@@ -84,16 +110,75 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
                 continue;
             }
         };
-        let note = parse(&rel, &text);
+        let mut note = parse(&rel, &text);
+        // The attachments export wrote for this note, by name, with their files and hashes.
+        let written: Vec<(String, String, String)> = note
+            .id
+            .and_then(|id| exported.get(&id.to_string()))
+            .into_iter()
+            .flatten()
+            .filter(|(_, f)| files.contains(&f.path))
+            .map(|(name, f)| (name.clone(), f.path.clone(), f.hash.clone()))
+            .collect();
+        let as_written = note.body.clone();
+        let blob_urls = |hashes: &dyn Fn(&str, &str) -> String| -> String {
+            let map: BTreeMap<String, String> = written
+                .iter()
+                .map(|(name, path, hash)| (file_name(path).to_string(), hashes(name, hash)))
+                .collect();
+            files_to_blob_urls(&as_written, &map)
+        };
+        note.body = blob_urls(&|_, hash| hash.to_string());
         match write(space, &rel, &note, by) {
             Ok((id, outcome)) => {
+                // Next to the note, by name, and the files export wrote for it.
+                let mut wanted: BTreeMap<String, String> = written
+                    .iter()
+                    .map(|(name, path, _)| (name.clone(), path.clone()))
+                    .collect();
+                for name in wiki_names(&note.body) {
+                    let path = join(folder_of(&rel), &name);
+                    if files.contains(&path) {
+                        wanted.entry(name).or_insert(path);
+                    }
+                }
+                let mut hashes: BTreeMap<String, String> = BTreeMap::new();
+                for (name, path) in wanted {
+                    match attach(space, &id, &name, &dir.join(&path), by) {
+                        Ok(hash) => {
+                            hashes.insert(name, hash);
+                            attached.insert(path);
+                        }
+                        Err(e) => report.skipped.push(Skipped {
+                            path,
+                            reason: e.to_string(),
+                        }),
+                    }
+                }
+                // A file changed since the export: its links name the blob now attached.
+                let fixed =
+                    blob_urls(&|name, hash| hashes.get(name).cloned().unwrap_or(hash.into()));
+                let mut outcome = outcome;
+                if fixed != note.body {
+                    space.update_node(
+                        &id,
+                        NodeUpdate {
+                            body: Some(fixed),
+                            ..Default::default()
+                        },
+                        by,
+                    )?;
+                    if matches!(outcome, Outcome::Unchanged) {
+                        outcome = Outcome::Updated;
+                    }
+                }
                 match outcome {
-                    Outcome::Created => report.created.push(rel),
-                    Outcome::Updated => report.updated.push(rel),
+                    Outcome::Created => report.created.push(rel.clone()),
+                    Outcome::Updated => report.updated.push(rel.clone()),
                     Outcome::Unchanged => report.unchanged += 1,
                 }
                 for (kind, targets) in note.links {
-                    pending_links.push((id, kind, targets));
+                    pending_links.push((rel.clone(), id, kind, targets));
                 }
             }
             Err(e) => report.skipped.push(Skipped {
@@ -103,20 +188,88 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
         }
     }
 
-    for (from, kind, targets) in pending_links {
+    report.attachments.retain(|path| !attached.contains(path));
+    report.attached = attached.into_iter().collect();
+
+    // The kinds the exported space defined, then any other kind the files use.
+    for (kind, spec) in read_link_kinds(dir) {
+        if space.link_kind(&kind)?.is_some() {
+            continue;
+        }
+        match space.set_link_kind(&spec, by) {
+            Ok(_) => report.link_kinds.push(kind),
+            Err(e) => report.unlinked.push(Skipped {
+                path: format!("{STATE_DIR}/{LINK_KINDS_FILE}"),
+                reason: format!("link kind {kind}: {e}"),
+            }),
+        }
+    }
+    for (rel, from, kind, targets) in pending_links {
         if kind == link_kinds::MENTIONS {
             continue;
         }
+        if space.link_kind(&kind)?.is_none() {
+            let spec = LinkKindSpec::directed(kind.clone(), kind.clone(), "");
+            if let Err(e) = space.set_link_kind(&spec, by) {
+                for target in targets {
+                    report.unlinked.push(Skipped {
+                        path: rel.clone(),
+                        reason: format!("{kind} link to {target}: {e}"),
+                    });
+                }
+                continue;
+            }
+            report.link_kinds.push(kind.clone());
+        }
         for target in targets {
             let Some(to) = find(space, &target)? else {
+                report.unlinked.push(Skipped {
+                    path: rel.clone(),
+                    reason: format!("{kind} link to {target}: no such node"),
+                });
                 continue;
             };
-            if space.link(&from, &to, &kind, by).is_ok() {
-                report.links += 1;
+            match space.link(&from, &to, &kind, by) {
+                Ok(_) => report.links += 1,
+                Err(e) => report.unlinked.push(Skipped {
+                    path: rel.clone(),
+                    reason: format!("{kind} link to {target}: {e}"),
+                }),
             }
         }
     }
     Ok(report)
+}
+
+/// The last part of a relative path.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Attaches the file at `full` to the node under `name`, replacing an attachment with that name
+/// and other content, and returns the hash of its blob.
+fn attach(
+    space: &mut Space,
+    id: &NodeId,
+    name: &str,
+    full: &Path,
+    by: &Provenance,
+) -> Result<String> {
+    let size = fs::metadata(full).map_err(io_error(full))?.len();
+    if size > MAX_ATTACHMENT_SIZE {
+        return Err(Error::Space(knode_format::Error::Invalid(format!(
+            "{name} is larger than {} MB, the most a space attaches",
+            MAX_ATTACHMENT_SIZE / (1024 * 1024)
+        ))));
+    }
+    let bytes = fs::read(full).map_err(io_error(full))?;
+    if let Some(current) = space.attachment(id, name)? {
+        if space.read_blob(&current.hash).ok().flatten().as_deref() == Some(bytes.as_slice()) {
+            return Ok(current.hash);
+        }
+        space.detach(id, name, by)?;
+    }
+    Ok(space.attach(id, name, bytes.as_slice(), by)?.hash)
 }
 
 /// Lists the notes and other files under `dir`, sorted by path.
