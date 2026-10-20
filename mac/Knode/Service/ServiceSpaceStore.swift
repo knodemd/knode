@@ -108,6 +108,18 @@ public actor ServiceSpaceStore: CoeditingStore {
         return hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) }
     }
 
+    public func search(_ query: String, mode: SearchMode, in space: Space.ID) async throws -> SearchResults {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "query": .string(query), "limit": .int(Self.searchLimit), "mode": .string(mode.rawValue)]
+        let data = try await callJSON("search", params)
+        if let results = try? ServiceConnection.decoder.decode(WireSearchResults.self, from: data) {
+            return SearchResults(mode: SearchMode(rawValue: results.mode) ?? .words, hits: results.hits.map(SearchHit.init), note: results.note)
+        }
+        // A service from before `mode` answers with the bare list, ranked as words and meaning.
+        let hits = try ServiceConnection.decoder.decode([WireHit].self, from: data)
+        return SearchResults(mode: .hybrid, hits: hits.map(SearchHit.init), note: nil)
+    }
+
     public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
         let path = try path(space)
         let history = try await call("history", ["space": .string(path), "id": .string(node)], as: [WireHistoryEntry].self, node: node)
@@ -399,6 +411,27 @@ struct WireLink: Decodable, Sendable {}
 struct WireHit: Decodable, Sendable {
     var node: WireSummary
     var snippet: String
+    var wordRank: Int?
+    var meaningRank: Int?
+}
+
+/// What `search` answers when it is given a `mode`.
+struct WireSearchResults: Decodable, Sendable {
+    var mode: String
+    var hits: [WireHit]
+    var note: String?
+}
+
+extension SearchHit {
+    init(_ hit: WireHit) {
+        self.init(
+            // The list shows the snippet as plain text where it shows no bold.
+            summary: NodeSummary(hit.node, excerpt: hit.snippet.replacing("**", with: "")),
+            snippet: hit.snippet,
+            wordRank: hit.wordRank,
+            meaningRank: hit.meaningRank
+        )
+    }
 }
 
 struct WireProvenance: Decodable, Sendable {

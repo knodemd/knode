@@ -247,6 +247,12 @@ public actor PreviewSpaceStore: SpaceStore {
         return NoteVersion(seq: sequence, nodeID: node.id, operation: operation, changeID: sequence, changedAt: node.updatedAt, author: author, title: node.title, body: node.body)
     }
 
+    /// The example space is searched by words.
+    public func search(_ query: String, mode: SearchMode, in space: Space.ID) async throws -> SearchResults {
+        let found = try await search(query, in: space)
+        return .words(found, note: mode == .words ? nil : "The example space is searched by words. Search by meaning works in your own spaces, through Knode Service.")
+    }
+
     public func search(_ query: String, in space: Space.ID) async throws -> [NodeSummary] {
         let terms = query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
         let nodes = try entry(space).nodes.values

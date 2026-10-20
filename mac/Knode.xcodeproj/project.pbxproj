@@ -28,6 +28,7 @@
 		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
 		0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */; };
 		0C47D34BC488A8D0D242E212 /* CoreMapStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8926EABF62A6AC5BE0BB8B1 /* CoreMapStoreTests.swift */; };
+		14C56F7C8D688FF1F9B6C69A /* SearchIndexModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FB22CDB5F3F7954955E115 /* SearchIndexModel.swift */; };
 		179AF48FFAEFFC495ED46A42 /* SpaceManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71324783108AA2231CD7C03E /* SpaceManifest.swift */; };
 		17F17199E352C0F5CCE1B6DB /* AgentsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761FAA02E01D6B1D80506E59 /* AgentsModelTests.swift */; };
 		19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17772215D1051C90CE7039B0 /* RecentSpaces.swift */; };
@@ -41,6 +42,7 @@
 		3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */; };
 		3851D559E1B10C85221D333D /* MapStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E9CD836D628011CD6A0F9CD /* MapStyle.swift */; };
 		38DB2D0CD47FF33720E2533E /* TextDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E1C1DDBBBA4387B79447DE /* TextDiff.swift */; };
+		3976C9587165218CE64048D4 /* SearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B6C2CE64623C331289D2412 /* SearchTests.swift */; };
 		3D5C44AA169C751B90369AEE /* NoteLinksPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */; };
 		3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */; };
 		441BF4E6029D68C0E790A2B4 /* AttachmentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00857B36583EDB57F420DB83 /* AttachmentStore.swift */; };
@@ -67,9 +69,11 @@
 		9B10984A6FAB8192F3FCF2E8 /* NoteEditorModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */; };
 		9C4696B80F90A05C17A65589 /* CoeditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9D1C0708969EFCA606BD604 /* CoeditingTests.swift */; };
 		9C47AFD1C86B4824AEC210DA /* GraphModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1225C214D55D9FEA8921B609 /* GraphModel.swift */; };
+		9C8E0A9760091DA0CA6FC8C3 /* SearchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FAB5829AF7223F860C6050E /* SearchViews.swift */; };
 		9E6B6366821928C1431461EA /* NoteAttachmentsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B5B29A5AC974E36CDDAB720 /* NoteAttachmentsModel.swift */; };
 		A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B7EDA91000979E88901A77 /* SpaceStore.swift */; };
 		A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */; };
+		AA81A15045E87224DCD52550 /* Search.swift in Sources */ = {isa = PBXBuildFile; fileRef = 825F495909BF4D04A0580AB2 /* Search.swift */; };
 		AD54F3BC930DA6854C362FA0 /* NoteLinksModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */; };
 		AEDA645803665F25A8706141 /* AgentsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CBAFE00EEA3007B2C7D1E6E /* AgentsModel.swift */; };
 		B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */; };
@@ -130,10 +134,12 @@
 		0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteLinksModel.swift; sourceTree = "<group>"; };
 		0E33D3DE941D342079440E3D /* CoeditingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoeditingStore.swift; sourceTree = "<group>"; };
 		0F4F01FEC8A78BA73E5D02F0 /* KnodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KnodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0FAB5829AF7223F860C6050E /* SearchViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViews.swift; sourceTree = "<group>"; };
 		1225C214D55D9FEA8921B609 /* GraphModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphModel.swift; sourceTree = "<group>"; };
 		12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteLinksPanel.swift; sourceTree = "<group>"; };
 		16065546A150F910F6A236AD /* SpacePanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacePanels.swift; sourceTree = "<group>"; };
 		17772215D1051C90CE7039B0 /* RecentSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentSpaces.swift; sourceTree = "<group>"; };
+		1B6C2CE64623C331289D2412 /* SearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTests.swift; sourceTree = "<group>"; };
 		1C55F8766EB17ECEAB8C72A3 /* CanvasModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasModel.swift; sourceTree = "<group>"; };
 		211628B1070B636AB469C990 /* KnodeHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeHome.swift; sourceTree = "<group>"; };
 		2287044266729109CE33CDDB /* ServiceMapStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceMapStore.swift; sourceTree = "<group>"; };
@@ -167,10 +173,12 @@
 		7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFolders.swift; sourceTree = "<group>"; };
 		7B5B29A5AC974E36CDDAB720 /* NoteAttachmentsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteAttachmentsModel.swift; sourceTree = "<group>"; };
 		7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStoreTests.swift; sourceTree = "<group>"; };
+		825F495909BF4D04A0580AB2 /* Search.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search.swift; sourceTree = "<group>"; };
 		84B7EDA91000979E88901A77 /* SpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceStore.swift; sourceTree = "<group>"; };
 		8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacesTests.swift; sourceTree = "<group>"; };
 		8C2EDFE9174FF7941EBB27D9 /* GraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphView.swift; sourceTree = "<group>"; };
 		919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFoldersView.swift; sourceTree = "<group>"; };
+		91FB22CDB5F3F7954955E115 /* SearchIndexModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndexModel.swift; sourceTree = "<group>"; };
 		935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeSettings.swift; sourceTree = "<group>"; };
 		95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
 		95BDD689D2D618AB825F4B13 /* NoteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteView.swift; sourceTree = "<group>"; };
@@ -256,6 +264,7 @@
 				4E9CD836D628011CD6A0F9CD /* MapStyle.swift */,
 				12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */,
 				95BDD689D2D618AB825F4B13 /* NoteView.swift */,
+				0FAB5829AF7223F860C6050E /* SearchViews.swift */,
 				BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */,
 				919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */,
 				16065546A150F910F6A236AD /* SpacePanels.swift */,
@@ -326,6 +335,7 @@
 				A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */,
 				D4484A4403049FB3FC2AD7F2 /* NoteHistoryModelTests.swift */,
 				C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */,
+				1B6C2CE64623C331289D2412 /* SearchTests.swift */,
 				F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */,
 				8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */,
 			);
@@ -352,6 +362,7 @@
 				54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */,
 				05A860B482EA0900CE4C3451 /* NoteHistoryModel.swift */,
 				0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */,
+				91FB22CDB5F3F7954955E115 /* SearchIndexModel.swift */,
 				E67C963230A136E45F1B79A9 /* SpaceFoldersModel.swift */,
 			);
 			path = Models;
@@ -378,6 +389,7 @@
 				766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */,
 				17772215D1051C90CE7039B0 /* RecentSpaces.swift */,
 				283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */,
+				825F495909BF4D04A0580AB2 /* Search.swift */,
 				7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */,
 				357B2C118E178D75931791A7 /* SpaceLibrary.swift */,
 				71324783108AA2231CD7C03E /* SpaceManifest.swift */,
@@ -661,6 +673,7 @@
 				EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */,
 				CDDFAEF30BC14651B5BA3610 /* NoteHistoryModelTests.swift in Sources */,
 				C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */,
+				3976C9587165218CE64048D4 /* SearchTests.swift in Sources */,
 				9B0C0A19C2A9A1B9D246E890 /* ServiceSpaceStoreTests.swift in Sources */,
 				52C83BEE63748375376D6AD6 /* SpacesTests.swift in Sources */,
 			);
@@ -709,6 +722,9 @@
 				3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */,
 				19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */,
 				3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */,
+				AA81A15045E87224DCD52550 /* Search.swift in Sources */,
+				14C56F7C8D688FF1F9B6C69A /* SearchIndexModel.swift in Sources */,
+				9C8E0A9760091DA0CA6FC8C3 /* SearchViews.swift in Sources */,
 				939F05CFA6C43BEB0D8797CD /* ServiceConnection.swift in Sources */,
 				D75859B6F6410DECCD7903DE /* ServiceMapStore.swift in Sources */,
 				B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */,
