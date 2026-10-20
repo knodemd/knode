@@ -38,6 +38,7 @@
 		2275A79CB9C472697E3B7761 /* SpaceFoldersModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67C963230A136E45F1B79A9 /* SpaceFoldersModel.swift */; };
 		2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = F62D33407D7A83E40E34FE2B /* AppIcon.icns */; };
 		2828A910729438B595879406 /* CanvasModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C55F8766EB17ECEAB8C72A3 /* CanvasModel.swift */; };
+		289DD507AC4934F3420B6385 /* SettingsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3441CBD4377727751FFE4729 /* SettingsComponents.swift */; };
 		2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D00F921E755F4E322D2982 /* ContentView.swift */; };
 		2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */; };
 		3008E96DA4F7E745ECEB73C6 /* KFloating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70D1C4573D175A9D3C5111 /* KFloating.swift */; };
@@ -80,9 +81,11 @@
 		9C8317B69B9D886633A8D029 /* DeletedNotesViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 596B76856E60B0436F3D6EB3 /* DeletedNotesViews.swift */; };
 		9C8E0A9760091DA0CA6FC8C3 /* SearchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FAB5829AF7223F860C6050E /* SearchViews.swift */; };
 		9E6B6366821928C1431461EA /* NoteAttachmentsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B5B29A5AC974E36CDDAB720 /* NoteAttachmentsModel.swift */; };
+		A06E877B557E0978CBC585A1 /* SettingsGlyphs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FF1B4EDA952D9979922315C /* SettingsGlyphs.swift */; };
 		A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B7EDA91000979E88901A77 /* SpaceStore.swift */; };
 		A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */; };
 		A6236060CC56682E49585C6A /* ServiceDeletedNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E41F60680F16D19D09F0F75 /* ServiceDeletedNotes.swift */; };
+		A82CE8D8A073ED8005E822E2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468649EC2EED11EE0AE574E7 /* SettingsView.swift */; };
 		AA81A15045E87224DCD52550 /* Search.swift in Sources */ = {isa = PBXBuildFile; fileRef = 825F495909BF4D04A0580AB2 /* Search.swift */; };
 		ABA9C976B59B29A36FAC3FFF /* KContainers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597F19A7C6B7FE6035B1B5D /* KContainers.swift */; };
 		AD54F3BC930DA6854C362FA0 /* NoteLinksModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */; };
@@ -170,6 +173,7 @@
 		2BAC4197CE15CF9B7F4529DB /* KnodeCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KnodeCore.swift; path = build/KnodeCore/KnodeCore.swift; sourceTree = "<group>"; };
 		2CBAFE00EEA3007B2C7D1E6E /* AgentsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsModel.swift; sourceTree = "<group>"; };
 		2F73AC1170815F22E83004BB /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
+		3441CBD4377727751FFE4729 /* SettingsComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsComponents.swift; sourceTree = "<group>"; };
 		346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeApp.swift; sourceTree = "<group>"; };
 		357B2C118E178D75931791A7 /* SpaceLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceLibrary.swift; sourceTree = "<group>"; };
 		3597F19A7C6B7FE6035B1B5D /* KContainers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KContainers.swift; sourceTree = "<group>"; };
@@ -179,6 +183,7 @@
 		3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachingTextView.swift; sourceTree = "<group>"; };
 		430C04EC06D588A51DC31C79 /* KMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMenus.swift; sourceTree = "<group>"; };
 		43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeAppIcons.swift; sourceTree = "<group>"; };
+		468649EC2EED11EE0AE574E7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesTests.swift; sourceTree = "<group>"; };
 		4907771A6F2739DB3E479FFB /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
 		4A8AF2D2FF90CBA41E3A35B4 /* Geist.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Geist.ttf; sourceTree = "<group>"; };
@@ -198,6 +203,7 @@
 		629294654D2A167C069EEF94 /* libKnodeCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libKnodeCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineTool.swift; sourceTree = "<group>"; };
 		6F2E23B71E09926219E50DCB /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		6FF1B4EDA952D9979922315C /* SettingsGlyphs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsGlyphs.swift; sourceTree = "<group>"; };
 		70CA6018A73437BB26BFF198 /* SpaceSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceSheets.swift; sourceTree = "<group>"; };
 		71324783108AA2231CD7C03E /* SpaceManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceManifest.swift; sourceTree = "<group>"; };
 		761FAA02E01D6B1D80506E59 /* AgentsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsModelTests.swift; sourceTree = "<group>"; };
@@ -323,6 +329,9 @@
 				95BDD689D2D618AB825F4B13 /* NoteView.swift */,
 				0FAB5829AF7223F860C6050E /* SearchViews.swift */,
 				BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */,
+				3441CBD4377727751FFE4729 /* SettingsComponents.swift */,
+				6FF1B4EDA952D9979922315C /* SettingsGlyphs.swift */,
+				468649EC2EED11EE0AE574E7 /* SettingsView.swift */,
 				919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */,
 				16065546A150F910F6A236AD /* SpacePanels.swift */,
 				70CA6018A73437BB26BFF198 /* SpaceSheets.swift */,
@@ -822,6 +831,9 @@
 				B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */,
 				2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */,
 				CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */,
+				289DD507AC4934F3420B6385 /* SettingsComponents.swift in Sources */,
+				A06E877B557E0978CBC585A1 /* SettingsGlyphs.swift in Sources */,
+				A82CE8D8A073ED8005E822E2 /* SettingsView.swift in Sources */,
 				F353FDE35EEAD5E56A13857C /* SpaceFolders.swift in Sources */,
 				2275A79CB9C472697E3B7761 /* SpaceFoldersModel.swift in Sources */,
 				DFCC81DD5422634CEAAB163B /* SpaceFoldersView.swift in Sources */,
