@@ -35,7 +35,7 @@ use knode_ingest::{
 use crate::markdown::{record_path, resolve_path};
 use crate::protocol::ChangeKind;
 use crate::server::State;
-use crate::spaces::{capture_enabled, excluded, patterns};
+use crate::spaces::{capture_enabled, excluded, rule_patterns};
 
 /// The folder in the Knode home where capture keeps its state.
 pub const CAPTURE_DIR: &str = "capture";
@@ -210,7 +210,7 @@ impl Routes {
             match folder.kind.as_str() {
                 folder_kinds::PROJECT => self.projects.push(Project {
                     space: id.to_string(),
-                    exclude: patterns(&folder.rules, "exclude")
+                    exclude: rule_patterns(&folder.rules, "exclude")
                         .into_iter()
                         .map(str::to_string)
                         .collect(),

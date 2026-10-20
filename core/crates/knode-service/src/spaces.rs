@@ -299,7 +299,7 @@ fn check_rules(kind: &str, rules: &Value) -> knode_format::Result<()> {
 }
 
 /// The patterns of a folder's rule (`include` or `exclude`).
-pub(crate) fn patterns<'a>(rules: &'a Value, key: &str) -> Vec<&'a str> {
+pub fn rule_patterns<'a>(rules: &'a Value, key: &str) -> Vec<&'a str> {
     rules
         .get(key)
         .and_then(Value::as_array)

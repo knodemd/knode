@@ -6,6 +6,7 @@ mod history;
 mod import;
 mod markdown;
 mod service;
+mod spaces;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -13,7 +14,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use knode_config::{Config, Paths, ResolvedSpace, SpaceSource};
-use knode_format::{Manifest, Provenance, Space};
+use knode_format::{Provenance, Space};
 use knode_mcp::Backend;
 
 /// Knode: one local memory every AI agent shares.
@@ -119,8 +120,21 @@ enum Command {
         #[command(subcommand)]
         action: agents::Action,
     },
-    /// List the spaces Knode knows about.
-    Spaces,
+    /// List the spaces Knode knows, with their icons, or rename one, set its icon, make it the
+    /// default or turn capture into it on or off.
+    Spaces {
+        #[command(subcommand)]
+        action: Option<spaces::SpacesAction>,
+        /// Print the spaces as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The folders that feed the space: projects whose agent conversations are captured into
+    /// it, folders of notes, and folders of agent sessions.
+    Folders {
+        #[command(subcommand)]
+        action: spaces::FoldersAction,
+    },
     /// Run, start, stop or inspect Knode Service, or start it at login.
     Service {
         #[command(subcommand)]
@@ -205,7 +219,14 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
         Command::Agents { action } => agents::run(&paths, action),
-        Command::Spaces => spaces(&paths),
+        Command::Spaces { action, json } => spaces::run(&paths, action, json),
+        Command::Folders { action } => {
+            let space = match cli.space.as_deref() {
+                Some(flag) if !flag.exists() => spaces::find(&paths, &flag.to_string_lossy())?,
+                flag => existing_space(&paths, flag)?,
+            };
+            spaces::folders(&space, action)
+        }
         Command::Service { action } => service::run(&paths, action),
     }
 }
@@ -267,10 +288,12 @@ fn init(paths: &Paths, name: &str, dir: Option<PathBuf>, make_default: bool) -> 
     let mut config = Config::load(paths)?;
     let current = config.default_space.clone().filter(|p| p.exists());
     if make_default || current.is_none() {
-        config.default_space = Some(path.clone());
+        config.set_default_space(&path);
         config.save(paths)?;
         println!("It is now your default space.");
     } else if let Some(current) = current {
+        config.remember_space(&path);
+        config.save(paths)?;
         println!(
             "Your default space is still {}. Use this one with --space {} or `knode init --default`.",
             current.display(),
@@ -381,30 +404,4 @@ fn mcp(paths: &Paths, flag: Option<&Path>, agent: Option<String>) -> Result<()> 
         ))),
     };
     knode_mcp::run_stdio(backend).context("the MCP server stopped")
-}
-
-fn spaces(paths: &Paths) -> Result<()> {
-    let config = Config::load(paths)?;
-    let mut list: Vec<PathBuf> = config.default_space.iter().cloned().collect();
-    for path in paths.spaces_in_dir()? {
-        if !list.contains(&path) {
-            list.push(path);
-        }
-    }
-    if list.is_empty() {
-        println!("No spaces yet. Create one with `knode init <name>`.");
-        return Ok(());
-    }
-    for path in &list {
-        let is_default = config.default_space.as_ref() == Some(path);
-        let marker = if is_default { "*" } else { " " };
-        let name = match Manifest::read(path) {
-            Ok(manifest) => manifest.name,
-            Err(_) if !path.exists() => "(missing)".to_string(),
-            Err(_) => "(not a space)".to_string(),
-        };
-        let note = if is_default { "  (default)" } else { "" };
-        println!("{marker} {name}  {}{note}", path.display());
-    }
-    Ok(())
 }

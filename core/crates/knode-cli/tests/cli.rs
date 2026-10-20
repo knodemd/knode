@@ -26,8 +26,12 @@ fn init_creates_a_space_and_sets_the_default_once() {
 
     let out = sb.ok(&["init", "personal"]);
     assert!(out.contains("Your default space is still"), "{out}");
+    // Still the default, and known: listed among the spaces.
     let config = fs::read_to_string(sb.knode_home().join("config.toml")).unwrap();
-    assert!(!config.contains("personal"), "{config}");
+    assert!(config.starts_with("default_space = "), "{config}");
+    assert!(config.contains("work.knode"), "{config}");
+    assert!(config.contains("spaces = ["), "{config}");
+    assert!(config.contains("personal.knode"), "{config}");
 
     let dir = sb.path("elsewhere");
     let out = sb.ok(&["init", "side", "--dir", dir.to_str().unwrap(), "--default"]);
@@ -40,10 +44,16 @@ fn init_creates_a_space_and_sets_the_default_once() {
     assert!(err.contains("cannot be a space name"), "{err}");
 
     let out = sb.ok(&["spaces"]);
-    assert!(out.contains("* side"), "{out}");
-    assert!(out.contains("(default)"), "{out}");
-    assert!(out.contains("  work  "), "{out}");
-    assert!(out.contains("  personal  "), "{out}");
+    let line = |name: &str| {
+        out.lines()
+            .find(|l| l.contains(&format!("{name}.knode")))
+            .unwrap_or_else(|| panic!("no {name} in {out}"))
+            .to_string()
+    };
+    assert!(line("side").starts_with("* "), "{out}");
+    assert!(line("side").ends_with("(default)"), "{out}");
+    assert!(line("work").starts_with("    work "), "{out}");
+    assert!(line("personal").starts_with("    personal "), "{out}");
 }
 
 #[test]
