@@ -54,27 +54,9 @@ final class KFloatingPresenter {
         host.sizingOptions = [.intrinsicContentSize]
         panel.contentView = host
         let size = host.fittingSize
-        let m = Self.margin
         let rect = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-        var origin: NSPoint
-        if let point {
-            origin = NSPoint(x: point.x - m, y: point.y - size.height + m)
-        } else {
-            switch edge {
-            case .below: origin = NSPoint(x: rect.minX - m, y: rect.minY - 6 - size.height + m)
-            case .above: origin = NSPoint(x: rect.minX - m, y: rect.maxY + 6 - m)
-            case .trailing: origin = NSPoint(x: rect.maxX + 6 - m, y: rect.maxY - size.height + m)
-            case .leading: origin = NSPoint(x: rect.minX - 6 - size.width + m, y: rect.maxY - size.height + m)
-            }
-        }
-        if let screen = window.screen ?? NSScreen.main {
-            let visible = screen.visibleFrame
-            origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
-            if origin.y < visible.minY, edge == .below, point == nil {
-                origin.y = rect.maxY + 6 - m
-            }
-            origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height)
-        }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+        let origin = Self.origin(size: size, anchor: rect, edge: edge, point: point, window: window.frame, screen: visible)
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         window.addChildWindow(panel, ordered: .above)
         if interactive {
@@ -85,6 +67,45 @@ final class KFloatingPresenter {
         }
         self.panel = panel
         self.host = host
+    }
+
+    /// Where a panel of `size` (shadow margin included) goes, in screen coordinates: at `edge` of
+    /// `anchor`, or with its top left corner at `point`. A panel that would stick out of the
+    /// window turns to the anchor's other side when that keeps it inside: one opened below a
+    /// button near the right edge lines up with the button's right edge, and one opened beside a
+    /// button near the bottom grows up from it. It always stays on the screen.
+    static func origin(size: NSSize, anchor rect: NSRect, edge: KPopoverEdge, point: NSPoint?,
+                       window: NSRect, screen visible: NSRect?) -> NSPoint {
+        let m = margin
+        var origin: NSPoint
+        if let point {
+            origin = NSPoint(x: point.x - m, y: point.y - size.height + m)
+        } else {
+            switch edge {
+            case .below: origin = NSPoint(x: rect.minX - m, y: rect.minY - 6 - size.height + m)
+            case .above: origin = NSPoint(x: rect.minX - m, y: rect.maxY + 6 - m)
+            case .trailing: origin = NSPoint(x: rect.maxX + 6 - m, y: rect.maxY - size.height + m)
+            case .leading: origin = NSPoint(x: rect.minX - 6 - size.width + m, y: rect.maxY - size.height + m)
+            }
+            switch edge {
+            case .below, .above:
+                if origin.x + size.width - m > window.maxX {
+                    origin.x = max(rect.maxX + m - size.width, window.minX - m)
+                }
+            case .leading, .trailing:
+                if origin.y + m < window.minY {
+                    origin.y = min(rect.minY - m, window.maxY + m - size.height)
+                }
+            }
+        }
+        if let visible {
+            origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
+            if origin.y < visible.minY, edge == .below, point == nil {
+                origin.y = rect.maxY + 6 - m
+            }
+            origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height)
+        }
+        return origin
     }
 
     /// Replaces the content of the open panel, keeping its place.

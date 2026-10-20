@@ -56,4 +56,46 @@ struct DesignSystemTests {
         let variation = try #require(CTFontCopyVariation(font as CTFont) as? [NSNumber: NSNumber])
         #expect(variation[NSNumber(value: 0x7767_6874)]?.doubleValue == 600)
     }
+
+
+    @Test @MainActor func popoversOpenWhereAskedWhenTheyFit() {
+        let m = KFloatingPresenter.margin
+        let window = NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let button = NSRect(x: 100, y: 600, width: 80, height: 30)
+        let size = NSSize(width: 300, height: 200)
+        let below = KFloatingPresenter.origin(size: size, anchor: button, edge: .below, point: nil, window: window, screen: nil)
+        #expect(below == NSPoint(x: button.minX - m, y: button.minY - 6 - size.height + m))
+        let leading = KFloatingPresenter.origin(size: size, anchor: NSRect(x: 900, y: 600, width: 80, height: 30),
+                                                edge: .leading, point: nil, window: window, screen: nil)
+        #expect(leading.y == 630 - size.height + m)
+    }
+
+    @Test @MainActor func aPopoverBelowAButtonNearTheRightEdgeLinesUpWithItsRightEdge() {
+        let m = KFloatingPresenter.margin
+        let window = NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let button = NSRect(x: 1050, y: 740, width: 100, height: 30)
+        let size = NSSize(width: 360, height: 400)
+        let origin = KFloatingPresenter.origin(size: size, anchor: button, edge: .below, point: nil, window: window, screen: nil)
+        #expect(origin.x + size.width - m == button.maxX)
+        #expect(origin.x + size.width - m <= window.maxX)
+    }
+
+    @Test @MainActor func aPopoverBesideAButtonNearTheBottomGrowsUp() {
+        let m = KFloatingPresenter.margin
+        let window = NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let button = NSRect(x: 900, y: 20, width: 280, height: 36)
+        let size = NSSize(width: 340, height: 560)
+        let origin = KFloatingPresenter.origin(size: size, anchor: button, edge: .leading, point: nil, window: window, screen: nil)
+        #expect(origin.y + m == button.minY)
+        #expect(origin.y + size.height - m <= window.maxY)
+    }
+
+    @Test @MainActor func popoversStayOnTheScreen() {
+        let screen = NSRect(x: 0, y: 0, width: 1000, height: 700)
+        let window = NSRect(x: 600, y: 0, width: 1200, height: 800)
+        let button = NSRect(x: 950, y: 300, width: 40, height: 30)
+        let size = NSSize(width: 300, height: 200)
+        let origin = KFloatingPresenter.origin(size: size, anchor: button, edge: .trailing, point: nil, window: window, screen: screen)
+        #expect(origin.x + size.width <= screen.maxX)
+    }
 }
