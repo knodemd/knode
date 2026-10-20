@@ -13,6 +13,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/index.rs
 $(SRCROOT)/../core/crates/knode-cli/src/main.rs
 $(SRCROOT)/../core/crates/knode-cli/src/maps.rs
 $(SRCROOT)/../core/crates/knode-cli/src/markdown.rs
+$(SRCROOT)/../core/crates/knode-cli/src/readwise.rs
 $(SRCROOT)/../core/crates/knode-cli/src/service.rs
 $(SRCROOT)/../core/crates/knode-cli/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
@@ -105,6 +106,7 @@ $(SRCROOT)/../core/crates/knode-service/src/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-service/src/paths.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
+$(SRCROOT)/../core/crates/knode-service/src/readwise.rs
 $(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/import.rs
@@ -144,6 +146,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/reading/markdown.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/mod.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/pdf.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/readwise.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/readwise_api.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/web.rs
 $(SRCROOT)/../core/crates/knode-vault/src/tags.rs
 $(SRCROOT)/../core/crates/knode-vault/src/time.rs
