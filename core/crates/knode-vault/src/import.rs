@@ -93,11 +93,7 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
     let mut notes = Vec::new();
     let mut report = ImportReport::default();
     walk(dir, "", &mut notes, &mut report.attachments)?;
-    let files: HashSet<String> = report.attachments.iter().cloned().collect();
-    let exported = read_attachment_map(dir);
-    let mut attached: BTreeSet<String> = BTreeSet::new();
-
-    let mut pending_links: Vec<(String, NodeId, String, Vec<String>)> = Vec::new();
+    let mut batch = Batch::new(dir, &report.attachments);
     for rel in notes {
         let full = dir.join(&rel);
         let text = match fs::read_to_string(&full) {
@@ -110,11 +106,70 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
                 continue;
             }
         };
-        let mut note = parse(&rel, &text);
+        batch.note(
+            space,
+            &rel,
+            parse(&rel, &text),
+            by,
+            &mut report,
+            &mut no_hook,
+        )?;
+    }
+    batch.finish(space, by, &mut report)?;
+    Ok(report)
+}
+
+/// Called with a note about to update the node it matches, before the node is written: it may
+/// change the note, or write the node itself first. See [`Batch::note`].
+pub(crate) type Hook<'a> = dyn FnMut(&mut Space, NodeId, &str, &mut Note) -> Result<()> + 'a;
+
+fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
+    Ok(())
+}
+
+/// Notes read into a space one at a time, with what is left to do once all of them are in:
+/// attachments to report and typed links to make.
+pub(crate) struct Batch {
+    dir: std::path::PathBuf,
+    /// The files under the folder that are not notes.
+    files: HashSet<String>,
+    /// The attachments `.knode/files.json` lists.
+    exported: crate::mirror::AttachmentMap,
+    attached: BTreeSet<String>,
+    pending_links: Vec<(String, NodeId, String, Vec<String>)>,
+}
+
+impl Batch {
+    /// A batch for the folder `dir`, whose files that are not notes are `files`.
+    pub(crate) fn new(dir: &Path, files: &[String]) -> Batch {
+        Batch {
+            dir: dir.to_path_buf(),
+            files: files.iter().cloned().collect(),
+            exported: read_attachment_map(dir),
+            attached: BTreeSet::new(),
+            pending_links: Vec::new(),
+        }
+    }
+
+    /// Writes one note, read from the file `rel`, to the space: updates the node it matches or
+    /// creates one, and attaches the files it uses. `hook` is called before a node is updated.
+    /// Returns the node and what happened to it, or `None` when the note was skipped (and
+    /// listed in the report).
+    pub(crate) fn note(
+        &mut self,
+        space: &mut Space,
+        rel: &str,
+        mut note: Note,
+        by: &Provenance,
+        report: &mut ImportReport,
+        hook: &mut Hook<'_>,
+    ) -> Result<Option<(NodeId, Outcome)>> {
+        let dir = self.dir.clone();
+        let files = &self.files;
         // The attachments export wrote for this note, by name, with their files and hashes.
         let written: Vec<(String, String, String)> = note
             .id
-            .and_then(|id| exported.get(&id.to_string()))
+            .and_then(|id| self.exported.get(&id.to_string()))
             .into_iter()
             .flatten()
             .filter(|(_, f)| files.contains(&f.path))
@@ -129,116 +184,131 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
             files_to_blob_urls(&as_written, &map)
         };
         note.body = blob_urls(&|_, hash| hash.to_string());
-        match write(space, &rel, &note, by) {
-            Ok((id, outcome)) => {
-                // Next to the note, by name, and the files export wrote for it.
-                let mut wanted: BTreeMap<String, String> = written
-                    .iter()
-                    .map(|(name, path, _)| (name.clone(), path.clone()))
-                    .collect();
-                for name in wiki_names(&note.body) {
-                    let path = join(folder_of(&rel), &name);
-                    if files.contains(&path) {
-                        wanted.entry(name).or_insert(path);
-                    }
-                }
-                let mut hashes: BTreeMap<String, String> = BTreeMap::new();
-                for (name, path) in wanted {
-                    match attach(space, &id, &name, &dir.join(&path), by) {
-                        Ok(hash) => {
-                            hashes.insert(name, hash);
-                            attached.insert(path);
-                        }
-                        Err(e) => report.skipped.push(Skipped {
-                            path,
-                            reason: e.to_string(),
-                        }),
-                    }
-                }
-                // A file changed since the export: its links name the blob now attached.
-                let fixed =
-                    blob_urls(&|name, hash| hashes.get(name).cloned().unwrap_or(hash.into()));
-                let mut outcome = outcome;
-                if fixed != note.body {
-                    space.update_node(
-                        &id,
-                        NodeUpdate {
-                            body: Some(fixed),
-                            ..Default::default()
-                        },
-                        by,
-                    )?;
-                    if matches!(outcome, Outcome::Unchanged) {
-                        outcome = Outcome::Updated;
-                    }
-                }
-                match outcome {
-                    Outcome::Created => report.created.push(rel.clone()),
-                    Outcome::Updated => report.updated.push(rel.clone()),
-                    Outcome::Unchanged => report.unchanged += 1,
-                }
-                for (kind, targets) in note.links {
-                    pending_links.push((rel.clone(), id, kind, targets));
-                }
-            }
-            Err(e) => report.skipped.push(Skipped {
-                path: rel,
-                reason: e.to_string(),
-            }),
-        }
-    }
-
-    report.attachments.retain(|path| !attached.contains(path));
-    report.attached = attached.into_iter().collect();
-
-    // The kinds the exported space defined, then any other kind the files use.
-    for (kind, spec) in read_link_kinds(dir) {
-        if space.link_kind(&kind)?.is_some() {
-            continue;
-        }
-        match space.set_link_kind(&spec, by) {
-            Ok(_) => report.link_kinds.push(kind),
-            Err(e) => report.unlinked.push(Skipped {
-                path: format!("{STATE_DIR}/{LINK_KINDS_FILE}"),
-                reason: format!("link kind {kind}: {e}"),
-            }),
-        }
-    }
-    for (rel, from, kind, targets) in pending_links {
-        if kind == link_kinds::MENTIONS {
-            continue;
-        }
-        if space.link_kind(&kind)?.is_none() {
-            let spec = LinkKindSpec::directed(kind.clone(), kind.clone(), "");
-            if let Err(e) = space.set_link_kind(&spec, by) {
-                for target in targets {
-                    report.unlinked.push(Skipped {
-                        path: rel.clone(),
-                        reason: format!("{kind} link to {target}: {e}"),
-                    });
-                }
-                continue;
-            }
-            report.link_kinds.push(kind.clone());
-        }
-        for target in targets {
-            let Some(to) = find(space, &target)? else {
-                report.unlinked.push(Skipped {
-                    path: rel.clone(),
-                    reason: format!("{kind} link to {target}: no such node"),
+        let read = note.body.clone();
+        let (id, outcome) = match write(space, rel, &mut note, by, hook) {
+            Ok(written) => written,
+            Err(e) => {
+                report.skipped.push(Skipped {
+                    path: rel.to_string(),
+                    reason: e.to_string(),
                 });
-                continue;
-            };
-            match space.link(&from, &to, &kind, by) {
-                Ok(_) => report.links += 1,
-                Err(e) => report.unlinked.push(Skipped {
-                    path: rel.clone(),
-                    reason: format!("{kind} link to {target}: {e}"),
+                return Ok(None);
+            }
+        };
+        // Next to the note, by name, and the files export wrote for it.
+        let mut wanted: BTreeMap<String, String> = written
+            .iter()
+            .map(|(name, path, _)| (name.clone(), path.clone()))
+            .collect();
+        for name in wiki_names(&note.body) {
+            let path = join(folder_of(rel), &name);
+            if files.contains(&path) {
+                wanted.entry(name).or_insert(path);
+            }
+        }
+        let mut hashes: BTreeMap<String, String> = BTreeMap::new();
+        for (name, path) in wanted {
+            match attach(space, &id, &name, &dir.join(&path), by) {
+                Ok(hash) => {
+                    hashes.insert(name, hash);
+                    self.attached.insert(path);
+                }
+                Err(e) => report.skipped.push(Skipped {
+                    path,
+                    reason: e.to_string(),
                 }),
             }
         }
+        // A file changed since the export: its links name the blob now attached.
+        let fixed = blob_urls(&|name, hash| hashes.get(name).cloned().unwrap_or(hash.into()));
+        let mut outcome = outcome;
+        // Unless the hook chose another body.
+        if note.body == read && fixed != note.body {
+            space.update_node(
+                &id,
+                NodeUpdate {
+                    body: Some(fixed),
+                    ..Default::default()
+                },
+                by,
+            )?;
+            if matches!(outcome, Outcome::Unchanged) {
+                outcome = Outcome::Updated;
+            }
+        }
+        match outcome {
+            Outcome::Created => report.created.push(rel.to_string()),
+            Outcome::Updated => report.updated.push(rel.to_string()),
+            Outcome::Unchanged => report.unchanged += 1,
+        }
+        for (kind, targets) in std::mem::take(&mut note.links) {
+            self.pending_links
+                .push((rel.to_string(), id, kind, targets));
+        }
+        Ok(Some((id, outcome)))
     }
-    Ok(report)
+
+    /// Lists the files attached and left out, defines the kinds of link the notes use and makes
+    /// their typed links.
+    pub(crate) fn finish(
+        self,
+        space: &mut Space,
+        by: &Provenance,
+        report: &mut ImportReport,
+    ) -> Result<()> {
+        let attached = self.attached;
+        report.attachments.retain(|path| !attached.contains(path));
+        report.attached.extend(attached);
+
+        // The kinds the exported space defined, then any other kind the files use.
+        for (kind, spec) in read_link_kinds(&self.dir) {
+            if space.link_kind(&kind)?.is_some() {
+                continue;
+            }
+            match space.set_link_kind(&spec, by) {
+                Ok(_) => report.link_kinds.push(kind),
+                Err(e) => report.unlinked.push(Skipped {
+                    path: format!("{STATE_DIR}/{LINK_KINDS_FILE}"),
+                    reason: format!("link kind {kind}: {e}"),
+                }),
+            }
+        }
+        for (rel, from, kind, targets) in self.pending_links {
+            if kind == link_kinds::MENTIONS {
+                continue;
+            }
+            if space.link_kind(&kind)?.is_none() {
+                let spec = LinkKindSpec::directed(kind.clone(), kind.clone(), "");
+                if let Err(e) = space.set_link_kind(&spec, by) {
+                    for target in targets {
+                        report.unlinked.push(Skipped {
+                            path: rel.clone(),
+                            reason: format!("{kind} link to {target}: {e}"),
+                        });
+                    }
+                    continue;
+                }
+                report.link_kinds.push(kind.clone());
+            }
+            for target in targets {
+                let Some(to) = find(space, &target)? else {
+                    report.unlinked.push(Skipped {
+                        path: rel.clone(),
+                        reason: format!("{kind} link to {target}: no such node"),
+                    });
+                    continue;
+                };
+                match space.link(&from, &to, &kind, by) {
+                    Ok(_) => report.links += 1,
+                    Err(e) => report.unlinked.push(Skipped {
+                        path: rel.clone(),
+                        reason: format!("{kind} link to {target}: {e}"),
+                    }),
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The last part of a relative path.
@@ -273,7 +343,7 @@ fn attach(
 }
 
 /// Lists the notes and other files under `dir`, sorted by path.
-fn walk(
+pub(crate) fn walk(
     dir: &Path,
     prefix: &str,
     notes: &mut Vec<String>,
@@ -316,22 +386,22 @@ fn walk(
 
 /// A note read from a file.
 #[derive(Debug, Default)]
-struct Note {
-    id: Option<NodeId>,
-    title: String,
-    kind: Option<String>,
-    tags: Vec<String>,
-    created: Option<String>,
-    updated: Option<String>,
-    created_by: Option<Provenance>,
-    updated_by: Option<Provenance>,
-    links: Vec<(String, Vec<String>)>,
-    props: Properties,
+pub(crate) struct Note {
+    pub(crate) id: Option<NodeId>,
+    pub(crate) title: String,
+    pub(crate) kind: Option<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) created: Option<String>,
+    pub(crate) updated: Option<String>,
+    pub(crate) created_by: Option<Provenance>,
+    pub(crate) updated_by: Option<Provenance>,
+    pub(crate) links: Vec<(String, Vec<String>)>,
+    pub(crate) props: Properties,
     /// The frontmatter entries Knode does not read, as written.
-    extra: String,
+    pub(crate) extra: String,
     /// Whether the frontmatter was not written by Knode.
-    vault: bool,
-    body: String,
+    pub(crate) vault: bool,
+    pub(crate) body: String,
 }
 
 /// Whether a frontmatter was written by Knode: it starts with an `id` and has a `kind`,
@@ -352,7 +422,7 @@ fn is_knode(entries: &[Entry<'_>]) -> bool {
         && get("updated").is_some_and(|v| time::parse(&v).is_some())
 }
 
-fn parse(rel: &str, text: &str) -> Note {
+pub(crate) fn parse(rel: &str, text: &str) -> Note {
     let parts = split(text);
     let entries = parts.frontmatter.map(entries).unwrap_or_default();
     let mut note = Note {
@@ -483,7 +553,7 @@ fn is_kind(kind: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Created,
     Updated,
     Unchanged,
@@ -491,7 +561,7 @@ enum Outcome {
 
 /// The node a file `id` stands for: the node with that id, or a node imported from a file with
 /// that id by an earlier version of Knode, which gave it an id of its own.
-fn find(space: &Space, id: &str) -> Result<Option<NodeId>> {
+pub(crate) fn find(space: &Space, id: &str) -> Result<Option<NodeId>> {
     let Ok(id) = NodeId::parse(id) else {
         return Ok(None);
     };
@@ -505,7 +575,13 @@ fn find(space: &Space, id: &str) -> Result<Option<NodeId>> {
 }
 
 /// Writes one note to the space: updates the node it matches, or creates one.
-fn write(space: &mut Space, rel: &str, note: &Note, by: &Provenance) -> Result<(NodeId, Outcome)> {
+fn write(
+    space: &mut Space,
+    rel: &str,
+    note: &mut Note,
+    by: &Provenance,
+    hook: &mut Hook<'_>,
+) -> Result<(NodeId, Outcome)> {
     let existing = match note.id {
         Some(id) => find(space, &id.to_string())?,
         None => space
@@ -513,6 +589,11 @@ fn write(space: &mut Space, rel: &str, note: &Note, by: &Provenance) -> Result<(
             .first()
             .map(|s| s.id),
     };
+
+    if let Some(id) = existing {
+        hook(space, id, rel, note)?;
+    }
+    let note: &Note = note;
 
     let mut props = note.props.clone();
     props.insert(keys::PATH.into(), rel.into());

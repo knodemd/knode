@@ -431,7 +431,7 @@ extension CoreSpaceStore: MapStore {
         return ViewGroupInfo(try await run { try core.setGroup(view: view, spec: spec, by: author) })
     }
 
-    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
+    public func removeGroup(_ id: ViewGroupInfo.ID, in view: MapView.ID, space: Space.ID) async throws {
         let core = try self.core(space)
         _ = try await run { try core.removeGroup(id: id) }
     }
@@ -524,5 +524,47 @@ extension GraphNodeInfo {
 extension GraphEdgeInfo {
     init(_ edge: KnodeCore.GraphEdge) {
         self.init(from: edge.from, to: edge.to, kind: edge.kind)
+    }
+}
+
+// MARK: - Attachments
+
+extension CoreSpaceStore: AttachmentStore {
+    public func attachments(of node: Node.ID, in space: Space.ID) async throws -> [AttachmentInfo] {
+        let core = try self.core(space)
+        return try await run { try core.attachments(node: node) }.map(AttachmentInfo.init)
+    }
+
+    public func attachFile(at url: URL, to node: Node.ID, in space: Space.ID) async throws -> AttachmentInfo {
+        let core = try self.core(space)
+        let author = author
+        let path = url.standardizedFileURL.path(percentEncoded: false)
+        return AttachmentInfo(try await run { try core.attachFile(node: node, path: path, by: author) })
+    }
+
+    public func attach(_ data: Data, named name: String, to node: Node.ID, in space: Space.ID) async throws -> AttachmentInfo {
+        let core = try self.core(space)
+        let author = author
+        return AttachmentInfo(try await run { try core.attach(node: node, name: name, content: data, by: author) })
+    }
+
+    public func removeAttachment(named name: String, from node: Node.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.detach(node: node, name: name, by: author) }
+    }
+
+    public func attachmentURL(named name: String, of node: Node.ID, in space: Space.ID) async throws -> URL? {
+        let core = try self.core(space)
+        return try await run { try core.attachmentPath(node: node, name: name) }.map { URL(filePath: $0) }
+    }
+}
+
+extension AttachmentInfo {
+    init(_ attachment: KnodeCore.Attachment) {
+        self.init(
+            nodeID: attachment.nodeId, name: attachment.name, hash: attachment.hash, size: Int64(clamping: attachment.size),
+            mediaType: attachment.mediaType, createdAt: Date(unixMilliseconds: attachment.createdAt), author: Author(attachment.createdBy)
+        )
     }
 }

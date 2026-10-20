@@ -470,7 +470,7 @@ extension PreviewSpaceStore: MapStore {
         return stored
     }
 
-    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
+    public func removeGroup(_ id: ViewGroupInfo.ID, in view: MapView.ID, space: Space.ID) async throws {
         let entry = try entry(space)
         for (view, groups) in entry.groups where groups.contains(where: { $0.id == id }) {
             spaces[space]?.groups[view]?.removeAll { $0.id == id }

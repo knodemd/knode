@@ -5,11 +5,9 @@
 //! positions of its nodes; a canvas is a node of kind `canvas` arranged by hand, with positions,
 //! sizes and groups. Moving the viewport, positions and groups adds no change to the history.
 
-use std::collections::HashSet;
-
 use serde_json::{Map, Value};
 
-use crate::{KnodeError, KnodeSpace, Link, Provenance, Result, excerpt, format, parse_id};
+use crate::{KnodeError, KnodeSpace, Link, Provenance, Result, format, parse_id};
 
 /// How a kind of link reads from its two nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -155,80 +153,28 @@ pub struct GraphFilter {
     pub link_kinds: Option<Vec<String>>,
 }
 
-impl GraphFilter {
-    /// True when the filter keeps every node and link.
-    fn is_empty(&self) -> bool {
-        *self == GraphFilter::default()
+impl From<GraphFilter> for format::GraphFilter {
+    fn from(f: GraphFilter) -> Self {
+        format::GraphFilter {
+            node_kinds: f.node_kinds,
+            tags: f.tags,
+            actors: f.actors,
+            since: f.since.map(format::Timestamp),
+            until: f.until.map(format::Timestamp),
+            link_kinds: f.link_kinds,
+        }
     }
+}
 
-    fn keeps(&self, node: &GraphNode) -> bool {
-        let any = |list: &Option<Vec<String>>, f: &dyn Fn(&String) -> bool| {
-            list.as_ref().is_none_or(|list| list.iter().any(f))
-        };
-        any(&self.node_kinds, &|k| *k == node.kind)
-            && any(&self.tags, &|t| node.tags.contains(t))
-            && any(&self.actors, &|a| {
-                *a == node.created_by || *a == node.updated_by
-            })
-            && self.since.is_none_or(|since| node.updated_at >= since)
-            && self.until.is_none_or(|until| node.updated_at < until)
-    }
-
-    fn keeps_link(&self, kind: &str) -> bool {
-        self.link_kinds
-            .as_ref()
-            .is_none_or(|kinds| kinds.iter().any(|k| k == kind))
-    }
-
-    /// The keys this filter sets, as stored in a view's `settings.filter`.
-    fn to_json(&self) -> Map<String, Value> {
-        let mut object = Map::new();
-        let list = |v: &Vec<String>| Value::from(v.clone());
-        if let Some(v) = &self.node_kinds {
-            object.insert("node_kinds".into(), list(v));
-        }
-        if let Some(v) = &self.tags {
-            object.insert("tags".into(), list(v));
-        }
-        if let Some(v) = &self.actors {
-            object.insert("actors".into(), list(v));
-        }
-        if let Some(v) = self.since {
-            object.insert("since".into(), format::Timestamp(v).to_string().into());
-        }
-        if let Some(v) = self.until {
-            object.insert("until".into(), format::Timestamp(v).to_string().into());
-        }
-        if let Some(v) = &self.link_kinds {
-            object.insert("link_kinds".into(), list(v));
-        }
-        object
-    }
-
-    /// Reads the keys this library knows from a stored filter; other keys are ignored here and
-    /// kept in the view.
-    fn from_json(value: &Value) -> Self {
-        let list = |key: &str| {
-            value.get(key).and_then(Value::as_array).map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-        };
-        let time = |key: &str| {
-            value
-                .get(key)
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339)
-        };
+impl From<format::GraphFilter> for GraphFilter {
+    fn from(f: format::GraphFilter) -> Self {
         GraphFilter {
-            node_kinds: list("node_kinds"),
-            tags: list("tags"),
-            actors: list("actors"),
-            since: time("since"),
-            until: time("until"),
-            link_kinds: list("link_kinds"),
+            node_kinds: f.node_kinds,
+            tags: f.tags,
+            actors: f.actors,
+            since: f.since.map(|t| t.as_millis()),
+            until: f.until.map(|t| t.as_millis()),
+            link_kinds: f.link_kinds,
         }
     }
 }
@@ -544,7 +490,10 @@ impl KnodeSpace {
                 .unwrap_or_default(),
             None => Map::new(),
         };
-        let mut object = filter.unwrap_or_default().to_json();
+        let mut object = match format::GraphFilter::from(filter.unwrap_or_default()).to_json() {
+            Value::Object(object) => object,
+            _ => Map::new(),
+        };
         object.extend(kept);
         let spec = format::GraphViewSpec {
             id,
@@ -574,73 +523,9 @@ impl KnodeSpace {
     /// `view` (if given). Without a filter, the view's own filter applies; with neither, the
     /// whole space.
     pub fn graph(&self, view: Option<String>, filter: Option<GraphFilter>) -> Result<Graph> {
-        let space = self.lock();
-        let saved = match &view {
-            Some(id) => Some(space.view(id)?.ok_or_else(|| KnodeError::Invalid {
-                message: format!("no view has the id {id:?}"),
-            })?),
-            None => None,
-        };
-        let filter = filter
-            .or_else(|| {
-                saved
-                    .as_ref()
-                    .and_then(|v| v.filter().map(GraphFilter::from_json))
-            })
-            .unwrap_or_default();
-        let mut nodes = Vec::new();
-        for summary in space.recent(usize::MAX)? {
-            let Some(node) = space.get_node(&summary.id)? else {
-                continue;
-            };
-            let node = GraphNode {
-                id: node.id.to_string(),
-                kind: node.kind,
-                title: node.title,
-                tags: node.tags,
-                created_at: node.created_at.as_millis(),
-                updated_at: node.updated_at.as_millis(),
-                created_by: node.created_by.actor,
-                updated_by: node.updated_by.actor,
-            };
-            if filter.is_empty() || filter.keeps(&node) {
-                nodes.push(node);
-            }
-        }
-        let shown: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-        let mut edges = Vec::new();
-        for node in &nodes {
-            for link in space.links_from(&parse_id(&node.id)?)? {
-                let to = link.to.to_string();
-                if shown.contains(to.as_str()) && filter.keeps_link(&link.kind) {
-                    edges.push(GraphEdge {
-                        from: node.id.clone(),
-                        to,
-                        kind: link.kind,
-                    });
-                }
-            }
-        }
-        let positions = match &view {
-            Some(id) => space
-                .positions(id)?
-                .into_iter()
-                .filter(|p| shown.contains(p.node_id.to_string().as_str()))
-                .map(Position::from)
-                .collect(),
-            None => Vec::new(),
-        };
-        let link_kinds = space
-            .link_kinds()?
-            .into_iter()
-            .map(LinkKind::from)
-            .collect();
-        Ok(Graph {
-            nodes,
-            edges,
-            positions,
-            link_kinds,
-        })
+        let filter = filter.map(format::GraphFilter::from);
+        let graph = self.lock().graph(view.as_deref(), filter.as_ref())?;
+        Ok(graph.into())
     }
 
     /// Creates a canvas: a node of kind `canvas` with this title and body, and its view.
@@ -653,54 +538,18 @@ impl KnodeSpace {
     /// The canvas whose node is `node`, as its board shows it, or `None` when the node is not
     /// a canvas.
     pub fn canvas_board(&self, node: String) -> Result<Option<CanvasBoard>> {
-        let space = self.lock();
         let node = parse_id(&node)?;
-        let Some(found) = space.canvas(&node)? else {
+        let space = self.lock();
+        let Some(board) = space.canvas_board(&node)? else {
             return Ok(None);
         };
-        let id = found.id.clone();
-        let mut items = Vec::new();
-        for position in space.positions(&id)? {
-            let Some(node) = space.get_node(&position.node_id)? else {
-                continue;
-            };
-            items.push(CanvasItem {
-                position: position.into(),
-                kind: node.kind,
-                title: node.title,
-                excerpt: excerpt(&node.body),
-            });
-        }
-        let on: HashSet<&str> = items.iter().map(|i| i.position.node_id.as_str()).collect();
-        let mut edges = Vec::new();
-        for item in &items {
-            for link in space.links_from(&parse_id(&item.position.node_id)?)? {
-                let to = link.to.to_string();
-                if on.contains(to.as_str()) {
-                    edges.push(GraphEdge {
-                        from: item.position.node_id.clone(),
-                        to,
-                        kind: link.kind,
-                    });
-                }
-            }
-        }
-        let groups = space
-            .groups(&id)?
-            .into_iter()
-            .map(ViewGroup::from)
-            .collect();
-        let link_kinds = space
-            .link_kinds()?
-            .into_iter()
-            .map(LinkKind::from)
-            .collect();
+        let view = View::from_format(board.view, board.title);
         Ok(Some(CanvasBoard {
-            view: view(&space, found)?,
-            items,
-            groups,
-            edges,
-            link_kinds,
+            view,
+            items: board.items.into_iter().map(CanvasItem::from).collect(),
+            groups: board.groups.into_iter().map(ViewGroup::from).collect(),
+            edges: board.edges.into_iter().map(GraphEdge::from).collect(),
+            link_kinds: board.link_kinds.into_iter().map(LinkKind::from).collect(),
         }))
     }
 
@@ -769,89 +618,77 @@ fn view(space: &format::Space, v: format::View) -> Result<View> {
         }
         _ => v.name.clone(),
     };
-    Ok(View {
-        viewport: v.viewport().map(|p| Viewport {
-            x: p.x,
-            y: p.y,
-            zoom: p.zoom,
-        }),
-        filter: v.filter().map(GraphFilter::from_json),
-        id: v.id,
-        kind: v.kind,
-        name,
-        node_id: v.node_id.map(|n| n.to_string()),
-        created_at: v.created_at.as_millis(),
-        updated_at: v.updated_at.as_millis(),
-    })
+    Ok(View::from_format(v, name))
 }
 
-/// Reads an RFC 3339 time, such as `2026-10-20T09:30:00Z` or `2026-10-20T11:30:00.250+02:00`,
-/// as Unix milliseconds.
-pub(crate) fn parse_rfc3339(text: &str) -> Option<i64> {
-    let bytes = text.as_bytes();
-    if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' {
-        return None;
-    }
-    if !matches!(bytes[10], b'T' | b't' | b' ') || bytes[16] != b':' {
-        return None;
-    }
-    let number = |range: std::ops::Range<usize>| -> Option<i64> {
-        let part = text.get(range)?;
-        part.bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| part.parse().ok())?
-    };
-    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
-    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-    if second > 60 {
-        return None;
-    }
-    let mut rest = &text[19..];
-    let mut millis = 0;
-    if let Some(fraction) = rest.strip_prefix('.') {
-        let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
-        if digits == 0 {
-            return None;
+impl View {
+    /// Converts a view, named `name`. A stored filter that cannot be read is shown as none.
+    fn from_format(v: format::View, name: String) -> View {
+        View {
+            viewport: v.viewport().map(|p| Viewport {
+                x: p.x,
+                y: p.y,
+                zoom: p.zoom,
+            }),
+            filter: v
+                .filter()
+                .and_then(|f| format::GraphFilter::from_json(f).ok())
+                .map(GraphFilter::from),
+            id: v.id,
+            kind: v.kind,
+            name,
+            node_id: v.node_id.map(|n| n.to_string()),
+            created_at: v.created_at.as_millis(),
+            updated_at: v.updated_at.as_millis(),
         }
-        let padded: String = fraction[..digits]
-            .chars()
-            .chain("000".chars())
-            .take(3)
-            .collect();
-        millis = padded.parse::<i64>().ok()?;
-        rest = &fraction[digits..];
     }
-    let offset = match rest {
-        "Z" | "z" => 0,
-        _ if rest.len() == 6 && rest.as_bytes()[3] == b':' => {
-            let sign = match rest.as_bytes()[0] {
-                b'+' => 1,
-                b'-' => -1,
-                _ => return None,
-            };
-            let hours: i64 = rest[1..3].parse().ok()?;
-            let minutes: i64 = rest[4..6].parse().ok()?;
-            sign * (hours * 60 + minutes)
-        }
-        _ => return None,
-    };
-    let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset * 60;
-    Some(seconds * 1000 + millis)
 }
 
-/// Days since 1970-01-01 of a date in the proleptic Gregorian calendar (Howard Hinnant).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let yoe = year.rem_euclid(400);
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+impl From<format::GraphNode> for GraphNode {
+    fn from(n: format::GraphNode) -> Self {
+        GraphNode {
+            id: n.id.to_string(),
+            kind: n.kind,
+            title: n.title,
+            tags: n.tags,
+            created_at: n.created_at.as_millis(),
+            updated_at: n.updated_at.as_millis(),
+            created_by: n.created_by.actor,
+            updated_by: n.updated_by.actor,
+        }
+    }
+}
+
+impl From<format::GraphEdge> for GraphEdge {
+    fn from(e: format::GraphEdge) -> Self {
+        GraphEdge {
+            from: e.from.to_string(),
+            to: e.to.to_string(),
+            kind: e.kind,
+        }
+    }
+}
+
+impl From<format::Graph> for Graph {
+    fn from(g: format::Graph) -> Self {
+        Graph {
+            nodes: g.nodes.into_iter().map(GraphNode::from).collect(),
+            edges: g.edges.into_iter().map(GraphEdge::from).collect(),
+            positions: g.positions.into_iter().map(Position::from).collect(),
+            link_kinds: g.link_kinds.into_iter().map(LinkKind::from).collect(),
+        }
+    }
+}
+
+impl From<format::CanvasItem> for CanvasItem {
+    fn from(i: format::CanvasItem) -> Self {
+        CanvasItem {
+            position: i.position.into(),
+            kind: i.kind,
+            title: i.title,
+            excerpt: i.excerpt,
+        }
+    }
 }
 
 #[cfg(test)]

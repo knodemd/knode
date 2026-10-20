@@ -1,14 +1,18 @@
 //! The live Markdown folder of a space: the `markdown.folder` setting.
 //!
-//! When a space has the setting, Knode Service keeps the folder in step with it with a
-//! [`LiveFolder`](knode_vault::LiveFolder): the whole space is written when the service opens
-//! it, each change is written within a few seconds, and what is left is written when the service
-//! stops. These functions read and change the setting; they work on an open space, so the CLI can
-//! use them when the service cannot run.
+//! When a space has the setting, Knode Service keeps the folder in step with it, both ways, with
+//! a [`LiveFolder`](knode_vault::LiveFolder): when the service opens the space, the files edited
+//! since it last wrote them are read in and then the whole space is written; each change made in
+//! Knode is written within a few seconds; the folder is watched, and each file edited in it is
+//! read in as an edit by the person the service runs for, with the file as its source; what is
+//! left is written when the service stops. These functions read and change the setting; they
+//! work on an open space, so the CLI can use them when the service cannot run.
 
 use std::path::{Component, Path, PathBuf};
 
 use knode_format::{Provenance, Space, setting_keys};
+use knode_sync::Docs;
+use knode_vault::{LiveFolder, PullReport};
 
 use crate::protocol::MarkdownFolder;
 
@@ -55,6 +59,57 @@ pub fn set_live_folder(
     };
     space.set_setting(setting_keys::MARKDOWN_FOLDER, value.as_deref(), by)?;
     live_folder(space)
+}
+
+/// The person the changes read from a live folder are made as: the user the service runs for,
+/// who owns the folder.
+pub(crate) fn folder_owner() -> Provenance {
+    let name = ["USER", "USERNAME"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .map(|name| name.trim().to_string())
+        .find(|name| !name.is_empty())
+        .unwrap_or_else(|| "me".to_string());
+    Provenance::person(name)
+}
+
+/// Opens the live folder `dir` of `space`: reads in the files edited since Knode last wrote them,
+/// merging bodies through the service's `docs`, writes the whole space, then watches the folder. A folder that cannot be watched still
+/// follows the space; its edits come in the next time the space is opened.
+pub(crate) fn start_live_folder(
+    space: &mut Space,
+    dir: &Path,
+    docs: &mut Docs,
+) -> knode_vault::Result<(LiveFolder, PullReport)> {
+    let mut live = LiveFolder::open(dir)?.with_source_root(record_path(dir));
+    let report = live.start_with(space, &folder_owner(), docs)?;
+    if let Err(e) = live.watch() {
+        eprintln!(
+            "Knode Service: cannot watch the Markdown folder {}: {e}",
+            dir.display()
+        );
+    }
+    Ok((live, report))
+}
+
+/// Says what a pull from a live folder did that a person should know: files deleted in the
+/// folder, whose nodes wait for them, and files that could not be read.
+pub(crate) fn log_pull(dir: &Path, report: &PullReport) {
+    for path in &report.deleted {
+        eprintln!(
+            "Knode Service: {path} was deleted from {}; its node is kept and marked {}",
+            dir.display(),
+            knode_vault::property_keys::DELETED
+        );
+    }
+    for skipped in &report.skipped {
+        eprintln!(
+            "Knode Service: {}: {}: {}",
+            dir.display(),
+            skipped.path,
+            skipped.reason
+        );
+    }
 }
 
 /// A path as the specification records the paths of folders (section 15.3): absolute and

@@ -459,8 +459,8 @@ Search by meaning runs on this machine, with a small embedding model
   indexed yet, it is off, or this build has no search by meaning), `meaning` and `hybrid` run as
   `words`, the result's `mode` says `words` and `note` says why. When some nodes are not indexed
   yet, `hybrid` finds them by words only and `note` says how many.
-- **Builds.** Search by meaning is the `semantic` feature of `knode-service`, on by default. On
-  aarch64 Linux it is not built yet (knodemd/knode#108), so there search is by words.
+- **Builds.** Search by meaning is the `semantic` feature of `knode-service`, on by default. Without
+  it, search is by words.
 
 `index.status` answers:
 

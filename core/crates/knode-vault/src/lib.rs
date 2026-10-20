@@ -6,8 +6,8 @@
 //! - [`export`] writes a space to a folder, one file per node, with YAML frontmatter;
 //! - [`import`] reads a folder of `.md` files into a space: a folder written by [`export`], or
 //!   an Obsidian vault;
-//! - [`LiveFolder`] keeps a folder in step with a space as it changes, one way, from the space
-//!   to the folder;
+//! - [`LiveFolder`] keeps a folder in step with a space as it changes, both ways: changes made in
+//!   Knode are written to the folder, and edits made to the files come back in, with history;
 //! - [`reading`] brings in what a person reads: PDFs, web pages, Kindle highlights and Readwise
 //!   exports.
 //!
@@ -121,7 +121,7 @@ mod time;
 use std::path::PathBuf;
 
 pub use import::{ImportReport, Skipped, import};
-pub use live::{LiveFolder, cloud_folder_warning};
+pub use live::{BodyWritten, LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
 pub use mirror::{ExportReport, export};
 
 /// The folder, inside an exported folder, where Knode keeps its own files.
@@ -155,6 +155,12 @@ pub mod property_keys {
     /// When the node was written from that file: while the node's `updated_at` is still this,
     /// export writes [`UPDATED`] as `updated`. Read, no longer written.
     pub const WRITTEN: &str = "markdown.written";
+
+    /// Set on a node whose file was deleted from its live Markdown folder, to the path the file
+    /// had. Knode never deletes a node because its file is gone: the node stays, is no longer
+    /// written to the folder, and waits for a person to delete it or keep it. Removing the
+    /// property keeps it, and writes its file again.
+    pub const DELETED: &str = "markdown.deleted";
 
     /// The prefix of every key above.
     pub const PREFIX: &str = "markdown.";
