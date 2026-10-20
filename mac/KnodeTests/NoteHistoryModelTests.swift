@@ -68,7 +68,7 @@ import Testing
 
         // A later change touched the note: the store refuses and the model asks.
         await history.undo(middle)
-        #expect(history.conflict?.version == middle)
+        #expect(history.conflict?.change == middle.changeID)
         #expect(history.conflict?.message.isEmpty == false)
         #expect(try await store.node(node, in: space).body == "One\nTwo\nThree")
 

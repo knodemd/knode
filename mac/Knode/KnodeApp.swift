@@ -132,6 +132,23 @@ struct SpaceCommands: Commands {
             }
         }
 
+        // Command-Z and Shift-Command-Z stay the text's own undo while typing. These undo and redo
+        // whole saved changes of the note, through its history, so they also reach changes made
+        // before the note was opened, from this app or the knode command.
+        CommandGroup(after: .undoRedo) {
+            Button("Undo Last Change to Note", systemImage: "arrow.uturn.backward.circle") {
+                Task { if await !model.undoLastChange() { NSSound.beep() } }
+            }
+            .keyboardShortcut("z", modifiers: [.command, .option])
+            .disabled(model.editor == nil)
+
+            Button("Redo Last Change to Note", systemImage: "arrow.uturn.forward.circle") {
+                Task { if await !model.redoLastChange() { NSSound.beep() } }
+            }
+            .keyboardShortcut("z", modifiers: [.command, .option, .shift])
+            .disabled(model.editor == nil)
+        }
+
         CommandGroup(after: .sidebar) {
             Button(model.isShowingHistory ? "Hide History" : "Show History", systemImage: "clock.arrow.circlepath") {
                 model.toggleHistory()
