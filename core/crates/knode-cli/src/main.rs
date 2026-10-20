@@ -100,14 +100,19 @@ enum Command {
         #[command(subcommand)]
         action: MarkdownAction,
     },
-    /// Give an agent its own key and add Knode to it: claude-code, codex, gemini or
-    /// claude-desktop. The first time, it may read and write the default space (or --space) only.
+    /// Give an agent its own key and add Knode to it. `--list` shows every agent and whether it
+    /// is on this machine. The first time, it may read and write the default space (or --space)
+    /// only.
     Connect {
         /// The agent.
-        agent: connect::Agent,
+        #[arg(required_unless_present = "list")]
+        agent: Option<connect::Agent>,
         /// Only show what would be done.
         #[arg(long)]
         print: bool,
+        /// List every agent Knode can be added to, and whether it is on this machine.
+        #[arg(long, conflicts_with_all = ["agent", "print"])]
+        list: bool,
     },
     /// Run the MCP server on standard input and output. Agents start it themselves.
     Mcp {
@@ -215,9 +220,10 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             markdown::folder(&space, dir.as_deref(), off, &person())
         }
-        Command::Connect { agent, print } => {
-            connect::run(&paths, agent, print, cli.space.as_deref())
-        }
+        Command::Connect { agent, print, list } => match agent {
+            Some(agent) if !list => connect::run(&paths, agent, print, cli.space.as_deref()),
+            _ => connect::list(),
+        },
         Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
         Command::Agents { action } => agents::run(&paths, action),
         Command::Spaces { action, json } => spaces::run(&paths, action, json),
