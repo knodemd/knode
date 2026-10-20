@@ -69,8 +69,8 @@ struct SpaceAccessSheet: View {
     @Environment(AgentsModel.self) private var agents
     @Environment(AppModel.self) private var model
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.kOverlays) private var overlays
     let url: URL
-    @State private var overlays = KOverlays()
 
     var body: some View {
         KSheetSurface(width: 560) {
@@ -99,7 +99,7 @@ struct SpaceAccessSheet: View {
                     openSettings()
                 }
                 Spacer()
-                KButton("Connect an agent", icon: .connect) { overlays.connecting = .claudeCode }
+                KButton("Connect an agent", icon: .connect) { overlays?.connecting = .claudeCode }
                     .disabled(agents.isBusy)
                 Button(action: close) { HStack(spacing: 8) { KIcon(.done, size: .sm); Text("Done") } }
                     .buttonStyle(KButtonStyle(kind: .primary))
@@ -107,7 +107,6 @@ struct SpaceAccessSheet: View {
             }
         }
         .frame(minHeight: 480, alignment: .top)
-        .kOverlayHost(overlays)
         .knodeTheme()
         .task { await agents.load() }
     }

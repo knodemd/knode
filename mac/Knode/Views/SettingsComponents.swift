@@ -167,17 +167,24 @@ struct KSheetTitle: View {
 }
 
 /// A sheet's own surface, for sheets that the window may present as a system sheet: the panel
-/// colour edge to edge, with the sheet's padding.
+/// colour edge to edge, with the sheet's padding. Inside our own sheet, whose card already has
+/// both, it only lays out the content.
 struct KSheetSurface<Content: View>: View {
     var width: CGFloat
     @ViewBuilder var content: Content
     @Environment(\.kTheme) private var theme
+    @Environment(\.kInSheetCard) private var inSheetCard
 
     var body: some View {
-        VStack(alignment: .leading, spacing: KSpace.x5) { content }
-            .padding(KSpace.x6)
-            .frame(width: width, alignment: .topLeading)
-            .background(theme.panel)
+        let stack = VStack(alignment: .leading, spacing: KSpace.x5) { content }
+        if inSheetCard {
+            stack.frame(width: width, alignment: .topLeading)
+        } else {
+            stack
+                .padding(KSpace.x6)
+                .frame(width: width, alignment: .topLeading)
+                .background(theme.panel)
+        }
     }
 }
 
@@ -191,6 +198,8 @@ final class KOverlays {
 
 extension EnvironmentValues {
     @Entry var kOverlays: KOverlays?
+    /// Whether the view is inside our own sheet's card, which draws the surface and padding.
+    @Entry var kInSheetCard = false
 }
 
 extension View {

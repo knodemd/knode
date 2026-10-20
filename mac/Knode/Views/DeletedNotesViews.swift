@@ -8,7 +8,7 @@ struct DeletedNotesBanner: View {
 
     var body: some View {
         let count = deleted.waiting.count
-        KBanner(.warning, title: count == 1 ? "1 note was deleted from the Markdown folder" : "\(count) notes were deleted from the Markdown folder", actions: {
+        KBanner(.warning, title: count == 1 ? "1 note was deleted from the Markdown folder" : "\(count) notes were deleted from the Markdown folder", actionsBelow: true, actions: {
             KButton("Review", icon: .list, size: .small, action: review)
         })
         .padding(.horizontal, KSpace.x2)
