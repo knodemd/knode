@@ -153,7 +153,11 @@ fn a_client_uses_every_tool() {
             "link_nodes",
             "recent",
             "history",
-            "undo"
+            "undo",
+            "link_kinds",
+            "read_canvas",
+            "attach_file",
+            "read_attachment"
         ]
     );
     for tool in &tools {

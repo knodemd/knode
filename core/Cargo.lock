@@ -1830,6 +1830,7 @@ dependencies = [
 name = "knode-mcp"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "knode-format",
  "knode-service",
  "rmcp",

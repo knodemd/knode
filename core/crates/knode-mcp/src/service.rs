@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use knode_format::{
-    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit,
+    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    View,
 };
 use knode_service::{Client, Error};
 
-use crate::backend::{Backend, BackendError, BackendResult};
+use crate::backend::{Backend, BackendError, BackendResult, LocalFolder};
 
 type Connect = dyn Fn() -> knode_service::Result<Client> + Send + Sync;
 
@@ -194,5 +195,68 @@ impl Backend for ServiceBackend {
 
     fn knows_the_agent(&self) -> bool {
         true
+    }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        self.with(|c, s| c.link_kinds(s))
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        self.with(|c, s| c.set_link_kind(s, spec, by))
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        self.with(|c, s| c.remove_link_kind(s, kind, by))
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        self.with(|c, s| c.node_links(s, id))
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        self.with(|c, s| c.views(s))
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        self.with(|c, s| c.canvas_board(s, node))
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        self.with(|c, s| c.attachments(s, id))
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        self.with(|c, s| c.read_attachment(s, id, name))
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        self.with(|c, s| c.attach(s, id, name, bytes, by))
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        self.with(|c, s| c.attach_file(s, id, path, by))
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        self.with(|c, s| {
+            Ok(c.folders(s)?
+                .into_iter()
+                .map(|f| LocalFolder {
+                    kind: f.folder.kind,
+                    capture: f.folder.capture,
+                    path: f.local,
+                })
+                .collect())
+        })
     }
 }
