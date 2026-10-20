@@ -55,6 +55,7 @@ final class AppModel {
             if editor !== oldValue {
                 makeHistory()
                 makeLinks()
+                makeAttachments()
             }
         }
     }
@@ -65,6 +66,7 @@ final class AppModel {
         didSet {
             if isShowingHistory, !oldValue {
                 isShowingLinks = false
+                isShowingAttachments = false
                 Task { await history?.load() }
             }
         }
@@ -76,7 +78,20 @@ final class AppModel {
         didSet {
             if isShowingLinks, !oldValue {
                 isShowingHistory = false
+                isShowingAttachments = false
                 Task { await links?.load() }
+            }
+        }
+    }
+    /// The files attached to the open note.
+    private(set) var attachments: NoteAttachmentsModel?
+    /// Whether the attachments of the open note are shown, in place of its links or history.
+    var isShowingAttachments = false {
+        didSet {
+            if isShowingAttachments, !oldValue {
+                isShowingHistory = false
+                isShowingLinks = false
+                Task { await attachments?.load() }
             }
         }
     }
@@ -619,6 +634,95 @@ final class AppModel {
         isShowingLinks.toggle()
     }
 
+    // MARK: Attachments
+
+    private func makeAttachments() {
+        guard let editor, let store = store(for: editor.spaceID) as? any AttachmentStore else {
+            attachments = nil
+            return
+        }
+        let attachments = NoteAttachmentsModel(spaceID: editor.spaceID, nodeID: editor.nodeID, store: store)
+        self.attachments = attachments
+        // The preview shows the attached images and PDFs where the body names them.
+        Task { await attachments.load() }
+    }
+
+    /// Whether files can be attached to the open note: not in the example space.
+    var canAttach: Bool { attachments != nil }
+
+    /// Attaches files to the open note and returns the names to show them by, those the body
+    /// does not show yet. Files dropped in the text go where they were dropped; elsewhere, use
+    /// `attachFilesAtEnd`.
+    func attachFiles(_ urls: [URL]) async -> [String] {
+        guard let editor, let attachments, attachments.nodeID == editor.nodeID else { return [] }
+        let added = await attachments.attachFiles(urls)
+        return newEmbeds(added, in: editor)
+    }
+
+    /// Attaches a pasted image to the open note and returns the name to show it by, or nil.
+    func attachPastedImage(_ data: Data, named name: String) async -> String? {
+        guard let editor, let attachments, attachments.nodeID == editor.nodeID,
+              let added = await attachments.attach(data, named: name)
+        else { return nil }
+        return added.name
+    }
+
+    /// Attaches files to the open note and shows each at the end of its body.
+    func attachFilesAtEnd(_ urls: [URL]) async {
+        guard let editor else { return }
+        let names = await attachFiles(urls)
+        guard self.editor === editor, !names.isEmpty else { return }
+        editor.body = NoteAttachmentsModel.body(editor.body, embedding: names)
+    }
+
+    private func newEmbeds(_ added: [AttachmentInfo], in editor: NoteEditorModel) -> [String] {
+        var names: [String] = []
+        for attachment in added where !names.contains(attachment.name) && !editor.body.contains(attachment.embed) {
+            names.append(attachment.name)
+        }
+        return names
+    }
+
+    /// Opens the file an attachment of the open note is, for a `[[name]]` link in its preview.
+    /// Returns false when the note has no attachment of that name.
+    func openAttachment(named name: String) -> Bool {
+        guard let attachments, let attachment = attachments.attachment(named: name) else { return false }
+        attachments.open(attachment)
+        return true
+    }
+
+    /// Whether files dropped on a canvas can be attached: not in the example space.
+    func canAttachFiles(to canvas: CanvasModel) -> Bool {
+        store(for: canvas.spaceID) is any AttachmentStore
+    }
+
+    /// Puts files dropped on a canvas on it: a note for each, named after the file, with the file
+    /// attached and shown in its body.
+    func addFiles(_ urls: [URL], to canvas: CanvasModel, at point: CGPoint) async {
+        let space = canvas.spaceID
+        guard let store = store(for: space) as? any AttachmentStore else { return }
+        let (files, refused) = NoteAttachmentsModel.attachable(urls)
+        var notes: [NodeSummary] = []
+        for url in files {
+            do {
+                let name = url.lastPathComponent
+                let node = try await self.store(for: space).createNode(in: space, title: name, body: AttachmentInfo.embed(name) + "\n")
+                let attached = try await store.attachFile(at: url, to: node.id, in: space)
+                var shown = node
+                if attached.name != name {
+                    shown = try await self.store(for: space).updateNode(node.id, in: space, title: nil, body: attached.embed + "\n")
+                }
+                notes.append(shown.summary)
+            } catch {
+                errorMessage = "\(url.lastPathComponent) could not be added: \(error.localizedDescription)"
+            }
+        }
+        if let message = refused.first { errorMessage = message }
+        guard !notes.isEmpty else { return }
+        await canvas.add(notes, at: point)
+        await reload()
+    }
+
     // MARK: Changes made by others
 
     /// Shows a change someone else made, such as an agent writing through Knode Service: the list
@@ -632,6 +736,14 @@ final class AppModel {
         case .folders:
             // The Folders and Capture screen follows its space itself.
             return
+        case .linkKinds, .views:
+            // Only the map shows these: its graph, the open canvas and the links panel.
+            guard change.space == selectedSpaceID else { return }
+            graph?.reloadSoon()
+            if change.kind == .views, let graph { Task { await graph.reloadViews() } }
+            if let links { Task { await links.load() } }
+            if let canvas { Task { await canvas.load() } }
+            return
         case .reload:
             await refreshSpace(change.space)
         case .create, .update, .delete, .link, .unlink:
@@ -642,6 +754,10 @@ final class AppModel {
         graph?.reloadSoon()
         if let links, change.kind == .reload || change.nodeID == links.nodeID || change.kind == .link || change.kind == .unlink {
             Task { await links.load() }
+        }
+        if let attachments, change.kind == .reload || change.nodeID == attachments.nodeID && change.kind == .update {
+            // Attaching or removing a file sends `update` for the note.
+            Task { await attachments.load() }
         }
         if let canvas, change.kind != .update || change.nodeID == canvas.nodeID {
             Task { await canvas.load() }

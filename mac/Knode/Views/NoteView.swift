@@ -27,6 +27,7 @@ struct NoteView: View {
     @Bindable var editor: NoteEditorModel
     @Environment(AppModel.self) private var model
     @AppStorage("editorLayout") private var layout: EditorLayout = .split
+    @State private var isDropTargeted = false
 
     var body: some View {
         @Bindable var model = model
@@ -44,11 +45,13 @@ struct NoteView: View {
             }
         }
         .inspector(isPresented: Binding(
-            get: { model.isShowingHistory || model.isShowingLinks },
-            set: { if !$0 { model.isShowingHistory = false; model.isShowingLinks = false } }
+            get: { model.isShowingHistory || model.isShowingLinks || model.isShowingAttachments },
+            set: { if !$0 { model.isShowingHistory = false; model.isShowingLinks = false; model.isShowingAttachments = false } }
         )) {
             Group {
-                if model.isShowingLinks, let links = model.links {
+                if model.isShowingAttachments, let attachments = model.attachments {
+                    NoteAttachmentsPanel(attachments: attachments)
+                } else if model.isShowingLinks, let links = model.links {
                     NoteLinksPanel(links: links)
                 } else if let history = model.history {
                     HistoryPanel(history: history)
@@ -75,6 +78,13 @@ struct NoteView: View {
                 .help("Show this note's links and backlinks (Shift-Command-L)")
             }
             ToolbarItem {
+                Toggle(isOn: $model.isShowingAttachments) {
+                    Label("Attachments", systemImage: "paperclip")
+                }
+                .disabled(!model.canAttach)
+                .help("Show the files attached to this note (Shift-Command-A)")
+            }
+            ToolbarItem {
                 Toggle(isOn: $model.isShowingHistory) {
                     Label("History", systemImage: "clock.arrow.circlepath")
                 }
@@ -97,6 +107,15 @@ struct NoteView: View {
                     preview.frame(minWidth: 240)
                 }
             }
+        }
+        // Files dropped on the note, outside the text, are attached and shown where it ends.
+        .overlay {
+            if isDropTargeted { DropHighlight() }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard model.canAttach else { return false }
+            Task { await model.attachFilesAtEnd(await DroppedItems.fileURLs(providers)) }
+            return true
         }
     }
 
@@ -132,7 +151,7 @@ struct NoteView: View {
 
     private var preview: some View {
         ScrollView {
-            MarkdownPreview(markdown: editor.body)
+            MarkdownPreview(markdown: editor.body, attachments: model.attachments)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 18)
                 .frame(maxWidth: 720, alignment: .leading)
@@ -144,6 +163,8 @@ struct NoteView: View {
 /// Draws a Markdown body as it reads. `[[links]]` open the note they name.
 struct MarkdownPreview: View {
     let markdown: String
+    /// The note's attachments, shown where the body says `![[name]]`.
+    var attachments: NoteAttachmentsModel?
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
 
@@ -157,6 +178,8 @@ struct MarkdownPreview: View {
         .tint(colorScheme == .dark ? KnodeColor.indigo : KnodeColor.ink)
         .environment(\.openURL, OpenURLAction { url in
             if let title = InlineMarkdown.linkedTitle(url) {
+                // `[[name]]` opens the note's attachment of that name, else the note so titled.
+                if model.openAttachment(named: title) { return .handled }
                 Task { await model.openLinkedNode(titled: title) }
                 return .handled
             }
@@ -209,6 +232,8 @@ struct MarkdownPreview: View {
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
         case .rule:
             Divider().padding(.vertical, 6)
+        case .embed(let name):
+            AttachmentEmbed(name: name, attachments: attachments)
         }
     }
 

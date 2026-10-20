@@ -17,7 +17,8 @@ public actor ServiceSpaceStore: SpaceStore {
 
     private let socketURL: URL
     public nonisolated let person: String
-    private let author: JSONValue
+    /// Who the app writes as, in the `by` of each write.
+    let author: JSONValue
     private var connection: ServiceConnection?
     /// The open spaces: their URL and the path the service knows them by.
     private var spaces: [Space.ID: (space: Space, path: String)] = [:]
@@ -134,21 +135,6 @@ public actor ServiceSpaceStore: SpaceStore {
         let path = try path(space)
         let params: [String: JSONValue] = ["space": .string(path), "change": .int(change), "force": .bool(force), "by": author]
         _ = try await call("undo", params, as: WireChange.self, change: change)
-    }
-
-    /// Links two nodes through the service, so its other clients see the link.
-    public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
-        let path = try path(space)
-        let params: [String: JSONValue] = ["space": .string(path), "from": .string(from), "to": .string(to), "kind": .string(kind), "by": author]
-        _ = try await call("link.create", params, as: WireLink.self, node: from)
-    }
-
-    /// Removes a link through the service. Returns whether there was one.
-    @discardableResult
-    public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws -> Bool {
-        let path = try path(space)
-        let params: [String: JSONValue] = ["space": .string(path), "from": .string(from), "to": .string(to), "kind": .string(kind), "by": author]
-        return try await call("link.delete", params, as: Bool.self, node: from)
     }
 
     // MARK: Name, settings and folders
@@ -285,6 +271,8 @@ public actor ServiceSpaceStore: SpaceStore {
                 kind = .renamed
             case "settings": kind = .settings
             case "folders": kind = .folders
+            case "link_kinds": kind = .linkKinds
+            case "views": kind = .views
             default: kind = .reload
             }
             broadcast.yield(SpaceChange(space: space, nodeID: nil, kind: kind))
@@ -295,7 +283,7 @@ public actor ServiceSpaceStore: SpaceStore {
         }
     }
 
-    private func callJSON(_ method: String, _ params: [String: JSONValue]) async throws -> Data {
+    func callJSON(_ method: String, _ params: [String: JSONValue]) async throws -> Data {
         do {
             return try await connected().callJSON(method, params)
         } catch ServiceError.remote(_, let kind, let message, let later) {
@@ -303,7 +291,7 @@ public actor ServiceSpaceStore: SpaceStore {
         }
     }
 
-    private func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil, change: Int64? = nil) async throws -> Result {
+    func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil, change: Int64? = nil) async throws -> Result {
         do {
             return try await connected().call(method, params, as: type)
         } catch ServiceError.remote(_, let kind, let message, let later) {
@@ -347,7 +335,7 @@ public actor ServiceSpaceStore: SpaceStore {
         return open
     }
 
-    private func path(_ space: Space.ID) throws -> String {
+    func path(_ space: Space.ID) throws -> String {
         guard let path = spaces[space]?.path else { throw SpaceStoreError.spaceNotFound(space) }
         return path
     }

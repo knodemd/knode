@@ -99,6 +99,11 @@ public struct SpaceChange: Sendable, Hashable {
         case settings
         /// A folder of the space was added, changed or removed.
         case folders
+        /// A kind of link was defined, changed or removed.
+        case linkKinds
+        /// A graph view or a canvas was created, changed or removed, or nodes or groups were
+        /// placed on it.
+        case views
     }
 
     public var space: Space.ID

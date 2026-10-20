@@ -83,7 +83,7 @@ import Testing
         #expect(board.items[0].position == ViewPosition(nodeID: note.id, x: 5, y: 6, size: CGSize(width: 300, height: 150), z: 3, collapsed: true, groupID: group.id))
         #expect(board.groups == [group])
 
-        try await store.removeGroup(group.id, in: space)
+        try await store.removeGroup(group.id, in: canvas.id, space: space)
         try await store.removePositions([note.id], from: canvas.id, space: space)
         let empty = try #require(try await store.canvasBoard(of: node, in: space))
         #expect(empty.items.isEmpty && empty.groups.isEmpty)
