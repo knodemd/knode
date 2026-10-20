@@ -40,6 +40,24 @@ public protocol SpaceStore: Sendable {
     /// Sets the icon of the space, one emoji, or removes it with `nil`.
     func setIcon(_ icon: String?, of space: Space.ID) async throws
 
+    /// The space as it is now: its name and icon, which someone else may have changed.
+    func spaceDetails(_ space: Space.ID) async throws -> Space
+
+    /// Whether captured agent conversations are written to the space (`capture.enabled`).
+    func captureEnabled(in space: Space.ID) async throws -> Bool
+
+    /// Turns capture into the space on or off. Off, nothing captured is written to it.
+    func setCaptureEnabled(_ enabled: Bool, in space: Space.ID) async throws
+
+    /// The folders that feed the space, oldest first.
+    func folders(of space: Space.ID) async throws -> [SpaceFolder]
+
+    /// Adds a folder to the space, or changes one, and returns it.
+    func setFolder(_ folder: FolderDraft, in space: Space.ID) async throws -> SpaceFolder
+
+    /// Removes a folder from the space. Nothing captured from it is removed.
+    func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws
+
     /// Stops using the space. Nothing on disk changes.
     func closeSpace(_ space: Space.ID) async
 
@@ -75,10 +93,16 @@ public struct SpaceChange: Sendable, Hashable {
         case create, update, delete, link, unlink
         /// Changes may have been missed: reload everything shown from the space.
         case reload
+        /// The space was renamed.
+        case renamed
+        /// A setting of the space changed, such as its icon or capture.
+        case settings
+        /// A folder of the space was added, changed or removed.
+        case folders
     }
 
     public var space: Space.ID
-    /// The node that changed; `nil` for `reload`.
+    /// The node that changed; `nil` for `reload` and the changes to the space itself.
     public var nodeID: Node.ID?
     public var kind: Kind
 
