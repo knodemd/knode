@@ -26,6 +26,11 @@ struct SpaceItem: Identifiable, Hashable {
     var id: URL { url }
 }
 
+/// What the detail of the main window shows: the open note, or the graph of the space.
+enum MainMode: String, Hashable {
+    case notes, graph
+}
+
 /// The state of the main window: the spaces, the node list, the search and the open note.
 @MainActor
 @Observable
@@ -42,14 +47,43 @@ final class AppModel {
     /// The nodes shown in the list: every node newest first, or the search results.
     private(set) var nodes: [NodeSummary] = []
     private(set) var editor: NoteEditorModel? {
-        didSet { if editor !== oldValue { makeHistory() } }
+        didSet {
+            if editor !== oldValue {
+                makeHistory()
+                makeLinks()
+            }
+        }
     }
     /// The history of the open note.
     private(set) var history: NoteHistoryModel?
     /// Whether the history of the open note is shown.
     var isShowingHistory = false {
-        didSet { if isShowingHistory, !oldValue { Task { await history?.load() } } }
+        didSet {
+            if isShowingHistory, !oldValue {
+                isShowingLinks = false
+                Task { await history?.load() }
+            }
+        }
     }
+    /// The links and backlinks of the open note.
+    private(set) var links: NoteLinksModel?
+    /// Whether the links of the open note are shown, in place of its history.
+    var isShowingLinks = false {
+        didSet {
+            if isShowingLinks, !oldValue {
+                isShowingHistory = false
+                Task { await links?.load() }
+            }
+        }
+    }
+    /// The board of the open note, when it is a canvas.
+    private(set) var canvas: CanvasModel?
+    /// The note list and editor, or the graph.
+    var mode: MainMode = .notes {
+        didSet { if mode != oldValue { modeDidChange() } }
+    }
+    /// The graph of the selected space, while it is shown or was last.
+    private(set) var graph: GraphModel?
     var errorMessage: String?
 
     /// The spaces opened most recently, newest first.
@@ -179,6 +213,12 @@ final class AppModel {
         await editor?.save()
         selectedSpaceID = id
         editor = nil
+        canvas = nil
+        if graph?.spaceID != id {
+            await graph?.flush()
+            graph = nil
+        }
+        if mode == .graph { modeDidChange() }
         searchText = ""
         pendingSearch?.cancel()
         await reload()
@@ -383,12 +423,16 @@ final class AppModel {
         await editor?.save()
         guard let id, let space = selectedSpaceID else {
             editor = nil
+            canvas = nil
             return
         }
         do {
             let spaceStore = store(for: space)
             let node = try await spaceStore.node(id, in: space)
             guard space == selectedSpaceID else { return }
+            await canvas?.flush()
+            canvas?.forgetUndo()
+            canvas = makeCanvas(for: node, in: space)
             editor = makeEditor(node, in: space)
         } catch {
             errorMessage = error.localizedDescription
@@ -483,6 +527,81 @@ final class AppModel {
         }
     }
 
+    // MARK: Map
+
+    /// The map side of a space's store, when it has one.
+    private func mapStore(for space: Space.ID) -> (any MapStore)? {
+        store(for: space) as? any MapStore
+    }
+
+    /// Whether the selected space can show a graph and canvases.
+    var hasMap: Bool {
+        selectedSpaceID.map { mapStore(for: $0) != nil } ?? false
+    }
+
+    func toggleGraph() {
+        mode = mode == .graph ? .notes : .graph
+    }
+
+    private func modeDidChange() {
+        guard mode == .graph, let space = selectedSpaceID, let store = mapStore(for: space) else { return }
+        if graph == nil || graph?.spaceID != space {
+            let graph = GraphModel(spaceID: space, store: store)
+            graph.onOpen = { [weak self] id in
+                guard let self else { return }
+                Task {
+                    self.mode = .notes
+                    await self.openNode(id)
+                }
+            }
+            self.graph = graph
+            Task { await graph.load() }
+        } else {
+            Task { await graph?.reload() }
+        }
+    }
+
+    /// Creates an empty canvas and opens it.
+    func createCanvas() async {
+        guard let space = selectedSpaceID, let store = mapStore(for: space) else { return }
+        do {
+            let view = try await store.createCanvas(title: "Untitled Canvas", in: space)
+            searchText = ""
+            pendingSearch?.cancel()
+            mode = .notes
+            await reload()
+            await openNode(view.nodeID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func makeCanvas(for node: Node, in space: Space.ID) -> CanvasModel? {
+        guard node.kind == NodeKind.canvas, let store = mapStore(for: space) else { return nil }
+        let canvas = CanvasModel(spaceID: space, nodeID: node.id, store: store)
+        canvas.onOpen = { [weak self] id in Task { await self?.openNode(id) } }
+        Task { await canvas.load() }
+        return canvas
+    }
+
+    private func makeLinks() {
+        guard let editor, let store = mapStore(for: editor.spaceID) else {
+            links = nil
+            return
+        }
+        let links = NoteLinksModel(spaceID: editor.spaceID, nodeID: editor.nodeID, store: store)
+        links.didChange = { [weak self] in
+            self?.graph?.reloadSoon()
+            await self?.canvas?.load()
+        }
+        self.links = links
+        if isShowingLinks { Task { await links.load() } }
+    }
+
+    func toggleLinks() {
+        isShowingLinks.toggle()
+    }
+
     // MARK: Changes made by others
 
     /// Shows a change someone else made, such as an agent writing through Knode Service: the list
@@ -490,6 +609,13 @@ final class AppModel {
     func apply(_ change: SpaceChange) async {
         guard change.space == selectedSpaceID else { return }
         scheduleReload()
+        graph?.reloadSoon()
+        if let links, change.kind == .reload || change.nodeID == links.nodeID || change.kind == .link || change.kind == .unlink {
+            Task { await links.load() }
+        }
+        if let canvas, change.kind != .update || change.nodeID == canvas.nodeID {
+            Task { await canvas.load() }
+        }
         guard let editor, change.nodeID == editor.nodeID || change.kind == .reload else { return }
         do {
             let node = try await store(for: change.space).node(editor.nodeID, in: change.space)

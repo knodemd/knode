@@ -14,7 +14,13 @@ struct ContentView: View {
             NodeListView()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 400)
         } detail: {
-            if let editor = model.editor {
+            if model.mode == .graph, let graph = model.graph {
+                GraphScreen(graph: graph)
+                    .id(graph.spaceID)
+            } else if let editor = model.editor, let canvas = model.canvas {
+                CanvasScreen(canvas: canvas, editor: editor)
+                    .id(canvas.nodeID)
+            } else if let editor = model.editor {
                 NoteView(editor: editor)
                     .id(editor.nodeID)
             } else if model.selectedSpace == nil {
@@ -198,7 +204,9 @@ struct NodeListView: View {
             } else {
                 List(selection: $model.selectedNodeID) {
                     ForEach(model.nodes) { node in
-                        NodeRow(node: node).tag(node.id)
+                        NodeRow(node: node)
+                            .tag(node.id)
+                            .draggable(node.id)
                     }
                 }
             }
@@ -211,6 +219,13 @@ struct NodeListView: View {
                 }
                 .disabled(model.selectedSpace == nil)
             }
+            ToolbarItem {
+                Toggle(isOn: Binding(get: { model.mode == .graph }, set: { model.mode = $0 ? .graph : .notes })) {
+                    Label("Graph", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .disabled(!model.hasMap)
+                .help("Show the space as a graph (Shift-Command-M)")
+            }
         }
     }
 }
@@ -220,9 +235,16 @@ struct NodeRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(node.title.isEmpty ? "Untitled" : node.title)
-                .font(.headline)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                if node.kind == NodeKind.canvas {
+                    Image(systemName: "rectangle.on.rectangle.angled")
+                        .foregroundStyle(KnodeColor.indigo)
+                        .accessibilityLabel("Canvas")
+                }
+                Text(node.title.isEmpty ? "Untitled" : node.title)
+                    .font(.headline)
+                    .lineLimit(1)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(node.updatedAt, format: .relative(presentation: .named))
                     .foregroundStyle(.secondary)

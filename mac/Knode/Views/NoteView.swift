@@ -43,11 +43,18 @@ struct NoteView: View {
                 Color.clear.modifier(UndoConflictAlert(history: history))
             }
         }
-        .inspector(isPresented: $model.isShowingHistory) {
-            if let history = model.history {
-                HistoryPanel(history: history)
-                    .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+        .inspector(isPresented: Binding(
+            get: { model.isShowingHistory || model.isShowingLinks },
+            set: { if !$0 { model.isShowingHistory = false; model.isShowingLinks = false } }
+        )) {
+            Group {
+                if model.isShowingLinks, let links = model.links {
+                    NoteLinksPanel(links: links)
+                } else if let history = model.history {
+                    HistoryPanel(history: history)
+                }
             }
+            .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
         }
         .toolbar {
             ToolbarItem {
@@ -59,6 +66,13 @@ struct NoteView: View {
                 .pickerStyle(.segmented)
                 .help("Edit, preview, or both")
                 .disabled(model.history?.selectedVersion != nil)
+            }
+            ToolbarItem {
+                Toggle(isOn: $model.isShowingLinks) {
+                    Label("Links", systemImage: "link")
+                }
+                .disabled(model.links == nil)
+                .help("Show this note's links and backlinks (Shift-Command-L)")
             }
             ToolbarItem {
                 Toggle(isOn: $model.isShowingHistory) {
