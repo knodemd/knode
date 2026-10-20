@@ -82,6 +82,47 @@ jobs:
           # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
           objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
 
+  # Builds the static musl binaries the release ships, and runs them on Alpine, a musl
+  # system where the gnu builds do not run (knodemd/knode#84).
+  musl:
+    name: Build and run on Alpine (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The same runners as the release workflow.
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust and musl-tools
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+          rustc --version
+          sudo apt-get update -q
+          sudo apt-get install -y -q musl-tools
+
+      - name: Build the release binary
+        run: cargo build --release --locked -p knode-cli --target "$TARGET"
+
+      - name: Run the release binary on Alpine
+        run: |
+          bin="target/$TARGET/release/knode"
+          file "$bin"
+          file "$bin" | grep -E 'static(-pie)? linked'
+          docker run --rm -v "$PWD/target/$TARGET/release:/knode:ro" alpine:3.22 \
+            sh -c 'cat /etc/alpine-release && /knode/knode --version && /knode/knode --help > /dev/null'
+
   # Runs the co-editing concurrency test several times on aarch64 Linux, where a race between
   # programs writing the same note once showed (knodemd/knode#142).
   coediting-loop:
