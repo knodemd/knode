@@ -1051,7 +1051,7 @@ pub(crate) struct Fields {
 
 impl Fields {
     /// Checks an update and keeps only the fields that differ from the node.
-    fn diff(current: &Node, update: NodeUpdate) -> Result<Fields> {
+    pub(crate) fn diff(current: &Node, update: NodeUpdate) -> Result<Fields> {
         let kind = match update.kind.as_deref().map(str::trim) {
             Some(kind) if kind != current.kind => Some(check_name("node kind", kind)?),
             _ => None,

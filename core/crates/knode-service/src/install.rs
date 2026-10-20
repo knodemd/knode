@@ -357,13 +357,34 @@ mod tests {
         fs::write(
             &path,
             format!(
-                "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1\" = '{fail_on}' ] || [ \"$2\" = '{fail_on}' ]; then echo 'no such service' >&2; exit {code}; fi\nexit 0\n",
+                "#!/bin/sh\n[ -n \"$KNODE_FAKE_PROBE\" ] && exit 0\necho \"$@\" >> '{}'\nif [ \"$1\" = '{fail_on}' ] || [ \"$2\" = '{fail_on}' ]; then echo 'no such service' >&2; exit {code}; fi\nexit 0\n",
                 log.display()
             ),
         )
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&path);
         path
+    }
+
+    /// Waits until `path` can be run. A process another test thread forks while `fs::write` still
+    /// holds the script open inherits that handle until it execs, and on Linux running the script
+    /// meanwhile fails with ETXTBSY ("Text file busy"). Once one run succeeds no such handle is
+    /// left, and none can appear later, because the script is never opened for writing again.
+    fn wait_until_executable(path: &Path) {
+        for _ in 0..500 {
+            match Command::new(path).env("KNODE_FAKE_PROBE", "1").status() {
+                Ok(status) => {
+                    assert!(status.success(), "{} failed: {status}", path.display());
+                    return;
+                }
+                Err(err) if err.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(err) => panic!("cannot run {}: {err}", path.display()),
+            }
+        }
+        panic!("{} stayed busy", path.display());
     }
 
     fn log(dir: &Path) -> Vec<String> {

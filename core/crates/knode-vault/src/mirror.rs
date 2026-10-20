@@ -6,15 +6,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use knode_format::{Node, NodeId, Properties, Provenance, Space, kinds, link_kinds};
+use knode_format::{LinkKindSpec, Node, NodeId, Properties, Provenance, Space, kinds, link_kinds};
 use serde::{Deserialize, Serialize};
 
+use crate::attachments::{blob_urls_to_files, is_exportable_name, is_safe_path, numbered};
 use crate::frontmatter::{self, entries, flow_list, scalar};
 use crate::names::{
     fold, folder_of, is_safe_relative, join, safe_stem, stem_fits, stem_of, title_from_stem,
 };
 use crate::property_keys as keys;
-use crate::{Error, FILES_MAP, Result, STATE_DIR, STYLE_VAULT, io_error, tags};
+use crate::{Error, FILES_MAP, LINK_KINDS_FILE, Result, STATE_DIR, STYLE_VAULT, io_error, tags};
 
 /// What [`export`] (or a [`LiveFolder`](crate::LiveFolder) sync) did to the folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +28,13 @@ pub struct ExportReport {
     pub removed: Vec<String>,
     /// How many nodes the folder holds now.
     pub files: usize,
+    /// How many attachment files the folder holds now.
+    #[serde(default)]
+    pub attachments: usize,
+    /// The attachments not written, as `<note path>: <name>`, with why: a name a file cannot
+    /// have in the folder (hidden, or a `.md` file), or a file missing from the space.
+    #[serde(default)]
+    pub left_out: Vec<String>,
 }
 
 /// Writes every node of `space` to the folder `dir` as a `.md` file, creating the folder if
@@ -48,6 +56,74 @@ struct FilesMap {
     version: u32,
     /// Node id, as written in the files, to path.
     files: BTreeMap<String, String>,
+    /// Node id, as written in the files, to the attachments written for it, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    attachments: BTreeMap<String, BTreeMap<String, AttachmentFile>>,
+}
+
+/// An attachment written to the folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AttachmentFile {
+    /// The file, relative to the folder, with `/` between folders.
+    pub(crate) path: String,
+    /// The hash of its blob.
+    pub(crate) hash: String,
+}
+
+/// Node id, as written in the files, to its attachment files by name.
+pub(crate) type AttachmentMap = BTreeMap<String, BTreeMap<String, AttachmentFile>>;
+
+/// `.knode/link-kinds.json`: the kinds of link the space defines.
+#[derive(Debug, Serialize, Deserialize)]
+struct LinkKindsFile {
+    version: u32,
+    kinds: Vec<LinkKindSpec>,
+}
+
+/// Reads `.knode/files.json` of `dir`: the paths of the nodes and of their attachments.
+fn read_map(dir: &Path) -> Result<(BTreeMap<String, String>, AttachmentMap)> {
+    let path = dir.join(STATE_DIR).join(FILES_MAP);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            let map: FilesMap = serde_json::from_str(&text).map_err(|e| Error::Map {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+            let files = map
+                .files
+                .into_iter()
+                .filter(|(_, p)| is_safe_relative(p))
+                .collect();
+            let mut attachments = map.attachments;
+            for files in attachments.values_mut() {
+                files.retain(|_, f| is_safe_path(&f.path));
+            }
+            Ok((files, attachments))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(io_error(&path)(e)),
+    }
+}
+
+/// The attachment files `.knode/files.json` of `dir` lists, or none when it has none or cannot
+/// be read.
+pub(crate) fn read_attachment_map(dir: &Path) -> AttachmentMap {
+    read_map(dir).map(|(_, a)| a).unwrap_or_default()
+}
+
+/// The kinds of link `.knode/link-kinds.json` of `dir` defines, by name, or none when it has
+/// none or cannot be read.
+pub(crate) fn read_link_kinds(dir: &Path) -> BTreeMap<String, LinkKindSpec> {
+    fs::read_to_string(dir.join(STATE_DIR).join(LINK_KINDS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<LinkKindsFile>(&text).ok())
+        .map(|file| {
+            file.kinds
+                .into_iter()
+                .map(|k| (k.kind.clone(), k))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A folder that mirrors a space, with the path of each node.
@@ -56,6 +132,8 @@ pub(crate) struct Mirror {
     dir: PathBuf,
     /// Export id to path, as last written.
     files: BTreeMap<String, String>,
+    /// Export id to attachment files, as last written.
+    attachments: AttachmentMap,
 }
 
 /// A node of the space, as the mirror sees it.
@@ -70,24 +148,11 @@ struct Item {
 impl Mirror {
     /// Opens the folder `dir`, reading `.knode/files.json` if it has one.
     pub(crate) fn load(dir: &Path) -> Result<Mirror> {
-        let path = dir.join(STATE_DIR).join(FILES_MAP);
-        let files = match fs::read_to_string(&path) {
-            Ok(text) => {
-                let map: FilesMap = serde_json::from_str(&text).map_err(|e| Error::Map {
-                    path: path.clone(),
-                    message: e.to_string(),
-                })?;
-                map.files
-                    .into_iter()
-                    .filter(|(_, p)| is_safe_relative(p))
-                    .collect()
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => return Err(io_error(&path)(e)),
-        };
+        let (files, attachments) = read_map(dir)?;
         Ok(Mirror {
             dir: dir.to_path_buf(),
             files,
+            attachments,
         })
     }
 
@@ -134,6 +199,7 @@ impl Mirror {
         };
 
         let mut report = ExportReport::default();
+        let attached = self.assign_attachments(space, &items, &assigned, &mut report)?;
 
         // Remove first, so a path freed by one node can be taken by another.
         let kept: HashSet<String> = assigned.values().map(|p| fold(p)).collect();
@@ -156,7 +222,19 @@ impl Mirror {
             let Some(node) = space.get_node(&item.id)? else {
                 continue;
             };
-            let text = render(space, &node, item, &export_ids, stem_of(path))?;
+            // The file name of each attachment, by hash, for `knode:blob/<hash>` links.
+            let mut blob_files = BTreeMap::new();
+            for file in attached
+                .get(&item.export_id)
+                .into_iter()
+                .flat_map(|a| a.values())
+            {
+                let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+                blob_files
+                    .entry(file.hash.clone())
+                    .or_insert_with(|| name.to_string());
+            }
+            let text = render(space, &node, item, &export_ids, stem_of(path), &blob_files)?;
             if write_if_changed(&self.dir.join(path), text.as_bytes())? {
                 report.written.push(path.clone());
             } else {
@@ -164,10 +242,209 @@ impl Mirror {
             }
         }
 
+        self.write_attachments(space, &attached, &assigned, &mut report)?;
+        self.save_link_kinds(space)?;
+
         report.files = assigned.len();
         self.files = assigned;
+        self.attachments = attached;
         self.save()?;
         Ok(report)
+    }
+
+    /// Chooses the file of every attachment of every node: next to the node's file, under its
+    /// name, or ` 2`, ` 3`... before the extension when another node's attachment with other
+    /// content, a note or a file Knode did not write has that name. A file it had before is kept.
+    fn assign_attachments(
+        &self,
+        space: &Space,
+        items: &[Item],
+        assigned: &BTreeMap<String, String>,
+        report: &mut ExportReport,
+    ) -> Result<AttachmentMap> {
+        let notes: HashSet<String> = assigned.values().map(|p| fold(p)).collect();
+        let ours: HashSet<String> = self
+            .attachments
+            .values()
+            .flat_map(|a| a.values())
+            .map(|f| fold(&f.path))
+            .collect();
+        let mut claimed: HashMap<String, String> = HashMap::new();
+        let mut out = AttachmentMap::new();
+        for item in items {
+            let attachments = space.attachments(&item.id)?;
+            if attachments.is_empty() {
+                continue;
+            }
+            let note = &assigned[&item.export_id];
+            let folder = folder_of(note);
+            let previous = self.attachments.get(&item.export_id);
+            for attachment in attachments {
+                let name = &attachment.name;
+                if !is_exportable_name(name) {
+                    report
+                        .left_out
+                        .push(format!("{note}: {name} (not a name for a file here)"));
+                    continue;
+                }
+                let mut blob: Option<Option<Vec<u8>>> = None;
+                let mut free = |path: &str| -> Result<bool> {
+                    let key = fold(path);
+                    if notes.contains(&key) {
+                        return Ok(false);
+                    }
+                    if let Some(hash) = claimed.get(&key) {
+                        return Ok(*hash == attachment.hash);
+                    }
+                    let full = self.dir.join(path);
+                    let Ok(meta) = fs::symlink_metadata(&full) else {
+                        return Ok(true);
+                    };
+                    if !meta.is_file() {
+                        return Ok(false);
+                    }
+                    if ours.contains(&key) {
+                        return Ok(true);
+                    }
+                    // A file Knode did not write: shared only when it is this very file.
+                    if blob.is_none() {
+                        blob = Some(space.read_blob(&attachment.hash).ok().flatten());
+                    }
+                    let same = match blob.as_ref().and_then(|b| b.as_ref()) {
+                        Some(bytes) => fs::read(&full).is_ok_and(|on_disk| on_disk == *bytes),
+                        None => false,
+                    };
+                    Ok(same)
+                };
+                let mut chosen = None;
+                if let Some(before) = previous.and_then(|p| p.get(name)) {
+                    if before.hash == attachment.hash
+                        && folder_of(&before.path) == folder
+                        && free(&before.path)?
+                    {
+                        chosen = Some(before.path.clone());
+                    }
+                }
+                let mut n = 1;
+                while chosen.is_none() {
+                    let path = join(folder, &numbered(name, n));
+                    if free(&path)? {
+                        chosen = Some(path);
+                    }
+                    n += 1;
+                }
+                let path = chosen.expect("chosen above");
+                claimed.insert(fold(&path), attachment.hash.clone());
+                out.entry(item.export_id.clone()).or_default().insert(
+                    name.clone(),
+                    AttachmentFile {
+                        path,
+                        hash: attachment.hash,
+                    },
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    /// Writes the attachment files that are not on disk yet, and removes the files written
+    /// before for attachments that are gone, as long as they still hold what Knode wrote.
+    fn write_attachments(
+        &self,
+        space: &Space,
+        attached: &AttachmentMap,
+        assigned: &BTreeMap<String, String>,
+        report: &mut ExportReport,
+    ) -> Result<()> {
+        let before: HashMap<&str, &str> = self
+            .attachments
+            .values()
+            .flat_map(|a| a.values())
+            .map(|f| (f.path.as_str(), f.hash.as_str()))
+            .collect();
+        let mut done: HashSet<String> = HashSet::new();
+        let mut kept: HashSet<String> = HashSet::new();
+        for (eid, files) in attached {
+            for (name, file) in files {
+                if !done.insert(fold(&file.path)) {
+                    kept.insert(fold(&file.path));
+                    continue;
+                }
+                let full = self.dir.join(&file.path);
+                if before.get(file.path.as_str()) == Some(&file.hash.as_str()) && full.is_file() {
+                    kept.insert(fold(&file.path));
+                    report.unchanged += 1;
+                    continue;
+                }
+                let bytes = match space.read_blob(&file.hash) {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) | Err(_) => {
+                        let note = assigned.get(eid).map(String::as_str).unwrap_or(eid);
+                        report.left_out.push(format!(
+                            "{note}: {name} (its file is missing from the space)"
+                        ));
+                        done.remove(&fold(&file.path));
+                        continue;
+                    }
+                };
+                kept.insert(fold(&file.path));
+                if write_if_changed(&full, &bytes)? {
+                    report.written.push(file.path.clone());
+                } else {
+                    report.unchanged += 1;
+                }
+            }
+        }
+        report.attachments = kept.len();
+        for (path, hash) in before {
+            if kept.contains(&fold(path)) {
+                continue;
+            }
+            let full = self.dir.join(path);
+            let ours = match space.read_blob(hash) {
+                Ok(Some(bytes)) => fs::read(&full).is_ok_and(|on_disk| on_disk == bytes),
+                _ => false,
+            };
+            if ours {
+                fs::remove_file(&full).map_err(io_error(&full))?;
+                report.removed.push(path.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes `.knode/link-kinds.json` with the kinds of link the space defines, or removes it
+    /// when the space defines none.
+    fn save_link_kinds(&self, space: &Space) -> Result<()> {
+        let path = self.dir.join(STATE_DIR).join(LINK_KINDS_FILE);
+        let kinds: Vec<LinkKindSpec> = space
+            .link_kinds()?
+            .into_iter()
+            .filter(|k| !k.built_in)
+            .map(|k| LinkKindSpec {
+                kind: k.kind,
+                label: k.label,
+                inverse_label: k.inverse_label,
+                direction: k.direction,
+                description: k.description,
+            })
+            .collect();
+        if kinds.is_empty() {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_error(&path)(e)),
+            }
+            return Ok(());
+        }
+        let file = LinkKindsFile { version: 1, kinds };
+        let mut text = serde_json::to_string_pretty(&file).map_err(|e| Error::Map {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
+        text.push('\n');
+        write_if_changed(&path, text.as_bytes())?;
+        Ok(())
     }
 
     /// Writes `.knode/files.json` if it changed.
@@ -175,6 +452,7 @@ impl Mirror {
         let map = FilesMap {
             version: 1,
             files: self.files.clone(),
+            attachments: self.attachments.clone(),
         };
         let mut text = serde_json::to_string_pretty(&map).map_err(|e| Error::Map {
             path: self.dir.join(STATE_DIR).join(FILES_MAP),
@@ -314,6 +592,7 @@ fn render(
     item: &Item,
     export_ids: &HashMap<NodeId, String>,
     stem: &str,
+    blob_files: &BTreeMap<String, String>,
 ) -> Result<String> {
     let mut links: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for link in space.links_from(&node.id)? {
@@ -409,7 +688,8 @@ fn render(
             fm.push_str(nl);
         }
     }
-    Ok(format!("---{nl}{fm}---{nl}{}", node.body))
+    let body = blob_urls_to_files(&node.body, blob_files);
+    Ok(format!("---{nl}{fm}---{nl}{body}"))
 }
 
 /// Writes a provenance as `kind`, `actor`, `session` and `source` pairs under `key`.

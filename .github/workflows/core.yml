@@ -3,9 +3,9 @@ name: core
 on:
   push:
     branches: [main]
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths: ["core/**", "mac/scripts/**", ".github/workflows/core.yml"]
   pull_request:
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths: ["core/**", "mac/scripts/**", ".github/workflows/core.yml"]
 
 permissions:
   contents: read
@@ -27,3 +27,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Mac build input lists are up to date
+        run: ../mac/scripts/update-inputs.sh --check
