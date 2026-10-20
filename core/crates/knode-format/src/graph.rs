@@ -80,6 +80,29 @@ impl GraphFilter {
         })
     }
 
+    /// The filter as the JSON object a graph view stores, with times as RFC 3339. Fields left
+    /// out are not written.
+    pub fn to_json(&self) -> Value {
+        let mut object = serde_json::Map::new();
+        let lists = [
+            ("node_kinds", &self.node_kinds),
+            ("tags", &self.tags),
+            ("actors", &self.actors),
+            ("link_kinds", &self.link_kinds),
+        ];
+        for (key, value) in lists {
+            if let Some(value) = value {
+                object.insert(key.into(), Value::from(value.clone()));
+            }
+        }
+        for (key, value) in [("since", self.since), ("until", self.until)] {
+            if let Some(time) = value {
+                object.insert(key.into(), Value::from(time.to_string()));
+            }
+        }
+        Value::Object(object)
+    }
+
     /// Whether the filter keeps every node and link.
     pub fn is_empty(&self) -> bool {
         *self == GraphFilter::default()

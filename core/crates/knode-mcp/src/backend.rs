@@ -36,6 +36,7 @@ impl From<knode_format::Error> for BackendError {
             | knode_format::Error::CannotUndo { .. }
             | knode_format::Error::AlreadyUndone { .. }
             | knode_format::Error::UndoConflict { .. }
+            | knode_format::Error::LinkKindInUse { .. }
             | knode_format::Error::PersonOnly(_) => BackendError::Invalid(error.to_string()),
             other => BackendError::Failed(other.to_string()),
         }
