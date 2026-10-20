@@ -4,16 +4,6 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
-$(SRCROOT)/../core/crates/knode-embed/Cargo.toml
-$(SRCROOT)/../core/crates/knode-embed/src/chunk.rs
-$(SRCROOT)/../core/crates/knode-embed/src/download.rs
-$(SRCROOT)/../core/crates/knode-embed/src/embedder.rs
-$(SRCROOT)/../core/crates/knode-embed/src/error.rs
-$(SRCROOT)/../core/crates/knode-embed/src/indexer.rs
-$(SRCROOT)/../core/crates/knode-embed/src/lib.rs
-$(SRCROOT)/../core/crates/knode-embed/src/model.rs
-$(SRCROOT)/../core/crates/knode-embed/src/rrf.rs
-$(SRCROOT)/../core/crates/knode-embed/src/test_support.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
