@@ -58,6 +58,7 @@
 		4F2DE482BCFD6C69FE6D41CA /* AgentDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F1C8DEC816C516EA7B8D52 /* AgentDirectory.swift */; };
 		51119B5A2FE748B40390C313 /* CommandLineToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */; };
 		52C83BEE63748375376D6AD6 /* SpacesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */; };
+		539B0400BF3A317D514C95F7 /* KDivider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84AC3823DEBF902182999629 /* KDivider.swift */; };
 		597F5EE2180ACD2E1831921D /* CanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED6EF144F0296362C21D0881 /* CanvasView.swift */; };
 		60591192F820836A19AE842D /* SpaceLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 357B2C118E178D75931791A7 /* SpaceLibrary.swift */; };
 		612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */; };
@@ -103,6 +104,7 @@
 		CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */; };
 		CC974D315B95BBE0AC44FEA5 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4192875931DFC4D972A9798 /* AgentsView.swift */; };
 		CD473464C026AC496B53A46D /* MapStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE610E1D3B3FAC0ED8BEA05 /* MapStore.swift */; };
+		CD7251C3A8DD18524D202424 /* WindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = D664C5421D5BF047BCEA9564 /* WindowChrome.swift */; };
 		CDDFAEF30BC14651B5BA3610 /* NoteHistoryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4484A4403049FB3FC2AD7F2 /* NoteHistoryModelTests.swift */; };
 		CEFADFD00FD50BC5A7D28D33 /* KnodeBrand in Frameworks */ = {isa = PBXBuildFile; productRef = 5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */; };
 		D3C05D6D4DD91324A42637C9 /* CoreSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */; };
@@ -213,6 +215,7 @@
 		7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStoreTests.swift; sourceTree = "<group>"; };
 		7EED0867AD3E0867D6169FEF /* DesignGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignGallery.swift; sourceTree = "<group>"; };
 		825F495909BF4D04A0580AB2 /* Search.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search.swift; sourceTree = "<group>"; };
+		84AC3823DEBF902182999629 /* KDivider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KDivider.swift; sourceTree = "<group>"; };
 		84B7EDA91000979E88901A77 /* SpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceStore.swift; sourceTree = "<group>"; };
 		89968EB17D184B8B7CE80952 /* KButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KButtons.swift; sourceTree = "<group>"; };
 		8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacesTests.swift; sourceTree = "<group>"; };
@@ -241,6 +244,7 @@
 		D1EAFF9DAC325C9B0B21945F /* Knode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Knode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D1F1C8DEC816C516EA7B8D52 /* AgentDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentDirectory.swift; sourceTree = "<group>"; };
 		D4484A4403049FB3FC2AD7F2 /* NoteHistoryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteHistoryModelTests.swift; sourceTree = "<group>"; };
+		D664C5421D5BF047BCEA9564 /* WindowChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowChrome.swift; sourceTree = "<group>"; };
 		DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolTests.swift; sourceTree = "<group>"; };
 		E67C963230A136E45F1B79A9 /* SpaceFoldersModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFoldersModel.swift; sourceTree = "<group>"; };
@@ -293,6 +297,7 @@
 				7EED0867AD3E0867D6169FEF /* DesignGallery.swift */,
 				89968EB17D184B8B7CE80952 /* KButtons.swift */,
 				3597F19A7C6B7FE6035B1B5D /* KContainers.swift */,
+				84AC3823DEBF902182999629 /* KDivider.swift */,
 				BD70D1C4573D175A9D3C5111 /* KFloating.swift */,
 				A28D94F7C875354C8F9F80AA /* KFont.swift */,
 				562BB2A308ED6147D0E1008D /* KIcon.swift */,
@@ -335,6 +340,7 @@
 				919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */,
 				16065546A150F910F6A236AD /* SpacePanels.swift */,
 				70CA6018A73437BB26BFF198 /* SpaceSheets.swift */,
+				D664C5421D5BF047BCEA9564 /* WindowChrome.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -797,6 +803,7 @@
 				C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */,
 				F764D3827D9C1E91A25FC033 /* KButtons.swift in Sources */,
 				ABA9C976B59B29A36FAC3FFF /* KContainers.swift in Sources */,
+				539B0400BF3A317D514C95F7 /* KDivider.swift in Sources */,
 				3008E96DA4F7E745ECEB73C6 /* KFloating.swift in Sources */,
 				C4BD00300F4AD398D9C0A87D /* KFont.swift in Sources */,
 				3149E4F8D6C681FDBF76C971 /* KIcon.swift in Sources */,
@@ -843,6 +850,7 @@
 				988B886901C3336334E15D89 /* SpaceSheets.swift in Sources */,
 				A34ACCD86824EE6E0D1581A5 /* SpaceStore.swift in Sources */,
 				38DB2D0CD47FF33720E2533E /* TextDiff.swift in Sources */,
+				CD7251C3A8DD18524D202424 /* WindowChrome.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
