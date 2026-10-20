@@ -9,6 +9,14 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[features]
+default = ["semantic"]
+# Search by meaning: Knode Service downloads a small embedding model once, indexes the open
+# spaces in the background and answers `search` with words and meaning together. Without it,
+# `search` is by words only. knode-embed does not build on aarch64 Linux yet (knodemd/knode#108),
+# so there this feature does nothing and Knode searches by words.
+semantic = ["dep:knode-embed"]
+
 [dependencies]
 knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
@@ -23,8 +31,14 @@ tokio = { version = "=1.53.3", features = ["io-util", "macros", "net", "rt-multi
 ulid = "=3.0.0"
 unicode-normalization = "=0.1.26"
 
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dependencies]
+knode-embed = { path = "../knode-embed", version = "=0.0.0", optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
+knode-embed = { path = "../knode-embed", version = "=0.0.0", features = ["test-support"] }

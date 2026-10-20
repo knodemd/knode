@@ -1852,6 +1852,7 @@ name = "knode-service"
 version = "0.0.0"
 dependencies = [
  "knode-config",
+ "knode-embed",
  "knode-format",
  "knode-ingest",
  "knode-vault",

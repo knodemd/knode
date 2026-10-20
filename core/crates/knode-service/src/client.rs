@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use knode_format::{
     ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit,
+    NodeUpdate, Provenance, SearchHit, SearchMode,
 };
 use knode_vault::{ExportReport, ImportReport};
 use serde::Serialize;
@@ -26,6 +26,7 @@ use crate::agents::{
 };
 use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
+use crate::search::{IndexRunParams, IndexStatus, SearchResults};
 use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
 use crate::{Error, Result, paths};
 
@@ -436,8 +437,41 @@ impl Client {
             space: space_path(space.as_ref())?,
             query: query.to_string(),
             limit,
+            mode: None,
         };
         self.request(methods::SEARCH, params)
+    }
+
+    /// Searches by words, by meaning or both ([`SearchMode::Hybrid`]), best first. The results
+    /// say which mode ran: words, with a note saying why, when meaning cannot be used yet.
+    pub fn search_with_mode(
+        &self,
+        space: impl AsRef<Path>,
+        query: &str,
+        mode: SearchMode,
+        limit: usize,
+    ) -> Result<SearchResults> {
+        let params = SearchParams {
+            space: space_path(space.as_ref())?,
+            query: query.to_string(),
+            limit,
+            mode: Some(mode),
+        };
+        self.request(methods::SEARCH, params)
+    }
+
+    /// How far the open spaces are indexed for search by meaning, and the model. People only.
+    pub fn index_status(&self) -> Result<IndexStatus> {
+        self.request(methods::INDEX_STATUS, json!({}))
+    }
+
+    /// Indexes every open space for search by meaning now, even on battery, opening `space`
+    /// first when given, and returns where the index is. People only.
+    pub fn index_run(&self, space: Option<&Path>) -> Result<IndexStatus> {
+        let params = IndexRunParams {
+            space: space.map(space_path).transpose()?,
+        };
+        self.request(methods::INDEX_RUN, params)
     }
 
     /// The nodes changed most recently, newest first.

@@ -5,10 +5,11 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use knode_format::{ChangeId, NodeId, NodeUpdate, Provenance, Space};
+use knode_format::{ChangeId, NodeId, NodeUpdate, Provenance, SearchMode, Space};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::search::IndexStatus;
 use crate::spaces::{FolderInput, SpaceEvent};
 
 /// The method names.
@@ -49,8 +50,12 @@ pub mod methods {
     pub const LINKS_BACK: &str = "links.back";
     /// The `[[links]]` of a node that name no node yet.
     pub const LINKS_UNRESOLVED: &str = "links.unresolved";
-    /// Full-text search.
+    /// Search by words, by meaning or both.
     pub const SEARCH: &str = "search";
+    /// How far the open spaces are indexed for search by meaning. People only.
+    pub const INDEX_STATUS: &str = "index.status";
+    /// Indexes the open spaces for search by meaning now. People only.
+    pub const INDEX_RUN: &str = "index.run";
     /// The nodes changed most recently.
     pub const RECENT: &str = "recent";
     /// Every version of a node.
@@ -311,6 +316,9 @@ pub struct Status {
     /// The default space while capture runs, where conversations of no folder go, or `None`.
     #[serde(default)]
     pub capture: Option<PathBuf>,
+    /// Search by meaning: the model and how far each open space is indexed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<IndexStatus>,
 }
 
 // Params of each method, shared by the client and the server.
@@ -492,6 +500,8 @@ pub(crate) struct SearchParams {
     pub query: String,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SearchMode>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

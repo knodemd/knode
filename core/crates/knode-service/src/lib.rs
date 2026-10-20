@@ -10,6 +10,8 @@
 //!   [`Config::from_env`] it also captures agent conversations into the spaces whose folders
 //!   they belong to, or the default space (see [`CaptureOptions`]).
 //! - [`spaces`] holds the rules for the name, settings and folders of a space.
+//! - [`search`] searches by words, by meaning or both, and indexes the open spaces in the
+//!   background for search by meaning (the `semantic` feature, on by default).
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
@@ -35,12 +37,15 @@ mod auth;
 mod capture;
 mod client;
 mod error;
+#[cfg(semantic)]
+mod index;
 mod install;
 pub mod keys;
 mod lock;
 pub mod markdown;
 mod paths;
 pub mod protocol;
+pub mod search;
 mod server;
 pub mod spaces;
 
@@ -59,6 +64,7 @@ pub use install::{
 pub use knode_ingest::{Agent, WatchOptions};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
 pub use protocol::{Change, ChangeKind, Event, MarkdownFolder, RpcError, SpaceInfo, Status};
+pub use search::{IndexOptions, IndexStatus, ModelState, ModelStatus, SearchResults, SpaceIndex};
 pub use server::{Config, ServiceHandle, run, start};
 pub use spaces::{FolderInfo, FolderInput, SpaceEvent, SpaceEventKind};
 
