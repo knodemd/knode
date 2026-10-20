@@ -1,0 +1,34 @@
+[package]
+name = "knode-embed"
+description = "Local semantic search for Knode: a small embedding model, Markdown chunking and hybrid ranking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = ["download"]
+# Download models on first use (adds an HTTPS client).
+download = ["dep:ureq"]
+# Run the model on the GPU with Metal on Apple platforms.
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# Use Apple Accelerate for matrix maths on the CPU.
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+
+[dependencies]
+candle-core = "=0.11.0"
+candle-nn = "=0.11.0"
+candle-transformers = "=0.11.0"
+knode-config = { path = "../knode-config" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.11.0"
+thiserror = "=2.0.21"
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
