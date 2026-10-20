@@ -21,13 +21,39 @@ const AIDER_SKIPPED: [&str; 4] = ["node_modules", "target", "Library", "vendor"]
 /// The environment variable that names the folder to search for Aider history files.
 pub const AIDER_ROOT_VARIABLE: &str = "KNODE_AIDER_ROOT";
 
+/// The environment variable that names Cursor's `User/globalStorage` folder, the one holding
+/// `state.vscdb`, instead of the default.
+pub const CURSOR_ROOT_VARIABLE: &str = "KNODE_CURSOR_ROOT";
+
+/// The environment variable that names Windsurf's `User/workspaceStorage` folder instead of the
+/// default.
+pub const WINDSURF_ROOT_VARIABLE: &str = "KNODE_WINDSURF_ROOT";
+
+/// The environment variable that names the folder holding Cline's task folders instead of the
+/// defaults.
+pub const CLINE_ROOT_VARIABLE: &str = "KNODE_CLINE_ROOT";
+
+/// The environment variable that names the folder holding Roo Code's task folders instead of
+/// the defaults.
+pub const ROO_CODE_ROOT_VARIABLE: &str = "KNODE_ROO_CODE_ROOT";
+
+/// The editors Cline and Roo Code are looked for in, by the name of their data folder.
+const VS_CODE_EDITORS: [&str; 5] = ["Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf"];
+
+/// The `globalStorage` folder of the Cline extension.
+const CLINE_EXTENSION: &str = "saoudrizwan.claude-dev";
+
+/// The `globalStorage` folder of the Roo Code extension.
+const ROO_CODE_EXTENSION: &str = "rooveterinaryinc.roo-cline";
+
 /// A session an agent wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFile {
     /// The agent that wrote it.
     pub agent: Agent,
-    /// Where it is. An OpenCode session, which lives in a database with the others, has a path
-    /// of its own: `<folder>/opencode.db#<session id>`.
+    /// Where it is. A session that lives in a database with others has a path of its own:
+    /// `<folder>/opencode.db#<session id>` for OpenCode, `<folder>/state.vscdb#<id>` for Cursor
+    /// and Windsurf.
     pub path: PathBuf,
     /// The session id taken from the file name. For Codex, Gemini CLI, Copilot CLI and Amp, the
     /// id inside the file wins; an Aider history file holds one session per run, each with its
@@ -35,7 +61,8 @@ pub struct SessionFile {
     pub session_id: String,
     /// What has to change for the session to be read again: its size in bytes for sessions read
     /// a line at a time, and a version that changes with every write for sessions read whole
-    /// (Gemini CLI `.json` files, Amp threads and OpenCode sessions).
+    /// (Gemini CLI `.json` files, Amp threads, OpenCode sessions, Cursor and Windsurf
+    /// conversations, and Cline and Roo Code tasks).
     pub len: u64,
     /// When it was last written, if known.
     pub modified: Option<SystemTime>,
@@ -52,10 +79,77 @@ pub struct SessionFile {
 /// - Amp: `XDG_DATA_HOME` or `~/.local/share`, then `amp/threads`;
 /// - Aider, which keeps its history in each project rather than in one folder: the folder named
 ///   by `KNODE_AIDER_ROOT` ([`AIDER_ROOT_VARIABLE`]), searched up to four levels down; `None`
-///   when it is not set.
+///   when it is not set;
+/// - Cursor: `KNODE_CURSOR_ROOT` ([`CURSOR_ROOT_VARIABLE`]), or Cursor's data folder, then
+///   `User/globalStorage`;
+/// - Windsurf: `KNODE_WINDSURF_ROOT` ([`WINDSURF_ROOT_VARIABLE`]), or Windsurf's data folder,
+///   then `User/workspaceStorage`;
+/// - Cline and Roo Code, which can run in several editors: see [`default_roots`]; this is the
+///   first of those folders that exists, or the first one.
 ///
-/// The same folders are used on macOS and Linux.
+/// The data folder of an editor is `~/Library/Application Support/<editor>` on macOS and
+/// `XDG_CONFIG_HOME` or `~/.config`, then `<editor>`, elsewhere. The other folders are the same
+/// on macOS and Linux.
 pub fn default_root(agent: Agent) -> Option<PathBuf> {
+    let roots = default_roots(agent);
+    roots
+        .iter()
+        .find(|root| root.is_dir())
+        .or(roots.first())
+        .cloned()
+}
+
+/// Every folder an agent may keep its sessions in: one for most agents (see [`default_root`]),
+/// and for Cline and Roo Code the task folder of the extension in each editor it may be
+/// installed in (VS Code, VS Code Insiders, VSCodium, Cursor and Windsurf), such as
+/// `<editor data folder>/User/globalStorage/saoudrizwan.claude-dev/tasks`, unless
+/// `KNODE_CLINE_ROOT` ([`CLINE_ROOT_VARIABLE`]) or `KNODE_ROO_CODE_ROOT`
+/// ([`ROO_CODE_ROOT_VARIABLE`]) names one folder instead. Folders that do not exist are listed
+/// too: they are watched for once they appear.
+pub fn default_roots(agent: Agent) -> Vec<PathBuf> {
+    let extension = match agent {
+        Agent::Cline => Some((CLINE_ROOT_VARIABLE, CLINE_EXTENSION)),
+        Agent::RooCode => Some((ROO_CODE_ROOT_VARIABLE, ROO_CODE_EXTENSION)),
+        _ => None,
+    };
+    if let Some((variable, extension)) = extension {
+        if let Some(root) = env_dir(variable) {
+            return vec![root];
+        }
+        return VS_CODE_EDITORS
+            .iter()
+            .filter_map(|editor| {
+                Some(
+                    editor_dir(editor)?
+                        .join("User")
+                        .join("globalStorage")
+                        .join(extension)
+                        .join("tasks"),
+                )
+            })
+            .collect();
+    }
+    single_root(agent).into_iter().collect()
+}
+
+/// The data folder of an editor built on VS Code.
+fn editor_dir(editor: &str) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        Some(
+            home()?
+                .join("Library")
+                .join("Application Support")
+                .join(editor),
+        )
+    } else {
+        let config = env_dir("XDG_CONFIG_HOME")
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| Some(home()?.join(".config")))?;
+        Some(config.join(editor))
+    }
+}
+
+fn single_root(agent: Agent) -> Option<PathBuf> {
     let root = match agent {
         Agent::ClaudeCode => env_dir("CLAUDE_CONFIG_DIR")
             .or_else(|| Some(home()?.join(".claude")))?
@@ -73,6 +167,16 @@ pub fn default_root(agent: Agent) -> Option<PathBuf> {
         Agent::OpenCode => data_home()?.join("opencode"),
         Agent::Amp => data_home()?.join("amp").join("threads"),
         Agent::Aider => env_dir(AIDER_ROOT_VARIABLE)?,
+        Agent::Cursor => env_dir(CURSOR_ROOT_VARIABLE)
+            .or_else(|| Some(editor_dir("Cursor")?.join("User").join("globalStorage")))?,
+        Agent::Windsurf => env_dir(WINDSURF_ROOT_VARIABLE).or_else(|| {
+            Some(
+                editor_dir("Windsurf")?
+                    .join("User")
+                    .join("workspaceStorage"),
+            )
+        })?,
+        _ => return None,
     };
     Some(root)
 }
@@ -99,14 +203,19 @@ fn data_home() -> Option<PathBuf> {
 ///
 /// For Claude Code only the main transcripts are listed (`<root>/<project>/<session>.jsonl`);
 /// subagent transcripts in `<session>/subagents/` are left out, as are Gemini CLI subagent
-/// sessions and OpenCode child sessions.
+/// sessions, OpenCode child sessions and Cursor subagents. Cursor and Windsurf conversations
+/// with no turns are left out too.
 pub fn discover(agent: Agent, root: &Path) -> io::Result<Vec<SessionFile>> {
-    let mut files = Vec::new();
-    if agent == Agent::OpenCode {
-        files = crate::opencode::list(root)?;
-    } else {
-        walk(agent, root, root, max_depth(agent), &mut files)?;
-    }
+    let mut files = match agent {
+        Agent::OpenCode => crate::opencode::list(root)?,
+        Agent::Cursor => crate::cursor::list(root)?,
+        Agent::Windsurf => crate::windsurf::list(root)?,
+        _ => {
+            let mut files = Vec::new();
+            walk(agent, root, root, max_depth(agent), &mut files)?;
+            files
+        }
+    };
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
 }
@@ -115,7 +224,7 @@ pub fn discover(agent: Agent, root: &Path) -> io::Result<Vec<SessionFile>> {
 pub fn discover_all() -> io::Result<Vec<SessionFile>> {
     let mut files = Vec::new();
     for agent in Agent::ALL {
-        if let Some(root) = default_root(agent) {
+        for root in default_roots(agent) {
             files.extend(discover(agent, &root)?);
         }
     }
@@ -136,19 +245,30 @@ pub(crate) fn session_file(agent: Agent, root: &Path, path: &Path) -> Option<Ses
 }
 
 /// The sessions to read again after `path` changed under `root`: the session file itself, or
-/// for OpenCode, every session when the database changed.
+/// for a database, every session in it when it changed (each is then read only if its version
+/// moved).
 pub(crate) fn changed_sessions(
     agent: Agent,
     root: &Path,
     path: &Path,
 ) -> io::Result<Vec<SessionFile>> {
-    if agent == Agent::OpenCode {
-        let in_root = path.parent() == Some(root);
-        return if in_root && crate::opencode::is_database_file(path) {
-            crate::opencode::list(root)
-        } else {
-            Ok(Vec::new())
-        };
+    let in_root = path.parent() == Some(root);
+    match agent {
+        Agent::OpenCode if in_root && crate::opencode::is_database_file(path) => {
+            return crate::opencode::list(root);
+        }
+        Agent::Cursor if in_root && crate::vscdb::is_database_file(path) => {
+            return crate::cursor::list(root);
+        }
+        Agent::Windsurf if crate::vscdb::is_database_file(path) => {
+            let workspace = path.parent().filter(|dir| dir.parent() == Some(root));
+            return match workspace {
+                Some(dir) => crate::windsurf::list_workspace(dir),
+                None => Ok(Vec::new()),
+            };
+        }
+        Agent::OpenCode | Agent::Cursor | Agent::Windsurf => return Ok(Vec::new()),
+        _ => {}
     }
     Ok(session_file(agent, root, path).into_iter().collect())
 }
@@ -156,7 +276,7 @@ pub(crate) fn changed_sessions(
 /// How many folders down from the root session files are.
 fn max_depth(agent: Agent) -> usize {
     match agent {
-        Agent::ClaudeCode | Agent::CopilotCli => 2,
+        Agent::ClaudeCode | Agent::CopilotCli | Agent::Cline | Agent::RooCode => 2,
         Agent::Codex => CODEX_DEPTH,
         Agent::GeminiCli => 3,
         Agent::Aider => AIDER_DEPTH,
@@ -187,6 +307,7 @@ fn shaped(agent: Agent, relative: &Path) -> bool {
         Agent::CopilotCli => depth == 2 && name == "events.jsonl",
         Agent::Amp => depth == 1 && extension == Some("json"),
         Agent::Aider => (1..=AIDER_DEPTH).contains(&depth) && name == crate::aider::HISTORY_FILE,
+        Agent::Cline | Agent::RooCode => depth == 2 && name == crate::cline::UI_MESSAGES,
         _ => false,
     }
 }
@@ -194,7 +315,12 @@ fn shaped(agent: Agent, relative: &Path) -> bool {
 /// Whether the session is read whole each time it changes, rather than a line at a time.
 pub(crate) fn read_whole(agent: Agent, path: &Path) -> bool {
     match agent {
-        Agent::Amp | Agent::OpenCode => true,
+        Agent::Amp
+        | Agent::OpenCode
+        | Agent::Cursor
+        | Agent::Windsurf
+        | Agent::Cline
+        | Agent::RooCode => true,
         Agent::GeminiCli => path.extension() == Some(OsStr::new("json")),
         _ => false,
     }
@@ -267,7 +393,7 @@ fn push_if_session(agent: Agent, path: PathBuf, files: &mut Vec<SessionFile>) {
         .unwrap_or_default();
     let session_id = match agent {
         Agent::Codex => trailing_uuid(&stem).unwrap_or(&stem).to_string(),
-        Agent::CopilotCli => path
+        Agent::CopilotCli | Agent::Cline | Agent::RooCode => path
             .parent()
             .and_then(Path::file_name)
             .map(|dir| dir.to_string_lossy().into_owned())

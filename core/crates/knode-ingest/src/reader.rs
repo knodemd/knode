@@ -71,7 +71,8 @@ pub struct Progress {
 /// Sessions that only grow (Claude Code, Codex, Copilot CLI and Gemini CLI `.jsonl` files, Aider
 /// history files) are read a line at a time; a last line still being written is left for the
 /// next poll. Sessions that are rewritten (Gemini CLI `.json` files, Amp threads, OpenCode
-/// sessions) are read whole again whenever they change.
+/// sessions, Cursor and Windsurf conversations, Cline and Roo Code tasks) are read whole again
+/// whenever they change.
 ///
 /// An Aider history file holds one session per run of Aider: the reader follows the newest, and
 /// hands over the ones that ended with [`SessionReader::take_finished`].
@@ -136,7 +137,7 @@ impl SessionReader {
     /// except an unfinished last line, which is read again next time.
     pub fn poll(&mut self) -> Result<Progress, Error> {
         let agent = self.conversation.agent;
-        if agent == Agent::OpenCode {
+        if matches!(agent, Agent::OpenCode | Agent::Cursor | Agent::Windsurf) {
             return self.poll_database();
         }
         if read_whole(agent, &self.path) {
@@ -179,26 +180,45 @@ impl SessionReader {
                 conversation.project = crate::gemini::project_root(&self.path);
             }
             Agent::Amp => crate::amp::apply_document(&mut conversation, &document),
+            Agent::Cline | Agent::RooCode => crate::cline::apply_document(
+                &mut conversation,
+                &document,
+                &self.path,
+                self.conversation.project.clone(),
+            ),
             _ => {}
         }
         conversation.forget_records();
         Ok(self.replace(conversation, version))
     }
 
-    /// Reads an OpenCode session from its database, whole, if it changed.
+    /// Reads a session kept in a database (OpenCode, Cursor, Windsurf), whole, if it changed.
     fn poll_database(&mut self) -> Result<Progress, Error> {
-        let Some(version) = crate::opencode::version(&self.path)? else {
+        let agent = self.conversation.agent;
+        let version = match agent {
+            Agent::Cursor => crate::cursor::version(&self.path)?,
+            Agent::Windsurf => crate::windsurf::version(&self.path)?,
+            _ => crate::opencode::version(&self.path)?,
+        };
+        let Some(version) = version else {
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::NotFound,
-                "the OpenCode session was deleted",
+                format!("the {agent} session was deleted"),
             )));
         };
         if version == self.offset && self.offset != 0 {
             return Ok(self.unchanged());
         }
-        let mut conversation =
-            Conversation::new(Agent::OpenCode, self.conversation.session_id.clone());
-        crate::opencode::read(&self.path, &mut conversation)?;
+        let mut conversation = Conversation::new(agent, self.conversation.session_id.clone());
+        // What is read is the version read, even if the database moved on in between.
+        let version = match agent {
+            Agent::Cursor => crate::cursor::read(&self.path, &mut conversation)?,
+            Agent::Windsurf => crate::windsurf::read(&self.path, &mut conversation)?,
+            _ => {
+                crate::opencode::read(&self.path, &mut conversation)?;
+                version
+            }
+        };
         Ok(self.replace(conversation, version))
     }
 
