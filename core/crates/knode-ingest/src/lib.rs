@@ -52,7 +52,7 @@ mod watch;
 mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
-pub use capture::{Capture, CaptureError, CaptureReport, Captured};
+pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,
     SessionFile, WINDSURF_ROOT_VARIABLE, default_root, default_roots, discover, discover_all,

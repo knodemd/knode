@@ -512,3 +512,143 @@ fn the_watcher_follows_a_session_live() {
         .body;
     assert!(body.contains("Live question."));
 }
+
+/// Routes conversations by project between two spaces; projects in `nowhere` go to no space.
+struct Router {
+    spaces: Vec<(String, Mutex<Space>)>,
+    /// Project prefix, and the index of its space or `None` for no space.
+    routes: Mutex<Vec<(String, Option<usize>)>>,
+}
+
+impl Router {
+    fn key(&self, index: usize) -> String {
+        self.spaces[index].0.clone()
+    }
+}
+
+impl knode_ingest::Destinations for Router {
+    fn routing(&self) -> String {
+        format!("{:?}", self.routes.lock().unwrap())
+    }
+
+    fn route(&self, conversation: &knode_ingest::Conversation, _: &Path) -> Vec<String> {
+        let project = conversation
+            .project
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let routes = self.routes.lock().unwrap();
+        match routes
+            .iter()
+            .find(|(prefix, _)| project.starts_with(prefix))
+        {
+            Some((_, Some(index))) => vec![self.key(*index)],
+            Some((_, None)) => Vec::new(),
+            None => vec![self.key(0)],
+        }
+    }
+
+    fn with_space(
+        &self,
+        key: &str,
+        write: &mut dyn FnMut(&mut Space) -> Result<(), knode_ingest::CaptureError>,
+    ) -> Result<(), knode_ingest::CaptureError> {
+        let (_, space) = self.spaces.iter().find(|(k, _)| k == key).unwrap();
+        write(&mut space.lock().unwrap())
+    }
+}
+
+#[test]
+fn routes_each_conversation_to_its_spaces() {
+    let home = Home::new();
+    let work = Space::create(home.dir.path().join("Work.knode"), "Work").unwrap();
+    let personal = Space::create(home.dir.path().join("Personal.knode"), "Personal").unwrap();
+    let router = Router {
+        spaces: vec![
+            (personal.manifest().id.clone(), Mutex::new(personal)),
+            (work.manifest().id.clone(), Mutex::new(work)),
+        ],
+        routes: Mutex::new(vec![
+            ("/Users/example/work".into(), Some(1)),
+            (PRIVATE.into(), None),
+        ]),
+    };
+    start_session(&home, "/Users/example/work/app", SESSION);
+    start_session(&home, PROJECT, "6e6e6e6e-1111-4222-8333-444455556666");
+    let private = start_session(&home, PRIVATE, "7e7e7e7e-1111-4222-8333-444455556666");
+
+    let mut capture = home.capture();
+    let report = capture.sync_all_to(&router).unwrap();
+    assert_eq!(report.created().count(), 2, "{report:?}");
+    assert_eq!(report.filtered, 1);
+    let in_space = |index: usize| conversations(&router.spaces[index].1.lock().unwrap()).len();
+    assert_eq!((in_space(0), in_space(1)), (1, 1));
+    let work_change = report
+        .changes
+        .iter()
+        .find(|c| c.session_id == SESSION)
+        .unwrap();
+    assert_eq!(work_change.space, router.key(1));
+    // Nothing of the conversation that goes nowhere is kept, not even in the state.
+    let state = fs::read_to_string(home.state()).unwrap();
+    assert_eq!(state.matches("How do we store the index?").count(), 2);
+
+    // Nothing new: nothing is written.
+    let again = capture.sync_all_to(&router).unwrap();
+    assert!(again.changes.is_empty(), "{again:?}");
+
+    // The private project now goes to the work space: it is read again and written there.
+    router.routes.lock().unwrap()[1].1 = Some(1);
+    let report = capture.sync_all_to(&router).unwrap();
+    assert_eq!(report.created().count(), 1, "{report:?}");
+    assert_eq!(report.changes[0].space, router.key(1));
+    assert_eq!((in_space(0), in_space(1)), (1, 2));
+
+    // Turned off again: the session grows, but nothing more is written anywhere.
+    router.routes.lock().unwrap()[1].1 = None;
+    append(
+        &private,
+        &record(
+            PRIVATE,
+            "7e7e7e7e-1111-4222-8333-444455556666",
+            "user",
+            2,
+            "Secret.",
+        ),
+    );
+    let report = capture.sync_all_to(&router).unwrap();
+    assert!(report.changes.is_empty(), "{report:?}");
+    let state = fs::read_to_string(home.state()).unwrap();
+    assert!(!state.contains("Secret."));
+    assert_eq!((in_space(0), in_space(1)), (1, 2));
+}
+
+#[test]
+fn reads_the_state_of_the_previous_version() {
+    let mut home = Home::new();
+    let path = start_session(&home, PROJECT, SESSION);
+    let mut capture = home.capture();
+    let node_id = only_change(&capture.sync_all(&mut home.space).unwrap()).node_id;
+    drop(capture);
+
+    // The same state as version 1 wrote it: one node per file, for one space.
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.state()).unwrap()).unwrap();
+    state["version"] = json!(1);
+    state["space"] = json!(home.space.manifest().id);
+    for file in state["files"].as_object_mut().unwrap().values_mut() {
+        let nodes = file.as_object_mut().unwrap().remove("nodes").unwrap();
+        file["node"] = nodes.as_object().unwrap().values().next().unwrap().clone();
+    }
+    fs::write(home.state(), state.to_string()).unwrap();
+
+    // The person deleted the conversation: it stays deleted after the upgrade.
+    home.space
+        .delete_node(&node_id, &knode_format::Provenance::person("tester"))
+        .unwrap();
+    append(&path, &record(PROJECT, SESSION, "user", 2, "More."));
+    let mut capture = home.capture();
+    let report = capture.sync_all(&mut home.space).unwrap();
+    assert!(report.changes.is_empty(), "{report:?}");
+    assert_eq!(report.deleted, 1);
+}

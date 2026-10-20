@@ -27,6 +27,15 @@ impl Space {
             .optional()?)
     }
 
+    /// Every setting of the space, by key, `space.id` included.
+    pub fn settings(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Sets a setting of the space, or removes it with `None`, and records the change. Returns
     /// whether anything changed. `space.id` never changes. Only a person can change settings.
     pub fn set_setting(&mut self, key: &str, value: Option<&str>, by: &Provenance) -> Result<bool> {
