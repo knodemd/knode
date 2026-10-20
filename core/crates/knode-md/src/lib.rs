@@ -325,7 +325,10 @@ mod tests {
     fn blocks_are_the_lines_of_the_plain_text_with_headings() {
         let md = "Intro\n\n# Plan\n\n> ## Quoted *head*\n\nText\nwraps\n\n#\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n###### Six\n";
         let blocks = blocks(md);
-        let lines: Vec<_> = blocks.iter().map(|b| (b.text.as_str(), b.heading)).collect();
+        let lines: Vec<_> = blocks
+            .iter()
+            .map(|b| (b.text.as_str(), b.heading))
+            .collect();
         assert_eq!(
             lines,
             [

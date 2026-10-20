@@ -90,6 +90,10 @@ pub enum Error {
         /// How many links have it.
         links: u64,
     },
+    /// Search by meaning cannot run here: sqlite-vec is not loaded, or the space has no
+    /// embedding model in use (schema version 4, spec section 19).
+    #[error("search by meaning is not available: {0}")]
+    VectorSearchUnavailable(String),
     /// Only a person may do this, never an agent.
     #[error("only a person can {0}")]
     PersonOnly(String),
