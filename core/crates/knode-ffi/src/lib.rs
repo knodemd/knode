@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use knode_format as format;
 use knode_format::NodeId;
 
+mod attachments;
 mod maps;
 mod spaces;
 
+pub use attachments::*;
 pub use maps::*;
 pub use spaces::*;
 
