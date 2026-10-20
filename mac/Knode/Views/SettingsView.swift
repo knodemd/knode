@@ -52,7 +52,7 @@ private struct SettingsWindow: View {
                 Spacer()
             }
             .padding(.top, 8)
-            .frame(height: SettingsWindowChrome.barHeight)
+            .frame(height: WindowChrome.barHeight)
             .background(theme.bg)
             KHairline()
             Group {
@@ -69,7 +69,7 @@ private struct SettingsWindow: View {
         .kOverlayHost(overlays)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar(removing: .title)
-        .background(SettingsWindowChrome())
+        .background(WindowChrome())
         .ignoresSafeArea(.container, edges: .top)
         .frame(width: 680, height: 620)
     }
@@ -167,71 +167,6 @@ struct ServiceStatusChip: View {
         case .checking: KChip("Checking")
         case .stopped: KChip("Stopped")
         case .running: KChip("Running", icon: .done, kind: .accent)
-        }
-    }
-}
-
-/// The settings window without the system title bar: the content runs under it, the window takes
-/// the background colour, and the traffic lights sit centred in our 52 pt bar of tabs.
-struct SettingsWindowChrome: NSViewRepresentable {
-    static let barHeight: CGFloat = 52
-
-    func makeNSView(context: Context) -> SettingsWindowChromeView { SettingsWindowChromeView() }
-    func updateNSView(_ view: SettingsWindowChromeView, context: Context) { view.placeButtons() }
-}
-
-final class SettingsWindowChromeView: NSView {
-    private var observers: [NSObjectProtocol] = []
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
-        observers = []
-        guard let window else { return }
-        configure(window)
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window = self.window else { return }
-            self.configure(window)
-            self.placeButtons()
-        }
-        for name in [NSWindow.didResizeNotification, NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.placeButtons() }
-            })
-        }
-        placeButtons()
-    }
-
-    override func layout() {
-        super.layout()
-        placeButtons()
-    }
-
-    private func configure(_ window: NSWindow) {
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
-        window.titlebarSeparatorStyle = .none
-        window.backgroundColor = KColor.ns(\.bg)
-    }
-
-    /// Makes the title bar area as tall as the bar of tabs and centres the traffic lights in it.
-    func placeButtons() {
-        guard let window, let close = window.standardWindowButton(.closeButton),
-              let titlebar = close.superview, let container = titlebar.superview else { return }
-        let height = SettingsWindowChrome.barHeight
-        if container.frame.height != height {
-            var frame = container.frame
-            frame.origin.y += frame.height - height
-            frame.size.height = height
-            container.frame = frame
-            titlebar.frame = container.bounds
-        }
-        var x: CGFloat = 20
-        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            guard let button = window.standardWindowButton(type) else { continue }
-            button.setFrameOrigin(NSPoint(x: x, y: ((height - button.frame.height) / 2).rounded()))
-            x += button.frame.width + 6
         }
     }
 }
