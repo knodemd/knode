@@ -36,6 +36,27 @@ by side, and offers:
 
 Unsaved edits are saved before a restore or an undo.
 
+**Undo Last Change to Note** (Option-Command-Z, in the Edit menu) undoes the newest edit or restore
+of the open note made by the person using the app, through the history, even one made before the
+note was opened. **Redo Last Change to Note** (Shift-Option-Command-Z) undoes that undo, until the
+person edits the note again. Changes made by agents are never picked; they are undone from the
+history panel. When someone else changed the note after the picked change, the app asks first; the
+person's own undone edits and undos in between do not count. Command-Z and Shift-Command-Z stay
+the text's own undo and redo while typing.
+
+## Agents and access
+
+**Settings > Agents** lists the agents of this machine: their kind, when they were added and
+whether their key is active (by fingerprint; keys stay in the Keychain). For each space it sets
+**No Access**, **Read** or **Read and Write**, and **Revoke** stops every key of an agent and takes
+away its access everywhere. **Agent Access** in the Space menu, and in a space's context menu,
+does the same for one space. **Connect an Agent** runs `knode connect <agent>`, or first only shows
+what it would do, and shows what the command printed.
+
+All of it goes through Knode Service, as the person (`agents.list`, `grants.set`,
+`agents.revoke`); when the service is not running, the screen offers to start it. Grants are not a
+sandbox, and the screen says so.
+
 The app talks to a space through the `SpaceStore` protocol (`Knode/Store/SpaceStore.swift`):
 
 - `ServiceSpaceStore` talks to Knode Service over its Unix socket
@@ -50,10 +71,10 @@ The app talks to a space through the `SpaceStore` protocol (`Knode/Store/SpaceSt
 
 Every change the app makes is recorded as made by the macOS user.
 
-Knode Service has no methods yet to rename a space, change its settings, restore a version or undo
-a change. For those, `RoutingSpaceStore` opens the space with the core in the app for the call, even
-while the service holds it (SQLite allows both), and the app reloads what it shows. The history
-itself is read through the service when it runs.
+History, the changes of a note, restore and undo go through the service when it runs, and through
+the core when it does not. Knode Service has no methods yet to rename a space or change its
+settings. For those, `RoutingSpaceStore` opens the space with the core in the app for the call, even
+while the service holds it (SQLite allows both), and the app reloads what it shows.
 
 ## Menu bar and the knode command
 
@@ -133,11 +154,11 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | Path | What it holds |
 |---|---|
 | `Knode/Store` | `SpaceStore`, the models, `CoreSpaceStore`, `RoutingSpaceStore`, `PreviewSpaceStore`, the list of spaces (`SpaceLibrary`), the recent spaces and the default space (`KnodeSettings`) |
-| `Knode/Service` | The socket client, `ServiceSpaceStore`, the menu bar status and the `knode` runner |
+| `Knode/Service` | The socket client, `ServiceSpaceStore`, the agents and grants (`AgentDirectory`), the menu bar status and the `knode` runner |
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
-| `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) and `NoteHistoryModel` (its history) |
+| `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change) and `AgentsModel` (agents and their access) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
-| `Knode/Views` | The window, the note editor, the history, the space sheets, the menu bar menu and the open panels |
+| `Knode/Views` | The window, the note editor, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |
 | `project.yml` | The [XcodeGen](https://github.com/yonaskolb/XcodeGen) source of `Knode.xcodeproj` |
