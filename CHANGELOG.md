@@ -72,9 +72,9 @@ belongs to, newest first.
   matter; `knode import` brings a folder back, keeping ids, dates and who wrote each note, and
   reads Obsidian vaults with their links, embeds and tags. Notes from a vault come back unchanged
   except for an added `id:` line.
-- **Live Markdown folder**: `knode markdown folder <dir>` keeps a folder of `.md` files current with every
-  note, for Obsidian, git or anything else. It goes one way for now: edits made in the folder do
-  not come back into the space yet.
+- **Live Markdown folder**: `knode markdown folder <dir>` keeps a folder of `.md` files current
+  with every note, for Obsidian, git or anything else. It goes one way for now: edits made in the
+  folder do not come back into the space yet.
 - **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
   OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
   it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
