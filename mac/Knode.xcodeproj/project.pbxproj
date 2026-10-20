@@ -99,6 +99,7 @@
 		C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */; };
 		C4BD00300F4AD398D9C0A87D /* KFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28D94F7C875354C8F9F80AA /* KFont.swift */; };
 		C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */; };
+		C89E8738DC81BD5F5BD34A90 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 44E4959DD9436CD3C7A1D23F /* AppIcon.icon */; };
 		CA94681234A819BD84980698 /* KnodeHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211628B1070B636AB469C990 /* KnodeHome.swift */; };
 		CA953378C19A1D1063C4BAFA /* MarkdownSourceEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F3A8F99C8B903DAB9D50F49 /* MarkdownSourceEditor.swift */; };
 		CC3323F76FF188FA7656C39E /* ServiceSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86BF2644693551058EF73B0 /* ServiceSpaceStore.swift */; };
@@ -185,6 +186,7 @@
 		3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachingTextView.swift; sourceTree = "<group>"; };
 		430C04EC06D588A51DC31C79 /* KMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMenus.swift; sourceTree = "<group>"; };
 		43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeAppIcons.swift; sourceTree = "<group>"; };
+		44E4959DD9436CD3C7A1D23F /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; name = AppIcon.icon; path = "../brand/07 App Icon/macOS/AppIcon.icon"; sourceTree = "<group>"; };
 		468649EC2EED11EE0AE574E7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesTests.swift; sourceTree = "<group>"; };
 		4907771A6F2739DB3E479FFB /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
@@ -275,6 +277,7 @@
 			isa = PBXGroup;
 			children = (
 				F62D33407D7A83E40E34FE2B /* AppIcon.icns */,
+				44E4959DD9436CD3C7A1D23F /* AppIcon.icon */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -623,6 +626,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */,
+				C89E8738DC81BD5F5BD34A90 /* AppIcon.icon in Resources */,
 				6F9C14E6DD8BF4CC863DEAAB /* Assets.xcassets in Resources */,
 				F8FB0B644C040CD44C4D7C53 /* Geist.ttf in Resources */,
 				0F63CE321465070BF6291AAE /* GeistMono.ttf in Resources */,

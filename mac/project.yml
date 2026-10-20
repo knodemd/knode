@@ -36,12 +36,22 @@ targets:
       - path: "../brand/07 App Icon/macOS/AppIcon.icns"
         buildPhase: resources
         group: Resources
+      # The macOS 26 icon (light, dark and tinted), compiled by Xcode into the asset catalog.
+      - path: "../brand/07 App Icon/macOS/AppIcon.icon"
+        type: file
+        buildPhase: resources
+        group: Resources
     dependencies:
       - package: KnodeBrand
       - target: KnodeCore
       - target: KnodeCLI
     info:
       path: Knode/Info.plist
+      properties:
+        CFBundleIconFile: AppIcon
+        CFBundleIconName: AppIcon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     settings:
       base:
         PRODUCT_NAME: Knode
@@ -53,6 +63,7 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         OTHER_LDFLAGS: "$(inherited) $(KNODE_CORE_SLICE)/libknode_ffi.a"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postBuildScripts:
       - name: Document Icon
         basedOnDependencyAnalysis: true
