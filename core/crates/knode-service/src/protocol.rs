@@ -65,6 +65,16 @@ pub mod methods {
     pub const UNSUBSCRIBE: &str = "unsubscribe";
     /// What the service is doing.
     pub const SERVICE_STATUS: &str = "service.status";
+    /// Authenticates the connection, as the person or as an agent.
+    pub const AUTH: &str = "auth";
+    /// The agents of this machine. People only.
+    pub const AGENTS_LIST: &str = "agents.list";
+    /// Adds an agent, or gives it a new key. People only.
+    pub const AGENTS_ADD: &str = "agents.add";
+    /// Revokes every key of an agent. People only.
+    pub const AGENTS_REVOKE: &str = "agents.revoke";
+    /// Sets what an agent may do in a space. People only.
+    pub const GRANTS_SET: &str = "grants.set";
     /// Notification: a node changed.
     pub const CHANGED: &str = "changed";
     /// Notification: this connection fell behind and missed changes.
@@ -95,6 +105,11 @@ pub mod codes {
     pub const UNSUPPORTED: i64 = -32005;
     /// The files of the space could not be read or written.
     pub const STORAGE: i64 = -32006;
+    /// The connection has not authenticated, or its key is unknown or revoked.
+    pub const UNAUTHENTICATED: i64 = -32010;
+    /// The connection may not make this call: an agent writing where it may only read, or
+    /// doing what only a person can.
+    pub const FORBIDDEN: i64 = -32011;
     /// The change cannot be undone: its kind of change is not undone, or the versions it
     /// needs were purged.
     pub const CANNOT_UNDO: i64 = -32020;
@@ -102,8 +117,6 @@ pub mod codes {
     pub const ALREADY_UNDONE: i64 = -32021;
     /// Undoing the change would overwrite later changes; `data.later` lists them.
     pub const UNDO_CONFLICT: i64 = -32022;
-    /// Only a person can do this.
-    pub const PERSON_ONLY: i64 = -32023;
     /// A folder of Markdown files could not be read or written.
     pub const FOLDER: i64 = -32024;
 }
@@ -130,7 +143,7 @@ impl RpcError {
         }
     }
 
-    fn with_kind(mut self, kind: &str) -> Self {
+    pub(crate) fn with_kind(mut self, kind: &str) -> Self {
         self.data = Some(serde_json::json!({ "kind": kind }));
         self
     }
@@ -182,7 +195,6 @@ impl From<knode_format::Error> for RpcError {
                 error.data = Some(serde_json::json!({ "kind": "undo_conflict", "later": later }));
                 return error;
             }
-            E::PersonOnly(_) => (codes::PERSON_ONLY, "person_only"),
             E::NotASpace(_) => (codes::NOT_A_SPACE, "not_a_space"),
             E::AlreadyExists(_) => (codes::ALREADY_EXISTS, "already_exists"),
             E::Invalid(_) => (codes::INVALID, "invalid"),
@@ -190,6 +202,7 @@ impl From<knode_format::Error> for RpcError {
                 (codes::UNSUPPORTED, "unsupported")
             }
             E::Io(_) | E::Sqlite(_) | E::Manifest(_) => (codes::STORAGE, "storage"),
+            E::PersonOnly(_) => (codes::FORBIDDEN, "forbidden"),
             _ => (codes::INTERNAL_ERROR, "internal"),
         };
         RpcError::new(code, message).with_kind(kind)

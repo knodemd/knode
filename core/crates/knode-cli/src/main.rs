@@ -1,5 +1,6 @@
 //! The knode command line.
 
+mod agents;
 mod connect;
 mod history;
 mod import;
@@ -97,7 +98,8 @@ enum Command {
         #[command(subcommand)]
         action: MarkdownAction,
     },
-    /// Add Knode to an agent: claude-code, codex, gemini or claude-desktop.
+    /// Give an agent its own key and add Knode to it: claude-code, codex, gemini or
+    /// claude-desktop. The first time, it may read and write the default space (or --space) only.
     Connect {
         /// The agent.
         agent: connect::Agent,
@@ -106,7 +108,17 @@ enum Command {
         print: bool,
     },
     /// Run the MCP server on standard input and output. Agents start it themselves.
-    Mcp,
+    Mcp {
+        /// The agent it runs for; its key is read from this machine's credential store.
+        /// Defaults to KNODE_AGENT. KNODE_AGENT_KEY, when set, is the key itself.
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+    },
+    /// List agents, change what they may do in each space, or revoke their keys.
+    Agents {
+        #[command(subcommand)]
+        action: agents::Action,
+    },
     /// List the spaces Knode knows about.
     Spaces,
     /// Run, start, stop or inspect Knode Service, or start it at login.
@@ -188,15 +200,18 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             markdown::folder(&space, dir.as_deref(), off, &person())
         }
-        Command::Connect { agent, print } => connect::run(agent, print),
-        Command::Mcp => mcp(&paths, cli.space.as_deref()),
+        Command::Connect { agent, print } => {
+            connect::run(&paths, agent, print, cli.space.as_deref())
+        }
+        Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
+        Command::Agents { action } => agents::run(&paths, action),
         Command::Spaces => spaces(&paths),
         Command::Service { action } => service::run(&paths, action),
     }
 }
 
 /// Who the person using the command is, for the provenance of their changes.
-fn person() -> Provenance {
+pub(crate) fn person() -> Provenance {
     let name = ["USER", "USERNAME"]
         .iter()
         .filter_map(|var| std::env::var(var).ok())
@@ -206,11 +221,11 @@ fn person() -> Provenance {
     Provenance::person(name)
 }
 
-fn absolute(path: &Path) -> Result<PathBuf> {
+pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
     std::path::absolute(path).with_context(|| format!("cannot resolve {}", path.display()))
 }
 
-fn resolve(paths: &Paths, flag: Option<&Path>) -> Result<ResolvedSpace> {
+pub(crate) fn resolve(paths: &Paths, flag: Option<&Path>) -> Result<ResolvedSpace> {
     let config = Config::load(paths)?;
     Ok(knode_config::resolve_space_from_env(flag, &config)?)
 }
@@ -310,9 +325,56 @@ fn search(backend: &dyn Backend, query: &str, limit: usize, json: bool) -> Resul
     Ok(())
 }
 
-fn mcp(paths: &Paths, flag: Option<&Path>) -> Result<()> {
+/// The environment variable with the name of the agent `knode mcp` runs for.
+const AGENT_VAR: &str = "KNODE_AGENT";
+/// The environment variable with the key of the agent `knode mcp` runs for, for setups
+/// without a credential store. Never pass a key on the command line.
+const AGENT_KEY_VAR: &str = "KNODE_AGENT_KEY";
+
+/// The key `knode mcp` connects with: `KNODE_AGENT_KEY`, else the key of `--agent` (or
+/// `KNODE_AGENT`) in the credential store. Otherwise, what to tell the person.
+fn agent_key(paths: &Paths, agent: Option<String>) -> Result<String, String> {
+    let env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(key) = env(AGENT_KEY_VAR) {
+        return Ok(key);
+    }
+    let Some(agent) = agent.or_else(|| env(AGENT_VAR)) else {
+        return Err(
+            "Knode now gives each agent its own key, and this agent was set up \
+                    without one, so it cannot use Knode until it is connected again. Ask the \
+                    user to run `knode connect <agent>` in a terminal (for example `knode \
+                    connect claude-code`), then start a new session."
+                .to_string(),
+        );
+    };
+    let arg = connect::Agent::find(&agent).map_or(agent.as_str(), |a| a.arg());
+    let reconnect = format!(
+        "Ask the user to run `knode connect {arg}` in a terminal, then start a new session."
+    );
+    let store = connect::store(paths);
+    match store.get(&agent) {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(format!(
+            "There is no key for the agent {agent} on this machine. {reconnect}"
+        )),
+        Err(e) => Err(format!(
+            "Cannot read the key of {agent} from {}: {e}. {reconnect}",
+            store.describe()
+        )),
+    }
+}
+
+fn mcp(paths: &Paths, flag: Option<&Path>, agent: Option<String>) -> Result<()> {
     let backend = match resolve(paths, flag) {
-        Ok(resolved) => service::backend(&resolved.path)?,
+        Ok(resolved) => match agent_key(paths, agent) {
+            Ok(key) => service::agent_backend(&resolved.path, key)?,
+            Err(message) => Box::new(knode_mcp::DirectBackend::unavailable(message)),
+        },
         // The server still starts, so the agent can tell the person what to do.
         Err(error) => Box::new(knode_mcp::DirectBackend::unavailable(format!(
             "Knode has no space to use: {error:#}. Ask the user to run `knode init <name>` in a terminal."

@@ -176,7 +176,7 @@ fn changes_undo_restore_and_purge() {
     let refused = rpc(client.purge(&space, &node.id, &claude()));
     assert_eq!(
         (refused.code, refused.kind()),
-        (codes::PERSON_ONLY, Some("person_only"))
+        (codes::FORBIDDEN, Some("forbidden"))
     );
     let purge = client.purge(&space, &node.id, &ada()).unwrap();
     assert_eq!(purge.action, actions::NODE_PURGE);
@@ -280,7 +280,7 @@ fn keeps_the_live_markdown_folder_in_step() {
     // Only a person turns it on; turning it on writes the whole space.
     let dir = fixture.path("Live notes");
     let refused = rpc(client.set_markdown_folder(&space, Some(&dir), &claude()));
-    assert_eq!(refused.kind(), Some("person_only"));
+    assert_eq!(refused.kind(), Some("forbidden"));
     let inside = rpc(client.set_markdown_folder(&space, Some(&space.join("x")), &ada()));
     assert_eq!(inside.kind(), Some("invalid"));
     let folder = client

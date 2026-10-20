@@ -12,6 +12,9 @@
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
+//! - Every connection authenticates: [`Client::connect`] as the person who owns the Knode
+//!   home, [`Client::connect_as_agent`] as an agent with its key. Agents are limited by the
+//!   grants of each space; [`keys`] makes keys and keeps them in the machine's credential store.
 //!
 //! ```no_run
 //! use knode_format::{NewNode, Provenance};
@@ -26,19 +29,25 @@
 #![warn(missing_docs)]
 #![cfg(unix)]
 
+pub mod agents;
+mod auth;
 mod capture;
 mod client;
 mod error;
 mod install;
+pub mod keys;
 mod lock;
 pub mod markdown;
 mod paths;
 pub mod protocol;
 mod server;
 
+pub use agents::{AgentInfo, Identity, KeyInfo, SpaceGrant};
+pub use auth::{ACCESS_LOG_FILE, AGENTS_FILE};
 pub use capture::{CAPTURE_DIR, CAPTURE_STATE_FILE, CaptureOptions};
 pub use client::{
-    Client, SPAWN_TIMEOUT, Subscription, connect_or_spawn, connect_or_spawn_with, stop_service,
+    Client, Credential, SPAWN_TIMEOUT, Subscription, connect_or_spawn, connect_or_spawn_as,
+    connect_or_spawn_with, stop_service,
 };
 pub use error::{Error, Result};
 pub use install::{

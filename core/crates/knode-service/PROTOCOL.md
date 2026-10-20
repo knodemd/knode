@@ -4,8 +4,8 @@ Knode Service is the one process that opens `.knode` spaces. The Knode app, the 
 MCP server and capture all talk to it, so a person and several agents can write to the same space
 at the same time and everyone sees each change as it happens.
 
-This document describes the protocol of Knode v0.2, which still answers clients of v0.1. Rust
-programs can use `knode_service::Client` instead of speaking it by hand.
+This document describes the protocol version that ships with Knode v0.2. Rust programs can use
+`knode_service::Client` instead of speaking it by hand.
 
 ## Transport
 
@@ -20,6 +20,53 @@ programs can use `knode_service::Client` instead of speaking it by hand.
   their answers come back in the same order. Open more connections to run requests side by side.
 - **Batches** (JSON arrays) are not supported: send one request per line.
 - **Notifications from the client** (requests without an `id`) run, but get no answer.
+
+## Authentication
+
+Every connection authenticates first, with `auth`, and only once. Until it does, every other
+method fails with `unauthenticated`. A connection acts either for the person who owns the Knode
+home or for one agent:
+
+- **The person** (the Knode app, the `knode` CLI) sends the owner token: the text of
+  `$KNODE_HOME/owner.token`, a file of mode `0600` that the service makes the first time it
+  starts. The person is not limited by grants.
+- **An agent** (such as `knode mcp`, run by Claude Code) sends its key, `knk_` and 64 lower case
+  hexadecimal digits. `knode connect <agent>` makes the key and keeps it in the machine's
+  credential store; the service only knows its fingerprint. An unknown or revoked key is
+  refused.
+
+```json
+→ {"jsonrpc":"2.0","id":1,"method":"auth","params":{"owner":"5f0c…"}}
+← {"jsonrpc":"2.0","id":1,"result":{"as":"person"}}
+→ {"jsonrpc":"2.0","id":1,"method":"auth","params":{"key":"knk_…"}}
+← {"jsonrpc":"2.0","id":1,"result":{"as":"agent","id":"01K83N6V4W5D2XQJ0Y7RZ9T1AB","name":"claude-code","kind":"claude-code"}}
+```
+
+For an agent, every call is checked, not just the connection, so revoking a key or lowering a
+grant takes effect on the next call:
+
+- Its key must still be valid on this machine, and listed for the agent and not revoked in the
+  space the call names. Otherwise its level in that space is `none`.
+- Its level in the space is `none`, `read` or `write` (section 16 of the
+  [.knode specification](https://github.com/knodemd/format)).
+- With `none` the space is **invisible**: a call that names it fails exactly as for a space that
+  does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
+  its changes are not sent to the agent.
+- With `read`, `space.open`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
+  `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
+  `markdown.folder.get` and `subscribe` are allowed; writes fail with `forbidden`.
+- With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
+  `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
+  the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
+- Creating spaces, managing agents, keys and grants, `purge`, `markdown.folder.set` and every other
+  method are for people only and fail with `forbidden`.
+- An agent's changes are recorded with `kind` `agent` and, as `actor`, the name of the agent its
+  key belongs to, whatever `by` says. `session` and `source` are kept.
+
+Each call an agent makes is written to the access log of the machine, `$KNODE_HOME/access.log`:
+one JSON line with the time (`at`, ms), the agent's id, the space's id, the method and the
+outcome (`allowed`, `denied` or `invisible`). It never holds keys, node content or search
+queries.
 
 ## One writer
 
@@ -92,7 +139,24 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
 | `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. An agent only sees the spaces it may read. |
+| `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
+| `agents.list` | none | The agents of this machine. People only. |
+| `agents.add` | `name`, `kind`, `fingerprint`, `by` | The agent. Adds it with the fingerprint of its new key, or gives an agent of that name the new key and revokes its old ones, in every space it was given. People only. |
+| `agents.revoke` | `agent` (its name), `by` | The agent. Revokes all its keys and sets its level to `none` in every space it was given. People only. |
+| `grants.set` | `agent` (its name), `space`, `level` (`none`, `read` or `write`), `by` | `{ "space", "level" }`. Writes the agent and its key fingerprints into the space, then its level. People only. |
+
+An agent, as `agents.list`, `agents.add` and `agents.revoke` return it, is:
+
+```json
+{ "id": "01K83N6V4W5D2XQJ0Y7RZ9T1AB", "name": "claude-code", "kind": "claude-code",
+  "created_at": 1792489800123,
+  "keys": [ { "fingerprint": "sha256:2d8e…", "created_at": 1792489800123, "revoked_at": null } ],
+  "spaces": [ { "space": "/Users/ada/Knode/Work.knode", "level": "write" } ] }
+```
+
+`level` is `null` for a space that cannot be opened now. The agents of a machine, with the
+fingerprints of their keys, are kept in `$KNODE_HOME/agents.json`.
 
 Space info is:
 
@@ -177,10 +241,11 @@ match on.
 | -32004 | `invalid` | A value breaks a rule of the format, such as an empty title or a bad kind. |
 | -32005 | `unsupported` | The space was written by a newer version of Knode, or its files do not agree. |
 | -32006 | `storage` | The files of the space could not be read or written. |
+| -32010 | `unauthenticated` | The connection has not authenticated, or its key is unknown or was revoked. |
+| -32011 | `forbidden` | An agent wrote where it may only read, or called a method for people only. |
 | -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
 | -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
 | -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
-| -32023 | `person_only` | Only a person can do this, such as purge or change the live Markdown folder. |
 | -32024 | `folder` | A folder of Markdown files could not be read or written. |
 
 ```json

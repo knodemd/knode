@@ -78,6 +78,12 @@ pub trait Backend: Send + Sync + 'static {
     fn undo(&self, id: ChangeId, force: bool, by: &Provenance) -> BackendResult<Change>;
     /// `restore`: puts a node back to one of its versions and returns it.
     fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node>;
+    /// Whether the backend knows which agent is calling from its key, and records and checks
+    /// its changes under that name whatever name the MCP client gives. Knode Service does; a
+    /// space opened directly does not.
+    fn knows_the_agent(&self) -> bool {
+        false
+    }
 }
 
 /// A backend that opens the space directly with `knode-format`.
@@ -275,5 +281,9 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
         (**self).restore(id, version, by)
+    }
+
+    fn knows_the_agent(&self) -> bool {
+        (**self).knows_the_agent()
     }
 }

@@ -745,8 +745,10 @@ fn undo<B: Backend + ?Sized>(backend: &B, args: UndoArgs, by: &Provenance) -> Ou
         )));
     };
     let original = &detail.change;
-    let mine =
-        original.changed_by.kind == ActorKind::Agent && original.changed_by.actor == by.actor;
+    // Knode Service checks the name of the agent's key itself; the name the client gives is
+    // only trusted for a space opened directly.
+    let mine = original.changed_by.kind == ActorKind::Agent
+        && (backend.knows_the_agent() || original.changed_by.actor == by.actor);
     if !mine {
         return Err(ToolOutput::error(format!(
             "Change {} was made by {}, not by you ({}). You can only undo your own changes; \

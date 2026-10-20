@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use knode_config::Paths;
 use knode_mcp::{Backend, DirectBackend, ServiceBackend};
-use knode_service::{Client, LoginKind, LoginService};
+use knode_service::{Client, Credential, LoginKind, LoginService};
 
 /// How long to wait for the service to start or stop.
 const WAIT: Duration = Duration::from_secs(10);
@@ -79,6 +79,27 @@ pub fn client() -> Option<Client> {
             None
         }
     }
+}
+
+/// The backend of `knode mcp` for an agent with its key: always Knode Service, which checks
+/// the agent's grants on every call. An agent never opens a space directly. When the service
+/// refuses the key or cannot run, every tool says what to do instead.
+pub fn agent_backend(path: &Path, key: String) -> Result<Box<dyn Backend>> {
+    let exe = std::env::current_exe().context("cannot find the knode program")?;
+    let credential = Credential::Agent(key);
+    let connect = move || knode_service::connect_or_spawn_as(&exe, &credential);
+    Ok(match ServiceBackend::new(path, connect) {
+        Ok(backend) => Box::new(backend),
+        Err(knode_service::Error::Rpc(error)) => Box::new(DirectBackend::unavailable(format!(
+            "Knode refused this agent: {}. Ask the user to run `knode connect <agent>` in a \
+             terminal (for example `knode connect claude-code`), then start a new session.",
+            error.message.trim_end_matches('.')
+        ))),
+        Err(error) => Box::new(DirectBackend::unavailable(format!(
+            "Knode Service cannot run ({error}), and agents only reach spaces through it. Ask \
+             the user to run `knode service status` in a terminal."
+        ))),
+    })
 }
 
 /// Tells the person that the space is opened directly because the service cannot run.

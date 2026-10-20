@@ -26,6 +26,12 @@ Service and a first Mac app.
     and start it at login, with a launch agent on macOS or a systemd user unit on Linux.
 - **The MCP server** (`knode mcp`) with the tools `search`, `read_node`, `write_node`,
   `link_nodes` and `recent`. Writes are recorded as the agent that made them.
+- **Agent keys and grants**: `knode connect` gives each agent its own key, kept in the Keychain
+  (the Secret Service on Linux, or a file only you can read), and the first time write access to
+  the default space only. `knode agents list`, `knode agents grant <agent> <space>
+  none|read|write` and `knode agents revoke <agent>` change that. A space an agent may not see is
+  invisible to it, and its changes carry the name of its key. Agents connected before keys stop
+  until `knode connect` is run for them again.
 - **Knode Service**: the one process that opens spaces. The app, the CLI and every agent write
   through it at once and see each other's changes live. `knode mcp`, `knode search`, `knode import`
   and `knode init` start it in the background when it is not running.

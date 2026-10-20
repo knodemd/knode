@@ -4,8 +4,9 @@
 //! seven tools, `search`, `read_node`, `write_node`, `link_nodes`, `recent`, `history` and
 //! `undo` (see [`tools`]),
 //! on top of a [`Backend`]: [`ServiceBackend`] through Knode Service, or [`DirectBackend`],
-//! which opens the space itself when the service cannot run. Writes are recorded as made by the agent, named after the client
-//! that connected, such as `claude-code`.
+//! which opens the space itself when the service cannot run. Through the service, the agent
+//! connects with its own key: Knode Service checks its grants on every call and records its
+//! writes under the agent's name, such as `claude-code`.
 //!
 //! ```no_run
 //! use knode_mcp::{DirectBackend, run_stdio};

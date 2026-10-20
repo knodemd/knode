@@ -61,7 +61,8 @@ public final class ServiceConnection: Sendable {
         return decoder
     }()
 
-    /// Connects to the socket at `url`. Throws `ServiceError.unavailable` when nothing listens.
+    /// Connects to the socket at `url` as the person who owns the Knode home. Throws
+    /// `ServiceError.unavailable` when nothing listens.
     public static func connect(to url: URL) throws -> ServiceConnection {
         let path = url.path(percentEncoded: false)
         let socket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
@@ -88,7 +89,22 @@ public final class ServiceConnection: Sendable {
             Darwin.close(socket)
             throw ServiceError.unavailable(message)
         }
-        return ServiceConnection(socket: socket)
+        let connection = ServiceConnection(socket: socket)
+        connection.authenticateAsOwner(token: url.deletingLastPathComponent().appending(path: "owner.token"))
+        return connection
+    }
+
+    /// Tells the service that this connection acts for the person who owns the Knode home, with
+    /// the owner token next to the socket, which only its owner can read. Agents connect with
+    /// their own keys instead. Sent first, as a notification, so it needs no answer: the service
+    /// handles the requests of a connection in order.
+    private func authenticateAsOwner(token url: URL) {
+        guard let token = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty,
+              var data = try? Self.encoder.encode(OutgoingNotification(method: "auth", params: .object(["owner": .string(token)])))
+        else { return }
+        data.append(0x0A)
+        try? write(data)
     }
 
     private init(socket: Int32) {
@@ -209,6 +225,12 @@ public final class ServiceConnection: Sendable {
     private struct Request: Encodable {
         var jsonrpc = "2.0"
         var id: Int
+        var method: String
+        var params: JSONValue
+    }
+
+    private struct OutgoingNotification: Encodable {
+        var jsonrpc = "2.0"
         var method: String
         var params: JSONValue
     }
