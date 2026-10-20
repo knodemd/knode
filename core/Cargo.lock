@@ -1993,18 +1993,23 @@ name = "knode-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "clap",
+ "flate2",
  "jsonc-parser",
  "knode-config",
  "knode-embed",
  "knode-format",
- "knode-ingest",
  "knode-mcp",
  "knode-service",
  "knode-vault",
+ "lopdf",
+ "md5",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "toml_edit",
+ "zip",
 ]
 
 [[package]]
@@ -2106,6 +2111,7 @@ name = "knode-service"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "flate2",
  "knode-config",
  "knode-embed",
  "knode-format",
@@ -2113,6 +2119,9 @@ dependencies = [
  "knode-sync",
  "knode-vault",
  "libc",
+ "lopdf",
+ "md5",
+ "rusqlite",
  "security-framework",
  "serde",
  "serde_json",
@@ -2122,6 +2131,7 @@ dependencies = [
  "tokio",
  "ulid",
  "unicode-normalization",
+ "zip",
 ]
 
 [[package]]
