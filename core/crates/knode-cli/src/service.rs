@@ -179,6 +179,11 @@ fn status(paths: &Paths) -> Result<()> {
                 Some(space) => println!("Capture: on, into {}", space.display()),
                 None => println!("Capture: off"),
             }
+            if let Some(index) = &status.index {
+                for line in crate::index::describe(index) {
+                    println!("{line}");
+                }
+            }
         }
         Err(_) => println!("Knode Service is not running."),
     }

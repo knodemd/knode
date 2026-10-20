@@ -4,6 +4,7 @@ mod agents;
 mod connect;
 mod history;
 mod import;
+mod index;
 mod markdown;
 mod service;
 mod spaces;
@@ -14,7 +15,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use knode_config::{Config, Paths, ResolvedSpace, SpaceSource};
-use knode_format::{Provenance, Space};
+use knode_format::{Provenance, SearchMode, Space};
 use knode_mcp::Backend;
 
 /// Knode: one local memory every AI agent shares.
@@ -43,17 +44,28 @@ enum Command {
         #[arg(long)]
         default: bool,
     },
-    /// Search the space and print the matching nodes.
+    /// Search the space and print the matching nodes, ranked by words and meaning together.
     Search {
-        /// The words to look for.
+        /// What to look for.
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
         /// How many nodes to print at most.
         #[arg(long, short = 'n', default_value_t = 10)]
         limit: usize,
+        /// Search by meaning only.
+        #[arg(long, conflicts_with = "words")]
+        meaning: bool,
+        /// Search by the words only.
+        #[arg(long)]
+        words: bool,
         /// Print the results as JSON.
         #[arg(long)]
         json: bool,
+    },
+    /// Search by meaning: show how far the space is indexed, index it now, or turn it off.
+    Index {
+        #[command(subcommand)]
+        action: index::IndexAction,
     },
     /// Import a folder of Markdown files (an export or an Obsidian vault), a Markdown file, or a
     /// Claude Code or Codex session.
@@ -176,10 +188,27 @@ fn run(cli: Cli) -> Result<()> {
     let paths = Paths::from_env()?;
     match cli.command {
         Command::Init { name, dir, default } => init(&paths, &name, dir, default),
-        Command::Search { query, limit, json } => {
+        Command::Search {
+            query,
+            limit,
+            meaning,
+            words,
+            json,
+        } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
             let backend = service::backend(&space)?;
-            search(backend.as_ref(), &query.join(" "), limit, json)
+            let mode = if meaning {
+                SearchMode::Meaning
+            } else if words {
+                SearchMode::Words
+            } else {
+                SearchMode::Hybrid
+            };
+            search(backend.as_ref(), &query.join(" "), mode, limit, json)
+        }
+        Command::Index { action } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            index::run(&paths, &space, action)
         }
         Command::Import { path, vault } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
@@ -325,12 +354,22 @@ fn create_space(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn search(backend: &dyn Backend, query: &str, limit: usize, json: bool) -> Result<()> {
-    let hits = backend.search(query, limit.max(1))?;
+fn search(
+    backend: &dyn Backend,
+    query: &str,
+    mode: SearchMode,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let found = backend.search(query, mode, limit.max(1))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&hits)?);
+        println!("{}", serde_json::to_string_pretty(&found)?);
         return Ok(());
     }
+    if let Some(note) = &found.note {
+        eprintln!("note: {note}");
+    }
+    let hits = &found.hits;
     if hits.is_empty() {
         println!("Nothing matches \"{query}\".");
         return Ok(());
