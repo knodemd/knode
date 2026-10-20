@@ -38,7 +38,7 @@ use super::db::{self, pick, sql_error};
 use super::markdown::{self, Names, escape, wrap};
 use super::proto::Message;
 use super::write::{Batch, Blob, Draft};
-use super::{ImportError, NoteApp, NotesReport, dates, folder};
+use super::{ImportError, NotesReport, dates, folder};
 
 /// The group container of Apple Notes, in `~/Library/Group Containers`.
 pub(crate) const CONTAINER: &str = "group.com.apple.notes";
@@ -49,38 +49,6 @@ const TABLES_LIMIT: &str =
     "Apple Notes tables are not imported yet: each leaves a line in its note.";
 const DRAWINGS_LIMIT: &str =
     "Apple Notes drawings and scans are imported as their preview image when the database has one.";
-
-/// Fails with [`ImportError::NoAccess`] when macOS keeps the path from being read.
-pub(crate) fn check_access(path: &Path) -> Result<(), ImportError> {
-    let denied = |e: &std::io::Error| e.kind() == std::io::ErrorKind::PermissionDenied;
-    let no_access = || ImportError::NoAccess {
-        app: NoteApp::AppleNotes,
-        path: path.to_path_buf(),
-    };
-    match fs::metadata(path) {
-        Err(e) if denied(&e) => return Err(no_access()),
-        Err(_) => return Ok(()),
-        Ok(meta) if meta.is_dir() => {
-            if let Err(e) = fs::read_dir(path) {
-                if denied(&e) {
-                    return Err(no_access());
-                }
-            }
-            match fs::File::open(path.join(DATABASE)) {
-                Err(e) if denied(&e) => return Err(no_access()),
-                _ => {}
-            }
-        }
-        Ok(_) => {
-            if let Err(e) = fs::File::open(path) {
-                if denied(&e) {
-                    return Err(no_access());
-                }
-            }
-        }
-    }
-    Ok(())
-}
 
 pub(crate) fn read(path: &Path, report: &mut NotesReport) -> Result<Batch, ImportError> {
     let database = if path.is_dir() {

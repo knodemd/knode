@@ -140,10 +140,10 @@ pub enum ImportError {
     /// macOS keeps Knode from reading the app's notes: the app running Knode needs Full Disk
     /// Access.
     #[error(
-        "{app} keeps its notes in {}, which macOS lets only apps with Full Disk Access read. \
-         Open System Settings > Privacy & Security > Full Disk Access, turn it on for the app \
-         that runs Knode (Knode, or your terminal), then quit and reopen that app. Or export the \
-         notes from {app} and import the exported folder.",
+        "macOS does not let Knode read {} ({app} keeps its notes there): only apps with Full \
+         Disk Access can. Open System Settings > Privacy & Security > Full Disk Access, turn it \
+         on for the app that runs Knode (Knode, or your terminal), then quit and reopen that \
+         app. Or export the notes from {app} and import the exported files.",
         path.display()
     )]
     NoAccess {
@@ -193,6 +193,30 @@ pub enum ImportError {
 pub(crate) fn io_error(path: impl Into<PathBuf>) -> impl FnOnce(std::io::Error) -> ImportError {
     let path = path.into();
     move |source| ImportError::Io { path, source }
+}
+
+/// Fails with [`ImportError::NoAccess`] when macOS keeps the path from being read, as it does
+/// for other apps' containers without Full Disk Access.
+fn check_access(app: NoteApp, path: &Path) -> Result<(), ImportError> {
+    let denied = |e: std::io::Error| e.kind() == std::io::ErrorKind::PermissionDenied;
+    let blocked = match std::fs::metadata(path) {
+        Err(e) => denied(e),
+        Ok(meta) if meta.is_dir() => {
+            std::fs::read_dir(path).err().is_some_and(denied)
+                || [apple_notes::DATABASE, bear::DATABASE]
+                    .iter()
+                    .map(|name| path.join(name))
+                    .any(|file| std::fs::File::open(file).err().is_some_and(denied))
+        }
+        Ok(_) => std::fs::File::open(path).err().is_some_and(denied),
+    };
+    if blocked {
+        return Err(ImportError::NoAccess {
+            app,
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 /// One node [`import_notes`] created or changed.
@@ -343,9 +367,7 @@ pub fn import_notes(
     by: &Provenance,
 ) -> Result<NotesReport, ImportError> {
     let path = path.as_ref();
-    if app == NoteApp::AppleNotes {
-        apple_notes::check_access(path)?;
-    }
+    check_access(app, path)?;
     if !path.exists() {
         return Err(ImportError::NotFound(path.to_path_buf()));
     }
