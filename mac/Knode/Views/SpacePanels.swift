@@ -35,4 +35,18 @@ enum SpacePanels {
         panel.directoryURL = folder
         return panel.runModal() == .OK ? panel.url : nil
     }
+
+    /// A folder that feeds a space, such as a project, with a line on what it is for.
+    static func chooseFolder(title: String, message: String) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.message = message
+        panel.prompt = "Add"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        return panel.runModal() == .OK ? panel.url : nil
+    }
 }
