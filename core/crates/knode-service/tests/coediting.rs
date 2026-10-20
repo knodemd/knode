@@ -541,3 +541,55 @@ fn a_restore_is_followed_by_the_open_editor() {
     assert_eq!(edited.text, None);
     assert_eq!(f.body(&id), "1. first");
 }
+
+/// How long editing together takes through the service on a 50 KB note: run with
+/// `cargo test --release -p knode-service --test coediting -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn timings_on_a_50_kb_note() {
+    let f = Fixture::new();
+    let space = f.space();
+    let paragraph = "A paragraph of a long note, written to see how long edits take. ";
+    let body: String = (0..800).map(|i| format!("{paragraph}{i}\n")).collect();
+    assert!(body.len() > 50_000);
+    let id = f.note(&body);
+    let claude = f.agent("claude-code", GrantLevel::Write);
+
+    let started = std::time::Instant::now();
+    let open = f.person.open_doc(&space, &id).unwrap();
+    println!("doc.open, first time: {:?}", started.elapsed());
+
+    let mut base = open.version;
+    let edits = 100;
+    let started = std::time::Instant::now();
+    for i in 0..edits {
+        let edited = f
+            .person
+            .edit_doc(&space, &id, Some(&base), &[insert(i * 7, "typed ")], &ada())
+            .unwrap();
+        base = edited.seen;
+    }
+    println!(
+        "doc.edit, one batch of typing: {:?} each",
+        started.elapsed() / edits as u32
+    );
+
+    let read = claude.open_doc(&space, &id).unwrap();
+    f.person
+        .edit_doc(&space, &id, Some(&base), &[insert(0, "late ")], &ada())
+        .unwrap();
+    let rewritten = read.text.replace("long note", "longer note");
+    let started = std::time::Instant::now();
+    let update = NodeUpdate {
+        body: Some(rewritten),
+        ..Default::default()
+    };
+    claude
+        .update_node_from(&space, &id, update, Some(&read.version), &ada())
+        .unwrap();
+    println!(
+        "node.update, an agent's full rewrite merged from an old version: {:?}",
+        started.elapsed()
+    );
+    assert!(f.body(&id).starts_with("late "));
+}
