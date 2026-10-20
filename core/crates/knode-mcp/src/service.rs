@@ -100,6 +100,13 @@ impl ServiceBackend {
                 Some("not_found" | "invalid" | "invalid_params") => {
                     BackendError::Invalid(rpc.message)
                 }
+                // The service refused the agent's key: tell the person how to connect it again.
+                Some("unauthenticated") => BackendError::Unavailable(format!(
+                    "Knode refused this agent: {}. Ask the user to run `knode connect <agent>` \
+                     in a terminal (for example `knode connect claude-code`).",
+                    rpc.message.trim_end_matches('.')
+                )),
+                Some("forbidden") => BackendError::Invalid(rpc.message),
                 Some("not_a_space" | "unsupported") => BackendError::Unavailable(format!(
                     "cannot open the Knode space at {}: {}",
                     self.space.display(),

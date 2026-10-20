@@ -294,6 +294,18 @@ fn errors_have_codes_and_clear_messages() {
     assert_eq!(parse["id"], Value::Null);
     let batch = ask("[]");
     assert_eq!(batch["error"]["code"], codes::INVALID_REQUEST);
+    // Nothing but `auth` is answered before the connection authenticates.
+    let refused = ask(r#"{"jsonrpc":"2.0","id":"s","method":"service.status"}"#);
+    assert_eq!(refused["error"]["code"], codes::UNAUTHENTICATED);
+    assert_eq!(refused["error"]["data"]["kind"], "unauthenticated");
+    let token = std::fs::read_to_string(fixture.home().join("owner.token")).unwrap();
+    let wrong = ask(r#"{"jsonrpc":"2.0","id":"a","method":"auth","params":{"owner":"nope"}}"#);
+    assert_eq!(wrong["error"]["code"], codes::UNAUTHENTICATED);
+    let me = ask(&format!(
+        r#"{{"jsonrpc":"2.0","id":"a","method":"auth","params":{{"owner":"{}"}}}}"#,
+        token.trim()
+    ));
+    assert_eq!(me["result"], json!({ "as": "person" }));
     let status = ask(r#"{"jsonrpc":"2.0","id":"s","method":"service.status"}"#);
     assert_eq!(status["id"], "s");
     assert_eq!(status["result"]["pid"], std::process::id());

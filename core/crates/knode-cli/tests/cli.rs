@@ -195,7 +195,11 @@ fn connect_claude_code_without_claude_prints_the_command() {
         out.contains("claude mcp add --scope user knode -- /"),
         "{out}"
     );
-    assert!(out.trim_end().ends_with(" mcp"), "{out}");
+    assert!(
+        out.trim_end().ends_with(" mcp --agent claude-code"),
+        "{out}"
+    );
+    assert!(out.contains("There is no space yet"), "{out}");
 }
 
 #[cfg(unix)]
@@ -204,8 +208,13 @@ fn connect_claude_code_runs_claude_once() {
     let sb = Sandbox::new();
     sb.fake_program("claude", 1);
     let out = sb.ok(&["connect", "claude-code", "--print"]);
-    assert!(out.starts_with("Would run:"), "{out}");
+    assert!(
+        out.starts_with("Would give claude-code its own key"),
+        "{out}"
+    );
+    assert!(out.contains("Would run:"), "{out}");
     assert_eq!(sb.log("claude"), "");
+    assert!(!sb.knode_home().join("agent-keys").exists());
 
     let out = sb.ok(&["connect", "claude-code"]);
     assert!(out.contains("Added Knode to Claude Code"), "{out}");
@@ -213,15 +222,21 @@ fn connect_claude_code_runs_claude_once() {
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines[0], "mcp get knode");
     assert!(
-        lines[1].starts_with("mcp add --scope user knode -- /") && lines[1].ends_with(" mcp"),
+        lines[1].starts_with("mcp add --scope user knode -- /")
+            && lines[1].ends_with(" mcp --agent claude-code"),
         "{log}"
     );
 
+    // Added before agent keys: replaced, so it runs with its key.
     let sb = Sandbox::new();
     sb.fake_program("claude", 0);
     let out = sb.ok(&["connect", "claude-code"]);
-    assert!(out.contains("already in Claude Code"), "{out}");
-    assert_eq!(sb.log("claude").trim(), "mcp get knode");
+    assert!(out.contains("Added Knode to Claude Code"), "{out}");
+    let log = sb.log("claude");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines[0], "mcp get knode");
+    assert_eq!(lines[1], "mcp remove --scope user knode");
+    assert!(lines[2].ends_with(" mcp --agent claude-code"), "{log}");
 }
 
 #[cfg(unix)]
@@ -251,7 +266,10 @@ fn connect_codex_edits_its_config_otherwise() {
         text.starts_with("[mcp_servers.knode]\ncommand = \"/"),
         "{text}"
     );
-    assert!(text.ends_with("args = [\"mcp\"]\n"), "{text}");
+    assert!(
+        text.ends_with("args = [\"mcp\", \"--agent\", \"codex\"]\n"),
+        "{text}"
+    );
     assert!(sb.ok(&["connect", "codex"]).contains("already in Codex"));
 
     fs::write(
@@ -291,7 +309,7 @@ fn connect_gemini_and_claude_desktop_edit_json_safely() {
     assert_eq!(value["mcpServers"]["x"]["command"], "y");
     assert_eq!(
         value["mcpServers"]["knode"]["args"],
-        serde_json::json!(["mcp"])
+        serde_json::json!(["mcp", "--agent", "gemini-cli"])
     );
     assert!(
         sb.home()
@@ -333,4 +351,113 @@ fn unknown_agents_are_rejected() {
     let sb = Sandbox::new();
     let err = sb.fails(&["connect", "notepad"]);
     assert!(err.contains("claude-code"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn connect_gives_an_agent_its_own_key_and_the_default_space_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let out = sb.ok(&["connect", "gemini"]);
+    assert!(out.contains("Gave gemini-cli its own key"), "{out}");
+    assert!(out.contains("gemini-cli can read and write work"), "{out}");
+    assert!(out.contains("cannot see any other space"), "{out}");
+
+    // The key is in a file only its owner can read, and nowhere else.
+    let file = sb.knode_home().join("agent-keys/gemini-cli.key");
+    let key = fs::read_to_string(&file).unwrap();
+    assert!(key.starts_with("knk_") && key.len() == 68, "{key}");
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let settings = fs::read_to_string(sb.home().join(".gemini/settings.json")).unwrap();
+    assert!(!settings.contains("knk_"), "{settings}");
+    let registry = fs::read_to_string(sb.knode_home().join("agents.json")).unwrap();
+    assert!(!registry.contains(&key), "{registry}");
+    for space in ["work", "personal"] {
+        let path = sb.space(space);
+        for entry in walk(&path) {
+            let bytes = fs::read(&entry).unwrap();
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(&key),
+                "{}",
+                entry.display()
+            );
+        }
+    }
+
+    // Connecting again keeps the key and the access.
+    let out = sb.ok(&["connect", "gemini"]);
+    assert!(!out.contains("Gave"), "{out}");
+    assert_eq!(fs::read_to_string(&file).unwrap(), key);
+
+    let list = sb.ok(&["agents", "list"]);
+    assert!(
+        list.contains("gemini-cli (gemini-cli, has a key)"),
+        "{list}"
+    );
+    assert!(list.contains("work  "), "{list}");
+    assert!(list.contains("write"), "{list}");
+    assert!(!list.contains("personal"), "{list}");
+
+    let out = sb.ok(&["agents", "grant", "gemini", "personal", "read"]);
+    assert!(out.contains("gemini-cli now can read personal"), "{out}");
+    let list = sb.ok(&["agents", "list"]);
+    assert!(list.contains("read"), "{list}");
+    let err = sb.fails(&["agents", "grant", "nobody", "work", "read"]);
+    assert!(err.contains("no agent named"), "{err}");
+    let err = sb.fails(&["agents", "grant", "gemini", "work", "admin"]);
+    assert!(err.contains("possible values"), "{err}");
+
+    let out = sb.ok(&["agents", "revoke", "gemini"]);
+    assert!(out.contains("knode connect gemini"), "{out}");
+    assert!(!file.exists());
+    let list = sb.ok(&["agents", "list"]);
+    assert!(list.contains("revoked"), "{list}");
+    assert!(list.contains("none"), "{list}");
+
+    // Connected again: a new key, and the default space once more.
+    let out = sb.ok(&["connect", "gemini"]);
+    assert!(out.contains("Gave gemini-cli its own key"), "{out}");
+    assert_ne!(fs::read_to_string(&file).unwrap(), key);
+    assert!(out.contains("can read and write work"), "{out}");
+}
+
+#[test]
+fn agents_list_offers_to_connect_agents_set_up_without_a_key() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let gemini = sb.home().join(".gemini/settings.json");
+    fs::create_dir_all(gemini.parent().unwrap()).unwrap();
+    fs::write(
+        &gemini,
+        r#"{"mcpServers": {"knode": {"command": "/old/knode", "args": ["mcp"]}}}"#,
+    )
+    .unwrap();
+    let list = sb.ok(&["agents", "list"]);
+    assert!(list.contains("No agents yet"), "{list}");
+    assert!(
+        list.contains("stopped until connected again: gemini-cli"),
+        "{list}"
+    );
+    assert!(list.contains("`knode connect gemini`"), "{list}");
+    sb.ok(&["connect", "gemini"]);
+    let list = sb.ok(&["agents", "list"]);
+    assert!(!list.contains("stopped until"), "{list}");
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
 }

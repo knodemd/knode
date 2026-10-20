@@ -39,6 +39,22 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(missing == nil)
     }
 
+    @Test func connectionAuthenticatesAsTheOwner() async throws {
+        // Without an owner token next to the socket, nothing is sent first.
+        let plain = try ServiceConnection.connect(to: service.socketURL)
+        _ = try await plain.call("service.status", as: ServiceMonitor.Status.self)
+        plain.close()
+        #expect(service.requests.first == "service.status")
+
+        let token = service.socketURL.deletingLastPathComponent().appending(path: "owner.token")
+        try "5f0c\n".write(to: token, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: token) }
+        let connection = try ServiceConnection.connect(to: service.socketURL)
+        defer { connection.close() }
+        _ = try await connection.call("service.status", as: ServiceMonitor.Status.self)
+        #expect(Array(service.requests.suffix(2)) == ["auth", "service.status"])
+    }
+
     @Test func connectionReportsRemoteErrors() async throws {
         let connection = try ServiceConnection.connect(to: service.socketURL)
         defer { connection.close() }

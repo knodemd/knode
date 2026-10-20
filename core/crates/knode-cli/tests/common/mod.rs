@@ -48,6 +48,8 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_DATA_HOME", self.path("data"))
             .env("PATH", self.path("bin"))
+            // Agent keys go to files in the sandbox, never to the Keychain of the machine.
+            .env("KNODE_KEY_STORE", "file")
             .current_dir(self.dir.path());
         cmd
     }
@@ -92,6 +94,13 @@ impl Sandbox {
         let path = self.path("bin").join(name);
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Connects Gemini CLI (its settings are a file in the sandbox) and returns the agent name
+    /// `knode mcp --agent` takes.
+    pub fn connect_agent(&self) -> &'static str {
+        self.ok(&["connect", "gemini"]);
+        "gemini-cli"
     }
 
     pub fn log(&self, name: &str) -> String {
