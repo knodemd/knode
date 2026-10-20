@@ -45,6 +45,7 @@ import Testing
     @Test func wikiLinksBecomeNodeLinks() throws {
         #expect(InlineMarkdown.wikiLinks(in: "See [[Two Words]].") == "See [Two Words](knode://node/Two%20Words).")
         #expect(InlineMarkdown.wikiLinks(in: "Code `[[kept]]` here") == "Code `[[kept]]` here")
+        #expect(InlineMarkdown.wikiLinks(in: "In [[SQLite for local data|SQLite]].") == "In [SQLite](knode://node/SQLite%20for%20local%20data).")
         let url = try #require(URL(string: "knode://node/Two%20Words"))
         #expect(InlineMarkdown.linkedTitle(url) == "Two Words")
         #expect(InlineMarkdown.linkedTitle(URL(string: "https://knode.md")!) == nil)
