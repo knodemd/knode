@@ -6,6 +6,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case newSpace
     case rename(URL)
     case icon(URL)
+    /// Which agents may do what in the space.
+    case access(URL)
 
     var id: Self { self }
 }

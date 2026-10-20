@@ -9,11 +9,13 @@ struct KnodeApp: App {
     // app (core/crates/knode-ffi); only the example space lives in memory.
     @State private var model: AppModel
     @State private var service: ServiceMonitor
+    @State private var agents: AgentsModel
 
     init() {
         KnodeFonts.register()
         let store = RoutingSpaceStore()
-        let service = ServiceMonitor(command: { KnodeCommand(executable: CommandLineTool.forThisApp.executable()) })
+        let command: @MainActor () -> KnodeCommand = { KnodeCommand(executable: CommandLineTool.forThisApp.executable()) }
+        let service = ServiceMonitor(command: command)
         service.onRunningChange = { running in
             if running { Task { await store.serviceDidStart() } }
         }
@@ -22,12 +24,14 @@ struct KnodeApp: App {
         let testing = ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
         _model = State(initialValue: AppModel(store: store, recentSpaces: RecentSpaces(), library: testing ? nil : SpaceLibrary(), settings: CoreKnodeSettings()))
         _service = State(initialValue: service)
+        _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
     }
 
     var body: some Scene {
         Window("Knode", id: "main") {
             ContentView()
                 .environment(model)
+                .environment(agents)
 
                 .onOpenURL { url in
                     Task { await model.openSpace(at: url) }
@@ -52,6 +56,12 @@ struct KnodeApp: App {
                 Button("Install Command Line Tool…", systemImage: "terminal") { appDelegate.installer.install() }
                 Button("Uninstall Command Line Tool…", systemImage: "trash") { appDelegate.installer.uninstall() }
             }
+        }
+
+        Settings {
+            SettingsView()
+                .environment(model)
+                .environment(agents)
         }
 
         MenuBarExtra {
