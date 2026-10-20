@@ -14,10 +14,12 @@ public actor RoutingSpaceStore: SpaceStore {
     private let core: CoreSpaceStore
     private var open: [Space.ID: (url: URL, backend: Backend)] = [:]
     private nonisolated let broadcast = Broadcast<SpaceChange>()
+    public nonisolated let person: String
 
     public init(service: ServiceSpaceStore = ServiceSpaceStore(), core: CoreSpaceStore = CoreSpaceStore()) {
         self.service = service
         self.core = core
+        person = service.person
         let changes = service.changes()
         let broadcast = broadcast
         Task {
@@ -79,9 +81,24 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space) { store in try await store.history(of: node, in: space) }
     }
 
-    // Knode Service has no methods yet to rename a space, change its settings, restore or undo:
-    // these go straight to the space through the core in the app, which SQLite allows next to the
-    // service. The service does not announce them to its other clients.
+    public func changes(of node: Node.ID, in space: Space.ID, limit: Int) async throws -> [ChangeRecord] {
+        try await route(space) { store in try await store.changes(of: node, in: space, limit: limit) }
+    }
+
+    // Restore and undo are writes: not run again after the service stops mid-call, as the service
+    // may have made them already.
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        try await route(space, retry: false) { store in try await store.restore(node, to: version, in: space) }
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        try await route(space, retry: false) { store in try await store.undo(change: change, in: space, force: force) }
+    }
+
+    // Knode Service has no methods yet to rename a space or change its settings: these go straight
+    // to the space through the core in the app, which SQLite allows next to the service. The
+    // service does not announce them to its other clients.
 
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
         let renamed = try await direct(space) { core in try await core.renameSpace(space, to: name) }
@@ -94,14 +111,6 @@ public actor RoutingSpaceStore: SpaceStore {
 
     public func setIcon(_ icon: String?, of space: Space.ID) async throws {
         try await direct(space) { core in try await core.setIcon(icon, of: space) }
-    }
-
-    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
-        try await direct(space) { core in try await core.restore(node, to: version, in: space) }
-    }
-
-    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
-        try await direct(space) { core in try await core.undo(change: change, in: space, force: force) }
     }
 
     public func closeSpace(_ space: Space.ID) async {
