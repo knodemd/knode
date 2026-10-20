@@ -5,7 +5,9 @@
 //!   macOS, else `$XDG_DATA_HOME/knode` (by default `~/.local/share/knode`).
 //! - **`config.toml`** names the default space: `default_space = "/path/to/Work.knode"`. It
 //!   also turns capture of agent conversations off (`capture = false`) or leaves projects out
-//!   of it (`capture_exclude = ["/path/to/project"]`).
+//!   of it (`capture_exclude = ["/path/to/project"]`), and lists the other spaces Knode knows
+//!   (`spaces = ["/path/to/Personal.knode"]`), so Knode Service routes captured conversations
+//!   by the folders of every one of them.
 //! - **Spaces** are created by default in `~/Knode`, as `~/Knode/<name>.knode`.
 //!
 //! The space a command uses is, in order: the `--space <path>` flag, the `KNODE_SPACE`
@@ -177,6 +179,11 @@ pub struct Config {
     /// everything inside it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capture_exclude: Vec<PathBuf>,
+    /// The spaces Knode knows besides the default one, such as those made with `knode init` or
+    /// added in the app. Knode Service reads their folders to decide where each captured
+    /// conversation goes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spaces: Vec<PathBuf>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -186,6 +193,39 @@ impl Config {
     /// Whether conversations are captured: `capture` in `config.toml`, on by default.
     pub fn capture_enabled(&self) -> bool {
         self.capture.unwrap_or(true)
+    }
+
+    /// Every space Knode knows: the default space first, then [`Config::spaces`], each once.
+    pub fn known_spaces(&self) -> Vec<PathBuf> {
+        let mut all: Vec<PathBuf> = Vec::new();
+        for path in self.default_space.iter().chain(&self.spaces) {
+            if !path.as_os_str().is_empty() && !all.contains(path) {
+                all.push(path.clone());
+            }
+        }
+        all
+    }
+
+    /// Adds a space to [`Config::spaces`] unless Knode already knows it. Returns whether it
+    /// was added.
+    pub fn remember_space(&mut self, path: &Path) -> bool {
+        if self.known_spaces().iter().any(|known| known == path) {
+            return false;
+        }
+        self.spaces.push(path.to_path_buf());
+        true
+    }
+
+    /// Makes a space the default one, keeping the previous default in [`Config::spaces`] so it
+    /// stays known.
+    pub fn set_default_space(&mut self, path: &Path) {
+        if let Some(previous) = self.default_space.take() {
+            if previous != path && !self.spaces.contains(&previous) {
+                self.spaces.insert(0, previous);
+            }
+        }
+        self.spaces.retain(|known| known != path);
+        self.default_space = Some(path.to_path_buf());
     }
 
     /// Reads `config.toml`. A missing file is an empty config.
@@ -395,6 +435,31 @@ mod tests {
         assert_eq!(config.capture_exclude, vec![PathBuf::from("/p/secret")]);
         let text = toml::to_string(&Config::default()).unwrap();
         assert!(!text.contains("capture"), "{text}");
+    }
+
+    #[test]
+    fn known_spaces() {
+        let mut config: Config =
+            toml::from_str("default_space = \"/a.knode\"\nspaces = [\"/b.knode\", \"/a.knode\"]\n")
+                .unwrap();
+        assert_eq!(
+            config.known_spaces(),
+            vec![PathBuf::from("/a.knode"), PathBuf::from("/b.knode")]
+        );
+        assert!(!config.remember_space(Path::new("/b.knode")));
+        assert!(config.remember_space(Path::new("/c.knode")));
+        config.set_default_space(Path::new("/c.knode"));
+        assert_eq!(config.default_space, Some(PathBuf::from("/c.knode")));
+        assert_eq!(
+            config.known_spaces(),
+            vec![
+                PathBuf::from("/c.knode"),
+                PathBuf::from("/b.knode"),
+                PathBuf::from("/a.knode")
+            ]
+        );
+        let text = toml::to_string(&Config::default()).unwrap();
+        assert!(!text.contains("spaces"), "{text}");
     }
 
     #[test]

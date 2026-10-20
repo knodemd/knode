@@ -10,6 +10,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/import.rs
 $(SRCROOT)/../core/crates/knode-cli/src/main.rs
 $(SRCROOT)/../core/crates/knode-cli/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-cli/src/service.rs
+$(SRCROOT)/../core/crates/knode-cli/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-format/Cargo.toml
@@ -72,6 +73,7 @@ $(SRCROOT)/../core/crates/knode-service/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-service/src/paths.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
+$(SRCROOT)/../core/crates/knode-service/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs

@@ -194,6 +194,8 @@ enum Access {
 fn access(method: &str) -> Access {
     match method {
         methods::SPACE_OPEN
+        | methods::SETTINGS_GET
+        | methods::FOLDERS_LIST
         | methods::NODE_GET
         | methods::NODE_FIND_BY_TITLE
         | methods::LINKS_FROM
@@ -215,8 +217,8 @@ fn access(method: &str) -> Access {
         | methods::RESTORE
         | methods::VAULT_IMPORT => Access::Write,
         methods::SERVICE_STATUS => Access::Status,
-        // Creating spaces, managing agents, purge, the live Markdown folder and anything not
-        // listed here are for people only.
+        // Creating and renaming spaces, changing settings and folders, managing agents, purge,
+        // the live Markdown folder and anything not listed here are for people only.
         _ => Access::PersonOnly,
     }
 }
