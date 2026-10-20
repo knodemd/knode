@@ -54,6 +54,20 @@ jobs:
       - name: Test the workspace
         run: cargo test --locked --workspace
 
+      # gemm (candle's matrix maths) has FP16 kernels that it picks at run time, and the rest of
+      # the build must not need FP16, which older ARM boards such as the Raspberry Pi 4 lack
+      # (knodemd/knode#108). Run the embedding tests, which run a tiny model, on an emulated
+      # Cortex-A72 (the Raspberry Pi 4 CPU, no FP16): any FP16 instruction outside those
+      # kernels would stop them with an illegal instruction.
+      - name: Test search by meaning on a CPU without FP16
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user
+          cargo test --locked -p knode-embed --lib
+
       - name: Build the release binary
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
 
@@ -62,5 +76,8 @@ jobs:
           bin="target/$TARGET/release/knode"
           file "$bin"
           "$bin" --version
+          if [ "$TARGET" = aarch64-unknown-linux-gnu ]; then
+            qemu-aarch64 -cpu cortex-a72 "$bin" --version
+          fi
           # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
           objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
