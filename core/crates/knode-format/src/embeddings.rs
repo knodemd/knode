@@ -422,14 +422,14 @@ impl Space {
     }
 
     /// The nodes that wait for embedding by model `id`, at most `limit`, most recently changed
-    /// first: those without chunks of it (19.4).
+    /// first (newer nodes first within the same millisecond): those without chunks of it (19.4).
     pub fn stale_nodes(&self, id: i64, limit: usize) -> Result<Vec<StaleNode>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT n.id, n.title, n.body, n.plain FROM nodes n
              WHERE NOT EXISTS (
                  SELECT 1 FROM embedding_chunks c WHERE c.model_id = ?1 AND c.node_id = n.id
              )
-             ORDER BY n.updated_at DESC, n.id
+             ORDER BY n.updated_at DESC, n.id DESC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![id, limit_param(limit)], |row| {
