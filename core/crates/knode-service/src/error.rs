@@ -28,6 +28,20 @@ pub enum Error {
     /// The connection to the service closed before the answer came.
     #[error("the connection to Knode Service closed")]
     Disconnected,
+    /// The socket path is longer than a Unix socket path may be, so the service cannot listen
+    /// there.
+    #[error(
+        "the socket {path} is {len} bytes long, more than the {max} a Unix socket allows here: \
+         set KNODE_HOME to a shorter folder"
+    )]
+    SocketPathTooLong {
+        /// The socket path.
+        path: String,
+        /// Its length in bytes.
+        len: usize,
+        /// The longest path the system allows.
+        max: usize,
+    },
     /// The service that was started exited without listening.
     #[error("Knode Service could not start ({status})")]
     StartFailed {

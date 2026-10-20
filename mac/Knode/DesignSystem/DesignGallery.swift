@@ -101,9 +101,6 @@ private struct DesignGalleryPage: View {
             ForEach(KnodeIcon.allCases, id: \.self) { icon in
                 KIcon(KGlyph(icon), size: .md).kTooltip(icon.title)
             }
-            ForEach(KnodeAppIcon.allCases, id: \.self) { icon in
-                KIcon(KGlyph(icon), size: .md, color: theme.indigo).kTooltip(icon.title)
-            }
         }
     }
 

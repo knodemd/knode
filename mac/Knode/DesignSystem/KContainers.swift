@@ -263,28 +263,35 @@ struct KBanner<Actions: View>: View {
     var title: String
     var message: String?
     var onClose: (() -> Void)?
+    /// The actions go under the text instead of beside it, for narrow places such as the sidebar.
+    var actionsBelow = false
     @ViewBuilder var actions: Actions
     @Environment(\.kTheme) private var theme
 
     init(_ kind: KBannerKind = .info, title: String, message: String? = nil, onClose: (() -> Void)? = nil,
-         @ViewBuilder actions: () -> Actions = { EmptyView() }) {
+         actionsBelow: Bool = false, @ViewBuilder actions: () -> Actions = { EmptyView() }) {
         self.kind = kind
         self.title = title
         self.message = message
         self.onClose = onClose
+        self.actionsBelow = actionsBelow
         self.actions = actions()
     }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: KRadius.control, style: .continuous)
-        HStack(alignment: .center, spacing: KSpace.x3) {
+        HStack(alignment: actionsBelow ? .top : .center, spacing: KSpace.x3) {
             KIcon(kind == .info ? .info : .warning, size: .sm, color: tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(KFont.ui(13, .semibold)).foregroundStyle(theme.fg)
-                if let message { Text(message).font(KFont.ui(12)).foregroundStyle(theme.muted) }
+            VStack(alignment: .leading, spacing: actionsBelow ? KSpace.x2 : 2) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(KFont.ui(13, .semibold)).foregroundStyle(theme.fg)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let message { Text(message).font(KFont.ui(12)).foregroundStyle(theme.muted) }
+                }
+                if actionsBelow { actions }
             }
             Spacer(minLength: KSpace.x2)
-            actions
+            if !actionsBelow { actions }
             if let onClose { KIconButton(.close, title: "Close", size: .small, action: onClose) }
         }
         .padding(.horizontal, KSpace.x4)

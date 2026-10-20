@@ -63,6 +63,9 @@ belongs to, newest first.
 
 - **Search by meaning on large spaces**: a search by meaning or hybrid search took minutes in a
   space of a few thousand notes (170 s on 2,700 notes and 20,000 chunks); it takes about 40 ms.
+- **A deep `KNODE_HOME`**: when the Knode Service socket would be longer than a Unix socket path
+  may be, commands and `knode service run` say so, with the length and the limit, and ask for a
+  shorter folder, instead of only "could not start".
 
 ### v0.2 - Spaces and permissions
 
