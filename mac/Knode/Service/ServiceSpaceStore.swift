@@ -136,6 +136,21 @@ public actor ServiceSpaceStore: SpaceStore {
         _ = try await call("undo", params, as: WireChange.self, change: change)
     }
 
+    /// Links two nodes through the service, so its other clients see the link.
+    public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "from": .string(from), "to": .string(to), "kind": .string(kind), "by": author]
+        _ = try await call("link.create", params, as: WireLink.self, node: from)
+    }
+
+    /// Removes a link through the service. Returns whether there was one.
+    @discardableResult
+    public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws -> Bool {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "from": .string(from), "to": .string(to), "kind": .string(kind), "by": author]
+        return try await call("link.delete", params, as: Bool.self, node: from)
+    }
+
     // Knode Service has no methods yet to rename a space or change its settings: `RoutingSpaceStore`
     // does those with the core in the app.
 
@@ -260,13 +275,18 @@ struct WireNode: Decodable, Sendable {
     var body: String
     var createdAt: Int64
     var updatedAt: Int64
+    var kind: String?
 }
 
 struct WireSummary: Decodable, Sendable {
     var id: String
     var title: String
     var updatedAt: Int64
+    var kind: String?
 }
+
+/// A link, as `link.create` returns it; the app only needs to know it was made.
+struct WireLink: Decodable, Sendable {}
 
 struct WireHit: Decodable, Sendable {
     var node: WireSummary
@@ -314,14 +334,15 @@ extension Node {
             title: node.title,
             body: node.body,
             createdAt: Date(unixMilliseconds: node.createdAt),
-            updatedAt: Date(unixMilliseconds: node.updatedAt)
+            updatedAt: Date(unixMilliseconds: node.updatedAt),
+            kind: node.kind ?? NodeKind.note
         )
     }
 }
 
 extension NodeSummary {
     init(_ summary: WireSummary, excerpt: String) {
-        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt))
+        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note)
     }
 }
 

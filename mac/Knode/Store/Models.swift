@@ -148,17 +148,20 @@ public struct Node: Identifiable, Hashable, Sendable {
     public var body: String
     public var createdAt: Date
     public var updatedAt: Date
+    /// What the node is, such as `note`, `conversation` or `canvas`.
+    public var kind: String
 
-    public init(id: ID, title: String, body: String, createdAt: Date, updatedAt: Date) {
+    public init(id: ID, title: String, body: String, createdAt: Date, updatedAt: Date, kind: String = NodeKind.note) {
         self.id = id
         self.title = title
         self.body = body
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.kind = kind
     }
 
     public var summary: NodeSummary {
-        NodeSummary(id: id, title: title, excerpt: NodeSummary.excerpt(of: body), updatedAt: updatedAt)
+        NodeSummary(id: id, title: title, excerpt: NodeSummary.excerpt(of: body), updatedAt: updatedAt, kind: kind)
     }
 }
 
@@ -168,12 +171,15 @@ public struct NodeSummary: Identifiable, Hashable, Sendable {
     public var title: String
     public var excerpt: String
     public var updatedAt: Date
+    /// What the node is, such as `note` or `canvas`.
+    public var kind: String
 
-    public init(id: Node.ID, title: String, excerpt: String, updatedAt: Date) {
+    public init(id: Node.ID, title: String, excerpt: String, updatedAt: Date, kind: String = NodeKind.note) {
         self.id = id
         self.title = title
         self.excerpt = excerpt
         self.updatedAt = updatedAt
+        self.kind = kind
     }
 
     /// The first line of plain text in a Markdown body, without heading or list markers.
