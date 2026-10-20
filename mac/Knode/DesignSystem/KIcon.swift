@@ -12,7 +12,6 @@ struct KGlyph: Hashable, Sendable {
     }
 
     init(_ icon: KnodeIcon) { self.init(rows: icon.rows, title: icon.title) }
-    init(_ icon: KnodeAppIcon) { self.init(rows: icon.rows, title: icon.title) }
 }
 
 /// Icon sizes that keep every cell on whole pixels at 2x: 1.5, 2, 2.5, 3 and 4 points a cell.
@@ -81,6 +80,14 @@ extension KGlyph {
     static let more = KGlyph(KnodeIcon.more)
     static let close = KGlyph(KnodeIcon.close)
     static let done = KGlyph(KnodeIcon.done)
+    static let attach = KGlyph(KnodeIcon.attach)
+    static let canvas = KGlyph(KnodeIcon.canvas)
+    static let split = KGlyph(KnodeIcon.split)
+    static let inspector = KGlyph(KnodeIcon.inspector)
+    static let keyCommand = KGlyph(KnodeIcon.keyCommand)
+    static let keyShift = KGlyph(KnodeIcon.keyShift)
+    static let keyOption = KGlyph(KnodeIcon.keyOption)
+    static let keyReturn = KGlyph(KnodeIcon.keyReturn)
     static let edit = KGlyph(KnodeIcon.edit)
     static let back = KGlyph(KnodeIcon.back)
     static let forward = KGlyph(KnodeIcon.forward)

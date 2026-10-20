@@ -121,7 +121,6 @@
 		EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */; };
 		F348ECE1482AE3F782460575 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2E23B71E09926219E50DCB /* HistoryView.swift */; };
 		F353FDE35EEAD5E56A13857C /* SpaceFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */; };
-		F45A3303A990B87F63455E42 /* KnodeAppIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */; };
 		F4AF196F7D42E171734EEA44 /* AttachingTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */; };
 		F764D3827D9C1E91A25FC033 /* KButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89968EB17D184B8B7CE80952 /* KButtons.swift */; };
 		F8FB0B644C040CD44C4D7C53 /* Geist.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4A8AF2D2FF90CBA41E3A35B4 /* Geist.ttf */; };
@@ -185,7 +184,6 @@
 		3B65FED5CAA2B40891950D07 /* Broadcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Broadcast.swift; sourceTree = "<group>"; };
 		3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachingTextView.swift; sourceTree = "<group>"; };
 		430C04EC06D588A51DC31C79 /* KMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMenus.swift; sourceTree = "<group>"; };
-		43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeAppIcons.swift; sourceTree = "<group>"; };
 		44E4959DD9436CD3C7A1D23F /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; name = AppIcon.icon; path = "../brand/07 App Icon/macOS/AppIcon.icon"; sourceTree = "<group>"; };
 		468649EC2EED11EE0AE574E7 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesTests.swift; sourceTree = "<group>"; };
@@ -306,7 +304,6 @@
 				562BB2A308ED6147D0E1008D /* KIcon.swift */,
 				8F0FA351E61B9C4D7FAEBDB4 /* KInputs.swift */,
 				430C04EC06D588A51DC31C79 /* KMenus.swift */,
-				43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */,
 				16F0498F04B0BEBD7864E40B /* KTheme.swift */,
 				97923B5EC7B62839C6115503 /* Fonts */,
 			);
@@ -815,7 +812,6 @@
 				E6F9AF7518F4D15BB1850BC0 /* KMenus.swift in Sources */,
 				138B4E9F7F71A2FE1C284E2B /* KTheme.swift in Sources */,
 				612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */,
-				F45A3303A990B87F63455E42 /* KnodeAppIcons.swift in Sources */,
 				0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */,
 				CA94681234A819BD84980698 /* KnodeHome.swift in Sources */,
 				A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */,

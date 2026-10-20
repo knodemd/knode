@@ -56,15 +56,4 @@ struct DesignSystemTests {
         let variation = try #require(CTFontCopyVariation(font as CTFont) as? [NSNumber: NSNumber])
         #expect(variation[NSNumber(value: 0x7767_6874)]?.doubleValue == 600)
     }
-
-    @Test func appIconsAreDrawnOnTheSevenBySevenGrid() {
-        for icon in KnodeAppIcon.allCases {
-            #expect(icon.rows.count == 7, "\(icon)")
-            #expect(icon.rows.allSatisfy { $0.count == 7 && $0.allSatisfy { $0 == "#" || $0 == "." } }, "\(icon)")
-            #expect(!KnodeGrid.path(icon.rows).isEmpty, "\(icon)")
-        }
-        // An app icon never shadows a brand icon: once the brand has it, the app uses the brand's.
-        let brand = Set(KnodeIcon.allCases.map(\.rawValue))
-        #expect(KnodeAppIcon.allCases.allSatisfy { !brand.contains($0.rawValue) })
-    }
 }
