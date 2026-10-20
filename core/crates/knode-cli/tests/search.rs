@@ -20,6 +20,21 @@ fn sandbox_with_notes() -> Sandbox {
     sb
 }
 
+/// Whether this build searches by meaning at all (not on aarch64 Linux yet).
+const SEMANTIC: bool = cfg!(all(
+    feature = "semantic",
+    not(all(target_arch = "aarch64", target_os = "linux"))
+));
+
+/// The note a search by words prints when meaning was asked for.
+fn fallback_note() -> &'static str {
+    if SEMANTIC {
+        "note: Search by meaning is off"
+    } else {
+        "note: This build of Knode searches by words only"
+    }
+}
+
 fn json(out: &str) -> Value {
     serde_json::from_str(out).unwrap()
 }
@@ -33,10 +48,7 @@ fn search_flags_pick_the_mode_and_fall_back_to_words() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stdout.starts_with("1. Cat  (note, "), "{stdout}");
-    assert!(
-        stderr.contains("note: Search by meaning is off"),
-        "{stderr}"
-    );
+    assert!(stderr.contains(fallback_note()), "{stderr}");
 
     let found = json(&sb.ok(&["search", "cat", "--meaning", "--json"]));
     assert_eq!(found["mode"], "words");
@@ -57,7 +69,12 @@ fn index_off_turns_it_off_in_the_config() {
     let config = fs::read_to_string(sb.knode_home().join("config.toml")).unwrap();
     assert!(config.contains("embeddings = \"off\""), "{config}");
     let out = sb.ok(&["index", "status"]);
-    assert!(out.contains("Search by meaning: off"), "{out}");
+    let expected = if SEMANTIC {
+        "Search by meaning: off"
+    } else {
+        "Search by meaning: not available"
+    };
+    assert!(out.contains(expected), "{out}");
 }
 
 #[cfg(all(

@@ -33,6 +33,6 @@ jobs:
       # Without the semantic feature (as on aarch64 Linux until #108): search is by words.
       - run: cargo clippy -p knode-service -p knode-cli --no-default-features --all-targets -- -D warnings
       - run: cargo test -p knode-service --no-default-features --test search
-      - run: cargo build -p knode-cli --no-default-features
+      - run: cargo test -p knode-cli --no-default-features --test search --test cli
       - name: Mac build input lists are up to date
         run: ../mac/scripts/update-inputs.sh --check
