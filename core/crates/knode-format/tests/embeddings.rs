@@ -366,7 +366,10 @@ fn switching_models_drops_the_old_one_whole() {
     space.use_embedding_model(new.id, &indexer()).unwrap();
 
     assert_eq!(space.embedding_model().unwrap(), Some(new.clone()));
-    assert_eq!(space.embedding_models().unwrap(), [new.clone()]);
+    assert_eq!(
+        space.embedding_models().unwrap(),
+        std::slice::from_ref(&new)
+    );
     assert_eq!(
         count(
             &space,
