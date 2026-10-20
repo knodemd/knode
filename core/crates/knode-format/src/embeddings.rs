@@ -596,27 +596,7 @@ impl Space {
         }
         // 100 chunks for the 50 nodes of the recommendation; more when more nodes are asked for.
         let nearest = NEAREST_CHUNKS.max(limit.saturating_mul(2)).min(4096);
-        // A bare column next to min() comes from the row with the minimum (SQLite), so each
-        // node keeps its nearest chunk.
-        let sql = format!(
-            "WITH hits AS (
-                 SELECT rowid, distance FROM {table} WHERE embedding MATCH ?1 AND k = ?2
-             ),
-             best AS (
-                 SELECT c.node_id, min(hits.distance) AS distance, c.ord, c.text_start,
-                        c.text_end, c.heading
-                 FROM hits JOIN embedding_chunks c ON c.id = hits.rowid AND c.model_id = ?3
-                 GROUP BY c.node_id
-             )
-             SELECT {SUMMARY_COLUMNS}, best.distance, best.ord, best.text_start, best.text_end,
-                    best.heading,
-                    substr(n.plain, best.text_start + 1, best.text_end - best.text_start)
-             FROM best
-             JOIN nodes n ON n.id = best.node_id
-             JOIN provenance u ON u.id = n.updated_by
-             ORDER BY best.distance, n.id
-             LIMIT ?4"
-        );
+        let sql = nearest_sql(&table);
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(
             params![vector_blob(query), nearest as i64, id, limit_param(limit)],
@@ -753,6 +733,36 @@ fn best_rank(hit: &HybridHit) -> u32 {
         .min(hit.meaning_rank.unwrap_or(u32::MAX))
 }
 
+/// The query of [`Space::vector_search`]: the `?2` chunks nearest to `?1` in `table`, the
+/// nearest chunk of each node, at most `?4` nodes of model `?3`.
+///
+/// `hits` is materialized so that sqlite-vec runs its search once. Left to the planner, the
+/// join can loop over `embedding_chunks` and run the whole search again for every chunk, which
+/// takes minutes in a space of a few thousand notes.
+fn nearest_sql(table: &str) -> String {
+    // A bare column next to min() comes from the row with the minimum (SQLite), so each
+    // node keeps its nearest chunk.
+    format!(
+        "WITH hits AS MATERIALIZED (
+                 SELECT rowid, distance FROM {table} WHERE embedding MATCH ?1 AND k = ?2
+             ),
+             best AS (
+                 SELECT c.node_id, min(hits.distance) AS distance, c.ord, c.text_start,
+                        c.text_end, c.heading
+                 FROM hits JOIN embedding_chunks c ON c.id = hits.rowid AND c.model_id = ?3
+                 GROUP BY c.node_id
+             )
+             SELECT {SUMMARY_COLUMNS}, best.distance, best.ord, best.text_start, best.text_end,
+                    best.heading,
+                    substr(n.plain, best.text_start + 1, best.text_end - best.text_start)
+             FROM best
+             JOIN nodes n ON n.id = best.node_id
+             JOIN provenance u ON u.id = n.updated_by
+             ORDER BY best.distance, n.id
+             LIMIT ?4"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -778,6 +788,34 @@ mod tests {
         let snippet = chunk_snippet(&long);
         assert!(snippet.ends_with('…'));
         assert_eq!(snippet.trim_end_matches('…').split(' ').count(), 16);
+    }
+
+    #[test]
+    fn search_by_meaning_runs_the_vector_search_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("Plan.knode"), "Plan").unwrap();
+        let spec = EmbeddingModelSpec::new("plan-test", 4);
+        let model = space
+            .add_embedding_model(&spec, &Provenance::person("Test"))
+            .unwrap();
+        let mut stmt = space
+            .conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                nearest_sql(&model.vector_table())
+            ))
+            .unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params![vector_blob(&[0.0; 4]), 100, model.id, 10], |row| {
+                row.get(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.starts_with("MATERIALIZE hits")),
+            "{plan:#?}"
+        );
     }
 
     #[test]
