@@ -34,6 +34,19 @@ fn sample(dir: &std::path::Path) -> Space {
             &me,
         )
         .unwrap();
+    // Written by a person, changed by an agent in a session.
+    space
+        .update_node(
+            &roadmap.id,
+            NodeUpdate {
+                body: Some("# Roadmap\n\n- [x] v0.1\n- [ ] v0.2\n- [ ] v0.3\n".into()),
+                ..Default::default()
+            },
+            &Provenance::agent("claude-code")
+                .with_session("8f14e45f")
+                .with_source("~/code/knode"),
+        )
+        .unwrap();
     let conversation = space
         .create_node_with_properties(
             NewNode::note("Session: format talk", "> user: what about \"quotes\"?\n")
@@ -100,8 +113,10 @@ fn export_import_export_is_byte_identical() {
     assert_eq!(report.files, 8);
     assert_eq!(report.written.len(), 8);
 
+    // Imported by someone else, into another space.
     let mut copy = Space::create(tmp.path().join("Copy.knode"), "Copy").unwrap();
-    let imported = import(&mut copy, &first, &me()).unwrap();
+    let grace = Provenance::person("Grace");
+    let imported = import(&mut copy, &first, &grace).unwrap();
     assert_eq!(imported.created.len(), 8, "{imported:?}");
     assert!(imported.skipped.is_empty(), "{imported:?}");
     assert_eq!(imported.links, 3);
@@ -110,6 +125,50 @@ fn export_import_export_is_byte_identical() {
     let second = tmp.path().join("second");
     export(&copy, &second).unwrap();
     assert_same(&tree(&first), &tree(&second));
+
+    // Every node keeps its id, dates and provenance; the history says who imported it.
+    for summary in original.recent(100).unwrap() {
+        let before = original.get_node(&summary.id).unwrap().unwrap();
+        let after = copy.get_node(&summary.id).unwrap().unwrap();
+        assert_eq!(
+            (
+                &after.created_at,
+                &after.updated_at,
+                &after.created_by,
+                &after.updated_by
+            ),
+            (
+                &before.created_at,
+                &before.updated_at,
+                &before.created_by,
+                &before.updated_by
+            ),
+            "{}",
+            before.title
+        );
+        assert_eq!(
+            (&after.title, &after.body, &after.kind, &after.tags),
+            (&before.title, &before.body, &before.kind, &before.tags)
+        );
+        assert!(
+            !copy.properties(&summary.id).unwrap().keys().any(|k| [
+                property_keys::ID,
+                property_keys::CREATED,
+                property_keys::UPDATED,
+                property_keys::WRITTEN
+            ]
+            .contains(&k.as_str())),
+            "no workaround properties"
+        );
+        let history = copy.history(&summary.id).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].changed_by, grace);
+    }
+    let roadmap = original.find_by_title("Roadmap").unwrap()[0].id;
+    let node = copy.get_node(&roadmap).unwrap().unwrap();
+    assert_eq!(node.created_by, me());
+    assert_eq!(node.updated_by.session.as_deref(), Some("8f14e45f"));
+    assert_eq!(node.updated_by.source.as_deref(), Some("~/code/knode"));
 
     // The copy has the same links, by its own ids.
     let decision = &copy.find_by_title("Use SQLite").unwrap()[0];
@@ -163,7 +222,7 @@ fn files_look_as_documented() {
     let mut links = [roadmap.to_string(), session.to_string()];
     links.sort();
     let expected = format!(
-        "---\nid: {decision}\nkind: decision\ntags: [format, storage/sqlite]\ncreated: {}\nupdated: {}\nlinks:\n  derived-from: [{session}]\n  part-of: [{roadmap}]\n---\n{}",
+        "---\nid: {decision}\nkind: decision\ntags: [format, storage/sqlite]\ncreated: {}\ncreated_by:\n  kind: person\n  actor: Ada\nupdated: {}\nlinks:\n  derived-from: [{session}]\n  part-of: [{roadmap}]\n---\n{}",
         node.created_at, node.updated_at, node.body
     );
     assert_eq!(String::from_utf8_lossy(&files["Use SQLite.md"]), expected);
@@ -171,6 +230,12 @@ fn files_look_as_documented() {
     let text = String::from_utf8_lossy(&files["Session- format talk.md"]).into_owned();
     assert!(text.contains("title: \"Session: format talk\"\n"), "{text}");
     assert!(text.contains("properties:\n  conversation.agent: claude-code\n  conversation.session: 8f14e45f\n  note: \"true\"\n  odd: \"a: b # c\"\n"), "{text}");
+    let text = String::from_utf8_lossy(&files["Roadmap.md"]).into_owned();
+    assert!(
+        text.contains("created_by:\n  kind: person\n  actor: Ada\nupdated: ")
+            && text.contains("updated_by:\n  kind: agent\n  actor: claude-code\n  session: 8f14e45f\n  source: ~/code/knode\n"),
+        "{text}"
+    );
     let text = String::from_utf8_lossy(&files["2026.md"]).into_owned();
     assert!(!text.contains("title:"), "{text}");
     let text = String::from_utf8_lossy(&files["plan 2.md"]).into_owned();
@@ -254,7 +319,7 @@ fn a_copy_edited_later_shows_its_own_update_time() {
                 body: Some("Changed in the copy.".into()),
                 ..Default::default()
             },
-            &me(),
+            &Provenance::person("Grace"),
         )
         .unwrap();
     let second = tmp.path().join("second");
@@ -264,16 +329,70 @@ fn a_copy_edited_later_shows_its_own_update_time() {
         text.contains(&format!("updated: {}\n", node.updated_at)),
         "{text}"
     );
+    assert!(
+        text.contains("updated_by:\n  kind: person\n  actor: Grace\n"),
+        "{text}"
+    );
     // The id stays the one of the original space.
     let original = space.find_by_title("Roadmap").unwrap()[0].id;
+    assert_eq!(roadmap, original);
     assert!(
         text.starts_with(&format!("---\nid: {original}\n")),
         "{text}"
     );
-    assert_eq!(
-        copy.property(&roadmap, property_keys::ID).unwrap(),
-        Some(original.to_string())
+}
+
+#[test]
+fn copies_made_by_earlier_versions_keep_the_ids_of_their_files() {
+    // Earlier versions gave imported nodes ids of their own and kept the file's id and dates
+    // in properties. Those are still read.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut copy = Space::create(tmp.path().join("Old.knode"), "Old").unwrap();
+    let original = "01JB7Q9W8K3M2N4P5R6S7T8V9X";
+    let node = copy
+        .create_node_with_properties(
+            NewNode::note("Plan", "Kept."),
+            &Properties::from([
+                (property_keys::ID.to_string(), original.to_string()),
+                (
+                    property_keys::CREATED.to_string(),
+                    "2026-01-02T03:04:05.006Z".to_string(),
+                ),
+                (
+                    property_keys::UPDATED.to_string(),
+                    "2026-02-03T04:05:06.007Z".to_string(),
+                ),
+            ]),
+            &me(),
+        )
+        .unwrap();
+    copy.set_property(
+        &node.id,
+        property_keys::WRITTEN,
+        &node.updated_at.to_string(),
+        &me(),
+    )
+    .unwrap();
+    let dir = tmp.path().join("out");
+    export(&copy, &dir).unwrap();
+    let text = fs::read_to_string(dir.join("Plan.md")).unwrap();
+    assert!(
+        text.starts_with(&format!("---\nid: {original}\n")),
+        "{text}"
     );
+    assert!(
+        text.contains("created: 2026-01-02T03:04:05.006Z\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("updated: 2026-02-03T04:05:06.007Z\n"),
+        "{text}"
+    );
+
+    // Importing the file again finds the node by the old id instead of making another one.
+    let report = import(&mut copy, &dir, &me()).unwrap();
+    assert!(report.created.is_empty(), "{report:?}");
+    assert_eq!(copy.node_count().unwrap(), 1);
 }
 
 #[test]

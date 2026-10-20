@@ -55,8 +55,8 @@ pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{
     ActorKind, Agent, AgentKey, Change, ChangeDetail, ChangeId, ChangeOp, Folder, FolderSpec,
-    GrantLevel, HistoryEntry, Link, LinkHistoryEntry, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
+    GrantLevel, HistoryEntry, ImportedNode, Link, LinkHistoryEntry, NewNode, Node, NodeId,
+    NodeSummary, NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
 };
 
 /// The extension of a space package.
@@ -178,4 +178,7 @@ pub mod setting_keys {
     pub const SPACE_ICON: &str = "space.icon";
     /// `on` or `off`: whether captured conversations are written to the space (schema version 3).
     pub const CAPTURE_ENABLED: &str = "capture.enabled";
+    /// The live Markdown folder of the space: a path recorded as folders are (`~/...` or
+    /// absolute) where Knode Service keeps a `.md` file of every node. Off when absent.
+    pub const MARKDOWN_FOLDER: &str = "markdown.folder";
 }

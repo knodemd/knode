@@ -13,9 +13,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use knode_format::{
-    GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Provenance,
-    SearchHit,
+    ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
+    NodeUpdate, Provenance, SearchHit,
 };
+use knode_vault::{ExportReport, ImportReport};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -304,19 +305,21 @@ impl Client {
         self.request(methods::LINK_CREATE, params)
     }
 
-    /// Removes a link. Returns whether there was one.
+    /// Removes a link, recorded as a change by `by`. Returns whether there was one.
     pub fn unlink(
         &self,
         space: impl AsRef<Path>,
         from: &NodeId,
         to: &NodeId,
         kind: &str,
+        by: &Provenance,
     ) -> Result<bool> {
         let params = LinkDeleteParams {
             space: space_path(space.as_ref())?,
             from: *from,
             to: *to,
             kind: kind.to_string(),
+            by: Some(by.clone()),
         };
         self.request(methods::LINK_DELETE, params)
     }
@@ -366,6 +369,151 @@ impl Client {
     /// Every version of a node, oldest first.
     pub fn history(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<HistoryEntry>> {
         self.request(methods::HISTORY, self.node_params(space.as_ref(), id)?)
+    }
+
+    /// The changes of the space, newest first: at most `limit`, and only those older than
+    /// `before` when it is set, to read a long history page by page.
+    pub fn changes(
+        &self,
+        space: impl AsRef<Path>,
+        limit: usize,
+        before: Option<ChangeId>,
+    ) -> Result<Vec<knode_format::Change>> {
+        let params = ChangesParams {
+            space: space_path(space.as_ref())?,
+            subject: None,
+            limit,
+            before,
+        };
+        self.request(methods::CHANGES, params)
+    }
+
+    /// The changes made to one subject, such as a node id, newest first, at most `limit`.
+    pub fn changes_of(
+        &self,
+        space: impl AsRef<Path>,
+        subject: &str,
+        limit: usize,
+    ) -> Result<Vec<knode_format::Change>> {
+        let params = ChangesParams {
+            space: space_path(space.as_ref())?,
+            subject: Some(subject.to_string()),
+            limit,
+            before: None,
+        };
+        self.request(methods::CHANGES, params)
+    }
+
+    /// A change with the versions of nodes and the links it wrote, or `None`.
+    pub fn change(&self, space: impl AsRef<Path>, id: ChangeId) -> Result<Option<ChangeDetail>> {
+        let params = ChangeParams {
+            space: space_path(space.as_ref())?,
+            id,
+        };
+        self.request(methods::CHANGE, params)
+    }
+
+    /// Undoes a change and returns the change that undoes it. Without `force`, fails with the
+    /// `undo_conflict` error when later changes would be overwritten.
+    pub fn undo(
+        &self,
+        space: impl AsRef<Path>,
+        change: ChangeId,
+        force: bool,
+        by: &Provenance,
+    ) -> Result<knode_format::Change> {
+        let params = UndoParams {
+            space: space_path(space.as_ref())?,
+            change,
+            force,
+            by: by.clone(),
+        };
+        self.request(methods::UNDO, params)
+    }
+
+    /// Puts a node back to one of its versions (the `seq` of a row of its history), or
+    /// recovers a deleted node, and returns it.
+    pub fn restore(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        version: i64,
+        by: &Provenance,
+    ) -> Result<Node> {
+        let params = RestoreParams {
+            space: space_path(space.as_ref())?,
+            id: *id,
+            version,
+            by: by.clone(),
+        };
+        self.request(methods::RESTORE, params)
+    }
+
+    /// Erases a node and every version of it for good. Only a person can purge.
+    pub fn purge(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        by: &Provenance,
+    ) -> Result<knode_format::Change> {
+        let params = NodeDeleteParams {
+            space: space_path(space.as_ref())?,
+            id: *id,
+            by: by.clone(),
+        };
+        self.request(methods::PURGE, params)
+    }
+
+    /// Writes the space to the folder `dir` as Markdown files.
+    pub fn export_markdown(
+        &self,
+        space: impl AsRef<Path>,
+        dir: impl AsRef<Path>,
+    ) -> Result<ExportReport> {
+        let params = VaultExportParams {
+            space: space_path(space.as_ref())?,
+            dir: absolute(dir.as_ref())?,
+        };
+        self.request(methods::VAULT_EXPORT, params)
+    }
+
+    /// Reads the Markdown files under `dir`, an export or an Obsidian vault, into the space.
+    pub fn import_markdown(
+        &self,
+        space: impl AsRef<Path>,
+        dir: impl AsRef<Path>,
+        by: &Provenance,
+    ) -> Result<ImportReport> {
+        let params = VaultImportParams {
+            space: space_path(space.as_ref())?,
+            dir: absolute(dir.as_ref())?,
+            by: by.clone(),
+        };
+        self.request(methods::VAULT_IMPORT, params)
+    }
+
+    /// The live Markdown folder of the space.
+    pub fn markdown_folder(&self, space: impl AsRef<Path>) -> Result<MarkdownFolder> {
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::MARKDOWN_FOLDER_GET, params)
+    }
+
+    /// Turns the live Markdown folder of the space on at `folder`, or off with `None`. Only a
+    /// person can change it.
+    pub fn set_markdown_folder(
+        &self,
+        space: impl AsRef<Path>,
+        folder: Option<&Path>,
+        by: &Provenance,
+    ) -> Result<MarkdownFolder> {
+        let params = MarkdownFolderSetParams {
+            space: space_path(space.as_ref())?,
+            folder: folder.map(absolute).transpose()?,
+            by: by.clone(),
+        };
+        self.request(methods::MARKDOWN_FOLDER_SET, params)
     }
 
     fn node_params(&self, space: &Path, id: &NodeId) -> Result<NodeParams> {

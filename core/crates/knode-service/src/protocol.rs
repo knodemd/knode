@@ -5,7 +5,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use knode_format::{NodeId, NodeUpdate, Provenance, Space};
+use knode_format::{ChangeId, NodeId, NodeUpdate, Provenance, Space};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -41,6 +41,24 @@ pub mod methods {
     pub const RECENT: &str = "recent";
     /// Every version of a node.
     pub const HISTORY: &str = "history";
+    /// The changes of a space, or of one subject such as a node, newest first.
+    pub const CHANGES: &str = "changes";
+    /// One change with the versions and links it wrote.
+    pub const CHANGE: &str = "change";
+    /// Undoes a change.
+    pub const UNDO: &str = "undo";
+    /// Puts a node back to one of its versions, or recovers a deleted node.
+    pub const RESTORE: &str = "restore";
+    /// Erases a node and every version of it, for good. People only.
+    pub const PURGE: &str = "purge";
+    /// Writes a space to a folder of Markdown files.
+    pub const VAULT_EXPORT: &str = "vault.export";
+    /// Reads a folder of Markdown files, or an Obsidian vault, into a space.
+    pub const VAULT_IMPORT: &str = "vault.import";
+    /// The live Markdown folder of a space.
+    pub const MARKDOWN_FOLDER_GET: &str = "markdown.folder.get";
+    /// Turns the live Markdown folder of a space on, moves it, or turns it off. People only.
+    pub const MARKDOWN_FOLDER_SET: &str = "markdown.folder.set";
     /// Starts `changed` notifications on this connection.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Stops `changed` notifications on this connection.
@@ -92,6 +110,15 @@ pub mod codes {
     /// The connection may not make this call: an agent writing where it may only read, or
     /// doing what only a person can.
     pub const FORBIDDEN: i64 = -32011;
+    /// The change cannot be undone: its kind of change is not undone, or the versions it
+    /// needs were purged.
+    pub const CANNOT_UNDO: i64 = -32020;
+    /// The change was already undone.
+    pub const ALREADY_UNDONE: i64 = -32021;
+    /// Undoing the change would overwrite later changes; `data.later` lists them.
+    pub const UNDO_CONFLICT: i64 = -32022;
+    /// A folder of Markdown files could not be read or written.
+    pub const FOLDER: i64 = -32024;
 }
 
 /// An error answered by the service: a JSON-RPC error object.
@@ -139,12 +166,35 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+impl From<knode_vault::Error> for RpcError {
+    fn from(e: knode_vault::Error) -> Self {
+        match e {
+            knode_vault::Error::Space(e) => e.into(),
+            other => RpcError::new(codes::FOLDER, other.to_string()).with_kind("folder"),
+        }
+    }
+}
+
 impl From<knode_format::Error> for RpcError {
     fn from(e: knode_format::Error) -> Self {
         use knode_format::Error as E;
         let message = e.to_string();
         let (code, kind) = match e {
-            E::NotFound(_) => (codes::NOT_FOUND, "not_found"),
+            E::NotFound(_) | E::ChangeNotFound(_) => (codes::NOT_FOUND, "not_found"),
+            E::CannotUndo { .. } => (codes::CANNOT_UNDO, "cannot_undo"),
+            E::AlreadyUndone { undone_by, .. } => {
+                let mut error = RpcError::new(codes::ALREADY_UNDONE, message);
+                error.data = Some(serde_json::json!({
+                    "kind": "already_undone",
+                    "undone_by": undone_by,
+                }));
+                return error;
+            }
+            E::UndoConflict { later, .. } => {
+                let mut error = RpcError::new(codes::UNDO_CONFLICT, message);
+                error.data = Some(serde_json::json!({ "kind": "undo_conflict", "later": later }));
+                return error;
+            }
             E::NotASpace(_) => (codes::NOT_A_SPACE, "not_a_space"),
             E::AlreadyExists(_) => (codes::ALREADY_EXISTS, "already_exists"),
             E::Invalid(_) => (codes::INVALID, "invalid"),
@@ -316,6 +366,76 @@ pub(crate) struct LinkDeleteParams {
     pub to: NodeId,
     #[serde(default = "default_link_kind")]
     pub kind: String,
+    /// Left out by clients older than v0.2: the change is then recorded as Knode's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Provenance>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ChangesParams {
+    pub space: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<ChangeId>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ChangeParams {
+    pub space: PathBuf,
+    pub id: ChangeId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct UndoParams {
+    pub space: PathBuf,
+    pub change: ChangeId,
+    #[serde(default)]
+    pub force: bool,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RestoreParams {
+    pub space: PathBuf,
+    pub id: NodeId,
+    pub version: i64,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct VaultExportParams {
+    pub space: PathBuf,
+    pub dir: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct VaultImportParams {
+    pub space: PathBuf,
+    pub dir: PathBuf,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct MarkdownFolderSetParams {
+    pub space: PathBuf,
+    pub folder: Option<PathBuf>,
+    pub by: Provenance,
+}
+
+/// The live Markdown folder of a space: the result of `markdown.folder.get` and
+/// `markdown.folder.set`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MarkdownFolder {
+    /// The folder as the space records it (`~/...` or absolute), or `None` when it is off.
+    pub folder: Option<String>,
+    /// The folder on this machine, or `None` when it is off.
+    pub path: Option<PathBuf>,
+    /// A warning for a folder inside iCloud Drive, Dropbox, OneDrive or Google Drive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

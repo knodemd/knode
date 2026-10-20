@@ -53,12 +53,13 @@ grant takes effect on the next call:
   does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
   its changes are not sent to the agent.
 - With `read`, `space.open`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
-  `links.unresolved`, `search`, `recent`, `history` and `subscribe` are allowed; writes fail with
-  `forbidden`.
-- With `write`, `node.create`, `node.update`, `node.delete`, `link.create` and `link.delete` are
-  allowed too.
-- Creating spaces, managing agents, keys and grants, and every other method are for people only
-  and fail with `forbidden`.
+  `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
+  `markdown.folder.get` and `subscribe` are allowed; writes fail with `forbidden`.
+- With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
+  `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
+  the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
+- Creating spaces, managing agents, keys and grants, `purge`, `markdown.folder.set` and every other
+  method are for people only and fail with `forbidden`.
 - An agent's changes are recorded with `kind` `agent` and, as `actor`, the name of the agent its
   key belongs to, whatever `by` says. `session` and `source` are kept.
 
@@ -120,13 +121,22 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `by` | The node as it is now. Fields left out stay as they are. |
 | `node.delete` | `space`, `id`, `by` | `null`. |
 | `link.create` | `space`, `from`, `to`, `kind`? (default `related`), `by` | The link. |
-| `link.delete` | `space`, `from`, `to`, `kind`? (default `related`) | `true` if there was such a link. |
+| `link.delete` | `space`, `from`, `to`, `kind`? (default `related`), `by`? | `true` if there was such a link. `by` is recorded as who removed it; left out (by clients older than v0.2), the change is recorded as Knode's own, `system`. |
 | `links.from` | `space`, `id` | The links that start from the node. |
 | `links.back` | `space`, `id` | The links that point at the node. |
 | `links.unresolved` | `space`, `id` | The `[[links]]` in the node's text that name no node yet, as written. |
 | `search` | `space`, `query`, `limit`? (default 20, at most 1000) | Search hits, best first. |
 | `recent` | `space`, `limit`? (default 20, at most 1000) | Node summaries, newest change first. |
 | `history` | `space`, `id` | Every version of the node, oldest first. |
+| `changes` | `space`, `subject`?, `limit`? (default 20, at most 1000), `before`? | Changes, newest first: of the whole space, or of one `subject` (a node id, a setting key). With `before` (a change id), only older changes, to read a long history page by page; `before` and `subject` do not go together. |
+| `change` | `space`, `id` (a change id) | `{ "change", "versions", "links" }`: the change, the versions of nodes it wrote and the links it made or removed, or `null`. |
+| `undo` | `space`, `change`, `force`? (default `false`), `by` | The new change that undoes it. Fails with `undo_conflict` when later changes touched the same nodes or links, unless `force` is set; confirm with the person before forcing. |
+| `restore` | `space`, `id`, `version` (the `seq` of a row of its history), `by` | The node as it is now. Also recovers a deleted node: restore it to its `delete` version. |
+| `purge` | `space`, `id`, `by` | The change that records it. Erases the node and every version of it for good. Only a person can purge. |
+| `vault.export` | `space`, `dir` (absolute) | `{ "written", "unchanged", "removed", "files" }`. Writes the space to `dir` as Markdown files; see below. |
+| `vault.import` | `space`, `dir` (absolute), `by` | `{ "created", "updated", "unchanged", "skipped", "attachments", "links" }`. Reads every `.md` file under `dir`, written by `vault.export` or from an Obsidian vault. `skipped` lists `{ "path", "reason" }`. |
+| `markdown.folder.get` | `space` | The live Markdown folder: `{ "folder", "path", "warning"? }`. |
+| `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
 | `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
 | `unsubscribe` | none | `true`. Stops them. |
 | `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. An agent only sees the spaces it may read. |
@@ -173,6 +183,28 @@ order the writes were made:
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
 
+Changes have the shape of the `changes` table of the [.knode specification](https://github.com/knodemd/format)
+(section 17): `{ "id", "changed_at", "changed_by", "action", "subject", "undoes"?, "detail" }`.
+A write that touches many nodes, such as an undo or an import, sends a `changed` notification for
+each node it wrote.
+
+## Markdown
+
+`vault.export` writes one `.md` file per node, with YAML frontmatter for its id, kind, tags,
+dates, provenance, links and properties. Exporting again to the same folder rewrites only the files
+that changed, and never touches files Knode did not write. `vault.import` reads such a folder, or an
+Obsidian vault, into a space: a file whose id is already in the space updates that node; any other
+file becomes a new node that keeps the id, dates and provenance of its frontmatter. Importing again
+never makes duplicates.
+
+**The live Markdown folder** of a space is a folder the service keeps in step with it, one way,
+from the space to the folder. It is off by default; `markdown.folder.set` turns it on and stores
+the folder in the space setting `markdown.folder` (relative to the home folder as `~/...` when it
+is inside it). While it is on, the service writes the whole space to it when it opens the space,
+writes each change within a few seconds, and writes what is left when it stops. A folder inside
+iCloud Drive, Dropbox, OneDrive or Google Drive gets a `warning`: two programs syncing the same
+files can make conflicted copies. A write that fails is logged and tried again a second later.
+
 ## Capture
 
 Knode Service captures every Claude Code and Codex conversation into the default space: one
@@ -203,7 +235,7 @@ match on.
 | -32601 | | No method has this name. |
 | -32602 | `invalid_params` | Params missing or of the wrong type, a bad node id, or a relative `space` path. |
 | -32603 | | Something went wrong inside the service, or it is stopping. |
-| -32001 | `not_found` | No node has this id. |
+| -32001 | `not_found` | No node, or no change, has this id. |
 | -32002 | `not_a_space` | The path is not a `.knode` package. |
 | -32003 | `already_exists` | A space already exists at this path. |
 | -32004 | `invalid` | A value breaks a rule of the format, such as an empty title or a bad kind. |
@@ -211,6 +243,10 @@ match on.
 | -32006 | `storage` | The files of the space could not be read or written. |
 | -32010 | `unauthenticated` | The connection has not authenticated, or its key is unknown or was revoked. |
 | -32011 | `forbidden` | An agent wrote where it may only read, or called a method for people only. |
+| -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
+| -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
+| -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
+| -32024 | `folder` | A folder of Markdown files could not be read or written. |
 
 ```json
 {"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"node 01K83N6V4W5D2XQJ0Y7RZ9T1AB not found","data":{"kind":"not_found"}}}

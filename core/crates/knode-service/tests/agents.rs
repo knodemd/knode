@@ -328,3 +328,83 @@ fn the_access_log_has_no_content_or_queries() {
     assert!(!registry.contains(&key));
     assert!(registry.contains(&fingerprint(&key)));
 }
+
+#[test]
+fn agents_read_history_and_undo_only_their_own_changes() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let claude = f.agent("claude-code");
+    let codex = f.agent("codex");
+    f.grant("claude-code", "Work", GrantLevel::Write);
+    f.grant("codex", "Work", GrantLevel::Read);
+    let claude = f.connect(&claude);
+    let codex = f.connect(&codex);
+
+    let mine = claude
+        .create_node(
+            &work,
+            NewNode::note("Mine", "One."),
+            &Provenance::agent("x"),
+        )
+        .unwrap();
+    let theirs = f
+        .person
+        .create_node(&work, NewNode::note("Hers", "Two."), &me())
+        .unwrap();
+    let my_change = claude.changes_of(&work, &mine.id.to_string(), 1).unwrap()[0].id;
+    let her_change = claude.changes_of(&work, &theirs.id.to_string(), 1).unwrap()[0].id;
+
+    // Reading the history needs read; undo needs write and the agent's own change.
+    assert!(codex.changes(&work, 10, None).unwrap().len() >= 2);
+    assert!(codex.change(&work, my_change).unwrap().is_some());
+    assert_eq!(
+        rpc(codex.undo(&work, my_change, false, &me())).kind(),
+        Some("forbidden")
+    );
+    let other = rpc(claude.undo(&work, her_change, false, &me()));
+    assert_eq!(other.kind(), Some("forbidden"));
+    assert!(
+        other.message.contains("only undo their own"),
+        "{}",
+        other.message
+    );
+    assert_eq!(
+        rpc(claude.undo(&work, my_change, true, &me())).kind(),
+        Some("forbidden")
+    );
+    let undo = claude.undo(&work, my_change, false, &me()).unwrap();
+    assert_eq!(undo.changed_by.actor, "claude-code");
+    assert!(f.person.get_node(&work, &mine.id).unwrap().is_none());
+
+    // Purge, import and the live folder: people only, or write.
+    assert_eq!(
+        rpc(claude.purge(&work, &theirs.id, &me())).kind(),
+        Some("forbidden")
+    );
+    assert_eq!(
+        rpc(claude.set_markdown_folder(&work, Some(&f.dir.path().join("md")), &me())).kind(),
+        Some("forbidden")
+    );
+    assert_eq!(
+        rpc(codex.import_markdown(&work, f.dir.path(), &me())).kind(),
+        Some("forbidden")
+    );
+    assert!(codex.markdown_folder(&work).unwrap().folder.is_none());
+
+    // A link removed by an agent without `by` is still recorded as that agent.
+    let a = claude
+        .create_node(&work, NewNode::note("A", ""), &me())
+        .unwrap();
+    let b = claude
+        .create_node(&work, NewNode::note("B", ""), &me())
+        .unwrap();
+    claude.link(&work, &a.id, &b.id, "related", &me()).unwrap();
+    claude
+        .call(
+            "link.delete",
+            json!({ "space": work, "from": a.id, "to": b.id, "kind": "related" }),
+        )
+        .unwrap();
+    let last = &f.person.changes(&work, 1, None).unwrap()[0];
+    assert_eq!(last.changed_by.actor, "claude-code");
+}
