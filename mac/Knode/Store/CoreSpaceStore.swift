@@ -80,7 +80,8 @@ public final class CoreSpaceStore: SpaceStore {
 
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
         let core = try self.core(space)
-        let info = try await run { try core.rename(name: name) }
+        let author = author
+        let info = try await run { try core.renameAs(name: name, by: author) }
         return spaces.withLock { spaces in
             spaces[space]?.space.name = info.name
             return spaces[space]?.space ?? Space(id: info.id, name: info.name)
@@ -98,8 +99,50 @@ public final class CoreSpaceStore: SpaceStore {
         let icon = try SpaceIcon.normalized(icon)
         let core = try self.core(space)
         let author = author
-        _ = try await run { try core.setSetting(key: SpaceIcon.settingKey, value: icon, by: author) }
+        _ = try await run { try core.changeSetting(key: SpaceIcon.settingKey, value: icon, by: author) }
         spaces.withLock { $0[space]?.space.icon = icon }
+    }
+
+    public func spaceDetails(_ space: Space.ID) async throws -> Space {
+        let core = try self.core(space)
+        let info = try await run { try core.info() }
+        let icon = try await icon(of: space)
+        return try spaces.withLock { spaces in
+            guard var open = spaces[space] else { throw SpaceStoreError.spaceNotFound(space) }
+            open.space.name = info.name
+            open.space.icon = icon
+            spaces[space] = open
+            return open.space
+        }
+    }
+
+    public func captureEnabled(in space: Space.ID) async throws -> Bool {
+        let core = try self.core(space)
+        return try await run { try core.captureEnabled() }
+    }
+
+    public func setCaptureEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.changeSetting(key: CaptureSetting.key, value: enabled ? "on" : "off", by: author) }
+    }
+
+    public func folders(of space: Space.ID) async throws -> [SpaceFolder] {
+        let core = try self.core(space)
+        return try await run { try core.folders() }.map(SpaceFolder.init)
+    }
+
+    public func setFolder(_ folder: FolderDraft, in space: Space.ID) async throws -> SpaceFolder {
+        let core = try self.core(space)
+        let author = author
+        let draft = KnodeCore.FolderDraft(id: folder.id, kind: folder.kind, path: folder.path, capture: folder.capture, rules: folder.rules)
+        return SpaceFolder(try await run { try core.setFolder(folder: draft, by: author) })
+    }
+
+    public func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.removeFolder(id: folder, by: author) }
     }
 
     public func closeSpace(_ space: Space.ID) async {
@@ -191,6 +234,20 @@ public final class CoreSpaceStore: SpaceStore {
 }
 
 // MARK: - From the core
+
+extension SpaceFolder {
+    init(_ folder: KnodeCore.SpaceFolder) {
+        self.init(
+            id: folder.id,
+            kind: folder.kind,
+            path: folder.path,
+            capture: folder.capture,
+            rules: folder.rules,
+            localURL: folder.local.map { URL(filePath: $0, directoryHint: .isDirectory) },
+            isMissing: folder.missing
+        )
+    }
+}
 
 extension Date {
     /// A date from Unix milliseconds, as the core stores them.

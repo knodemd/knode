@@ -96,21 +96,44 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space, retry: false) { store in try await store.undo(change: change, in: space, force: force) }
     }
 
-    // Knode Service has no methods yet to rename a space or change its settings: these go straight
-    // to the space through the core in the app, which SQLite allows next to the service. The
-    // service does not announce them to its other clients.
+    // The name, settings and folders of a space go through the service while it holds the space,
+    // so its other clients and capture see each change at once. Each call is safe to run again
+    // on the core if the service stops meanwhile: it leaves the space the same either way.
 
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
-        let renamed = try await direct(space) { core in try await core.renameSpace(space, to: name) }
-        return renamed
+        try await route(space) { store in try await store.renameSpace(space, to: name) }
+    }
+
+    public func spaceDetails(_ space: Space.ID) async throws -> Space {
+        try await route(space) { store in try await store.spaceDetails(space) }
     }
 
     public func icon(of space: Space.ID) async throws -> String? {
-        try await direct(space) { core in try await core.icon(of: space) }
+        try await route(space) { store in try await store.icon(of: space) }
     }
 
     public func setIcon(_ icon: String?, of space: Space.ID) async throws {
-        try await direct(space) { core in try await core.setIcon(icon, of: space) }
+        try await route(space) { store in try await store.setIcon(icon, of: space) }
+    }
+
+    public func captureEnabled(in space: Space.ID) async throws -> Bool {
+        try await route(space) { store in try await store.captureEnabled(in: space) }
+    }
+
+    public func setCaptureEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        try await route(space) { store in try await store.setCaptureEnabled(enabled, in: space) }
+    }
+
+    public func folders(of space: Space.ID) async throws -> [SpaceFolder] {
+        try await route(space) { store in try await store.folders(of: space) }
+    }
+
+    public func setFolder(_ folder: FolderDraft, in space: Space.ID) async throws -> SpaceFolder {
+        try await route(space) { store in try await store.setFolder(folder, in: space) }
+    }
+
+    public func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws {
+        try await route(space) { store in try await store.removeFolder(folder, from: space) }
     }
 
     public func closeSpace(_ space: Space.ID) async {
@@ -131,7 +154,7 @@ public actor RoutingSpaceStore: SpaceStore {
     /// Opens or creates a space through the service, or through the core when the service is not
     /// running.
     private func openWith(_ open: (any SpaceStore) async throws -> Space) async throws -> Space {
-        var space: Space
+        let space: Space
         let backend: Backend
         do {
             space = try await open(service)
@@ -141,11 +164,6 @@ public actor RoutingSpaceStore: SpaceStore {
             backend = .core
         }
         if let url = space.url { self.open[space.id] = (url, backend) }
-        if backend == .service, let url = space.url {
-            // The service reads the manifest once; the app may have renamed the space since.
-            space.name = SpaceManifest.name(at: url) ?? space.name
-            space.icon = try? await icon(of: space.id)
-        }
         return space
     }
 
@@ -214,8 +232,9 @@ extension RoutingSpaceStore: CoeditingStore {
 // MARK: - Map
 
 // Knode Service has no methods yet for link kinds, labelled links, views, positions or canvases:
-// these go straight to the space through the core in the app, as renaming does. Making and removing
-// a link goes through the service while it holds the space, so its other clients see the change.
+// these go straight to the space through the core in the app, which SQLite allows next to the
+// service. Making and removing a link goes through the service while it holds the space, so its
+// other clients see the change.
 extension RoutingSpaceStore: MapStore {
     public func linkKinds(in space: Space.ID) async throws -> [LinkKindInfo] {
         try await direct(space) { core in try await core.linkKinds(in: space) }

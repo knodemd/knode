@@ -145,6 +145,30 @@ public final class ServiceConnection: Sendable {
         return result
     }
 
+    /// Sends `method` with `params` and returns its result as JSON text, with its keys as the
+    /// service wrote them, for results that hold JSON of any shape, such as the rules of a folder.
+    public func callJSON(_ method: String, _ params: [String: JSONValue] = [:]) async throws -> Data {
+        let line = try await send(method, params)
+        let response: Response<Ignored>
+        do {
+            response = try Self.decoder.decode(Response<Ignored>.self, from: line)
+        } catch {
+            throw ServiceError.badResponse(String(describing: error))
+        }
+        if let error = response.error {
+            throw ServiceError.remote(code: error.code, kind: error.data?.kind, message: error.message, later: error.data?.later ?? [])
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let result = object["result"],
+              let data = try? JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
+        else { throw ServiceError.badResponse("no result") }
+        return data
+    }
+
+    /// Any result, not read.
+    private struct Ignored: Decodable {
+        init(from decoder: any Decoder) throws {}
+    }
+
     private func send(_ method: String, _ params: [String: JSONValue]) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             let id: Int? = state.withLock { state in

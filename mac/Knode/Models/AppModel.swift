@@ -8,6 +8,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case icon(URL)
     /// Which agents may do what in the space.
     case access(URL)
+    /// The folders that feed the space, and whether it captures.
+    case folders(URL)
 
     var id: Self { self }
 }
@@ -43,6 +45,8 @@ final class AppModel {
     private(set) var defaultSpaceURL: URL?
     /// The sheet shown over the window, if any.
     var sheet: SpaceSheet?
+    /// The space the person asked to take off the sidebar, while they confirm.
+    var spaceToRemove: SpaceItem?
     private(set) var selectedSpaceID: Space.ID?
     /// The nodes shown in the list: every node newest first, or the search results.
     private(set) var nodes: [NodeSummary] = []
@@ -144,7 +148,7 @@ final class AppModel {
         if let library {
             if !library.hasBeenSaved {
                 // The first time, the sidebar lists the spaces Knode already knows.
-                let known = [defaultSpaceURL].compactMap { $0 } + recentSpaceURLs + settings.spacesInFolder()
+                let known = [defaultSpaceURL].compactMap { $0 } + settings.knownSpaces() + recentSpaceURLs + settings.spacesInFolder()
                 for url in known where FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
                     library.add(url)
                 }
@@ -297,8 +301,18 @@ final class AppModel {
         }
     }
 
-    /// Takes a space off the sidebar and closes it. Its files stay where they are.
-    func removeFromList(_ url: URL) async {
+    /// Takes a space off the sidebar and closes it. Its files stay where they are. With `forget`,
+    /// it also leaves the spaces Knode knows (`config.toml`), so capture no longer writes to it.
+    func removeFromList(_ url: URL, forget: Bool = false) async {
+        if forget, url != SpacePanels.exampleURL {
+            do {
+                try settings.forgetSpace(url)
+                reloadDefaultSpace()
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         if let space = space(at: url) {
             if space.id == selectedSpaceID {
                 await editor?.save()
@@ -370,6 +384,9 @@ final class AppModel {
             }
             if !exampleSpaceIDs.contains(space.id), let url = space.url ?? url {
                 remember(space, at: url)
+                // Known to Knode, so capture routes conversations over its folders. Opening the
+                // space never fails for this.
+                try? settings.rememberSpace(url)
                 if let recentSpaces {
                     recentSpaces.add(url)
                     recentSpaceURLs = recentSpaces.urls
@@ -609,8 +626,21 @@ final class AppModel {
     // MARK: Changes made by others
 
     /// Shows a change someone else made, such as an agent writing through Knode Service: the list
-    /// reloads, and the open note too when it changed and has no unsaved edits.
+    /// reloads, and the open note too when it changed and has no unsaved edits. A space renamed or
+    /// given another icon shows its new name and icon.
     func apply(_ change: SpaceChange) async {
+        switch change.kind {
+        case .renamed, .settings:
+            await refreshSpace(change.space)
+            return
+        case .folders:
+            // The Folders and Capture screen follows its space itself.
+            return
+        case .reload:
+            await refreshSpace(change.space)
+        case .create, .update, .delete, .link, .unlink:
+            break
+        }
         guard change.space == selectedSpaceID else { return }
         scheduleReload()
         graph?.reloadSoon()
@@ -641,6 +671,28 @@ final class AppModel {
             if self.editor === editor { self.editor = nil }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Reads the name and icon of an open space again, after someone changed them.
+    func refreshSpace(_ id: Space.ID) async {
+        guard spaces.contains(where: { $0.id == id }), !exampleSpaceIDs.contains(id),
+              let space = try? await store.spaceDetails(id)
+        else { return }
+        update(id) { open in
+            open.name = space.name
+            open.icon = space.icon
+        }
+    }
+
+    /// The Folders and Capture screen of a space, opening the space if needed.
+    func foldersModel(at url: URL) async -> SpaceFoldersModel? {
+        do {
+            let space = try await openedSpace(at: url)
+            return SpaceFoldersModel(space: space, store: store(for: space.id))
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
         }
     }
 

@@ -195,34 +195,107 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(service.requests.contains("history"))
     }
 
-    @Test func routingRenamesWithTheCoreWhileTheServiceHoldsTheSpace() async throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: "KnodeTests-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let spaceURL = folder.appending(path: "Real.knode", directoryHint: .isDirectory)
-        // A real package, as the service would have written it.
+    @Test func routingRenamesAndSetsTheIconThroughTheService() async throws {
         let core = CoreSpaceStore(person: "Ada")
-        let made = try await core.createSpace(at: spaceURL, name: "Real")
-        core.close(made.id)
-
         let store = RoutingSpaceStore(service: ServiceSpaceStore(socketURL: service.socketURL, person: "Ada"), core: core)
-        let space = try await store.openSpace(at: spaceURL)
+        let space = try await store.openSpace(at: url)
         #expect(await store.backend(of: space.id) == .service)
 
         let renamed = try await store.renameSpace(space.id, to: "Renamed")
         #expect(renamed.name == "Renamed")
         try await store.setIcon("🧪", of: space.id)
         #expect(try await store.icon(of: space.id) == "🧪")
-        // The service still holds the space, and the core let go of it.
-        #expect(await store.backend(of: space.id) == .service)
+        try await store.setCaptureEnabled(false, in: space.id)
+        #expect(try await store.captureEnabled(in: space.id) == false)
+        #expect(service.requests.contains("space.rename"))
+        #expect(service.params(of: "settings.set")?["value"] as? String == "off")
+        #expect(service.settings(of: path) == ["space.icon": "🧪", "capture.enabled": "off"])
+        // The core in the app never opened the space.
         #expect(!core.isOpen(space.id))
-        #expect(!service.requests.contains("node.update"))
 
         // Opened again through the service, it shows the new name and icon.
         await store.closeSpace(space.id)
-        let again = try await store.openSpace(at: spaceURL)
+        let again = try await store.openSpace(at: url)
         #expect(again.name == "Renamed")
         #expect(again.icon == "🧪")
+    }
+
+    // MARK: Name, settings and folders through the service
+
+    @Test func storeChangesFoldersThroughTheService() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        #expect(try await store.folders(of: space.id).isEmpty)
+        #expect(try await store.captureEnabled(in: space.id))
+
+        let project = FileManager.default.temporaryDirectory.appending(path: "site", directoryHint: .isDirectory)
+        var draft = FolderDraft.adding(.project, at: project)
+        draft.rules = #"{"exclude":["node_modules/**"],"some_future_key":1}"#
+        let added = try await store.setFolder(draft, in: space.id)
+        #expect(added.kind == "project" && added.capture)
+        #expect(added.path == ServiceSpaceStore.path(of: project))
+        #expect(service.params(of: "folders.set")?["by"] as? [String: String] == ["kind": "person", "actor": "Ada"])
+
+        // Turning capture off keeps the rules as the service wrote them, unknown keys too.
+        let off = try await store.setFolder(added.draft(capture: false), in: space.id)
+        #expect(off.id == added.id && !off.capture)
+        let rules = try #require(service.params(of: "folders.set")?["rules"] as? [String: Any])
+        #expect(rules["exclude"] as? [String] == ["node_modules/**"])
+        #expect(rules["some_future_key"] as? Int == 1)
+
+        let agent = try await store.setFolder(.adding(.agent, at: URL(filePath: "/tmp/kn-sessions"), agent: "codex"), in: space.id)
+        #expect(agent.agent == "codex")
+        #expect(agent.isMissing)
+        await #expect(throws: SpaceStoreError.self) {
+            _ = try await store.setFolder(.adding(.agent, at: URL(filePath: "/tmp/kn-sessions")), in: space.id)
+        }
+        #expect(try await store.folders(of: space.id).map(\.id) == [added.id, agent.id])
+
+        try await store.removeFolder(added.id, from: space.id)
+        #expect(try await store.folders(of: space.id).map(\.id) == [agent.id])
+    }
+
+    @Test func storeHearsAboutChangesToTheSpace() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        var changes = store.changes().makeAsyncIterator()
+
+        service.otherClientRenames(path, to: "Elsewhere")
+        #expect(await changes.next() == SpaceChange(space: space.id, nodeID: nil, kind: .renamed))
+        service.otherClientSets("space.icon", to: "🌱", in: path)
+        #expect(await changes.next() == SpaceChange(space: space.id, nodeID: nil, kind: .settings))
+        service.otherClientAddsFolder("/tmp/kn-project", in: path)
+        #expect(await changes.next() == SpaceChange(space: space.id, nodeID: nil, kind: .folders))
+
+        let details = try await store.spaceDetails(space.id)
+        #expect(details.name == "Elsewhere")
+        #expect(details.icon == "🌱")
+        #expect(try await store.folders(of: space.id).map(\.path) == ["/tmp/kn-project"])
+    }
+
+    @Test func routingChangesFoldersWithTheCoreWithoutAService() async throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "KnodeTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let socket = service.socketURL
+        service.stop()
+        let store = RoutingSpaceStore(service: ServiceSpaceStore(socketURL: socket, person: "Ada"), core: CoreSpaceStore(person: "Ada"))
+        let space = try await store.createSpace(at: folder.appending(path: "Real.knode", directoryHint: .isDirectory), name: "Real")
+        #expect(await store.backend(of: space.id) == .core)
+
+        let project = folder.appending(path: "site", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let added = try await store.setFolder(.adding(.project, at: project), in: space.id)
+        #expect(!added.isMissing)
+        #expect(added.localURL?.standardizedFileURL == project.standardizedFileURL)
+        _ = try await store.setFolder(added.draft(capture: false), in: space.id)
+        #expect(try await store.folders(of: space.id).map(\.capture) == [false])
+        try await store.setCaptureEnabled(false, in: space.id)
+        #expect(try await store.captureEnabled(in: space.id) == false)
+        #expect(try await store.renameSpace(space.id, to: "  Renamed ").name == "Renamed")
+        #expect(try await store.spaceDetails(space.id).name == "Renamed")
+        try await store.removeFolder(added.id, from: space.id)
+        #expect(try await store.folders(of: space.id).isEmpty)
     }
 
     // MARK: History through the service
@@ -312,6 +385,40 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
     }
 
     // MARK: App
+
+    @MainActor
+    @Test func theSidebarFollowsRenamesAndIconsMadeElsewhere() async throws {
+        let store = RoutingSpaceStore(service: ServiceSpaceStore(socketURL: service.socketURL, person: "Ada"), core: CoreSpaceStore(person: "Ada"))
+        let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
+        await model.openSpace(at: url)
+        #expect(model.sidebarSpaces.first?.name == "Test")
+
+        service.otherClientRenames(path, to: "Renamed in the terminal")
+        #expect(try await eventually { model.sidebarSpaces.first?.name == "Renamed in the terminal" })
+        service.otherClientSets("space.icon", to: "🌱", in: path)
+        #expect(try await eventually { model.sidebarSpaces.first?.icon == "🌱" })
+    }
+
+    @MainActor
+    @Test func theFoldersScreenFollowsChangesMadeElsewhere() async throws {
+        let store = RoutingSpaceStore(service: ServiceSpaceStore(socketURL: service.socketURL, person: "Ada"), core: CoreSpaceStore(person: "Ada"))
+        let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
+        let folders = try #require(await model.foldersModel(at: url))
+        defer { folders.stop() }
+        await folders.load()
+        #expect(folders.isLoaded && folders.folders.isEmpty && folders.captureEnabled)
+
+        service.otherClientAddsFolder("/tmp/kn-project", in: path)
+        #expect(try await eventually { folders.folders.map(\.path) == ["/tmp/kn-project"] })
+        service.otherClientSets("capture.enabled", to: "off", in: path)
+        #expect(try await eventually { !folders.captureEnabled })
+
+        await folders.setCapture(false, for: try #require(folders.folders.first))
+        #expect(folders.folders.first?.capture == false)
+        await folders.setCaptureEnabled(true)
+        #expect(folders.captureEnabled)
+        #expect(service.settings(of: path)["capture.enabled"] == nil)
+    }
 
     @MainActor
     @Test func theListFollowsAnAgentsWrites() async throws {
