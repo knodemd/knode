@@ -339,3 +339,27 @@ fn apple_notes_without_access_says_how_to_give_it() {
         error.message
     );
 }
+
+#[test]
+fn readwise_api_needs_no_path_and_a_token() {
+    let what = prepare(None, None, Some(ImportSource::ReadwiseApi)).unwrap();
+    assert_eq!(what.source(), ImportSource::ReadwiseApi);
+    assert!(what.needs_readwise_token());
+    assert_eq!(
+        ImportSource::from_id("readwise-api"),
+        Some(ImportSource::ReadwiseApi)
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("readwise.csv");
+    std::fs::write(&file, "x").unwrap();
+    let error = prepare(Some(&file), None, Some(ImportSource::ReadwiseApi)).unwrap_err();
+    assert!(error.to_string().contains("not from a file"), "{error}");
+
+    // Without a token, nothing is asked of Readwise.
+    let mut space =
+        knode_format::Space::create(tmp.path().join("Reading.knode"), "Reading").unwrap();
+    let error =
+        knode_service::import::run(&mut space, &what.with_readwise_token(None), &me()).unwrap_err();
+    assert!(error.to_string().contains("no Readwise token"), "{error}");
+}

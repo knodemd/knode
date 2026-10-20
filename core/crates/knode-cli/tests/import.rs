@@ -202,3 +202,36 @@ fn imports_directly_when_the_service_cannot_run() {
     );
     assert!(stdout.contains("(Evernote export): 2 new"), "{stdout}");
 }
+
+#[test]
+fn readwise_api_reads_the_token_from_the_credential_store() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let err = sb.fails(&["import", "--from", "readwise-api"]);
+    assert!(err.contains("no Readwise token"), "{err}");
+
+    let mut child = sb
+        .cmd()
+        .args(["readwise", "token", "set"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"rw-test-token\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let kept = sb.knode_home().join("agent-keys/_readwise.key");
+    assert_eq!(fs::read_to_string(&kept).unwrap().trim(), "rw-test-token");
+
+    let out = sb.ok(&["readwise", "token", "delete"]);
+    assert!(out.contains("Forgot"), "{out}");
+    assert!(!kept.exists());
+}
