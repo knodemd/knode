@@ -9,7 +9,8 @@
 //! - [`import_kindle_clippings`] reads `My Clippings.txt` and [`import_kindle_notebook`] the
 //!   notebook a Kindle app exports as HTML, one node per book;
 //! - [`import_readwise_csv`] and [`import_readwise_markdown`] read the CSV and Markdown exports of
-//!   Readwise, one node per book or article.
+//!   Readwise, one node per book or article, and [`import_readwise_api`] reads the same
+//!   highlights through the Readwise API, only what changed since the last sync.
 //!
 //! ```
 //! use knode_format::{Provenance, Space};
@@ -66,6 +67,8 @@ mod kindle;
 mod markdown;
 mod pdf;
 mod readwise;
+#[cfg(feature = "fetch")]
+mod readwise_api;
 mod web;
 
 use knode_format::NodeId;
@@ -74,6 +77,8 @@ use serde::{Deserialize, Serialize};
 pub use kindle::{import_kindle_clippings, import_kindle_notebook};
 pub use pdf::import_pdf;
 pub use readwise::{import_readwise_csv, import_readwise_markdown};
+#[cfg(feature = "fetch")]
+pub use readwise_api::{READWISE_API, import_readwise_api, import_readwise_api_from};
 #[cfg(feature = "fetch")]
 pub use web::{FetchedPage, USER_AGENT, fetch, import_url};
 pub use web::{import_html, import_page};
@@ -115,6 +120,13 @@ pub mod keys {
     /// The `updated_at` of the node when an import last wrote its body: a web page imported again
     /// only updates a node that has not changed since.
     pub const WRITTEN: &str = "reading.written";
+}
+
+/// The space settings the reading importers write.
+pub mod settings {
+    /// When the last sync with the Readwise API started, RFC 3339 in UTC: the next sync only
+    /// fetches the highlights updated after it.
+    pub const READWISE_SYNCED: &str = "reading.readwise.synced";
 }
 
 /// The values of [`keys::SOURCE`].

@@ -11,7 +11,7 @@ use knode_service::{ImportOutcome, ImportedNode};
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 11] = [
+pub const FROM: [&str; 12] = [
     "export",
     "markdown",
     "session",
@@ -19,6 +19,7 @@ pub const FROM: [&str; 11] = [
     "web",
     "kindle",
     "readwise",
+    "readwise-api",
     "apple-notes",
     "bear",
     "notion",
@@ -38,6 +39,8 @@ pub struct Request<'a> {
     pub vault: bool,
     /// `--json`: print the report as JSON.
     pub json: bool,
+    /// The Knode home, where the credential store keeps the Readwise token.
+    pub home: &'a Path,
 }
 
 /// Imports what `request` names into the space at `space`.
@@ -61,13 +64,23 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
         }
     }
     // Checked here first, without the space: a wrong kind or a missing file fails at once.
-    let what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    let mut what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    // The token of this machine; without one, Knode Service reads its own.
+    let token = if what.needs_readwise_token() {
+        knode_service::readwise::token(request.home)?
+    } else {
+        None
+    };
 
     let mut result = match service::client() {
         Some(client) => {
-            let answer = match url {
-                Some(url) => client.import_url(space, url, by),
-                None => client.import_path(space, path.as_deref(), from, by),
+            let answer = if what.needs_readwise_token() {
+                client.import_readwise_api(space, token.as_deref(), by)
+            } else {
+                match url {
+                    Some(url) => client.import_url(space, url, by),
+                    None => client.import_path(space, path.as_deref(), from, by),
+                }
             };
             answer.map_err(|e| match e {
                 knode_service::Error::Rpc(e) => anyhow!(e.message),
@@ -76,6 +89,7 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
         }
         None => {
             let mut space = Space::open(space)?;
+            what = what.with_readwise_token(token);
             import::run(&mut space, &what, by).map_err(|e| anyhow!("{e}"))?
         }
     };
@@ -128,7 +142,11 @@ fn print(result: &ImportResult) {
     // Reading lists every document; other imports, what changed.
     let reading = matches!(
         result.source,
-        ImportSource::Pdf | ImportSource::Web | ImportSource::Kindle | ImportSource::Readwise
+        ImportSource::Pdf
+            | ImportSource::Web
+            | ImportSource::Kindle
+            | ImportSource::Readwise
+            | ImportSource::ReadwiseApi
     );
     let listed: Vec<&ImportedNode> = result
         .nodes

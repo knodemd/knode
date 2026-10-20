@@ -7,6 +7,7 @@ mod import;
 mod index;
 mod maps;
 mod markdown;
+mod readwise;
 mod service;
 mod spaces;
 
@@ -70,11 +71,13 @@ enum Command {
     },
     /// Import into the space: a Claude, ChatGPT or Gemini data export, a folder of Markdown
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
-    /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export, or the notes
-    /// of Apple Notes, Bear, Notion or Evernote. Knode tells which from the path; --from says it.
+    /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
+    /// itself (`--from readwise-api`), or the notes of Apple Notes, Bear, Notion or Evernote.
+    /// Knode tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes` or
-        /// `--from bear` to read the app's own notes on this Mac.
+        /// `--from bear` to read the app's own notes on this Mac, and with
+        /// `--from readwise-api`.
         #[arg(value_name = "PATH|URL", required_unless_present = "from")]
         target: Option<String>,
         /// What it is, when Knode should not guess.
@@ -182,6 +185,11 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         agent: Option<String>,
     },
+    /// Keep or forget the Readwise access token `knode import --from readwise-api` uses.
+    Readwise {
+        #[command(subcommand)]
+        action: readwise::Action,
+    },
     /// List agents, change what they may do in each space, or revoke their keys.
     Agents {
         #[command(subcommand)]
@@ -281,6 +289,7 @@ fn run(cli: Cli) -> Result<()> {
                 from: from.as_deref(),
                 vault,
                 json,
+                home: &paths.home,
             };
             import::run(&space, request, &person())
         }
@@ -341,6 +350,7 @@ fn run(cli: Cli) -> Result<()> {
             _ => connect::list(),
         },
         Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
+        Command::Readwise { action } => readwise::run(&paths, action),
         Command::Agents { action } => agents::run(&paths, action),
         Command::Spaces { action, json } => spaces::run(&paths, action, json),
         Command::Folders { action } => {

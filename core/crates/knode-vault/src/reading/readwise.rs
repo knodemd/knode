@@ -103,7 +103,7 @@ fn collect_md(path: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn write_books(
+pub(super) fn write_books(
     space: &mut Space,
     file: &str,
     books: Vec<Book>,
@@ -132,7 +132,7 @@ fn split_tags(text: &str) -> Vec<String> {
 }
 
 /// A location as Readwise gives it: `Location 120`, `Page 3`.
-fn place(kind: &str, value: &str) -> Option<String> {
+pub(super) fn place(kind: &str, value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
         return None;

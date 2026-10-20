@@ -32,6 +32,8 @@ use registry::{Lookup, MachineAgent, Registry};
 /// machine and the access log.
 #[derive(Debug)]
 pub(crate) struct Auth {
+    /// The Knode home.
+    pub(crate) home: std::path::PathBuf,
     owner: String,
     registry: std::sync::Mutex<Registry>,
     log: AccessLog,
@@ -41,6 +43,7 @@ impl Auth {
     /// Loads the agents of the Knode home `home` and makes its owner token the first time.
     pub fn load(home: &Path) -> std::io::Result<Auth> {
         Ok(Auth {
+            home: home.to_path_buf(),
             owner: owner_token(home)?,
             registry: std::sync::Mutex::new(Registry::load(home)?),
             log: AccessLog::new(home),

@@ -41,6 +41,9 @@ pub enum ImportSource {
     Kindle,
     /// A Readwise export: the CSV, or the Markdown (a `.md` file or the unzipped folder).
     Readwise,
+    /// Readwise through its API, with the token of this machine: only what changed since the
+    /// last sync. People only.
+    ReadwiseApi,
     /// Apple Notes: its database, or notes it exported as Markdown.
     AppleNotes,
     /// Bear: a backup, TextBundles, its database, or notes it exported as Markdown.
@@ -53,7 +56,7 @@ pub enum ImportSource {
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 11] = [
+    pub const ALL: [ImportSource; 12] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -61,6 +64,7 @@ impl ImportSource {
         ImportSource::Web,
         ImportSource::Kindle,
         ImportSource::Readwise,
+        ImportSource::ReadwiseApi,
         ImportSource::AppleNotes,
         ImportSource::Bear,
         ImportSource::Notion,
@@ -68,7 +72,7 @@ impl ImportSource {
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
-    /// `readwise`, `apple-notes`, `bear`, `notion`, `evernote`.
+    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -78,6 +82,7 @@ impl ImportSource {
             ImportSource::Web => "web",
             ImportSource::Kindle => "kindle",
             ImportSource::Readwise => "readwise",
+            ImportSource::ReadwiseApi => "readwise-api",
             ImportSource::AppleNotes => "apple-notes",
             ImportSource::Bear => "bear",
             ImportSource::Notion => "notion",
@@ -263,13 +268,28 @@ pub(crate) struct ImportRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<ImportSource>,
     pub by: Provenance,
+    /// The Readwise token, for `from` `readwise-api`, when the client has one; else the service
+    /// reads its own. Never stored or logged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<Secret>,
+}
+
+/// A token: sent where it is needed, never printed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
 }
 
 /// The sources `import.run` reads, for messages.
 pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of Markdown files, \
      a .md file, a Claude Code or Codex session (.jsonl), a PDF, a saved web page (.html), an \
-     http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, an \
-     Apple Notes or Bear database, a Bear backup, a Notion export or an Evernote .enex file";
+     http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
+     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export or an Evernote .enex file";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +310,7 @@ enum Input {
     KindleNotebook(PathBuf),
     ReadwiseCsv(PathBuf),
     ReadwiseMarkdown(PathBuf),
+    ReadwiseApi(Option<Secret>),
     App(NoteApp, PathBuf),
 }
 
@@ -304,6 +325,7 @@ impl Prepared {
             Input::Html(_) | Input::Url(_) => ImportSource::Web,
             Input::KindleClippings(_) | Input::KindleNotebook(_) => ImportSource::Kindle,
             Input::ReadwiseCsv(_) | Input::ReadwiseMarkdown(_) => ImportSource::Readwise,
+            Input::ReadwiseApi(_) => ImportSource::ReadwiseApi,
             Input::App(app, _) => ImportSource::of_app(*app),
         }
     }
@@ -324,6 +346,7 @@ impl Prepared {
             Input::KindleNotebook(_) => "Kindle notebook".into(),
             Input::ReadwiseCsv(_) => "Readwise CSV export".into(),
             Input::ReadwiseMarkdown(_) => "Readwise Markdown export".into(),
+            Input::ReadwiseApi(_) => "Readwise API".into(),
             Input::App(app, _) => match app {
                 NoteApp::AppleNotes => "Apple Notes".into(),
                 NoteApp::Bear => "Bear".into(),
@@ -333,10 +356,24 @@ impl Prepared {
         }
     }
 
+    /// Whether it reads Readwise through its API, which needs a token.
+    pub fn needs_readwise_token(&self) -> bool {
+        matches!(self.input, Input::ReadwiseApi(_))
+    }
+
+    /// Gives the Readwise token to read Readwise through its API with; nothing otherwise.
+    pub fn with_readwise_token(mut self, token: Option<String>) -> Self {
+        if let Input::ReadwiseApi(slot) = &mut self.input {
+            *slot = token.map(Secret);
+        }
+        self
+    }
+
     /// The path or URL to read.
     pub fn from(&self) -> String {
         match &self.input {
             Input::Url(url) => url.clone(),
+            Input::ReadwiseApi(_) => "readwise.io".into(),
             Input::Export(p)
             | Input::MarkdownFolder(p)
             | Input::MarkdownFile(p)
@@ -389,6 +426,7 @@ pub fn prepare(
                 }
             }
         }
+        (None, None) if from == Some(ImportSource::ReadwiseApi) => Input::ReadwiseApi(None),
         (None, None) => match from.and_then(ImportSource::app) {
             Some(app @ (NoteApp::AppleNotes | NoteApp::Bear)) => {
                 let Some(location) = app.default_location() else {
@@ -462,6 +500,11 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
             Input::ReadwiseCsv(p)
         }
         ImportSource::Readwise => Input::ReadwiseMarkdown(p),
+        ImportSource::ReadwiseApi => {
+            return Err(ImportError::Unknown(
+                "readwise-api reads from Readwise, not from a file: leave the path out".into(),
+            ));
+        }
         ImportSource::AppleNotes
         | ImportSource::Bear
         | ImportSource::Notion
@@ -686,6 +729,18 @@ pub fn run(
             reading::import_readwise_markdown(space, path, by),
             &mut result,
         )?,
+        Input::ReadwiseApi(token) => {
+            let Some(Secret(token)) = token else {
+                return Err(ImportError::Unknown(format!(
+                    "no Readwise token: set {} or run `knode readwise token set`",
+                    crate::readwise::TOKEN_VAR
+                )));
+            };
+            reading_result(
+                reading::import_readwise_api(space, token, None, by),
+                &mut result,
+            )?
+        }
         Input::App(app, path) => {
             let report = apps::import_notes(space, *app, path, by).map_err(app_error)?;
             for n in &report.created {
