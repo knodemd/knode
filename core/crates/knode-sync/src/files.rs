@@ -69,7 +69,11 @@ pub(crate) fn write_update(dir: &Path, bytes: &[u8]) -> io::Result<String> {
     Ok(name)
 }
 
-/// Writes `bytes` to a temporary name starting with `.`, flushes it, and renames it into place.
+/// Writes `bytes` to a temporary name starting with `.`, flushes it to disk, and renames it
+/// into place (21.2).
+///
+/// The folder is not flushed after the rename: a rename lost in a crash loses a file whose edits
+/// SQLite either lacks too or holds, and 21.5 brings the document in step with SQLite then.
 pub(crate) fn write_atomically(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let temp = dir.join(format!(".{name}.{}", ulid::Ulid::generate()));
@@ -77,24 +81,10 @@ pub(crate) fn write_atomically(dir: &Path, name: &str, bytes: &[u8]) -> io::Resu
         let mut file = File::create(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        fs::rename(&temp, dir.join(name))?;
-        sync_dir(dir)
+        fs::rename(&temp, dir.join(name))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
     result
-}
-
-/// Flushes a folder, so a rename into it survives a crash.
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        File::open(dir)?.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
-    }
-    Ok(())
 }
