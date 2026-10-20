@@ -172,6 +172,13 @@ jobs:
             runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+          # Static binaries for musl systems such as Alpine and for glibc older than the
+          # gnu builds need. Each is built on a runner of its own architecture, so the
+          # musl-gcc from musl-tools compiles the C code (bundled SQLite, sqlite-vec).
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -185,6 +192,15 @@ jobs:
           rustup default stable
           rustc --version
 
+      - name: Install musl-tools
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q musl-tools
+          # sqlite-vec names the BSD integer types (u_int8_t and others), which glibc
+          # declares but musl does not by default; map them to the standard ones.
+          echo "TARGET_CFLAGS=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
+
       - name: Build
         working-directory: core
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
@@ -194,8 +210,13 @@ jobs:
           bin="core/target/$TARGET/release/knode"
           file "$bin"
           "$bin" --version | grep -F "$VERSION"
-          # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
-          objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+          if [[ "$TARGET" == *-musl ]]; then
+            # The musl builds must not load anything at run time.
+            file "$bin" | grep -E 'statically linked|static-pie linked'
+          else
+            # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
+            objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+          fi
 
       - name: Package
         run: |
