@@ -661,6 +661,13 @@ fn settings_are_changes_made_by_people() {
             .unwrap()
     );
     assert_eq!(space.setting(setting_keys::SPACE_ICON).unwrap(), None);
+    space
+        .set_setting(setting_keys::CAPTURE_ENABLED, Some("off"), &ada())
+        .unwrap();
+    let all = space.settings().unwrap();
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(all[setting_keys::CAPTURE_ENABLED], "off");
+    assert_eq!(all[setting_keys::SPACE_ID], space.manifest().id);
 
     assert!(matches!(
         space.set_setting(setting_keys::CAPTURE_ENABLED, Some("off"), &claude()),
