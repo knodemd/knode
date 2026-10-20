@@ -193,6 +193,7 @@ private struct KSheetCard<Content: View>: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: KRadius.card, style: .continuous)
         content
+            .environment(\.kInSheetCard, true)
             .padding(KSpace.x6)
             .frame(width: width)
             .background(shape.fill(theme.panel))
