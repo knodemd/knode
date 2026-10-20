@@ -12,7 +12,15 @@ struct MarkdownSourceEditor: NSViewRepresentable {
     let editor: NoteEditorModel
     var attachments: AttachmentDrop?
 
-    static let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+    /// Geist Mono, the type of the source on knode.md.
+    static var font: NSFont { KFont.nsMono(13.5) }
+
+    /// Lines a little apart, like the web's code blocks.
+    static var paragraphStyle: NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 5
+        return style
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(editor: editor)
@@ -21,6 +29,8 @@ struct MarkdownSourceEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
+        scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
         let textView = AttachingTextView()
@@ -38,11 +48,19 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         textView.drawsBackground = false
         textView.font = Self.font
         textView.typingAttributes = Coordinator.attributes
-        textView.textContainerInset = NSSize(width: 18, height: 12)
+        textView.textContainerInset = NSSize(width: 23, height: 20)
+        // The caret and the selection in indigo, never the system accent colour.
+        textView.insertionPointColor = KColor.indigo
+        textView.selectedTextAttributes = [
+            .backgroundColor: KColor.indigo.withAlphaComponent(0.32),
+            .foregroundColor: KColor.ns(\.fg),
+        ]
+        textView.linkTextAttributes = [.foregroundColor: KColor.indigo]
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.string = editor.body
+        textView.textStorage?.setAttributes(Coordinator.attributes, range: NSRange(location: 0, length: (editor.body as NSString).length))
         textView.setAccessibilityLabel("Markdown")
         context.coordinator.textView = textView
         return scroll
@@ -64,7 +82,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         private var patching = false
 
         static var attributes: [NSAttributedString.Key: Any] {
-            [.font: MarkdownSourceEditor.font, .foregroundColor: NSColor.textColor]
+            [.font: MarkdownSourceEditor.font, .foregroundColor: KColor.ns(\.fg), .paragraphStyle: MarkdownSourceEditor.paragraphStyle]
         }
 
         init(editor: NoteEditorModel) {
