@@ -7,7 +7,9 @@
 //! - [`import`] reads a folder of `.md` files into a space: a folder written by [`export`], or
 //!   an Obsidian vault;
 //! - [`LiveFolder`] keeps a folder in step with a space as it changes, one way, from the space
-//!   to the folder.
+//!   to the folder;
+//! - [`reading`] brings in what a person reads: PDFs, web pages, Kindle highlights and Readwise
+//!   exports.
 //!
 //! ```
 //! use knode_format::{NewNode, Provenance, Space};
@@ -111,6 +113,7 @@ mod import;
 mod live;
 mod mirror;
 mod names;
+pub mod reading;
 mod tags;
 mod time;
 
