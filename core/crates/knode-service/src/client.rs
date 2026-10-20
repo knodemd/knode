@@ -383,7 +383,12 @@ impl Client {
         let edited = match (value.get("version"), value.get("seen")) {
             (Some(Value::String(version)), Some(Value::String(seen))) => Some(DocEdited {
                 text: (version != seen)
-                    .then(|| value.get("body").and_then(Value::as_str).map(str::to_string))
+                    .then(|| {
+                        value
+                            .get("body")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                     .flatten(),
                 version: version.clone(),
                 seen: seen.clone(),

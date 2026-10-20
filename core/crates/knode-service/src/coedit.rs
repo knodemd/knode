@@ -103,7 +103,9 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             };
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
-            let written = state.docs().apply_local_edit(&mut space, &p.id, edit, &p.by)?;
+            let written = state
+                .docs()
+                .apply_local_edit(&mut space, &p.id, edit, &p.by)?;
             announce(state, &space, &p.id, &written, &p.by);
             let version = written.version.to_json();
             let seen = written.seen.to_json();
