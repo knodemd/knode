@@ -66,6 +66,9 @@ pub const BODY: &str = "body";
 /// bytes than its snapshot.
 pub const COMPACT_AFTER_FILES: usize = 100;
 
+/// How many times a write is made again when other programs keep writing the same node first.
+const WRITE_ATTEMPTS: usize = 100;
+
 /// How long a character diff of a new full text may take before a line diff is used instead.
 const DIFF_TIMEOUT_MS: f64 = 50.0;
 
@@ -595,12 +598,13 @@ impl Docs {
     fn pull(&mut self, space: &mut Space, node: &Node) -> Result<bool> {
         let id = node.id;
         let peer = self.peer_for(space, &node.updated_by)?;
-        let changed = {
+        let (changed, read) = {
             let _lock = space.loro_lock()?;
             self.load(space, &id)?;
             let body = space.get_node(&id)?.ok_or(Error::NotFound(id))?.body;
-            let row = match space.loro_version(&id)? {
-                Some(row) => Some(Version::from_json(&row)?),
+            let read = space.loro_version(&id)?;
+            let row = match &read {
+                Some(row) => Some(Version::from_json(row)?),
                 None => None,
             };
             let loaded = self.loaded(space, &id);
@@ -625,32 +629,37 @@ impl Docs {
                 let name = files::write_update(&space.loro_dir(&id), &update)?;
                 loaded.read.insert(name);
             }
-            changed
+            (changed, read)
         };
+        // Another program that wrote the node since the lock was released recorded a newer
+        // version with its body: that row stays, and the document catches up with it on the
+        // next read.
         let version = self.loaded(space, &id).version();
-        space.set_loro_version(&id, &version.to_json())?;
+        space.try_set_loro_version(&id, &version.to_json(), read.as_deref())?;
         Ok(changed)
     }
 
     /// Writes the document's text to the node when the document is ahead of `loro_docs`.
     fn push(&mut self, space: &mut Space, node: &NodeId) -> Result<Option<Node>> {
-        let row = match space.loro_version(node)? {
-            Some(row) => Version::from_json(&row)?,
-            None => return Ok(None),
-        };
-        let loaded = self.loaded(space, node);
-        let version = loaded.version();
-        if version == row || !version.includes(&row) {
-            return Ok(None);
+        for _ in 0..WRITE_ATTEMPTS {
+            let row = match space.loro_version(node)? {
+                Some(row) => Version::from_json(&row)?,
+                None => return Ok(None),
+            };
+            let loaded = self.loaded(space, node);
+            let version = loaded.version();
+            if version == row || !version.includes(&row) {
+                return Ok(None);
+            }
+            let text = loaded.text().to_string();
+            let by = provenance_of(space, &version, &row)?;
+            match space.try_write_loro_body(node, &text, &version.to_json(), &by)? {
+                Some(written) => return Ok(Some(written)),
+                // Another program wrote since `row` was read: read its edits and look again.
+                None => self.load(space, node)?,
+            }
         }
-        let text = loaded.text().to_string();
-        let by = provenance_of(space, &version, &row)?;
-        Ok(Some(space.write_loro_body(
-            node,
-            &text,
-            &version.to_json(),
-            &by,
-        )?))
+        Err(busy())
     }
 
     /// Writes what the document gained since `before`: the update file, then the node and its
@@ -677,8 +686,7 @@ impl Docs {
         let update = loaded.doc.export(ExportMode::updates(before))?;
         let name = files::write_update(&dir, &update)?;
         loaded.read.insert(name);
-        let text = loaded.text().to_string();
-        let written = space.write_loro_body(node, &text, &version.to_json(), by)?;
+        let written = self.write_body(space, node, by)?;
         if Self::needs_compaction(space, node)? {
             self.compact(space, node)?;
         }
@@ -689,6 +697,37 @@ impl Docs {
             update,
         })
     }
+}
+
+impl Docs {
+    /// Writes the document's text and version to the node, after the update file holding the
+    /// edit was written.
+    ///
+    /// Another program may have written the body since this one read the files, with edits this
+    /// document lacks: writing over it would undo them in the body until the next write. Their
+    /// update files were written before the body, so they are read and merged, and the write is
+    /// made again with them.
+    fn write_body(&mut self, space: &mut Space, node: &NodeId, by: &Provenance) -> Result<Node> {
+        for _ in 0..WRITE_ATTEMPTS {
+            let loaded = self.loaded(space, node);
+            let text = loaded.text().to_string();
+            let version = loaded.version().to_json();
+            match space.try_write_loro_body(node, &text, &version, by)? {
+                Some(written) => return Ok(written),
+                None => self.load(space, node)?,
+            }
+        }
+        Err(busy())
+    }
+}
+
+/// The error when other programs kept writing a node first for [`WRITE_ATTEMPTS`] tries. The
+/// edit is in the document's files, and the next operation on the node writes it.
+fn busy() -> Error {
+    Error::Io(io::Error::new(
+        io::ErrorKind::ResourceBusy,
+        "other programs kept writing the node; try again",
+    ))
 }
 
 fn key(space: &Space, node: &NodeId) -> (String, NodeId) {

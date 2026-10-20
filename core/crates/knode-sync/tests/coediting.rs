@@ -554,6 +554,20 @@ fn three_programs_writing_at_once_lose_nothing() {
             );
         }
     }
+    // Nor did the body lose an edit on the way: once written, an edit stays in every later body.
+    let mut history = space.history(&id).unwrap();
+    history.sort_by_key(|entry| entry.seq);
+    let mut kept: Vec<String> = Vec::new();
+    for entry in history {
+        for edit in &kept {
+            assert!(entry.body.contains(edit), "{edit} lost: {}", entry.body);
+        }
+        kept = ["ada", "claude", "codex"]
+            .iter()
+            .flat_map(|name| (0..25).map(move |i| format!("[{name} {i}]")))
+            .filter(|edit| entry.body.contains(edit))
+            .collect();
+    }
 }
 
 #[test]

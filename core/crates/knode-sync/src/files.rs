@@ -111,8 +111,9 @@ mod tests {
             let stop = stop.clone();
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    let names: Vec<String> =
-                        (0..20).map(|_| write_update(&path, b"x").unwrap()).collect();
+                    let names: Vec<String> = (0..20)
+                        .map(|_| write_update(&path, b"x").unwrap())
+                        .collect();
                     for name in names {
                         fs::remove_file(updates_dir(&path).join(name)).unwrap();
                     }
