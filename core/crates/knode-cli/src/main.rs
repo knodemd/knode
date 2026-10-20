@@ -2,7 +2,6 @@
 
 mod agents;
 mod connect;
-mod exports;
 mod history;
 mod import;
 mod index;
@@ -69,15 +68,24 @@ enum Command {
         #[command(subcommand)]
         action: index::IndexAction,
     },
-    /// Import a Claude, ChatGPT or Gemini (Google Takeout) data export, a folder of Markdown
-    /// files (an export or an Obsidian vault), a Markdown file, or a Claude Code or Codex
-    /// session.
+    /// Import into the space: a Claude, ChatGPT or Gemini data export, a folder of Markdown
+    /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
+    /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export, or the notes
+    /// of Apple Notes, Bear, Notion or Evernote. Knode tells which from the path; --from says it.
     Import {
-        /// A data export (.zip or its folder), a folder, a .md file, or a session .jsonl file.
-        path: PathBuf,
+        /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes` or
+        /// `--from bear` to read the app's own notes on this Mac.
+        #[arg(value_name = "PATH|URL", required_unless_present = "from")]
+        target: Option<String>,
+        /// What it is, when Knode should not guess.
+        #[arg(long, value_name = "KIND", value_parser = import::FROM)]
+        from: Option<String>,
         /// The folder is an Obsidian vault (only changes the wording of the summary).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "from")]
         vault: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Show the links of a node, going out and coming in, each as it reads from the node.
     Links {
@@ -251,21 +259,20 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             index::run(&paths, &space, action)
         }
-        Command::Import { path, vault } => {
+        Command::Import {
+            target,
+            from,
+            vault,
+            json,
+        } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
-            if !vault && exports::is_export(&path) {
-                exports::import(&space, &path, &person())
-            } else if path.is_dir() {
-                markdown::import(&space, &absolute(&path)?, vault, &person())
-            } else if vault {
-                bail!(
-                    "{} is not a folder: --vault takes an Obsidian vault folder",
-                    path.display()
-                )
-            } else {
-                let backend = service::backend(&space)?;
-                import::run(backend.as_ref(), &path, &person())
-            }
+            let request = import::Request {
+                target: target.as_deref(),
+                from: from.as_deref(),
+                vault,
+                json,
+            };
+            import::run(&space, request, &person())
         }
         Command::Links { node, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;

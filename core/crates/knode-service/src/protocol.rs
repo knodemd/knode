@@ -166,6 +166,9 @@ pub mod methods {
     pub const ATTACHMENT_PATH: &str = "attachment.path";
     /// Imports a Claude, ChatGPT or Gemini data export. People only.
     pub const CONVERSATIONS_IMPORT: &str = "conversations.import";
+    /// Imports what is at a path on this machine, or a web page at an `http(s)` URL: a data
+    /// export, Markdown, a session, reading or another app's notes. People only.
+    pub const IMPORT_RUN: &str = "import.run";
 }
 
 /// The JSON-RPC error codes the service answers with.
@@ -206,6 +209,9 @@ pub mod codes {
     pub const UNDO_CONFLICT: i64 = -32022;
     /// A folder of Markdown files could not be read or written.
     pub const FOLDER: i64 = -32024;
+    /// macOS keeps Knode from reading another app's files: the message says how to give Knode
+    /// Full Disk Access.
+    pub const NO_ACCESS: i64 = -32025;
     /// An edit was based on a version of a document that the service does not have: open the
     /// document again with `doc.open`.
     pub const UNKNOWN_VERSION: i64 = -32030;
@@ -265,6 +271,21 @@ impl From<knode_vault::Error> for RpcError {
             knode_vault::Error::Space(e) => e.into(),
             other => RpcError::new(codes::FOLDER, other.to_string()).with_kind("folder"),
         }
+    }
+}
+
+impl From<crate::import::ImportError> for RpcError {
+    fn from(e: crate::import::ImportError) -> Self {
+        use crate::import::ImportError as E;
+        let message = e.to_string();
+        let (code, kind) = match e {
+            E::Space(e) => return e.into(),
+            E::NotFound(_) => (codes::INVALID, "not_found"),
+            E::Unknown(_) => (codes::INVALID, "invalid"),
+            E::NoAccess(_) => (codes::NO_ACCESS, "no_access"),
+            _ => (codes::FOLDER, "folder"),
+        };
+        RpcError::new(code, message).with_kind(kind)
     }
 }
 

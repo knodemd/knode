@@ -1,145 +1,165 @@
-//! `knode import`: a Markdown file or an agent session into a space. Folders are imported by
-//! [`crate::markdown::import`].
+//! `knode import`: anything Knode reads, from a path or an http(s) URL, through Knode Service
+//! (`import.run`) or the space opened directly.
 
-use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use knode_format::{NewNode, NodeUpdate, Provenance, kinds};
-use knode_ingest::{Agent, SessionReader, to_markdown};
-use knode_mcp::Backend;
+use anyhow::{Result, anyhow, bail};
+use knode_format::{Provenance, Space};
+use knode_service::import::{self, ImportResult, ImportSource};
+use knode_service::{ImportOutcome, ImportedNode};
 
-/// Imports `path` into `space`: one Markdown file, or a Claude Code or Codex session file.
-pub fn run(space: &dyn Backend, path: &Path, by: &Provenance) -> Result<()> {
-    let path = crate::absolute(path)?;
-    if path.is_file() {
-        match extension(&path).as_deref() {
-            Some("md" | "markdown") => import_markdown(space, &[path], by),
-            Some("jsonl") => import_session(space, &path),
+use crate::service;
+
+/// The kinds `--from` takes.
+pub const FROM: [&str; 11] = [
+    "export",
+    "markdown",
+    "session",
+    "pdf",
+    "web",
+    "kindle",
+    "readwise",
+    "apple-notes",
+    "bear",
+    "notion",
+    "evernote",
+];
+
+/// How many nodes the summary lists one by one.
+const LISTED: usize = 20;
+
+/// What `knode import` was asked for.
+pub struct Request<'a> {
+    /// A path, or an http(s) URL; none for `--from apple-notes` or `--from bear`.
+    pub target: Option<&'a str>,
+    /// The kind named with `--from`.
+    pub from: Option<&'a str>,
+    /// `--vault`: a folder that is an Obsidian vault.
+    pub vault: bool,
+    /// `--json`: print the report as JSON.
+    pub json: bool,
+}
+
+/// Imports what `request` names into the space at `space`.
+pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
+    let mut from = request
+        .from
+        .map(|id| ImportSource::from_id(id).ok_or_else(|| anyhow!("unknown kind {id:?}")))
+        .transpose()?;
+    let (path, url): (Option<PathBuf>, Option<&str>) = match request.target {
+        Some(t) if import::is_url(t) => (None, Some(t.trim())),
+        Some(t) => (Some(crate::absolute(Path::new(t))?), None),
+        None => (None, None),
+    };
+    if request.vault {
+        match &path {
+            Some(dir) if dir.is_dir() => from = Some(ImportSource::Markdown),
             _ => bail!(
-                "{} is not a data export, a Markdown file or a session: knode import takes a \
-                 Claude, ChatGPT or Gemini (Google Takeout) export, a folder of .md files, a .md \
-                 file, or a Claude Code or Codex session (.jsonl)",
-                path.display()
+                "{} is not a folder: --vault takes an Obsidian vault folder",
+                request.target.unwrap_or("the path")
             ),
         }
+    }
+    // Checked here first, without the space: a wrong kind or a missing file fails at once.
+    let what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+
+    let mut result = match service::client() {
+        Some(client) => {
+            let answer = match url {
+                Some(url) => client.import_url(space, url, by),
+                None => client.import_path(space, path.as_deref(), from, by),
+            };
+            answer.map_err(|e| match e {
+                knode_service::Error::Rpc(e) => anyhow!(e.message),
+                other => anyhow!(other),
+            })?
+        }
+        None => {
+            let mut space = Space::open(space)?;
+            import::run(&mut space, &what, by).map_err(|e| anyhow!("{e}"))?
+        }
+    };
+    if request.vault {
+        result.format = "Obsidian vault".into();
+    }
+    if request.json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        bail!("{} does not exist", path.display())
+        print(&result);
     }
-}
-
-fn extension(path: &Path) -> Option<String> {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-}
-
-/// The title of a Markdown note: its first heading, else the file name without extension.
-pub fn markdown_title(text: &str, path: &Path) -> String {
-    first_heading(text).unwrap_or_else(|| {
-        path.file_stem()
-            .map(|s| s.to_string_lossy().trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Untitled".to_string())
-    })
-}
-
-/// The text of the first ATX heading (`# Title` to `###### Title`) outside code fences and
-/// front matter.
-fn first_heading(text: &str) -> Option<String> {
-    let mut fence: Option<&str> = None;
-    let mut lines = text.lines().peekable();
-    if lines.peek().is_some_and(|l| l.trim_end() == "---") {
-        lines.next();
-        for line in lines.by_ref() {
-            if matches!(line.trim_end(), "---" | "...") {
-                break;
-            }
-        }
-    }
-    for line in lines {
-        let trimmed = line.trim_start();
-        if line.len() - trimmed.len() > 3 {
-            continue;
-        }
-        if let Some(open) = fence {
-            if trimmed.starts_with(open) {
-                fence = None;
-            }
-            continue;
-        }
-        if trimmed.starts_with("```") {
-            fence = Some("```");
-            continue;
-        }
-        if trimmed.starts_with("~~~") {
-            fence = Some("~~~");
-            continue;
-        }
-        let level = trimmed.chars().take_while(|c| *c == '#').count();
-        if !(1..=6).contains(&level) {
-            continue;
-        }
-        let rest = &trimmed[level..];
-        if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
-            continue;
-        }
-        let title = rest.trim().trim_end_matches('#').trim();
-        if !title.is_empty() {
-            return Some(title.to_string());
-        }
-    }
-    None
-}
-
-fn import_markdown(space: &dyn Backend, files: &[PathBuf], by: &Provenance) -> Result<()> {
-    let (mut created, mut unchanged, mut failed) = (0, 0, 0);
-    for file in files {
-        let text = match fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(e) => {
-                eprintln!("skipped {}: {e}", file.display());
-                failed += 1;
-                continue;
-            }
-        };
-        let title = markdown_title(&text, file);
-        // Importing the same file again does not make a copy.
-        let mut same = false;
-        for found in space.find_by_title(&title)? {
-            if let Some(node) = space.get_node(&found.id)?
-                && node.body == text
-            {
-                same = true;
-                break;
-            }
-        }
-        if same {
-            unchanged += 1;
-            continue;
-        }
-        let source = by.clone().with_source(file.display().to_string());
-        match space.create_node(NewNode::note(title, text), &source) {
-            Ok(_) => created += 1,
-            Err(e) => {
-                eprintln!("skipped {}: {e}", file.display());
-                failed += 1;
-            }
-        }
-    }
-    let mut summary = format!("Imported {}", plural(created, "note"));
-    if unchanged > 0 {
-        summary.push_str(&format!(", {unchanged} already there"));
-    }
-    if failed > 0 {
-        summary.push_str(&format!(", {failed} skipped"));
-    }
-    println!("{summary}.");
-    if failed > 0 && created == 0 && unchanged == 0 {
+    if result.read() == 0 && !result.skipped.is_empty() {
         bail!("nothing could be imported");
     }
     Ok(())
+}
+
+/// Prints what the import did: one line with the counts, the nodes, what was skipped and why
+/// (to standard error) and what else is worth knowing.
+fn print(result: &ImportResult) {
+    let mut summary = format!(
+        "Imported {} ({}): {} new, {} updated, {} unchanged",
+        result.from, result.format, result.created, result.updated, result.unchanged
+    );
+    if result.edited > 0 {
+        summary.push_str(&format!(
+            ", {} edited in Knode and left as {}",
+            result.edited,
+            if result.edited == 1 { "it is" } else { "they are" }
+        ));
+    }
+    if result.highlights > 0 {
+        summary.push_str(&format!(
+            ", {} added",
+            plural(result.highlights, "highlight")
+        ));
+    }
+    if result.attached > 0 {
+        summary.push_str(&format!(", {} attached", plural(result.attached, "file")));
+    }
+    if !result.skipped.is_empty() {
+        summary.push_str(&format!(", {} skipped", result.skipped.len()));
+    }
+    println!("{summary}.");
+
+    // Reading lists every document; other imports, what changed.
+    let reading = matches!(
+        result.source,
+        ImportSource::Pdf | ImportSource::Web | ImportSource::Kindle | ImportSource::Readwise
+    );
+    let listed: Vec<&ImportedNode> = result
+        .nodes
+        .iter()
+        .filter(|n| reading || n.outcome != ImportOutcome::Unchanged)
+        .collect();
+    for node in listed.iter().take(LISTED) {
+        println!("  {}", line(node));
+    }
+    if listed.len() > LISTED {
+        println!("  and {} more", listed.len() - LISTED);
+    }
+    for skipped in &result.skipped {
+        eprintln!("skipped {}: {}", skipped.item, skipped.reason);
+    }
+    for note in &result.notes {
+        println!("{note}");
+    }
+}
+
+fn line(node: &ImportedNode) -> String {
+    let outcome = match node.outcome {
+        ImportOutcome::Created => "new",
+        ImportOutcome::Updated => "updated",
+        ImportOutcome::Unchanged => "unchanged",
+        ImportOutcome::Edited => "edited in Knode, left as it is",
+    };
+    let mut line = format!("{outcome}: {}", node.title);
+    if node.highlights > 0 {
+        line.push_str(&format!(" ({} added)", plural(node.highlights, "highlight")));
+    }
+    if let Some(note) = &node.note {
+        line.push_str(&format!(" - {note}"));
+    }
+    line
 }
 
 fn plural(n: usize, noun: &str) -> String {
@@ -147,155 +167,5 @@ fn plural(n: usize, noun: &str) -> String {
         format!("1 {noun}")
     } else {
         format!("{n} {noun}s")
-    }
-}
-
-/// Which agent wrote a session file, from its first records and its name.
-fn detect_agent(path: &Path) -> Result<Agent> {
-    let file = fs::File::open(path).with_context(|| format!("cannot read {}", path.display()))?;
-    for line in BufReader::new(file).lines().take(50) {
-        let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if record.get("sessionId").is_some() {
-            return Ok(Agent::ClaudeCode);
-        }
-        if record.get("type").and_then(|t| t.as_str()) == Some("session_meta")
-            || (record.get("id").is_some() && record.get("instructions").is_some())
-        {
-            return Ok(Agent::Codex);
-        }
-    }
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    if name.starts_with("rollout-") {
-        return Ok(Agent::Codex);
-    }
-    bail!(
-        "{} is not a Claude Code or Codex session file",
-        path.display()
-    )
-}
-
-/// The session id in a file name: the whole name for Claude Code, the UUID at the end for
-/// Codex (`rollout-<time>-<uuid>`).
-fn session_id(agent: Agent, path: &Path) -> String {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    match agent {
-        Agent::Codex => {
-            let tail = stem
-                .len()
-                .checked_sub(36)
-                .and_then(|start| stem.get(start..));
-            match tail {
-                Some(id) if id.chars().filter(|c| *c == '-').count() == 4 => id.to_string(),
-                _ => stem,
-            }
-        }
-        _ => stem,
-    }
-}
-
-/// The Markdown of a conversation without its first line, the `# title` heading, since the
-/// title is the node's own.
-fn conversation_body(markdown: &str) -> String {
-    match markdown.split_once('\n') {
-        Some((first, rest)) if first.starts_with("# ") => rest.trim_start_matches('\n').to_string(),
-        _ => markdown.to_string(),
-    }
-}
-
-fn import_session(space: &dyn Backend, path: &Path) -> Result<()> {
-    let agent = detect_agent(path)?;
-    let mut reader = SessionReader::open(agent, path, session_id(agent, path));
-    reader
-        .poll()
-        .with_context(|| format!("cannot read the session {}", path.display()))?;
-    let conversation = reader.into_conversation();
-    if conversation.is_empty() {
-        bail!("{} has no messages to import", path.display());
-    }
-    let title = conversation.title();
-    let body = conversation_body(&to_markdown(&conversation));
-    let mut by = Provenance::agent(agent.id()).with_session(conversation.session_id.clone());
-    if let Some(project) = &conversation.project {
-        by = by.with_source(project.display().to_string());
-    }
-
-    // The same session imported again updates its node instead of making a copy.
-    for found in space.find_by_title(&title)? {
-        let Some(node) = space.get_node(&found.id)? else {
-            continue;
-        };
-        if node.kind == kinds::CONVERSATION
-            && node.created_by.session.as_deref() == Some(conversation.session_id.as_str())
-        {
-            let update = NodeUpdate {
-                body: Some(body),
-                ..Default::default()
-            };
-            let before = node.updated_at;
-            let node = space.update_node(&node.id, update, &by)?;
-            if node.updated_at == before {
-                println!("\"{title}\" is already imported and unchanged.");
-            } else {
-                println!("Updated the {} conversation \"{title}\".", agent.name());
-            }
-            return Ok(());
-        }
-    }
-    let node = space.create_node(
-        NewNode::note(title.clone(), body).with_kind(kinds::CONVERSATION),
-        &by,
-    )?;
-    println!(
-        "Imported the {} conversation \"{title}\" ({}).",
-        agent.name(),
-        node.id
-    );
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn title_is_the_first_heading() {
-        let p = Path::new("/x/file name.md");
-        assert_eq!(markdown_title("# Hello #\n\ntext", p), "Hello");
-        assert_eq!(
-            markdown_title("intro\n\n## Second level\n", p),
-            "Second level"
-        );
-        assert_eq!(markdown_title("```\n# not this\n```\n# This\n", p), "This");
-        assert_eq!(markdown_title("---\ntitle: x\n---\n# After\n", p), "After");
-        assert_eq!(markdown_title("#hashtag\n", p), "file name");
-        assert_eq!(markdown_title("    # code\n", p), "file name");
-        assert_eq!(markdown_title("", p), "file name");
-    }
-
-    #[test]
-    fn session_ids_come_from_file_names() {
-        assert_eq!(
-            session_id(
-                Agent::Codex,
-                Path::new("rollout-2026-01-02T11-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee.jsonl")
-            ),
-            "0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
-        );
-        assert_eq!(
-            session_id(Agent::ClaudeCode, Path::new("/p/abc.jsonl")),
-            "abc"
-        );
-    }
-
-    #[test]
-    fn conversation_body_drops_the_title() {
-        assert_eq!(conversation_body("# T\n\n## User\nhi\n"), "## User\nhi\n");
-        assert_eq!(conversation_body("no title"), "no title");
     }
 }

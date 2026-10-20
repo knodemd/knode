@@ -12,6 +12,9 @@
 //! - [`spaces`] holds the rules for the name, settings and folders of a space.
 //! - [`search`] searches by words, by meaning or both, and indexes the open spaces in the
 //!   background for search by meaning (the `semantic` feature, on by default).
+//! - [`import`] tells what is at a path or URL (a data export, Markdown, a session, a PDF, a
+//!   web page, Kindle or Readwise highlights, or the notes of Apple Notes, Bear, Notion or
+//!   Evernote) and imports it: `import.run`.
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
@@ -38,6 +41,7 @@ mod capture;
 mod client;
 mod coedit;
 mod error;
+pub mod import;
 #[cfg(semantic)]
 mod index;
 mod install;
@@ -63,6 +67,7 @@ pub use install::{
     LAUNCH_AGENT_LABEL, LoginKind, LoginService, SYSTEMD_UNIT, launch_agent_path,
     launch_agent_plist, systemd_unit, systemd_unit_path,
 };
+pub use import::{ImportOutcome, ImportResult, ImportSource, ImportedNode};
 pub use knode_ingest::{Agent, WatchOptions};
 pub use maps::{
     AttachmentContent, ConversationImport, MAX_INLINE_ATTACHMENT, PositionInput, SkippedItem,
