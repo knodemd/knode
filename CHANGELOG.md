@@ -6,10 +6,99 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+No version is released yet. Everything below is on `main`, so the first release carries all of it.
+It is grouped by the version of the [roadmap](https://knode.md/handbook/roadmap) each change
+belongs to, newest first.
+
+### v0.3 - Map and import (in progress)
+
+#### Added
+
+- **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
+  or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
+  filters and saved views, and canvases where notes are placed, grouped and linked by hand.
+  `knode links`, `knode link --kind` and `knode kinds` do the same from the command line, and the
+  MCP tools `link_kinds` and `read_canvas` let agents use them.
+- **Search by meaning**: a small multilingual model, downloaded once and checked, runs on your own
+  machine; Knode Service indexes every space in the background and pauses on battery.
+  `knode search` ranks by words and meaning together, with `--words` or `--meaning` for one of
+  them, and `knode index` shows how far a space is indexed. The MCP `search` tool takes the same
+  modes and says when it fell back to words and why. In the Mac app, the search field chooses
+  words and meaning, words or meaning, and each result shows how it was found; Settings > Search
+  and the menu bar show the model, how many notes are indexed and Index Now. It works on Linux
+  too, arm64 included. `embeddings = "off"` in `config.toml`, or the switch in the app, turns it
+  off.
+- **Editing together**: you and your agents can edit the same note at once. Edits are merged
+  instead of one overwriting the other, an agent's edit appears live in the open editor, and the
+  history keeps who wrote what.
+- **Attachments**: images, PDFs and other files kept inside the space. In the Mac app, drop or
+  paste them into a note, open them from an Attachments inspector, and see images and PDFs in the
+  preview. `knode attach` and `knode attachments` from the command line, and `attach_file` and
+  `read_attachment` for agents. Markdown export writes them next to each note and import brings
+  them back.
+- **`knode import` for everything you bring in**: besides Markdown and agent sessions, it reads
+  Claude and ChatGPT data exports (the `.zip` or its folder, one node per conversation, Claude
+  projects as notes), PDFs, saved web pages and `http(s)` URLs (fetched only when you give one),
+  Kindle clippings and notebooks, Readwise CSV and Markdown exports, and the notes of Apple Notes
+  (its database, with Full Disk Access, or an export), Bear (backups, TextBundles or its
+  database), Notion (the zipped export) and Evernote (`.enex`). Knode tells which from the path,
+  `--from <kind>` says it, and `--json` prints the report. Importing again updates the same nodes
+  instead of copying them. Gemini exports from Google Takeout are read too, but have not been
+  checked against a real export yet; Perplexity has no export of all threads, so it is not
+  supported; Readwise is read from its exports, not its API. The Mac app has no import screen
+  yet.
+- **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
+  space as edits of the folder's owner, new files become notes, renamed or moved files rename or
+  move their note, and edits made while Knode was not running come in at start. A deleted file
+  never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+
+#### Changed
+
+- **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
+  embeddings and the documents used for editing together. Spaces are upgraded when they are
+  opened.
+- **Markdown export** keeps the kind of each link and the attached files.
+
+### v0.2 - Spaces and permissions
+
+#### Added
+
+- **Several spaces**: the Mac app lists every space like Apple Music libraries, with an icon, and
+  switches with Command-1 to 9 or from the menu bar without restarting Knode Service. Rename a
+  space, give it an emoji icon or make it the default from the app or with `knode spaces rename`,
+  `icon` and `default`.
+- **Folders that feed each space**: `knode folders` and a Folders and Capture screen in the Mac app
+  choose which projects, notes folders and agent folders feed a space. Each conversation is
+  captured into the space whose project folder matches it best, and capture can be turned off
+  per folder or per space.
+- **Permissions in the Mac app**: Settings > Agents lists every agent and sets No Access, Read or
+  Read and Write for each space, and revokes keys.
+- **History and undo**: every change is kept with who made it. `knode history`, `knode undo` and
+  `knode restore` show changes, undo one or bring back an earlier version or a deleted note; an
+  agent may only undo its own changes. In the Mac app, Command-Y shows the history of a note with a
+  comparison, Restore This Version and Undo This Change.
+- **Markdown out and back**: `knode export` writes a space as Markdown files with YAML front
+  matter; `knode import` brings a folder back, keeping ids, dates and who wrote each note, and
+  reads Obsidian vaults with their links, embeds and tags. Notes from a vault come back unchanged
+  except for an added `id:` line.
+- **Live Markdown folder**: `knode markdown folder <dir>` keeps a folder of `.md` files current
+  with every note, for Obsidian, git or anything else (in v0.3 it also reads edits back).
+- **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
+  OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
+  it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
+  Windsurf chats; Windsurf's Cascade conversations are not captured yet, and the Windsurf, Cline
+  and Roo Code formats have not been checked against real sessions.
+
+#### Changed
+
+- `knode spaces` shows each space's icon, which one is the default and where capture is off.
+
+### v0.1 - You use it
+
 The first release, v0.1: one memory that Claude Code and Codex share, a `knode` command, Knode
 Service and a first Mac app.
 
-### Added
+#### Added
 
 - **The `.knode` format, version 0** ([specification](https://github.com/knodemd/format)): a space is a
   package with `manifest.json`, `knode.db` (SQLite), `blobs/` and `sync/`. Every node is Markdown;
@@ -43,12 +132,5 @@ Service and a first Mac app.
   newest first, a Markdown editor with live preview where `[[links]]` open the note they name,
   search, and recent spaces. A menu bar item shows Knode Service and starts or stops it, and the app
   offers to install the `knode` command.
-- **`knode import` for everything you bring in**: besides Claude, ChatGPT and Gemini exports,
-  Markdown and agent sessions, it now reads PDFs, saved web pages and `http(s)` URLs (fetched only
-  when you give one), Kindle clippings and notebooks, Readwise CSV and Markdown exports, and the
-  notes of Apple Notes (its database, with Full Disk Access, or an export), Bear (backups,
-  TextBundles or its database), Notion (the zipped export) and Evernote (`.enex`). Knode tells
-  which from the path, `--from <kind>` says it, and `--json` prints the report. Importing again
-  updates the same nodes instead of copying them. Knode Service does the same with `import.run`.
 - **Builds for macOS and Linux**: Apple silicon, Intel and a universal binary, and Linux x86_64
   and arm64, with checksums. On Linux, `curl -fsSL https://knode.md/install.sh | sh` installs it.
