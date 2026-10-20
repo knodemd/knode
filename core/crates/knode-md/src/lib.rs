@@ -5,6 +5,7 @@
 //! once, when a node is written, so that search and the graph never parse Markdown:
 //!
 //! - [`extract`] returns the plain text to index and the `[[links]]` the body contains;
+//! - [`blocks`] returns the lines of that plain text, marking the headings, for chunking;
 //! - [`rename_links`] rewrites `[[Old title]]` into `[[New title]]` when a node is renamed.
 //!
 //! ```
@@ -58,18 +59,53 @@ pub struct Extracted {
 /// cells, code, link text and image descriptions. Markup, raw HTML and URLs are dropped.
 /// Blocks are separated by a newline; runs of whitespace inside a block become one space.
 pub fn extract(markdown: &str) -> Extracted {
+    read(markdown, None)
+}
+
+/// A block of a node body: one line of its plain text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    /// The text of the block, a line of the plain text.
+    pub text: String,
+    /// The level of the heading, 1 to 6, when the block is a heading.
+    pub heading: Option<u8>,
+}
+
+/// Reads the blocks of a node body: the lines of its plain text, in order, with the level of
+/// each heading. Joined with `\n`, their texts are exactly the plain text of [`extract`].
+///
+/// ```
+/// let blocks = knode_md::blocks("# Plan\n\nShip **v0.1**.\n\n## Q4\n\n- one");
+/// let lines: Vec<_> = blocks.iter().map(|b| (b.text.as_str(), b.heading)).collect();
+/// assert_eq!(lines, [("Plan", Some(1)), ("Ship v0.1.", None), ("Q4", Some(2)), ("one", None)]);
+/// ```
+pub fn blocks(markdown: &str) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    read(markdown, Some(&mut blocks));
+    blocks
+}
+
+fn read(markdown: &str, mut blocks: Option<&mut Vec<Block>>) -> Extracted {
     let mut out = Extracted::default();
     let mut block = String::new();
+    // The level of the heading being read, if inside one.
+    let mut heading: Option<u8> = None;
     // The `[[link]]` being read, if inside one.
     let mut wiki: Option<WikiLink> = None;
 
-    let flush = |block: &mut String, plain: &mut String| {
+    let mut flush = |block: &mut String, plain: &mut String, heading: Option<u8>| {
         let line = block.split_whitespace().collect::<Vec<_>>().join(" ");
         if !line.is_empty() {
             if !plain.is_empty() {
                 plain.push('\n');
             }
             plain.push_str(&line);
+            if let Some(blocks) = blocks.as_deref_mut() {
+                blocks.push(Block {
+                    text: line,
+                    heading,
+                });
+            }
         }
         block.clear();
     };
@@ -113,8 +149,9 @@ pub fn extract(markdown: &str) -> Extracted {
             | Event::TaskListMarker(_)
             | Event::Rule
             | Event::Html(_)
-            | Event::InlineHtml(_)
-            | Event::Start(_) => {}
+            | Event::InlineHtml(_) => {}
+            Event::Start(Tag::Heading { level, .. }) => heading = Some(level as u8),
+            Event::Start(_) => {}
             Event::End(end) => match end {
                 TagEnd::Paragraph
                 | TagEnd::Heading(_)
@@ -127,15 +164,15 @@ pub fn extract(markdown: &str) -> Extracted {
                     if matches!(end, TagEnd::TableCell) {
                         block.push(' ');
                     } else {
-                        flush(&mut block, &mut out.plain);
+                        flush(&mut block, &mut out.plain, heading.take());
                     }
                 }
-                TagEnd::TableRow | TagEnd::TableHead => flush(&mut block, &mut out.plain),
+                TagEnd::TableRow | TagEnd::TableHead => flush(&mut block, &mut out.plain, None),
                 _ => {}
             },
         }
     }
-    flush(&mut block, &mut out.plain);
+    flush(&mut block, &mut out.plain, None);
 
     // A label equal to the target is not a label: `[[Roadmap]]` has none.
     for link in &mut out.links {
@@ -282,6 +319,28 @@ mod tests {
     fn plain_text_reads_code_blocks_and_tables() {
         let md = "```rust\nfn main() {}\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
         assert_eq!(plain_text(md), "fn main() {}\na b\n1 2");
+    }
+
+    #[test]
+    fn blocks_are_the_lines_of_the_plain_text_with_headings() {
+        let md = "Intro\n\n# Plan\n\n> ## Quoted *head*\n\nText\nwraps\n\n#\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n###### Six\n";
+        let blocks = blocks(md);
+        let lines: Vec<_> = blocks.iter().map(|b| (b.text.as_str(), b.heading)).collect();
+        assert_eq!(
+            lines,
+            [
+                ("Intro", None),
+                ("Plan", Some(1)),
+                ("Quoted head", Some(2)),
+                ("Text wraps", None),
+                ("a b", None),
+                ("1 2", None),
+                ("Six", Some(6)),
+            ]
+        );
+        let joined: Vec<_> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(joined.join("\n"), plain_text(md));
+        assert!(super::blocks("").is_empty());
     }
 
     #[test]
