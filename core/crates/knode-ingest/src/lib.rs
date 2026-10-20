@@ -40,6 +40,7 @@ pub mod codex;
 mod copilot;
 mod cursor;
 mod discover;
+mod exports;
 mod filter;
 mod gemini;
 mod model;
@@ -56,6 +57,10 @@ pub use capture::{Capture, CaptureError, CaptureReport, Captured};
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,
     SessionFile, WINDSURF_ROOT_VARIABLE, default_root, default_roots, discover, discover_all,
+};
+pub use exports::{
+    CLAUDE_PROJECT_PROPERTY, ExportFormat, ImportError, ImportReport, Imported, Skipped,
+    detect_export, import_export,
 };
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
@@ -82,7 +87,10 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &serde_json::Value)
         | Agent::Cursor
         | Agent::Windsurf
         | Agent::Cline
-        | Agent::RooCode => {}
+        | Agent::RooCode
+        | Agent::ClaudeAi
+        | Agent::ChatGpt
+        | Agent::GeminiWeb => {}
     }
 }
 
