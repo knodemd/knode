@@ -1,45 +1,137 @@
-import KnodeBrand
 import SwiftUI
 
 /// The graph of a space: every node and typed link, laid out by force. Drag the background to pan,
 /// pinch or scroll with Command to zoom, drag a node to move it, click one to open it.
 struct GraphScreen: View {
     @Bindable var graph: GraphModel
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.kTheme) private var theme
+    @State private var naming: GraphViewNaming?
+    @State private var viewName = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            GraphBar(graph: graph)
-            Divider()
-            ZStack(alignment: .bottomLeading) {
+            GraphBar(graph: graph, naming: $naming, viewName: $viewName)
+            Rectangle().fill(theme.line).frame(height: 1)
+            ZStack {
                 GraphCanvas(graph: graph)
                 if graph.nodes.isEmpty, !graph.isLoading {
-                    ContentUnavailableView(
-                        graph.filter.isEmpty ? "No Notes Yet" : "Nothing Matches",
-                        systemImage: "point.3.connected.trianglepath.dotted",
-                        description: Text(graph.filter.isEmpty ? "Notes and their links appear here." : "No note passes every filter.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    KEmptyState(
+                        icon: .map,
+                        title: graph.filter.isEmpty ? "No notes yet" : "Nothing matches",
+                        message: graph.filter.isEmpty ? "Notes and their links appear here." : "No note passes every filter."
+                    ) {
+                        if !graph.filter.isEmpty {
+                            KButton("Clear filters", icon: .close) { graph.filter = GraphFilter() }
+                        }
+                    }
+                    .allowsHitTesting(!graph.filter.isEmpty)
                 }
-                GraphLegend(graph: graph)
-                    .padding(12)
+            }
+            .overlay(alignment: .topLeading) {
+                GraphFinder(graph: graph).padding(KSpace.x3)
+            }
+            .overlay(alignment: .bottomLeading) {
+                GraphLegend(graph: graph).padding(KSpace.x3)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                MapZoomControls(
+                    zoomOut: { graph.zoom(by: 1 / 1.4) },
+                    zoomIn: { graph.zoom(by: 1.4) },
+                    fit: { graph.fit() }
+                )
+                .padding(KSpace.x3)
+            }
+            .overlay(alignment: .top) {
+                if let error = graph.errorMessage {
+                    KBanner(.error, title: "Something went wrong", message: error, onClose: { graph.errorMessage = nil })
+                        .frame(maxWidth: 520)
+                        .padding(KSpace.x3)
+                }
             }
         }
-        .background(MapInks(scheme).background)
-        .alert(
-            "Something went wrong",
-            isPresented: Binding(get: { graph.errorMessage != nil }, set: { if !$0 { graph.errorMessage = nil } }),
-            actions: { Button("OK") { graph.errorMessage = nil } },
-            message: { Text(graph.errorMessage ?? "") }
-        )
+        .background(theme.bg)
+        .kSheet(item: $naming, width: 400) { kind in
+            GraphViewNameSheet(kind: kind, name: $viewName) {
+                naming = nil
+            } save: {
+                let name = viewName
+                naming = nil
+                switch kind {
+                case .new:
+                    Task { await graph.saveAsNewView(named: name) }
+                case .rename:
+                    if let view = graph.currentView { Task { await graph.rename(view, to: name) } }
+                }
+            }
+        }
         .onDisappear { Task { await graph.flush() } }
+        .knodeTheme()
+    }
+}
+
+/// Naming a saved view: a new one, or the current one again.
+enum GraphViewNaming: Identifiable {
+    case new, rename
+    var id: Self { self }
+}
+
+/// The sheet that names a saved view.
+private struct GraphViewNameSheet: View {
+    let kind: GraphViewNaming
+    @Binding var name: String
+    var cancel: () -> Void
+    var save: () -> Void
+
+    private var isEmpty: Bool { name.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x5) {
+            KSheetHeader(
+                kicker: "Graph view",
+                title: kind == .new ? "Save view" : "Rename view",
+                message: kind == .new ? "Saves the filter, where every note is and what is on screen." : nil
+            )
+            KTextField("Name", text: $name) { if !isEmpty { save() } }
+            HStack(spacing: KSpace.x2) {
+                Spacer()
+                KButton("Cancel", kind: .secondary, action: cancel)
+                Button {
+                    save()
+                } label: {
+                    HStack(spacing: KSpace.x2) {
+                        KIcon(kind == .new ? .save : .edit, size: .sm)
+                        Text(kind == .new ? "Save" : "Rename")
+                    }
+                }
+                .buttonStyle(KButtonStyle(kind: .primary))
+                .keyboardShortcut(.defaultAction)
+                .disabled(isEmpty)
+            }
+        }
+    }
+}
+
+/// Zoom out, zoom in and fit, stacked in a small card in a corner of a map.
+struct MapZoomControls: View {
+    var zoomOut: () -> Void
+    var zoomIn: () -> Void
+    var fit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 2) {
+            KIconButton(.zoomIn, title: "Zoom in", size: .small, action: zoomIn)
+            KIconButton(.zoomOut, title: "Zoom out", size: .small, action: zoomOut)
+            KIconButton(.expand, title: "Fit everything", size: .small, action: fit)
+        }
+        .padding(3)
+        .mapChrome(radius: KRadius.row)
     }
 }
 
 /// Draws the graph and takes the pointer.
 struct GraphCanvas: View {
     @Bindable var graph: GraphModel
-    @Environment(\.colorScheme) private var scheme
+    @Environment(\.kTheme) private var theme
     @State private var gesture: DragKind?
     @State private var startViewport: Viewport?
     @State private var magnifyStart: Viewport?
@@ -143,7 +235,7 @@ struct GraphCanvas: View {
 
     private func draw(in context: inout GraphicsContext, size: CGSize) {
         _ = graph.revision
-        let inks = MapInks(scheme)
+        let inks = MapInks(theme)
         let layout = graph.layout
         let viewport = graph.viewport
         let zoom = viewport.zoom
@@ -153,8 +245,8 @@ struct GraphCanvas: View {
         var screen = [CGPoint](repeating: .zero, count: n)
         for i in 0..<n { screen[i] = viewport.toScreen(layout.position(i), in: size) }
 
-        // Links: `mentions` thin, typed links stronger; those of the node under the pointer in
-        // indigo.
+        // Links: `mentions` in the hairline colour, typed links in indigo; those of the node under
+        // the pointer in full indigo.
         let highlight = graph.hovered ?? graph.focused
         var mentions = Path(), typed = Path(), lit = Path()
         let mentionsIndex = graph.linkKinds.firstIndex { $0.kind == LinkKindInfo.mentions }
@@ -173,14 +265,14 @@ struct GraphCanvas: View {
                 typed.addLine(to: b)
             }
         }
-        let width = min(1.2, max(0.4, zoom))
-        context.stroke(mentions, with: .color(inks.foreground.opacity(0.14)), lineWidth: width * 0.8)
-        context.stroke(typed, with: .color(inks.foreground.opacity(0.32)), style: StrokeStyle(lineWidth: width, dash: [4, 3]))
-        context.stroke(lit, with: .color(inks.indigo), lineWidth: max(1.2, width * 1.6))
+        let width = min(1.4, max(0.6, zoom))
+        context.stroke(mentions, with: .color(inks.line), lineWidth: width)
+        context.stroke(typed, with: .color(inks.indigo.opacity(theme.isDark ? 0.55 : 0.7)), lineWidth: width)
+        context.stroke(lit, with: .color(inks.indigo), lineWidth: max(1.4, width * 1.6))
 
         // Nodes, one path per glyph.
         var paths: [NodeGlyph: Path] = [:]
-        let base = max(1.6, min(7, 4.2 * zoom))
+        let base = max(2, min(7.5, 4.6 * zoom))
         for i in 0..<n where visible.contains(screen[i]) {
             let glyph = graph.glyphs[i]
             let degree = Double(layout.degree[i])
@@ -188,13 +280,7 @@ struct GraphCanvas: View {
             glyph.add(to: &paths[glyph, default: Path()], at: screen[i], radius: r)
         }
         for (glyph, path) in paths {
-            let ink = glyph.indigo ? inks.indigo : inks.foreground
-            if glyph.filled {
-                context.fill(path, with: .color(ink))
-            } else {
-                context.fill(path, with: .color(inks.background))
-                context.stroke(path, with: .color(ink), lineWidth: 1.2)
-            }
+            inks.draw(glyph, path, in: &context, lineWidth: max(1, min(1.6, zoom * 1.3)))
         }
 
         // The focus and the node under the pointer.
@@ -202,15 +288,17 @@ struct GraphCanvas: View {
             guard let index, index < n else { continue }
             let p = screen[index]
             let r = base + ring
-            context.stroke(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)), with: .color(inks.indigo), lineWidth: 2)
+            let circle = Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+            context.fill(circle, with: .color(inks.indigo.opacity(0.12)))
+            context.stroke(circle, with: .color(inks.indigo), lineWidth: 1.5)
         }
 
         // Titles.
         for i in graph.labelled() where i < n && visible.contains(screen[i]) {
             let strong = i == graph.hovered || i == graph.focused
             let text = Text(graph.nodes[i].title)
-                .font(.system(size: strong ? 12 : 10.5, weight: strong ? .semibold : .regular))
-                .foregroundStyle(strong ? inks.foreground : inks.foreground.opacity(0.7))
+                .font(KFont.ui(strong ? 12 : 11, strong ? .semibold : .regular))
+                .foregroundStyle(strong ? inks.foreground : inks.muted)
             context.draw(text, at: CGPoint(x: screen[i].x, y: screen[i].y + base + 9), anchor: .top)
         }
 
@@ -225,200 +313,322 @@ struct GraphCanvas: View {
             let mid = CGPoint(x: (screen[s].x + screen[t].x) / 2, y: (screen[s].y + screen[t].y) / 2)
             let kind = graph.linkKind(ofEdge: k)
             let label = kind?.label ?? graph.edges[k].kind
-            let resolved = context.resolve(Text(label).font(.knodeLine(10)).foregroundStyle(KnodeColor.ink))
-            let textSize = resolved.measure(in: CGSize(width: 240, height: 40))
-            let box = CGRect(x: mid.x - textSize.width / 2 - 5, y: mid.y - textSize.height / 2 - 2, width: textSize.width + 10, height: textSize.height + 4)
-            context.fill(Path(roundedRect: box, cornerRadius: box.height / 2), with: .color(inks.indigo))
-            context.draw(resolved, at: mid)
+            MapLinkLabel.draw(label, at: mid, typed: kind?.kind != LinkKindInfo.mentions, inks: inks, in: &context)
         }
     }
 }
 
-/// The bar above the graph: saved views, filters, search, zoom.
+/// The label of a link on a map: Knode Line in a pill, indigo for typed links.
+enum MapLinkLabel {
+    static func draw(_ label: String, at point: CGPoint, typed: Bool, inks: MapInks, in context: inout GraphicsContext) {
+        let ink = Color(hex: KPalette.dark.bg)
+        let resolved = context.resolve(Text(label.uppercased()).font(KFont.line(10)).tracking(0.2).foregroundStyle(typed ? ink : inks.muted))
+        let textSize = resolved.measure(in: CGSize(width: 240, height: 40))
+        let box = CGRect(x: point.x - textSize.width / 2 - 6, y: point.y - textSize.height / 2 - 3, width: textSize.width + 12, height: textSize.height + 6)
+        let pill = Path(roundedRect: box, cornerRadius: box.height / 2)
+        if typed {
+            context.fill(pill, with: .color(inks.indigo))
+        } else {
+            context.fill(pill, with: .color(inks.panel))
+            context.stroke(pill, with: .color(inks.line), lineWidth: 1)
+        }
+        context.draw(resolved, at: point)
+    }
+}
+
+/// The bar above the graph: saved views, filters and how much is shown.
 struct GraphBar: View {
     @Bindable var graph: GraphModel
-    @State private var isNamingView = false
-    @State private var isRenamingView = false
-    @State private var viewName = ""
-    @FocusState private var searchFocused: Bool
+    @Binding var naming: GraphViewNaming?
+    @Binding var viewName: String
+    @Environment(\.kTheme) private var theme
+    @State private var isFiltering = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: KSpace.x2) {
             viewsMenu
-            filterMenu
-            searchField
-            Spacer(minLength: 8)
-            Text("\(graph.nodes.count.formatted()) notes, \(graph.edges.count.formatted()) links")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            filterButton
+            if !graph.filter.isEmpty {
+                KButton("Clear", icon: .close, kind: .ghost, size: .small) { graph.filter = GraphFilter() }
+                    .kTooltip("Show every note again")
+            }
+            Spacer(minLength: KSpace.x2)
+            if graph.isLoading { KSpinner(size: 12) }
+            Text("\(graph.nodes.count.formatted()) notes  \(graph.edges.count.formatted()) links")
+                .kLineStyle(10)
+                .foregroundStyle(theme.muted)
                 .monospacedDigit()
-            ControlGroup {
-                Button("Zoom Out", systemImage: "minus.magnifyingglass") { graph.zoom(by: 1 / 1.4) }
-                Button("Zoom In", systemImage: "plus.magnifyingglass") { graph.zoom(by: 1.4) }
-                Button("Fit", systemImage: "arrow.up.left.and.down.right.magnifyingglass") { graph.fit() }
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .fixedSize()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .alert("Save View", isPresented: $isNamingView) {
-            TextField("Name", text: $viewName)
-            Button("Save") { Task { await graph.saveAsNewView(named: viewName) } }
-                .disabled(viewName.trimmingCharacters(in: .whitespaces).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Saves the filter, where every note is and what is on screen.")
-        }
-        .alert("Rename View", isPresented: $isRenamingView) {
-            TextField("Name", text: $viewName)
-            Button("Rename") {
-                if let view = graph.currentView { Task { await graph.rename(view, to: viewName) } }
-            }
-            .disabled(viewName.trimmingCharacters(in: .whitespaces).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        }
+        .padding(.horizontal, KSpace.x3)
+        .frame(height: 44)
+        .background(theme.bg)
     }
 
     private var viewsMenu: some View {
-        Menu {
-            Button("Whole Space", systemImage: graph.currentView == nil ? "checkmark" : "circle.dashed") {
-                Task { await graph.select(nil) }
+        KMenuButton(style: .secondary, entries: viewEntries) {
+            HStack(spacing: 6) {
+                KIcon(.grid, size: .xs)
+                Text(graph.currentView?.name ?? "Whole space")
+                KIcon(.down, size: .xs, color: theme.muted)
             }
-            if !graph.views.isEmpty {
-                Section("Saved Views") {
-                    ForEach(graph.views) { view in
-                        Button(view.name, systemImage: graph.currentView?.id == view.id ? "checkmark" : "square.on.square") {
-                            Task { await graph.select(view) }
-                        }
-                    }
-                }
-            }
-            Divider()
-            Button("Save as New View…", systemImage: "plus.square.on.square") {
-                viewName = ""
-                isNamingView = true
-            }
-            if let current = graph.currentView {
-                Button("Save Filter to “\(current.name)”", systemImage: "square.and.arrow.down") {
-                    Task { await graph.updateCurrentView() }
-                }
-                .disabled(!graph.hasUnsavedFilter)
-                Button("Rename “\(current.name)”…", systemImage: "pencil") {
-                    viewName = current.name
-                    isRenamingView = true
-                }
-                Button("Delete “\(current.name)”", systemImage: "trash", role: .destructive) {
-                    Task { await graph.delete(current) }
-                }
-            }
-        } label: {
-            Label(graph.currentView?.name ?? "Whole Space", systemImage: "square.on.square")
         }
         .fixedSize()
-        .help("Saved graph views")
+        .kTooltip("Saved graph views")
     }
 
-    private var filterMenu: some View {
-        Menu {
-            Section("Kinds") {
-                ForEach(graph.facets.kinds, id: \.self) { kind in
-                    Toggle(isOn: Binding(get: { graph.isOn(kind, in: \.nodeKinds) }, set: { _ in graph.toggle(kind, in: \.nodeKinds) })) {
-                        Text(kind.capitalized)
-                    }
-                }
+    private func viewEntries() -> [KMenuEntry] {
+        var entries: [KMenuEntry] = [
+            .action("Whole space", icon: .map, isChecked: graph.currentView == nil) { Task { await graph.select(nil) } }
+        ]
+        if !graph.views.isEmpty {
+            entries.append(.section("Saved views"))
+            for view in graph.views {
+                entries.append(.action(view.name, icon: .grid, isChecked: graph.currentView?.id == view.id) {
+                    Task { await graph.select(view) }
+                })
             }
-            Menu("Links", systemImage: "link") {
-                ForEach(graph.linkKinds) { kind in
-                    Toggle(kind.label, isOn: Binding(get: { graph.isOn(kind.kind, in: \.linkKinds) }, set: { _ in graph.toggle(kind.kind, in: \.linkKinds) }))
-                }
-            }
-            if !graph.facets.tags.isEmpty {
-                Menu("Tags", systemImage: "tag") {
-                    ForEach(graph.facets.tags, id: \.self) { tag in
-                        Toggle(tag, isOn: Binding(get: { graph.isOn(tag, in: \.tags) }, set: { _ in graph.toggle(tag, in: \.tags) }))
-                    }
-                }
-            }
-            Menu("People and Agents", systemImage: "person.2") {
-                ForEach(graph.facets.actors, id: \.self) { actor in
-                    Toggle(actor, isOn: Binding(get: { graph.isOn(actor, in: \.actors) }, set: { _ in graph.toggle(actor, in: \.actors) }))
-                }
-            }
-            Menu("Changed", systemImage: "calendar") {
-                Button("Any Time", systemImage: "clock") { graph.showChanged(inLast: nil) }
-                Button("Today", systemImage: "sun.max") { graph.showChanged(inLast: 1) }
-                Button("Past 7 Days", systemImage: "calendar") { graph.showChanged(inLast: 7) }
-                Button("Past 30 Days", systemImage: "calendar") { graph.showChanged(inLast: 30) }
-                Button("Past Year", systemImage: "calendar") { graph.showChanged(inLast: 365) }
-            }
-            Divider()
-            Button("Clear Filters", systemImage: "xmark.circle") { graph.filter = GraphFilter() }
-                .disabled(graph.filter.isEmpty)
-        } label: {
-            Label(graph.filter.count == 0 ? "Filter" : "Filter (\(graph.filter.count))", systemImage: graph.filter.isEmpty ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
-        .fixedSize()
-        .help("Show only some kinds, tags, people, agents, dates or links")
+        entries.append(.divider)
+        entries.append(.action("Save as new view", icon: .add) {
+            viewName = ""
+            naming = .new
+        })
+        if let current = graph.currentView {
+            entries.append(.action("Save filter to \u{201C}\(current.name)\u{201D}", icon: .save, isEnabled: graph.hasUnsavedFilter) {
+                Task { await graph.updateCurrentView() }
+            })
+            entries.append(.action("Rename \u{201C}\(current.name)\u{201D}", icon: .edit) {
+                viewName = current.name
+                naming = .rename
+            })
+            entries.append(.action("Delete \u{201C}\(current.name)\u{201D}", icon: .delete, isDestructive: true) {
+                Task { await graph.delete(current) }
+            })
+        }
+        return entries
     }
 
-    private var searchField: some View {
-        TextField("Find a note", text: $graph.searchText)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 200)
-            .focused($searchFocused)
-            .onSubmit { graph.focusFirstMatch() }
-            .popover(isPresented: Binding(get: { searchFocused && !graph.matches.isEmpty }, set: { if !$0 { searchFocused = false } }), arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(graph.matches) { node in
-                        Button {
-                            graph.focus(node.id)
-                        } label: {
-                            Label {
-                                Text(node.title).lineLimit(1)
-                            } icon: {
-                                NodeGlyphView(kind: node.kind)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.borderless)
-                        .padding(.vertical, 3)
-                    }
+    private var filterButton: some View {
+        Button { isFiltering.toggle() } label: {
+            HStack(spacing: 6) {
+                KIcon(.filter, size: .xs, color: graph.filter.isEmpty ? nil : (theme.isDark ? theme.indigo : theme.fg))
+                Text("Filter")
+                if graph.filter.count > 0 {
+                    Text("\(graph.filter.count)")
+                        .font(KFont.ui(10, .semibold))
+                        .foregroundStyle(theme.onAccent)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(Capsule().fill(theme.isDark ? theme.indigo : theme.accent))
                 }
-                .padding(10)
-                .frame(width: 260)
             }
-            .help("Type to find a note on the graph; Return centres it")
+        }
+        .buttonStyle(KButtonStyle(kind: .secondary, size: .small))
+        .fixedSize()
+        .kTooltip("Show only some kinds, tags, people, agents, dates or links")
+        .kPopover(isPresented: $isFiltering) {
+            GraphFilterPanel(graph: graph)
+        }
     }
 }
 
-/// Which glyph is which kind.
+/// The filters of the graph: kinds, links, tags, people and agents, and when notes changed.
+struct GraphFilterPanel: View {
+    @Bindable var graph: GraphModel
+    @Environment(\.kTheme) private var theme
+
+    private static let periods: [(days: Int?, title: String)] = [(nil, "Any time"), (1, "Today"), (7, "7 days"), (30, "30 days"), (365, "Year")]
+
+    var body: some View {
+        let rows = graph.facets.kinds.count + graph.linkKinds.count + graph.facets.tags.count + graph.facets.actors.count
+        KScrollView {
+            VStack(alignment: .leading, spacing: KSpace.x4) {
+                section("Kinds") {
+                    ForEach(graph.facets.kinds, id: \.self) { kind in
+                        check(kind.capitalized, on: graph.isOn(kind, in: \.nodeKinds)) {
+                            graph.toggle(kind, in: \.nodeKinds)
+                        } leading: {
+                            NodeGlyphView(kind: kind)
+                        }
+                    }
+                }
+                section("Links") {
+                    ForEach(graph.linkKinds) { kind in
+                        check(kind.label, on: graph.isOn(kind.kind, in: \.linkKinds)) {
+                            graph.toggle(kind.kind, in: \.linkKinds)
+                        } leading: {
+                            Capsule()
+                                .fill(kind.kind == LinkKindInfo.mentions ? theme.line : theme.indigo)
+                                .frame(width: 10, height: 2)
+                        }
+                    }
+                }
+                if !graph.facets.tags.isEmpty {
+                    section("Tags") {
+                        ForEach(graph.facets.tags, id: \.self) { tag in
+                            check(tag, on: graph.isOn(tag, in: \.tags)) { graph.toggle(tag, in: \.tags) } leading: { EmptyView() }
+                        }
+                    }
+                }
+                if !graph.facets.actors.isEmpty {
+                    section("People and agents") {
+                        ForEach(graph.facets.actors, id: \.self) { actor in
+                            check(actor, on: graph.isOn(actor, in: \.actors)) { graph.toggle(actor, in: \.actors) } leading: { EmptyView() }
+                        }
+                    }
+                }
+                section("Changed") {
+                    periods
+                }
+                Rectangle().fill(theme.line).frame(height: 1)
+                KButton("Clear filters", icon: .close, kind: .ghost, size: .small) { graph.filter = GraphFilter() }
+                    .disabled(graph.filter.isEmpty)
+            }
+            .padding(KSpace.x1)
+        }
+        .frame(width: 264, height: min(440, CGFloat(rows) * 26 + 280))
+    }
+
+    private var currentPeriod: Int? {
+        guard let since = graph.filter.since else { return nil }
+        let days = Int((Date().timeIntervalSince(since) / 86_400).rounded())
+        return Self.periods.compactMap(\.days).min { abs($0 - days) < abs($1 - days) }
+    }
+
+    private var periods: some View {
+        let current = currentPeriod
+        return FlowRow(spacing: 6) {
+            ForEach(Self.periods, id: \.title) { period in
+                let on = period.days == current
+                Button { graph.showChanged(inLast: period.days) } label: {
+                    KChip(period.title, kind: on ? .solid : .neutral)
+                }
+                .buttonStyle(KPlainButtonStyle())
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            KSectionLabel(title).padding(.bottom, 2)
+            content()
+        }
+    }
+
+    private func check<Leading: View>(_ title: String, on: Bool, toggle: @escaping () -> Void, @ViewBuilder leading: () -> Leading) -> some View {
+        let lead = leading()
+        return Button(action: toggle) {
+            HStack(spacing: KSpace.x2) {
+                KCheckmark(isOn: on, side: 14)
+                lead
+                Text(title).font(KFont.ui(13)).foregroundStyle(theme.fg).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 24)
+        }
+        .buttonStyle(KPlainButtonStyle())
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// Lays children out left to right, wrapping onto new lines.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                y += line + spacing
+                x = 0
+                line = 0
+            }
+            x += size.width + spacing
+            line = max(line, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: proposal.width ?? widest, height: y + line)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                y += line + spacing
+                x = bounds.minX
+                line = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
+    }
+}
+
+/// Finding a note on the graph: a search field over the board, with the matches below it.
+struct GraphFinder: View {
+    @Bindable var graph: GraphModel
+    @Environment(\.kTheme) private var theme
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            KSearchField(placeholder: "Find a note", text: $graph.searchText, size: .small, focus: $focused) {
+                graph.focusFirstMatch()
+            }
+            .frame(width: 240)
+            .kTooltip(focused ? nil : "Type to find a note on the graph; Return centres it")
+            if focused, !graph.matches.isEmpty {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(graph.matches) { node in
+                        KRow(action: { graph.focus(node.id) }) {
+                            NodeGlyphView(kind: node.kind)
+                            Text(node.title).font(KFont.ui(13)).foregroundStyle(theme.fg).lineLimit(1)
+                        }
+                    }
+                }
+                .padding(KSpace.x1)
+                .frame(width: 240)
+                .mapChrome()
+                .shadow(color: .black.opacity(theme.isDark ? 0.35 : 0.08), radius: 12, y: 4)
+            }
+        }
+    }
+}
+
+/// Which glyph is which kind, and which line is which link.
 struct GraphLegend: View {
     let graph: GraphModel
+    @Environment(\.kTheme) private var theme
 
     var body: some View {
         let kinds = graph.facets.kinds.filter { kind in graph.nodes.contains { $0.kind == kind } }
         if !kinds.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
+                KSectionLabel("Legend").padding(.bottom, 2)
                 ForEach(kinds, id: \.self) { kind in
-                    HStack(spacing: 6) {
+                    HStack(spacing: KSpace.x2) {
                         NodeGlyphView(kind: kind)
                         Text(kind.capitalized)
                     }
                 }
-                HStack(spacing: 6) {
-                    Rectangle().frame(width: 12, height: 1).opacity(0.4)
+                HStack(spacing: KSpace.x2) {
+                    Capsule().fill(theme.line).frame(width: 10, height: 1.5)
                     Text("Mentions")
                 }
-                HStack(spacing: 6) {
-                    Rectangle().frame(width: 12, height: 1).opacity(0.8)
+                HStack(spacing: KSpace.x2) {
+                    Capsule().fill(theme.indigo).frame(width: 10, height: 1.5)
                     Text("Typed link")
                 }
             }
-            .font(.caption)
-            .padding(8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .font(KFont.ui(12))
+            .foregroundStyle(theme.muted)
+            .padding(KSpace.x3)
+            .fixedSize()
+            .mapChrome()
         }
     }
 }
