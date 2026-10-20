@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use knode_format::{ChangeId, ChangeOp, NewNode, NodeId, Provenance, Space, actions, link_kinds};
 use knode_vault::{LiveFolder, PullReport};
 use serde::Serialize;
@@ -333,7 +335,8 @@ pub(crate) struct State {
     /// space. Always locked after the space, never before.
     live: Mutex<HashMap<PathBuf, LiveFolder>>,
     /// The Loro documents of the bodies edited together, in every space. Always locked after
-    /// the space, never before.
+    /// the space and after `live`, never before either: a live folder merges the bodies edited
+    /// in it through them.
     docs: Mutex<knode_sync::Docs>,
 }
 
@@ -413,7 +416,8 @@ impl State {
             eprintln!("Knode Service: {warning}");
         }
         let mark = last_change(space).unwrap_or_default();
-        match crate::markdown::start_live_folder(space, &dir) {
+        let started = crate::markdown::start_live_folder(space, &dir, &mut self.docs());
+        match started {
             Ok((folder, report)) => {
                 live.insert(key, folder);
                 drop(live);
@@ -438,6 +442,14 @@ impl State {
         for id in &report.marked {
             self.notify(space, *id, ChangeKind::Update);
         }
+        // Bodies merged through their documents, with their versions, for open editors.
+        for body in &report.bodies {
+            let mut change = Change::new(space.path().to_path_buf(), body.id, ChangeKind::Update);
+            change.version = Some(body.version.to_json());
+            change.by = Some(body.by.clone());
+            change.update = Some(BASE64.encode(&body.update));
+            self.send_change(change);
+        }
     }
 
     /// Reads the edits made in the live Markdown folders and writes the changes made in Knode to
@@ -456,7 +468,8 @@ impl State {
             };
             let mark = last_change(&space).unwrap_or_default();
             let dir = folder.dir().to_path_buf();
-            let result = folder.tick(&mut space, &crate::markdown::folder_owner(), all);
+            let owner = crate::markdown::folder_owner();
+            let result = folder.tick_with(&mut space, &owner, all, &mut self.docs());
             drop(live);
             match result {
                 Ok(report) => self.notify_pull(&space, mark, &dir, &report),

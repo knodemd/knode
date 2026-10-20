@@ -11,6 +11,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use knode_format::{Provenance, Space, setting_keys};
+use knode_sync::Docs;
 use knode_vault::{LiveFolder, PullReport};
 
 use crate::protocol::MarkdownFolder;
@@ -73,14 +74,15 @@ pub(crate) fn folder_owner() -> Provenance {
 }
 
 /// Opens the live folder `dir` of `space`: reads in the files edited since Knode last wrote them,
-/// writes the whole space, then watches the folder. A folder that cannot be watched still
+/// merging bodies through the service's `docs`, writes the whole space, then watches the folder. A folder that cannot be watched still
 /// follows the space; its edits come in the next time the space is opened.
 pub(crate) fn start_live_folder(
     space: &mut Space,
     dir: &Path,
+    docs: &mut Docs,
 ) -> knode_vault::Result<(LiveFolder, PullReport)> {
     let mut live = LiveFolder::open(dir)?.with_source_root(record_path(dir));
-    let report = live.start(space, &folder_owner())?;
+    let report = live.start_with(space, &folder_owner(), docs)?;
     if let Err(e) = live.watch() {
         eprintln!(
             "Knode Service: cannot watch the Markdown folder {}: {e}",

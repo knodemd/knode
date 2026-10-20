@@ -142,12 +142,40 @@ pub struct PullReport {
     pub skipped: Vec<Skipped>,
     /// Every node changed, with how, for the owner of the space to announce.
     pub changes: Vec<(NodeId, ChangeOp)>,
+    /// The bodies written through their node's Loro document, in order, for the owner of the
+    /// space to send to the node's open editors. Their nodes are in `changes` too.
+    #[serde(skip)]
+    pub bodies: Vec<BodyWritten>,
+}
+
+/// A body a [`LiveFolder::pull`] wrote through its node's Loro document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyWritten {
+    /// The node.
+    pub id: NodeId,
+    /// Who wrote it: the owner of the folder.
+    pub by: Provenance,
+    /// The version of the document the body holds now.
+    pub version: Version,
+    /// The Loro updates of the write, for editors that keep their own copy of the document.
+    pub update: Vec<u8>,
 }
 
 impl PullReport {
     /// Whether nothing changed.
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty() && self.skipped.is_empty()
+    }
+}
+
+impl BodyWritten {
+    fn of(id: NodeId, by: &Provenance, written: knode_sync::Written) -> Option<BodyWritten> {
+        (!written.update.is_empty()).then(|| BodyWritten {
+            id,
+            by: by.clone(),
+            version: written.version,
+            update: written.update,
+        })
     }
 }
 
@@ -415,6 +443,48 @@ impl LiveFolder {
         Ok(report)
     }
 
+    /// Like [`start`](Self::start), merging bodies through `docs`, the [`Docs`] the owner of
+    /// the space edits them with, so that its open documents stay in step.
+    pub fn start_with(
+        &mut self,
+        space: &mut Space,
+        owner: &Provenance,
+        docs: &mut Docs,
+    ) -> Result<PullReport> {
+        self.with_docs(docs, |live| live.start(space, owner))
+    }
+
+    /// Like [`tick`](Self::tick), merging bodies through `docs`, as
+    /// [`start_with`](Self::start_with) does.
+    pub fn tick_with(
+        &mut self,
+        space: &mut Space,
+        owner: &Provenance,
+        all: bool,
+        docs: &mut Docs,
+    ) -> Result<PullReport> {
+        self.with_docs(docs, |live| live.tick(space, owner, all))
+    }
+
+    /// Like [`pull`](Self::pull), merging bodies through `docs`, as
+    /// [`start_with`](Self::start_with) does.
+    pub fn pull_with(
+        &mut self,
+        space: &mut Space,
+        owner: &Provenance,
+        docs: &mut Docs,
+    ) -> Result<PullReport> {
+        self.with_docs(docs, |live| live.pull(space, owner))
+    }
+
+    /// Runs `f` with `docs` in place of the folder's own documents.
+    fn with_docs<T>(&mut self, docs: &mut Docs, f: impl FnOnce(&mut Self) -> T) -> T {
+        std::mem::swap(&mut self.docs, docs);
+        let result = f(self);
+        std::mem::swap(&mut self.docs, docs);
+        result
+    }
+
     /// Reads every file of the folder that changed since Knode last wrote or read it into the
     /// space, as `owner` (the person who owns the folder), with the path of the file as the
     /// source. See [`LiveFolder`] for what each change does. The nodes it changes are written
@@ -624,7 +694,7 @@ impl LiveFolder {
             .as_ref()
             .is_none_or(|s| s.node != fields_hash(&current));
         if !knode_changed || file == now {
-            self.keep_doc_in_step(space, &id, &file.body, by);
+            self.keep_doc_in_step(space, &id, &file.body, by, report);
             return Ok(());
         }
 
@@ -712,13 +782,14 @@ impl LiveFolder {
             let edit =
                 BodyEdit::text(file.body.clone()).based_on(loro_base.expect("checked above"));
             if let Ok(written) = self.docs.apply_local_edit(space, &id, edit, by) {
-                body = written.node.body;
+                body = written.node.body.clone();
+                report.bodies.extend(BodyWritten::of(id, by, written));
             }
         }
         note.title = if take_title { file.title } else { now.title };
         note.kind = Some(if take_kind { file.kind } else { now.kind });
         note.tags = if take_tags { file.tags } else { now.tags };
-        self.keep_doc_in_step(space, &id, &body, by);
+        self.keep_doc_in_step(space, &id, &body, by, report);
         note.body = body;
         report.merged.push(rel.to_string());
         Ok(())
@@ -726,7 +797,14 @@ impl LiveFolder {
 
     /// Writes a new body through the node's Loro document, when it has one, so the document
     /// keeps every edit. The note then writes the same body, which changes nothing more.
-    fn keep_doc_in_step(&mut self, space: &mut Space, id: &NodeId, body: &str, by: &Provenance) {
+    fn keep_doc_in_step(
+        &mut self,
+        space: &mut Space,
+        id: &NodeId,
+        body: &str,
+        by: &Provenance,
+        report: &mut PullReport,
+    ) {
         if !Docs::has_doc(space, id) {
             return;
         }
@@ -735,10 +813,12 @@ impl LiveFolder {
             .ok()
             .flatten()
             .is_some_and(|n| n.body != body);
-        if differs {
-            let _ = self
-                .docs
-                .apply_local_edit(space, id, BodyEdit::text(body.to_string()), by);
+        if !differs {
+            return;
+        }
+        let edit = BodyEdit::text(body.to_string());
+        if let Ok(written) = self.docs.apply_local_edit(space, id, edit, by) {
+            report.bodies.extend(BodyWritten::of(*id, by, written));
         }
     }
 
