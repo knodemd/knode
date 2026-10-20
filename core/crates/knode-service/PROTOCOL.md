@@ -54,9 +54,10 @@ grant takes effect on the next call:
   its changes are not sent to the agent.
 - With `read`, `space.open`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
-  `markdown.folder.get` and `subscribe` are allowed; writes fail with `forbidden`.
+  `markdown.folder.get`, `doc.open`, `doc.updates` and `subscribe` are allowed; writes fail with
+  `forbidden`.
 - With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
-  `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
+  `undo`, `restore`, `vault.import` and `doc.edit` are allowed too. An agent may only `undo` a change made by
   the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
 - The methods for link kinds, views, canvases and attachments follow the same levels: with
   `read`, `link_kinds.list`, `links.of`, `links.back_labeled`, `views.list`, `view.get`, `graph`,
@@ -66,8 +67,9 @@ grant takes effect on the next call:
   `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path` and
   `conversations.import` name files on this machine and are for people only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
-  `purge`, `markdown.folder.set` and every other method are for people only and fail with
-  `forbidden`.
+  `purge`, `markdown.folder.set`, `doc.peer`, `doc.merge` and every other method are for people
+  only and fail with `forbidden`. (The authorship of merged Loro updates comes from their peers,
+  not from the key, so agents edit with `doc.edit` and `node.update` instead.)
 - An agent's changes are recorded with `kind` `agent` and, as `actor`, the name of the agent its
   key belongs to, whatever `by` says. `session` and `source` are kept.
 
@@ -132,7 +134,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `node.create` | `space`, `title`, `body`?, `kind`? (default `note`), `tags`?, `by` | The node. |
 | `node.get` | `space`, `id` | The node, or `null` when no node has this id. |
 | `node.find_by_title` | `space`, `title` | Node summaries with this title, oldest first. Titles are compared without regard to case or extra spaces; a `[[link]]` with this title points at the first one. |
-| `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `by` | The node as it is now. Fields left out stay as they are. |
+| `node.update` | `space`, `id`, `title`?, `body`?, `kind`?, `tags`?, `version`?, `by` | The node as it is now. Fields left out stay as they are. With `version` (from `doc.open`), the new `body` is merged with what others wrote since; see Editing together. When the body was written through its document, the node also has `version` and `seen`. |
 | `node.delete` | `space`, `id`, `by` | `null`. |
 | `link.create` | `space`, `from`, `to`, `kind`? (default `related`), `by` | The link. |
 | `link.delete` | `space`, `from`, `to`, `kind`? (default `related`), `by`? | `true` if there was such a link. `by` is recorded as who removed it; left out (by clients older than v0.2), the change is recorded as Knode's own, `system`. |
@@ -151,7 +153,12 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `vault.import` | `space`, `dir` (absolute), `by` | `{ "created", "updated", "unchanged", "skipped", "attachments", "links" }`. Reads every `.md` file under `dir`, written by `vault.export` or from an Obsidian vault. `skipped` lists `{ "path", "reason" }`. |
 | `markdown.folder.get` | `space` | The live Markdown folder: `{ "folder", "path", "warning"? }`. |
 | `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
-| `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
+| `doc.open` | `space`, `id` | `{ "text", "version" }`: the body and the version of its document, made from the body the first time. See Editing together. |
+| `doc.edit` | `space`, `id`, `version`?, `splices` or `text`, `by` | `{ "version", "seen", "text"? }`. Edits the body at `version`, merged with what others wrote since. |
+| `doc.peer` | `space`, `by` | `{ "peer" }`: a new Loro peer id, in decimal, for an editor that keeps its own copy of documents. People only. |
+| `doc.merge` | `space`, `id`, `update` (base64) | `{ "version" }`. Merges Loro updates made as recorded peers. People only. |
+| `doc.updates` | `space`, `id`, `since`? | `{ "update", "version" }`: the Loro updates made since the version `since` (the whole document without it), in base64. |
+| `subscribe` | `space`?, `updates`? (default `false`) | `true`. Starts `changed` notifications; see below. With `updates`, those of body writes carry the Loro updates. |
 | `unsubscribe` | none | `true`. Stops them. |
 | `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. An agent only sees the spaces it may read. |
 | `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
@@ -269,6 +276,13 @@ order the writes were made:
   was removed). Attaching a file to a node or removing one sends `update` for the node; creating
   a canvas sends `create` for its node. Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
   to the new title.
+- A body written through its document (see Editing together) sends `changed` with `op`
+  `update` and also `version`, the version of the document now, and `by`, who wrote it; with
+  `updates` set in `subscribe`, also `update`, the Loro updates of the write in base64:
+
+  ```json
+  {"jsonrpc":"2.0","method":"changed","params":{"space":"/Users/ada/Knode/Personal.knode","node_id":"01K83N6V4W5D2XQJ0Y7RZ9T1AB","op":"update","version":"{\"7318201936571142\":52}","by":{"kind":"agent","actor":"claude-code"}}}
+  ```
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
@@ -277,6 +291,42 @@ Changes have the shape of the `changes` table of the [.knode specification](http
 (section 17): `{ "id", "changed_at", "changed_by", "action", "subject", "undoes"?, "detail" }`.
 A write that touches many nodes, such as an undo or an import, sends a `changed` notification for
 each node it wrote.
+
+## Editing together
+
+A person and agents can edit the same body at once. Their edits merge with
+[Loro](https://loro.dev), as section 21 of the [.knode specification](https://github.com/knodemd/format)
+describes, instead of one overwriting the other. Titles, kinds and tags are short values written
+whole, as before.
+
+- **Versions.** `doc.open` returns the body and the `version` of its document, a string to pass
+  back unchanged (a JSON object from Loro peer ids to counts, such as `{"7318201936571142":52}`).
+  An edit says which version it was made on, and what others wrote since is kept.
+- **An editor** opens the body with `doc.open` and sends what the person types as `doc.edit`
+  `splices`, `[{ "at", "delete", "insert" }]`, applied in order to the text at `version`.
+  Positions and lengths count Unicode scalar values (Rust `char`s), not bytes or UTF-16 units.
+  The answer has `version`, the version of the document now, and `seen`, the version of the text
+  the editor has: what it had, with its edit, without what others wrote since. The editor bases
+  its next edit on `seen`. When others wrote meanwhile, `version` differs from `seen` and `text`
+  is the body now: an editor with no edit waiting shows it and goes on from `version`; one with
+  edits waiting sends them first, based on `seen`, and catches up from that answer. A `doc.edit`
+  with no splices only catches up.
+- **An agent** that rewrites the whole text sends `node.update` with the `body` and the `version`
+  it read, or `doc.edit` with `text`: the new text is diffed from the text at `version`, so edits
+  made since are kept.
+- **Old clients.** `node.update` without `version` writes the body as before. When the node already
+  has a document, the body is written through it, replacing the current text, and open editors
+  follow.
+- **Typing.** Every `doc.edit` is one change, with its own history row. Editors gather keystrokes
+  for a moment (the Knode app sends them 300 ms after the last one, at most every second while
+  typing goes on) and send them before showing anyone else's edit.
+- **Editors with their own copy** of a document, such as one made with the Loro library, ask for
+  a peer with `doc.peer`, load the document with `doc.updates`, make their edits as that peer and
+  send them with `doc.merge`; `subscribe` with `updates` gives them everyone else's.
+- **Errors.** An edit based on a version the document does not have fails with
+  `unknown_version`: open it again. Undo and restore write the body without Loro, and the
+  document is brought in step before the next edit (section 21.5). `purge` removes the node's
+  document; `node.delete` keeps it, for an undo.
 
 ## Markdown
 
@@ -357,6 +407,8 @@ match on.
 | -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
 | -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
 | -32024 | `folder` | A folder of Markdown files, or a data export, could not be read or written. |
+| -32030 | `unknown_version` | An edit was based on a version of a document the service does not have. Open it again with `doc.open`. |
+| -32031 | `missing_history` | Loro updates depend on edits the document does not have yet. Send them from an earlier version. |
 
 ```json
 {"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"node 01K83N6V4W5D2XQJ0Y7RZ9T1AB not found","data":{"kind":"not_found"}}}

@@ -7,7 +7,9 @@
 //! - [`import`] reads a folder of `.md` files into a space: a folder written by [`export`], or
 //!   an Obsidian vault;
 //! - [`LiveFolder`] keeps a folder in step with a space as it changes, both ways: changes made in
-//!   Knode are written to the folder, and edits made to the files come back in, with history.
+//!   Knode are written to the folder, and edits made to the files come back in, with history;
+//! - [`reading`] brings in what a person reads: PDFs, web pages, Kindle highlights and Readwise
+//!   exports.
 //!
 //! ```
 //! use knode_format::{NewNode, Provenance, Space};
@@ -111,13 +113,14 @@ mod import;
 mod live;
 mod mirror;
 mod names;
+pub mod reading;
 mod tags;
 mod time;
 
 use std::path::PathBuf;
 
 pub use import::{ImportReport, Skipped, import};
-pub use live::{LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
+pub use live::{BodyWritten, LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
 pub use mirror::{ExportReport, export};
 
 /// The folder, inside an exported folder, where Knode keeps its own files.

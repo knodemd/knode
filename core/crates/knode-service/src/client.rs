@@ -355,9 +355,102 @@ impl Client {
             space: space_path(space.as_ref())?,
             id: *id,
             update,
+            version: None,
             by: by.clone(),
         };
         self.request(methods::NODE_UPDATE, params)
+    }
+
+    /// Changes a node like [`update_node`](Self::update_node), with a new body merged from
+    /// `version`, the version of its document the caller read with [`open_doc`](Self::open_doc):
+    /// what others wrote since is kept, not replaced. Returns the node and, when the body was
+    /// written through its document, [`DocEdited`] (with the body now as `text` when others
+    /// wrote since `version`).
+    pub fn update_node_from(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        update: NodeUpdate,
+        version: Option<&str>,
+        by: &Provenance,
+    ) -> Result<(Node, Option<DocEdited>)> {
+        let params = NodeUpdateParams {
+            space: space_path(space.as_ref())?,
+            id: *id,
+            update,
+            version: version.map(str::to_string),
+            by: by.clone(),
+        };
+        let value = self.call(methods::NODE_UPDATE, serde_json::to_value(params)?)?;
+        let edited = match (value.get("version"), value.get("seen")) {
+            (Some(Value::String(version)), Some(Value::String(seen))) => Some(DocEdited {
+                text: (version != seen)
+                    .then(|| {
+                        value
+                            .get("body")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .flatten(),
+                version: version.clone(),
+                seen: seen.clone(),
+            }),
+            _ => None,
+        };
+        Ok((serde_json::from_value(value)?, edited))
+    }
+
+    /// Opens a node's body for editing together: its text and the version of its document,
+    /// made from the body the first time.
+    pub fn open_doc(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<DocText> {
+        self.request(
+            methods::DOC_OPEN,
+            json!({ "space": space_path(space.as_ref())?, "id": id }),
+        )
+    }
+
+    /// Edits a node's body with splices made in order on the text at `version` (the current
+    /// text with `None`), merged with what others wrote since.
+    pub fn edit_doc(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        version: Option<&str>,
+        splices: &[DocSplice],
+        by: &Provenance,
+    ) -> Result<DocEdited> {
+        self.request(
+            methods::DOC_EDIT,
+            json!({
+                "space": space_path(space.as_ref())?,
+                "id": id,
+                "version": version,
+                "splices": splices,
+                "by": by,
+            }),
+        )
+    }
+
+    /// Replaces a node's body with `text`, diffed from the text at `version` (the current text
+    /// with `None`), so what others wrote since is kept.
+    pub fn write_doc(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        version: Option<&str>,
+        text: &str,
+        by: &Provenance,
+    ) -> Result<DocEdited> {
+        self.request(
+            methods::DOC_EDIT,
+            json!({
+                "space": space_path(space.as_ref())?,
+                "id": id,
+                "version": version,
+                "text": text,
+                "by": by,
+            }),
+        )
     }
 
     /// Deletes a node.
@@ -663,6 +756,13 @@ impl Client {
     ///
     /// Each call returns its own [`Subscription`]; dropping it stops its delivery.
     pub fn subscribe(&self, space: Option<&Path>) -> Result<Subscription> {
+        self.subscribe_with(space, false)
+    }
+
+    /// Starts receiving changes like [`subscribe`](Self::subscribe), with the Loro updates of
+    /// body writes in [`Change::update`] when `updates` is set, for an editor that keeps its own
+    /// copy of a document.
+    pub fn subscribe_with(&self, space: Option<&Path>, updates: bool) -> Result<Subscription> {
         let space = space.map(space_path).transpose()?;
         let (events, rx) = mpsc::channel();
         let key = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
@@ -674,7 +774,7 @@ impl Client {
         });
         let result = self.call(
             methods::SUBSCRIBE,
-            serde_json::to_value(SubscribeParams { space })?,
+            serde_json::to_value(SubscribeParams { space, updates })?,
         );
         if let Err(e) = result {
             lock(&self.shared.subscribers).retain(|s| s.key != key);
