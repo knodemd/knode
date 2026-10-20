@@ -141,7 +141,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `links.from` | `space`, `id` | The links that start from the node. |
 | `links.back` | `space`, `id` | The links that point at the node. |
 | `links.unresolved` | `space`, `id` | The `[[links]]` in the node's text that name no node yet, as written. |
-| `search` | `space`, `query`, `limit`? (default 20, at most 1000) | Search hits, best first. |
+| `search` | `space`, `query`, `limit`? (default 20, at most 1000), `mode`? (`words`, `meaning` or `hybrid`) | With `mode`: `{ "mode", "hits", "note"? }`, where `mode` is the mode that ran. Without it: the bare list of hits, ranked as `hybrid`, as clients before `mode` expect. See Search. |
 | `recent` | `space`, `limit`? (default 20, at most 1000) | Node summaries, newest change first. |
 | `history` | `space`, `id` | Every version of the node, oldest first. |
 | `changes` | `space`, `subject`?, `limit`? (default 20, at most 1000), `before`? | Changes, newest first: of the whole space, or of one `subject` (a node id, a setting key). With `before` (a change id), only older changes, to read a long history page by page; `before` and `subject` do not go together. |
@@ -160,7 +160,9 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `doc.updates` | `space`, `id`, `since`? | `{ "update", "version" }`: the Loro updates made since the version `since` (the whole document without it), in base64. |
 | `subscribe` | `space`?, `updates`? (default `false`) | `true`. Starts `changed` notifications; see below. With `updates`, those of body writes carry the Loro updates. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. An agent only sees the spaces it may read. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture", "index" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. `index` is as `index.status` answers it, from what the index last saw. An agent only sees the spaces it may read. |
+| `index.status` | none | How far the open spaces are indexed for search by meaning, and the model. See Search. People only. |
+| `index.run` | `space`? | As `index.status`. Opens `space` when given, then indexes every open space now, even on battery, and tries a failed download again. People only. |
 | `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
 | `agents.list` | none | The agents of this machine. People only. |
 | `agents.add` | `name`, `kind`, `fingerprint`, `by` | The agent. Adds it with the fingerprint of its new key, or gives an agent of that name the new key and revokes its old ones, in every space it was given. People only. |
@@ -382,6 +384,56 @@ kept there either. Its writes are made with the provenance
 `{ "kind": "agent", "actor": "claude-code" | "codex" | ..., "session": "<session id>" }`, go
 through the same space as every client's, one at a time, and are announced with `changed` like
 any other write. `service.status` gives the default space as `capture` while capture runs.
+
+## Search
+
+`search` finds nodes by words (full-text search), by meaning, or both ranked together with
+reciprocal rank fusion, as section 19 of the
+[.knode specification](https://github.com/knodemd/format) describes. `mode` picks one: `words`,
+`meaning` or `hybrid`, the default. Each hit is
+`{ "node", "snippet", "score", "word_rank", "meaning_rank" }`: the node summary, the text around
+the words found (matches in `**bold**`) or the start of its nearest passage, the fusion score
+(higher is better) and its place in the words and meaning lists, from 1, or `null` when it is
+not in one.
+
+Search by meaning runs on this machine, with a small embedding model
+(`multilingual-e5-small`, about 490 MB, around 100 languages). Nothing is sent anywhere:
+
+- **The model** is downloaded once, in the background, into `$KNODE_HOME/models`, the first time
+  there is something to index, and each file is checked against its SHA-256. It is loaded when
+  there is work or a search, and let go after ten minutes without either.
+- **Indexing** runs in the background for each open space: after it opens, and a couple of
+  seconds after each change. The model runs without holding the space, so writes never wait
+  for it; a node that changed meanwhile is indexed again. It pauses while the machine runs on
+  battery, unless `index.run` asks for it.
+- **`embeddings = "off"`** in `config.toml` (or the environment variable `KNODE_EMBEDDINGS=off`)
+  turns it off: nothing is downloaded or indexed, and `search` is by words. Vectors already
+  stored stay in the space. It is on when left out.
+- **Fallback.** When meaning cannot be used yet (the model is downloading, the space is not
+  indexed yet, it is off, or this build has no search by meaning), `meaning` and `hybrid` run as
+  `words`, the result's `mode` says `words` and `note` says why. When some nodes are not indexed
+  yet, `hybrid` finds them by words only and `note` says how many.
+- **Builds.** Search by meaning is the `semantic` feature of `knode-service`, on by default. On
+  aarch64 Linux it is not built yet (knodemd/knode#108), so there search is by words.
+
+`index.status` answers:
+
+```json
+{ "available": true, "enabled": true, "running": true,
+  "model": { "name": "multilingual-e5-small", "state": "downloading",
+             "downloaded": 120000000, "size": 487724985 },
+  "paused": "on battery",
+  "spaces": [ { "space": "/Users/ada/Knode/Work.knode", "nodes": 1200, "waiting": 300,
+                "indexing": true } ] }
+```
+
+- `available`: whether this build can search by meaning. `enabled`: `embeddings` in
+  `config.toml`. `running`: whether this service indexes at all.
+- `model.state`: `unavailable`, `missing`, `downloading`, `downloaded`, `loading`, `ready` or
+  `failed` (with `error`; it is tried again ten minutes later, or at once with `index.run`).
+- `paused`, when indexing waits, says why.
+- Each open space: its `nodes`, how many are `waiting` to be indexed, whether it is `indexing`
+  now or soon, and the `error` of its last run, if any.
 
 ## Errors
 

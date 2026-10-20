@@ -34,8 +34,9 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
             # knode-embed's matrix maths (gemm) needs the FP16 extension to build on aarch64
-            # Linux. It is not part of the knode binary yet, so it is left out here instead of
-            # building everything for FP16, which older ARM boards lack (knodemd/knode#108).
+            # Linux. knode-service and knode-cli leave it out on this target (their `semantic`
+            # feature does nothing here, so search is by words), and it is left out here instead
+            # of building everything for FP16, which older ARM boards lack (knodemd/knode#108).
             exclude: knode-embed
     runs-on: ${{ matrix.runner }}
     env:

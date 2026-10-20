@@ -126,9 +126,10 @@ fn data_exports_are_imported_once() {
     assert!(again.contains(": 0 updated,"), "{again}");
 
     let out = sb.ok(&["search", "--json", "the"]);
-    let hits: Value = serde_json::from_str(&out).unwrap();
+    let found: Value = serde_json::from_str(&out).unwrap();
     assert!(
-        hits.as_array()
+        found["hits"]
+            .as_array()
             .unwrap()
             .iter()
             .any(|h| h["node"]["kind"] == "conversation"),
