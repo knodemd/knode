@@ -1,0 +1,162 @@
+# Search evaluation corpus: synthetic second-brain notes in English and Spanish.
+# One note per line: id | title | body. Lines starting with # are comments.
+n001 | ADR-007: Use SQLite in WAL mode | We decided to move the Atlas backend from Postgres to SQLite in WAL mode. One writer, many readers, and backups become a file copy. Revisit if we need multi-region writes.
+n002 | ADR-008: Rust for the sync engine | The sync engine will be written in Rust instead of Go. Reasons: shared code with the desktop app, no GC pauses, and the team already maintains two Rust crates.
+n003 | ADR-009: Feature flags via config file | Feature flags live in a TOML file shipped with each release, not in a remote service. Cheaper, works offline, and a flag change needs a release, which we accept.
+n004 | ADR-010: Decisión sobre autenticación | Usaremos passkeys como método principal de inicio de sesión y el enlace mágico por correo como respaldo. Las contraseñas desaparecen en la versión 3.
+n005 | ADR-011: Monorepo | Juntamos el backend, la app web y las apps móviles en un solo repositorio. Un solo CI, versiones coordinadas y menos dependencias duplicadas.
+n006 | ADR-012: Event sourcing rejected | We considered event sourcing for the billing ledger and rejected it: too much operational complexity for a team of four. An append-only audit table gives us most of the benefit.
+n007 | Choosing a charting library | Compared Recharts, Chart.js and Vega-Lite for the analytics dashboard. Picked Vega-Lite because specs can be stored as JSON and rendered on the server for emails.
+n008 | Pricing decision for Atlas Pro | Atlas Pro will cost 8 euros per month or 80 per year. The free plan keeps unlimited notes but only one device. Student discount 50 percent.
+n009 | Decisión: hosting en Hetzner | Movemos los servidores de AWS a Hetzner para reducir la factura a un tercio. Mantenemos S3 solo para las copias de seguridad cifradas.
+n010 | Why we dropped GraphQL | The GraphQL layer added caching problems and N+1 queries. We went back to plain REST endpoints with typed clients generated from OpenAPI.
+n011 | Logging policy | Logs never contain note content or email addresses. We log request ids, durations and error codes. Retention is 14 days.
+n012 | Política de versiones | Seguimos versionado semántico. Las versiones menores salen cada seis semanas; los parches cuando hagan falta. Nada se publica en viernes.
+n013 | Weekly sync 2026-03-02 | Attendees: Marta, Leo, Priya. Leo finished the importer for Evernote. Priya is blocked on the App Store review. Action: Marta writes the release notes for 2.4.
+n014 | Reunión de planificación Q2 | Objetivos del trimestre: lanzar la app de Android, bajar el tiempo de arranque a menos de un segundo y contratar a una persona de soporte. Responsable de Android: Leo.
+n015 | Retro after the outage | What went well: alerts fired within two minutes. What went badly: the runbook was outdated and nobody knew the database password rotation. Action: update runbook, test failover monthly.
+n016 | 1:1 con Priya | Priya quiere dedicar más tiempo al diseño del sistema de plugins. Acordamos que dedique los viernes a ello. Le preocupa la carga de soporte.
+n017 | Customer call with Northwind | Northwind wants SSO with Okta and an audit log export to CSV. They have 120 seats. Follow-up: send a quote by Friday and a security questionnaire.
+n018 | Design review: onboarding | The new onboarding has three screens instead of seven. Users pick a template, import notes, then see a tour. Concern: the import step can take minutes for large vaults.
+n019 | Reunión con el gestor | Revisamos el IVA del segundo trimestre y la deducción de los gastos del despacho en casa. Hay que guardar las facturas de la luz e internet.
+n020 | Board update March | Revenue grew 18 percent month over month, churn is 3.1 percent. Burn is stable. We plan to raise a seed extension in the autumn.
+n021 | Kickoff: proyecto Halcón | Halcón es el nombre interno de la nueva búsqueda. Fase 1: búsqueda por palabras con FTS5. Fase 2: búsqueda semántica local. Fase 3: búsqueda híbrida.
+n022 | Interview debrief: backend candidate | Strong on databases and testing, weaker on system design. Recommend a second interview focused on distributed systems. Team vote: 3 yes, 1 maybe.
+n023 | Standup notes Tuesday | Sync conflicts reproduced on two laptops. Leo suspects clock skew. Marta pairing with him in the afternoon.
+n024 | Acta: comité de seguridad | Se aprueba activar la autenticación de dos factores obligatoria para todo el equipo. Rotación de claves de API cada 90 días.
+n025 | BUG-431: crash when importing empty notes | Importer panics on notes with no body because we unwrap the first paragraph. Fix: treat an empty body as an empty string. Added a regression test.
+n026 | BUG-432: sync loop on renamed files | Renaming a file on two devices at once makes them rename each other forever. Fix: compare the content hash before applying a rename.
+n027 | BUG-440: memory leak in image previews | Thumbnails were cached without a limit. Memory grew to 3 GB after scrolling a large folder. Fixed with an LRU cache of 200 entries.
+n028 | BUG-447: la búsqueda ignora acentos | Buscar "cafe" no encontraba "café". Activamos el tokenizador unicode61 con remove_diacritics en FTS5.
+n029 | BUG-452: timezone off by one hour | Daily notes were created for the wrong day after the switch to summer time. We stored local time without offset. Now we store UTC and convert at display.
+n030 | BUG-455: login loop on Safari | Safari blocked the third-party cookie used by the auth callback, so users were sent back to login forever. Moved the callback to the same domain.
+n031 | BUG-460: el PDF exportado pierde imágenes | Al exportar a PDF las imágenes con rutas relativas no aparecían. Resolvemos las rutas respecto a la carpeta de la nota antes de renderizar.
+n032 | BUG-463: slow startup with 50k notes | Startup took 9 seconds because we parsed every file. Now we read the index from SQLite and parse lazily. Startup is 0.8 seconds.
+n033 | BUG-470: duplicate tags after merge | Merging two notes kept both copies of shared tags. Normalize tags to lowercase and deduplicate.
+n034 | BUG-471: fallo al pegar desde Word | Pegar texto desde Microsoft Word metía estilos HTML basura. Ahora limpiamos el HTML y convertimos a Markdown.
+n035 | BUG-478: race condition in autosave | Two autosave timers could write the same file, and the older content won. Fixed by serialising writes through one queue per file.
+n036 | Postmortem: database disk full | On 14 May the primary database ran out of disk because WAL checkpoints were blocked by a long read transaction. Added a disk usage alert at 80 percent.
+n037 | Rust: read a file to string | `let text = std::fs::read_to_string(path)?;` Use `?` to propagate the io::Error. For big files prefer BufReader and lines().
+n038 | Python: dedupe a list keeping order | `list(dict.fromkeys(items))` keeps the first occurrence and the original order. Works since Python 3.7 because dicts keep insertion order.
+n039 | SQL: find duplicate emails | `SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) > 1;`
+n040 | Git: undo the last commit but keep changes | `git reset --soft HEAD~1` moves the branch back one commit and leaves the changes staged.
+n041 | Bash: find large files | `find . -type f -size +100M -exec ls -lh {} \;` lists files bigger than 100 MB under the current folder.
+n042 | Rust: parallel iterator with rayon | Replace `.iter()` with `.par_iter()` after adding rayon. Good for CPU bound work like hashing files; not for IO.
+n043 | Swift: debounce a search field | Use Combine: `$query.debounce(for: .milliseconds(300), scheduler: RunLoop.main)` so the search runs after the user stops typing.
+n044 | TypeScript: exhaustive switch | Add a `default` branch that assigns the value to `never`. The compiler then complains when a new union member is not handled.
+n045 | Python: leer un CSV con pandas | `df = pd.read_csv("ventas.csv", sep=";", decimal=",")` para ficheros exportados desde Excel en español.
+n046 | SQLite: enable WAL | `PRAGMA journal_mode=WAL;` once per database file. Also set `PRAGMA synchronous=NORMAL;` for a good balance of speed and safety.
+n047 | Docker: limpiar imágenes viejas | `docker system prune -a --volumes` borra contenedores parados, imágenes sin usar y volúmenes. Cuidado: no se puede deshacer.
+n048 | Regex: match an ISO date | `\d{4}-\d{2}-\d{2}` matches 2026-03-02. Add anchors and validate the month with a real date parser.
+n049 | Rust: error handling with thiserror | Derive `thiserror::Error` on an enum, one variant per failure, with `#[from]` for io::Error. Libraries use thiserror, applications use anyhow.
+n050 | Kubernetes: restart a deployment | `kubectl rollout restart deployment/api -n prod` restarts pods one by one without downtime.
+n051 | JavaScript: copiar al portapapeles | `await navigator.clipboard.writeText(texto)` solo funciona en contextos seguros (https) y tras un gesto del usuario.
+n052 | ffmpeg: convert video to gif | `ffmpeg -i input.mp4 -vf "fps=12,scale=640:-1" out.gif` keeps it small. Use a palette for better colours.
+n053 | Python: virtualenv | `python3 -m venv .venv && source .venv/bin/activate`. Never install packages globally with pip.
+n054 | SQL: ventana para total acumulado | `SUM(importe) OVER (ORDER BY fecha)` calcula el total acumulado por fecha sin subconsultas.
+n055 | Tortilla de patatas | Patatas en láminas finas confitadas en aceite de oliva a fuego lento, cebolla pochada y cinco huevos batidos. Cuajar poco para que quede jugosa.
+n056 | Gazpacho andaluz | Tomates maduros, pepino, pimiento verde, un diente de ajo, pan del día anterior, aceite, vinagre de Jerez y sal. Triturar y servir muy frío.
+n057 | Sourdough bread | 500 g flour, 350 g water, 100 g active starter, 10 g salt. Stretch and fold four times, cold retard overnight, bake at 250 C in a Dutch oven.
+n058 | Weeknight chickpea curry | Onion, garlic, ginger, curry paste, two tins of chickpeas, a tin of coconut milk and spinach at the end. Ready in 25 minutes.
+n059 | Lentejas con chorizo | Lentejas pardinas, chorizo, zanahoria, patata, pimentón de la Vera y laurel. Cocer 40 minutos a fuego medio.
+n060 | Banana bread | Three very ripe bananas, 75 g melted butter, 150 g sugar, one egg, 190 g flour and a teaspoon of baking soda. Bake 60 minutes at 175 C.
+n061 | Pancakes for Sunday | 200 g flour, 2 eggs, 300 ml milk, a spoon of sugar and a pinch of salt. Rest the batter 10 minutes so they come out fluffy.
+n062 | Paella valenciana | Pollo, conejo, judía verde, garrofó, tomate, azafrán y arroz bomba. No se remueve el arroz una vez añadido el caldo. Socarrat al final.
+n063 | Cold brew coffee | 100 g coarse ground coffee to 1 litre of cold water. Steep 16 hours in the fridge, filter, dilute one to one with milk or water.
+n064 | Crema catalana | Leche infusionada con canela y piel de limón, yemas, azúcar y maicena. Se quema el azúcar por encima con un soplete justo antes de servir.
+n065 | Pesto genovese | Basil, pine nuts, garlic, parmesan, pecorino and olive oil. Pound in a mortar, and do not heat the pesto or the basil turns black.
+n066 | Overnight oats | Half a cup of oats, half a cup of milk, a spoon of chia, yoghurt and berries. Leave in the fridge overnight for a breakfast ready in the morning.
+n067 | Salmorejo cordobés | Tomate, pan, ajo, aceite de oliva virgen extra y sal. Más espeso que el gazpacho. Se sirve con huevo duro y jamón picado.
+n068 | Thai green curry | Green curry paste fried in coconut cream, chicken thighs, aubergine, fish sauce, palm sugar and Thai basil. Serve with jasmine rice.
+n069 | Bizcocho de yogur | Un yogur natural, y con su vaso medimos: tres de harina, dos de azúcar, uno de aceite, tres huevos y un sobre de levadura. 35 minutos a 180 grados.
+n070 | Roast chicken | Dry brine the chicken with salt the day before. Roast at 220 C for an hour with lemon and thyme inside. Rest 15 minutes before carving.
+n071 | Highlights: Thinking, Fast and Slow | System 1 is fast and intuitive, System 2 is slow and deliberate. We overweight vivid stories and underweight base rates.
+n072 | Highlights: Atomic Habits | Make it obvious, attractive, easy and satisfying. You do not rise to the level of your goals, you fall to the level of your systems.
+n073 | Subrayados: Cien años de soledad | La memoria de Macondo y la repetición de los nombres en la familia Buendía. El tiempo no avanza, gira en círculo.
+n074 | Highlights: The Pragmatic Programmer | Do not repeat yourself. Fix broken windows early. Use tracer bullets to find the target before building the whole thing.
+n075 | Highlights: Deep Work | Schedule blocks of focused work and protect them. Shallow work expands to fill the day if you let it. Quit social media for a month as an experiment.
+n076 | Subrayados: El hombre en busca de sentido | Frankl: a la persona se le puede arrebatar todo salvo la última libertad, elegir su actitud ante las circunstancias.
+n077 | Highlights: Designing Data-Intensive Applications | Replication, partitioning and transactions. Linearizability is expensive; most apps are fine with read-your-writes consistency.
+n078 | Highlights: How to Take Smart Notes | Zettelkasten: write permanent notes in your own words, one idea per note, and link each to existing notes. The slip box is a thinking partner.
+n079 | Highlights: Sapiens | Shared fictions such as money, nations and companies let large groups of strangers cooperate.
+n080 | Subrayados: Meditaciones de Marco Aurelio | No es la muerte lo que debemos temer, sino no haber empezado nunca a vivir. Lo que obstaculiza el camino se convierte en el camino.
+n081 | Highlights: The Mom Test | Ask about their life, not your idea. Talk about specifics in the past, not hypotheticals about the future. Compliments are noise.
+n082 | Highlights: Shape Up | Six-week cycles, appetite instead of estimates, and a two-week cooldown. Bets are placed at the betting table, not in a backlog.
+n083 | Subrayados: La sombra del viento | El Cementerio de los Libros Olvidados en Barcelona. Cada libro tiene alma, la de quien lo escribió y la de quienes lo leyeron.
+n084 | Article: local-first software | Ink & Switch argue for software where data lives on your device first and syncs through CRDTs. Seven ideals: fast, multi-device, offline, collaboration, longevity, privacy and user control.
+n085 | Article: reciprocal rank fusion | RRF combines ranked lists by summing 1/(k + rank) for each document. k = 60 works well and needs no score normalisation.
+n086 | Running plan for the half marathon | Three runs a week: intervals on Tuesday, tempo on Thursday, and a long run on Sunday growing from 10 to 18 km. Race day is 12 October.
+n087 | Rutina de fuerza | Lunes y jueves: sentadilla, press de banca y remo con barra. Tres series de cinco repeticiones. Subir 2,5 kg cuando salgan todas.
+n088 | Sleep notes | No screens after 22:30, room at 18 degrees, coffee only before noon. Average sleep went from 6 h 10 to 7 h 05 in a month.
+n089 | Cita con la fisioterapeuta | Tendinitis en el hombro derecho. Ejercicios con goma elástica tres veces al día y nada de press militar durante tres semanas.
+n090 | Blood test results | Vitamin D low at 18 ng/ml. The doctor recommends 2000 IU a day and a repeat test in three months. Cholesterol normal.
+n091 | Yoga para la espalda | Postura del gato y la vaca, el niño y torsiones suaves tumbado. Diez minutos por la mañana alivian el dolor lumbar.
+n092 | Monthly budget | Rent 950, groceries 400, transport 60, subscriptions 45, savings 600 into the index fund. Review on the first Sunday of each month.
+n093 | Declaración de la renta 2025 | Presentar antes del 30 de junio. Deducción por alquiler de vivienda habitual y por donativos. Pedir el borrador en la sede electrónica.
+n094 | Index fund notes | Buy a global all-world index fund monthly regardless of the market. Fees under 0.25 percent. Do not check the price every day.
+n095 | Subscriptions to cancel | Two streaming services barely used, a VPN I never open and a magazine. Saves 37 euros a month.
+n096 | Hipoteca: comparar ofertas | Banco A: tipo fijo 2,9 por ciento a 25 años. Banco B: variable Euríbor más 0,6. Pedir la FEIN y comparar la TAE, no solo el tipo.
+n097 | Japan trip packing list | Rail pass, IC card, pocket wifi, cash in yen, comfortable shoes and a small towel. Many places still do not take cards.
+n098 | Itinerario Lisboa 4 días | Día 1 Alfama y el tranvía 28. Día 2 Belém y pasteles. Día 3 Sintra. Día 4 LX Factory y atardecer en el mirador de Santa Catarina.
+n099 | Berlin conference notes | Talk on CRDTs in production: Automerge 2 is fast enough for documents up to a few MB. Talk on WebGPU for ML inference in the browser.
+n100 | Ruta en coche por Asturias | Cudillero, Lastres, los Lagos de Covadonga y la ruta del Cares. Reservar el aparcamiento de los lagos con antelación en verano.
+n101 | Flight checklist | Check in online 24 hours before, download the boarding pass, passport valid six months, charge headphones, empty the water bottle for security.
+n102 | Tomatoes on the balcony | Cherry tomatoes need 6 hours of sun and a deep pot. Water at the base every morning in summer, and feed with potassium once flowers appear.
+n103 | Plantas de interior | El potus aguanta poca luz. La monstera necesita luz indirecta y regar cuando la tierra esté seca. No encharcar.
+n104 | Boiler maintenance | Annual service in October. Bleed the radiators when they are cold at the top. Pressure should stay between 1 and 1.5 bar.
+n105 | Mudanza: lista de tareas | Dar de alta la luz y el agua en el piso nuevo, cambiar la dirección en el banco, empadronarse y avisar al seguro del coche.
+n106 | Wifi setup | Router in the hallway, mesh node in the office. Guest network for visitors. Changed the admin password from the default.
+n107 | Compost at home | Balance green waste (vegetable scraps, coffee grounds) with brown waste (cardboard, dry leaves). Turn it weekly. Ready in about three months.
+n108 | Idea: a reading tracker | A tiny app that imports Kindle highlights and resurfaces one a day by email. Could be a weekend project with SQLite and a cron job.
+n109 | Ideas para el cumpleaños de Lucía | Clase de cerámica, un libro de Sally Rooney o una cena en el restaurante japonés que le gustó. Presupuesto 60 euros.
+n110 | Talk proposal: search on device | Abstract: how we built private semantic search with a small multilingual model, sqlite-vec and reciprocal rank fusion, all running on a laptop.
+n111 | Learning Rust plan | Read the book chapters 1 to 10, do Rustlings, then rewrite the CLI importer. Thirty minutes every morning.
+n112 | Aprender alemán | Duolingo diez minutos al día, un podcast de nivel A2 en el coche y clases los miércoles. Objetivo: B1 antes de diciembre.
+n113 | Gift ideas for Dad | A good pocket knife, a vinyl of Paco de Lucía, or a day of fishing. He already has too many books.
+n114 | Weekly review template | What did I finish? What is stuck? What are the three priorities next week? Clear the inbox to zero and process paper notes.
+n115 | Journal 2026-02-14 | Long walk by the river. Thought about whether to leave the agency and go freelance. Decided to wait until savings cover six months.
+n116 | Search index design | Notes are indexed with FTS5 using the unicode61 tokenizer. Titles weigh more than bodies. Snippets use 16 tokens around the match.
+n117 | Embedding model shortlist | Candidates: all-MiniLM-L6-v2 (English only), multilingual-e5-small (384 dimensions, 100 languages) and bge-m3 (too big). Chose multilingual-e5-small.
+n118 | Chunking strategy | Split notes by headings, then by paragraphs, keeping chunks under 400 tokens with a 50 token overlap. Titles are prepended to each chunk.
+n119 | Rate limiting the public API | Token bucket per API key: 60 requests per minute, bursts of 20. Return 429 with a Retry-After header.
+n120 | Estrategia de copias de seguridad | Regla 3-2-1: tres copias, dos soportes distintos y una fuera de casa. Copia nocturna cifrada con restic a un bucket.
+n121 | Accessibility checklist | Every button has a label, colour contrast at least 4.5 to 1, the whole app usable with the keyboard, and VoiceOver reads the list rows.
+n122 | Migración a Swift 6 | Activamos la concurrencia estricta. La mayoría de errores eran tipos no Sendable compartidos entre actores. Usamos @MainActor en los view models.
+n123 | Release checklist 2.4 | Bump the version, update the changelog, run the full test suite, notarize the Mac build, upload to TestFlight, then announce on the blog.
+n124 | CI is slow | The pipeline takes 28 minutes. Caching the cargo registry and target folder brought it to 11. Next: split the UI tests into shards.
+n125 | Plugin system sketch | Plugins run in a WebAssembly sandbox with no file system access. They get notes through a narrow API and must declare permissions.
+n126 | Encryption at rest | Each vault is encrypted with a key stored in the Keychain. Sync servers only ever see ciphertext. Losing the recovery key means losing the data.
+n127 | Telemetría: lo que medimos | Solo contamos arranques, fallos y la versión. Nunca el contenido de las notas. Se puede desactivar en Ajustes.
+n128 | Offline mode | All edits are stored locally and synced when the network returns. Conflicts become two versions side by side for the person to merge.
+n129 | Dark mode colours | Background #121212, text at 87 percent white, accents desaturated so they do not glow. Test with the screen at low brightness.
+n130 | Notas sobre el modelo de permisos | Cada agente recibe permisos por espacio: leer, escribir o nada. Las escrituras quedan firmadas con la procedencia del agente.
+n131 | Meeting notes: marketing plan | Launch post on Hacker News on a Tuesday morning, a short demo video, and a newsletter to the waitlist of 4,200 people.
+n132 | Reunión: precios para empresas | Planteamos un plan Team a 12 euros por usuario al mes con SSO y facturación anual. Mínimo cinco usuarios.
+n133 | Support macros | Refund within 30 days without questions. For sync problems ask for the app version and the log file from Help > Export Logs.
+n134 | Bug triage rules | P0: data loss or security, fix now. P1: a core feature broken for many, this week. P2: everything else goes to the backlog.
+n135 | Ideas para el blog | Cómo organizamos las notas de un equipo remoto. Por qué elegimos SQLite. Una guía de atajos de teclado.
+n136 | Podcast notes: interview with a chess grandmaster | Talked about intuition built from thousands of games, and how computers changed opening preparation.
+n137 | Diario 2026-04-03 | Hoy terminé la primera versión del importador de Notion. Mañana pruebo con el espacio de prueba de 10.000 notas.
+n138 | Notion importer notes | Notion exports Markdown with an id suffix in every file name. We strip the 32 character hex suffix and rebuild the links.
+n139 | Obsidian import | Wikilinks and embeds convert directly. Front matter becomes properties. Attachments are copied into the space.
+n140 | Keyboard shortcuts | Cmd+K opens the command palette, Cmd+Shift+F searches every note, Cmd+L inserts a link, Cmd+Option+N creates a daily note.
+n141 | Cumpleaños y fechas | Mamá 12 de marzo, Lucía 3 de agosto, aniversario 21 de septiembre. Poner recordatorio una semana antes.
+n142 | Car service | The 60,000 km service is due in June: oil, filters and brake fluid. Tyres at 3 mm, replace before winter.
+n143 | Wedding planning | Venue booked for 20 June. Still to do: photographer, menu tasting, invitations by March. Budget 15,000 euros.
+n144 | Lista de la compra semanal | Leche, huevos, pan, tomates, aguacates, arroz, pollo, yogur, café y fruta de temporada.
+n145 | Grocery list for the barbecue | Burgers, buns, corn, halloumi, watermelon, ice, charcoal and beer. Ask Sam to bring the speaker.
+n146 | Thoughts on remote work | Async by default, written decisions, three hours of overlap a day across time zones, and an in-person week twice a year.
+n147 | Contrato de alquiler | Fianza de dos meses, actualización con el IPC cada año y preaviso de 30 días. El casero paga la comunidad.
+n148 | OKRs Q3 | Objective: make search delightful. KR1: 80 percent of searches end with a click on the first three results. KR2: p95 latency under 50 ms.
+n149 | Postmortem: expired TLS certificate | The certificate for api.atlas.dev expired on a Sunday because the renewal cron used the old DNS token. Now alerts fire 21 days before expiry.
+n150 | Notes on vector databases | sqlite-vec stores vectors in a virtual table and runs exact KNN. Good up to about a million vectors on a laptop, with no separate server.
+n151 | Mentoring session with Jon | Jon wants to move from frontend to backend. Suggested he owns the export API next quarter and reads Designing Data-Intensive Applications.
+n152 | Miso soup | Dashi, a spoon of white miso dissolved off the heat, tofu cubes, wakame and spring onion. Never boil the miso.
+n153 | Receta: pan de masa madre | 500 g de harina, 350 g de agua, 100 g de masa madre activa y 10 g de sal. Pliegues cada media hora y fermentación en frío toda la noche.
+n154 | Bug write-up: CSV export uses the wrong decimal separator | Spanish users saw 1.234,5 become 1.2345. We now write numbers with a dot, quote fields and offer a locale option.
+n155 | Cómo depurar fugas de memoria en Swift | Usar el Memory Graph de Xcode y buscar ciclos de referencias en closures. Capturar self como weak en los callbacks.
+n156 | Meeting: data retention | Deleted notes stay in the trash 30 days, then are purged. Backups older than 90 days are deleted. Legal asked for a written policy.
+n157 | Llamada con cliente: Contoso | Contoso necesita exportar todas las notas a PDF para auditorías y quiere alojar el servidor de sincronización en su propia nube.
+n158 | Highlights: Range by David Epstein | Generalists triumph in wicked environments where rules change. Early specialisation helps only in kind domains like chess or golf.
+n159 | Learning Japanese | Kana done in two weeks with Anki. Now 10 new kanji a day and a graded reader every evening.
+n160 | Home office setup | Standing desk, external monitor at eye level, a mechanical keyboard and a lamp with warm light for the evening.
