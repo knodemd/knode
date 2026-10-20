@@ -5,9 +5,13 @@
 //! server runs `knode mcp --agent <name>`, which reads the key from the store.
 //!
 //! Claude Code and Codex are configured with their own commands when they are installed.
-//! Otherwise, and for Gemini CLI and Claude Desktop, their settings file is edited: only the
-//! `knode` entry is added or replaced, the file is backed up first, and running it again
-//! changes nothing.
+//! Every other agent, and Codex when it is not installed, has its settings file edited: only the
+//! `knode` entry is added or replaced, the file is backed up first, its permissions and (where
+//! the agent allows them) its comments are kept, and running it again changes nothing. Aider has
+//! no MCP client, so it gets guidance instead.
+
+mod json;
+mod places;
 
 use std::ffi::OsStr;
 use std::fs;
@@ -19,7 +23,9 @@ use clap::ValueEnum;
 use knode_config::Paths;
 use knode_format::GrantLevel;
 use knode_service::keys::{KeyStore, default_key_store, fingerprint, generate_key};
-use serde_json::{Value, json};
+use serde_json::Value;
+
+use places::Place;
 
 /// The name of the MCP server in every agent's settings.
 const SERVER: &str = "knode";
@@ -38,16 +44,38 @@ pub enum Agent {
     Gemini,
     /// Claude Desktop, through claude_desktop_config.json.
     ClaudeDesktop,
+    /// Cursor, through ~/.cursor/mcp.json.
+    Cursor,
+    /// Windsurf (Devin Desktop), through mcp_config.json.
+    Windsurf,
+    /// Cline, in every VS Code family editor it is installed in, and Cline CLI.
+    Cline,
+    /// Roo Code, in every VS Code family editor it is installed in.
+    #[value(alias = "roo")]
+    RooCode,
+    /// GitHub Copilot CLI, through ~/.copilot/mcp-config.json.
+    #[value(alias = "copilot")]
+    CopilotCli,
+    /// OpenCode, through ~/.config/opencode/opencode.json.
+    #[value(name = "opencode")]
+    OpenCode,
+    /// Amp, through ~/.config/amp/settings.json.
+    Amp,
+    /// Aider has no MCP client: prints what to do instead.
+    Aider,
+    /// GitHub Copilot in VS Code (agent mode), through the user mcp.json.
+    #[value(name = "vscode", alias = "vs-code")]
+    VsCode,
+    /// Zed, through context_servers in its settings.json.
+    Zed,
 }
 
 impl Agent {
     /// The agent's name in Knode, the actor of its changes, and its kind.
     pub fn name(self) -> &'static str {
         match self {
-            Agent::ClaudeCode => "claude-code",
-            Agent::Codex => "codex",
             Agent::Gemini => "gemini-cli",
-            Agent::ClaudeDesktop => "claude-desktop",
+            other => other.arg(),
         }
     }
 
@@ -58,14 +86,34 @@ impl Agent {
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
             Agent::ClaudeDesktop => "claude-desktop",
+            Agent::Cursor => "cursor",
+            Agent::Windsurf => "windsurf",
+            Agent::Cline => "cline",
+            Agent::RooCode => "roo-code",
+            Agent::CopilotCli => "copilot-cli",
+            Agent::OpenCode => "opencode",
+            Agent::Amp => "amp",
+            Agent::Aider => "aider",
+            Agent::VsCode => "vscode",
+            Agent::Zed => "zed",
         }
     }
 
-    pub const ALL: [Agent; 4] = [
+    pub const ALL: [Agent; 14] = [
         Agent::ClaudeCode,
         Agent::Codex,
         Agent::Gemini,
         Agent::ClaudeDesktop,
+        Agent::Cursor,
+        Agent::Windsurf,
+        Agent::Cline,
+        Agent::RooCode,
+        Agent::CopilotCli,
+        Agent::OpenCode,
+        Agent::Amp,
+        Agent::Aider,
+        Agent::VsCode,
+        Agent::Zed,
     ];
 
     /// The agent with this name or `knode connect` argument.
@@ -86,12 +134,46 @@ fn mcp_args(agent: Agent, space: Option<&Path>) -> Vec<String> {
     args
 }
 
+/// A settings file about to be changed: what it holds now and what it will hold, or `None`
+/// when Knode is already there.
+struct Change {
+    place: Place,
+    current: Option<String>,
+    updated: Option<String>,
+}
+
 /// `knode connect <agent>`. `space` is the space given with `--space`, if any; the agent gets
 /// access to it, or to the default space, the first time.
 pub fn run(paths: &Paths, agent: Agent, print: bool, space: Option<&Path>) -> Result<()> {
+    if agent == Agent::Aider {
+        print_aider();
+        return Ok(());
+    }
     let knode = knode_path()?;
     let flag = space.map(crate::absolute).transpose()?;
     let args = mcp_args(agent, flag.as_deref());
+    // Every settings file is read and checked before the agent gets a key, so a file that
+    // cannot be changed leaves nothing half done.
+    let changes = places::places(agent)?
+        .into_iter()
+        .map(|place| {
+            let current = read_optional(&place.file)?;
+            let entry = places::entry(agent, &knode, &args);
+            let updated = json::set_entry(
+                current.as_deref().unwrap_or(""),
+                place.syntax,
+                place.container,
+                SERVER,
+                &entry,
+            )
+            .with_context(|| format!("cannot add Knode to {}", place.file.display()))?;
+            Ok(Change {
+                place,
+                current,
+                updated,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let target = crate::resolve(paths, flag.as_deref())
         .ok()
         .map(|r| r.path)
@@ -115,26 +197,94 @@ pub fn run(paths: &Paths, agent: Agent, print: bool, space: Option<&Path>) -> Re
     match agent {
         Agent::ClaudeCode => claude_code(&knode, &args, print),
         Agent::Codex => codex(&knode, &args, print),
-        Agent::Gemini => {
-            let file = home()?.join(".gemini/settings.json");
-            json_settings(
-                "Gemini CLI",
-                &file,
-                &knode,
-                &args,
-                print,
-                "Start a new Gemini CLI session",
-            )
+        _ => {
+            for (i, change) in changes.into_iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                finish_edit(
+                    &change.place.label,
+                    &change.place.file,
+                    change.current,
+                    change.updated,
+                    print,
+                    &change.place.restart,
+                )?;
+            }
+            Ok(())
         }
-        Agent::ClaudeDesktop => json_settings(
-            "Claude Desktop",
-            &claude_desktop_config()?,
-            &knode,
-            &args,
-            print,
-            "Quit and reopen Claude Desktop",
-        ),
     }
+}
+
+/// What to do for Aider, which cannot run MCP servers.
+fn print_aider() {
+    println!(
+        "Aider has no MCP client yet, so Knode cannot be added to it, and nothing was changed.\n\
+         \n\
+         To give Aider what is in Knode:\n\
+         \n\
+         - Keep a live Markdown copy of a space, then add notes to the chat as read-only files:\n\
+         \n\
+         \x20   knode markdown folder ~/Knode/markdown\n\
+         \x20   aider --read ~/Knode/markdown/<note>.md\n\
+         \n\
+         - Or, inside Aider, search Knode and add the results to the chat:\n\
+         \n\
+         \x20   /run knode search <words>\n\
+         \n\
+         Both read your default space (or the one in --space) as you, not as an agent."
+    );
+}
+
+/// `knode connect --list`: every agent, whether it is on this machine and where Knode goes.
+pub fn list() -> Result<()> {
+    let home = home().ok();
+    let short = |path: &Path| -> String {
+        match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+            Some(rest) => format!("~/{}", rest.display()),
+            None => path.display().to_string(),
+        }
+    };
+    let rows: Vec<(Agent, bool, String)> = Agent::ALL
+        .into_iter()
+        .map(|agent| {
+            let detected = places::detected(agent);
+            let how = match agent {
+                Agent::ClaudeCode => "claude mcp add --scope user".to_string(),
+                Agent::Codex if which("codex").is_some() => "codex mcp add".to_string(),
+                Agent::Codex => codex_config().map_or_else(|e| e.to_string(), |f| short(&f)),
+                Agent::Aider => "no MCP client; prints what to do instead".to_string(),
+                _ => match places::places(agent) {
+                    Ok(found) => found
+                        .iter()
+                        .map(|p| {
+                            let known = if places::has_knode(p) {
+                                " (has Knode)"
+                            } else {
+                                ""
+                            };
+                            format!("{}{known}", short(&p.file))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    Err(_) => "not installed in any editor".to_string(),
+                },
+            };
+            (agent, detected, how)
+        })
+        .collect();
+    let width = rows
+        .iter()
+        .map(|(a, _, _)| a.arg().len())
+        .max()
+        .unwrap_or(0);
+    println!("{:width$}  {:8}  Where", "Agent", "Detected");
+    for (agent, detected, how) in rows {
+        let detected = if detected { "yes" } else { "no" };
+        println!("{:width$}  {detected:8}  {how}", agent.arg());
+    }
+    println!("\nConnect one with `knode connect <agent>`; `--print` shows what it would change.");
+    Ok(())
 }
 
 /// The credential store of this machine.
@@ -187,7 +337,8 @@ fn issue_key(paths: &Paths, agent: Agent, space: Option<&Path>) -> Result<()> {
             }
             None => {
                 println!(
-                    "There is no space yet, so {name} cannot see anything. Create one with                      `knode init <name>`, then `knode agents grant {name} <space> write`."
+                    "There is no space yet, so {name} cannot see anything. Create one with \
+                     `knode init <name>`, then `knode agents grant {name} <space> write`."
                 );
                 return Ok(());
             }
@@ -452,7 +603,7 @@ fn codex(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
         current,
         updated,
         print,
-        "Start a new Codex session",
+        "Start a new Codex session to use it",
     )
 }
 
@@ -493,46 +644,6 @@ fn codex_toml(text: &str, knode: &Path, mcp: &[String]) -> Result<Option<String>
     table.insert("args", toml_edit::value(args));
     servers.insert(SERVER, toml_edit::Item::Table(table));
     Ok(Some(doc.to_string()))
-}
-
-fn json_settings(
-    name: &str,
-    file: &Path,
-    knode: &Path,
-    mcp: &[String],
-    print: bool,
-    restart: &str,
-) -> Result<()> {
-    let current = read_optional(file)?;
-    let updated = json_config(current.as_deref().unwrap_or(""), knode, mcp)
-        .with_context(|| format!("cannot add Knode to {}", file.display()))?;
-    finish_edit(name, file, current, updated, print, restart)
-}
-
-/// The settings with `mcpServers.knode` running `knode` with `mcp`, or `None` when they already
-/// do. Everything else is kept, in the same order.
-fn json_config(text: &str, knode: &Path, mcp: &[String]) -> Result<Option<String>> {
-    let mut root: Value = if text.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(text).context("it is not valid JSON; fix it and try again")?
-    };
-    let root_map = root
-        .as_object_mut()
-        .context("it is not a JSON object; fix it and try again")?;
-    let servers = root_map
-        .entry("mcpServers")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .context("\"mcpServers\" is not a JSON object; fix it and try again")?;
-    let entry = json!({ "command": knode.to_string_lossy(), "args": mcp });
-    if servers.get(SERVER) == Some(&entry) {
-        return Ok(None);
-    }
-    servers.insert(SERVER.to_string(), entry);
-    let mut out = serde_json::to_string_pretty(&root)?;
-    out.push('\n');
-    Ok(Some(out))
 }
 
 fn read_optional(file: &Path) -> Result<Option<String>> {
@@ -577,10 +688,7 @@ fn finish_edit(
         println!("Backed up {} to {}", file.display(), backup.display());
     }
     write_atomic(file, &updated)?;
-    println!(
-        "Added Knode to {name} in {}. {restart} to use it.",
-        file.display()
-    );
+    println!("Added Knode to {name} in {}. {restart}.", file.display());
     Ok(())
 }
 
@@ -622,23 +730,35 @@ mod tests {
     #[test]
     fn json_keeps_other_servers_and_order() {
         let knode = Path::new("/bin/knode");
-        let mcp = &mcp();
+        let entry = places::entry(Agent::Gemini, knode, &mcp());
+        let set =
+            |text: &str| json::set_entry(text, json::Syntax::Json, "mcpServers", SERVER, &entry);
         let text = r#"{"theme": "dark", "mcpServers": {"other": {"command": "x"}}, "a": 1}"#;
-        let out = json_config(text, knode, mcp).unwrap().unwrap();
+        let out = set(text).unwrap().unwrap();
         let value: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["mcpServers"]["other"]["command"], "x");
         assert_eq!(value["mcpServers"]["knode"]["command"], "/bin/knode");
         assert_eq!(
             value["mcpServers"]["knode"]["args"],
-            json!(["mcp", "--agent", "gemini-cli"])
+            serde_json::json!(["mcp", "--agent", "gemini-cli"])
         );
         let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["theme", "mcpServers", "a"]);
-        assert_eq!(json_config(&out, knode, mcp).unwrap(), None);
-        assert!(json_config("", knode, mcp).unwrap().is_some());
-        assert!(json_config("[1]", knode, mcp).is_err());
-        assert!(json_config("{nope", knode, mcp).is_err());
-        assert!(json_config(r#"{"mcpServers": 3}"#, knode, mcp).is_err());
+        assert_eq!(set(&out).unwrap(), None);
+        assert!(set("").unwrap().is_some());
+        assert!(set("[1]").is_err());
+        assert!(set("{nope").is_err());
+        assert!(set(r#"{"mcpServers": 3}"#).is_err());
+    }
+
+    #[test]
+    fn every_agent_has_a_distinct_name() {
+        for agent in Agent::ALL {
+            assert_eq!(Agent::find(agent.arg()), Some(agent));
+            assert_eq!(Agent::find(agent.name()), Some(agent));
+            let value = agent.to_possible_value().unwrap();
+            assert_eq!(value.get_name(), agent.arg());
+        }
     }
 
     #[test]
