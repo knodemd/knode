@@ -219,6 +219,14 @@ struct NodeListView: View {
                 } else {
                     ContentUnavailableView.search(text: model.searchText)
                 }
+            } else if let results = model.searchResults {
+                List(selection: $model.selectedNodeID) {
+                    ForEach(results.hits) { hit in
+                        SearchResultRow(hit: hit)
+                            .tag(hit.id)
+                            .draggable(hit.id)
+                    }
+                }
             } else {
                 List(selection: $model.selectedNodeID) {
                     ForEach(model.nodes) { node in
@@ -227,6 +235,11 @@ struct NodeListView: View {
                             .draggable(node.id)
                     }
                 }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !model.searchText.isEmpty, let note = model.searchResults?.note {
+                SearchNoteBanner(note: note)
             }
         }
         .navigationTitle(model.selectedSpace?.name ?? "Knode")
@@ -243,6 +256,9 @@ struct NodeListView: View {
                 }
                 .disabled(!model.hasMap)
                 .help("Show the space as a graph (Shift-Command-M)")
+            }
+            ToolbarItem {
+                SearchModeMenu()
             }
         }
     }

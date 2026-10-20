@@ -1,7 +1,7 @@
 import KnodeBrand
 import SwiftUI
 
-/// The settings window: the Agents tab.
+/// The settings window: agents, spaces and search.
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -10,6 +10,9 @@ struct SettingsView: View {
             }
             Tab("Spaces", systemImage: "folder.badge.gearshape") {
                 SpacesSettingsView()
+            }
+            Tab("Search", systemImage: "sparkle.magnifyingglass") {
+                SearchSettingsView()
             }
         }
         .frame(width: 600, height: 560)

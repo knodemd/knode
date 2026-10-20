@@ -52,6 +52,11 @@ final class FakeKnodeService: @unchecked Sendable {
     private var bodyNotice: [String: Any]?
     /// `space` notifications to send once the answer is sent.
     private var spaceEvents: [[String: Any]] = []
+    /// The mode a `search` with `mode` runs in, whatever it asks for, and its note; `nil` runs
+    /// the mode asked for.
+    private var searchFallback: (mode: String, note: String?)?
+    /// What `index.status` and `index.run` answer, and `index` in `service.status`.
+    private var index: [String: Any] = FakeKnodeService.indexStatus()
 
     init() throws {
         // Unix socket paths are short: keep the folder name short.
@@ -157,6 +162,34 @@ final class FakeKnodeService: @unchecked Sendable {
         }
     }
 
+    /// Makes `search` with a `mode` run in `mode` and answer with `note`, as when meaning
+    /// cannot be used yet.
+    func setSearchFallback(mode: String, note: String?) {
+        lock.withLock { searchFallback = (mode, note) }
+    }
+
+    /// Sets what `index.status` answers.
+    func setIndex(_ status: [String: Any]) {
+        lock.withLock { index = status }
+    }
+
+    /// An `index.status` answer.
+    static func indexStatus(
+        enabled: Bool = true,
+        state: String = "ready",
+        downloaded: Int64 = 0,
+        spaces: [[String: Any]] = [],
+        paused: String? = nil
+    ) -> [String: Any] {
+        var status: [String: Any] = [
+            "available": true, "enabled": enabled, "running": true,
+            "model": ["name": "multilingual-e5-small", "state": state, "downloaded": downloaded, "size": 487_724_985],
+            "spaces": spaces,
+        ]
+        if let paused { status["paused"] = paused }
+        return status
+    }
+
     // MARK: Serving
 
     private func acceptLoop() {
@@ -240,7 +273,9 @@ final class FakeKnodeService: @unchecked Sendable {
             clients[client] = true
             return (true, nil)
         case "service.status":
-            return (["version": "0.0.0", "pid": 1, "spaces": spaces.keys.sorted(), "clients": clients.count], nil)
+            return (["version": "0.0.0", "pid": 1, "spaces": spaces.keys.sorted(), "clients": clients.count, "index": index], nil)
+        case "index.status", "index.run":
+            return (index, nil)
         case "space.create":
             guard spaces[path] == nil else { throw RPCError(code: -32003, kind: "already_exists", message: "\(path) already exists") }
             spaces[path] = Space(id: nextID(), name: params["name"] as? String ?? "")
@@ -385,8 +420,25 @@ final class FakeKnodeService: @unchecked Sendable {
             return (nodes.map { ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by] }, nil)
         case "search":
             let query = (params["query"] as? String ?? "").lowercased()
-            let hits = try space().nodes.values.filter { $0.title.lowercased().contains(query) || $0.body.lowercased().contains(query) }
-            return (hits.map { ["node": ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by], "snippet": "**\($0.title)**", "score": 1.0] }, nil)
+            let found = try space().nodes.values
+                .filter { $0.title.lowercased().contains(query) || $0.body.lowercased().contains(query) }
+                .sorted { $0.title < $1.title }
+            guard let asked = params["mode"] as? String else {
+                return (found.map { ["node": ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by], "snippet": "**\($0.title)**", "score": 1.0] }, nil)
+            }
+            let mode = searchFallback?.mode ?? asked
+            // Words rank the notes found in order; meaning, here, ranks them the other way round.
+            let hits: [[String: Any]] = found.enumerated().map { index, node in
+                [
+                    "node": ["id": node.id, "kind": "note", "title": node.title, "created_at": node.createdAt, "updated_at": node.updatedAt, "updated_by": node.by],
+                    "snippet": "about **\(node.title)**", "score": 1.0,
+                    "word_rank": mode == "meaning" ? NSNull() : index + 1,
+                    "meaning_rank": mode == "words" ? NSNull() : found.count - index,
+                ]
+            }
+            var result: [String: Any] = ["mode": mode, "hits": hits]
+            if let note = searchFallback?.note { result["note"] = note }
+            return (result, nil)
         case "doc.open", "doc.edit":
             return (try respondDocument(method, params, path: path), nil)
         default:
