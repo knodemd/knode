@@ -4,6 +4,16 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
+$(SRCROOT)/../core/crates/knode-embed/Cargo.toml
+$(SRCROOT)/../core/crates/knode-embed/src/chunk.rs
+$(SRCROOT)/../core/crates/knode-embed/src/download.rs
+$(SRCROOT)/../core/crates/knode-embed/src/embedder.rs
+$(SRCROOT)/../core/crates/knode-embed/src/error.rs
+$(SRCROOT)/../core/crates/knode-embed/src/indexer.rs
+$(SRCROOT)/../core/crates/knode-embed/src/lib.rs
+$(SRCROOT)/../core/crates/knode-embed/src/model.rs
+$(SRCROOT)/../core/crates/knode-embed/src/rrf.rs
+$(SRCROOT)/../core/crates/knode-embed/src/test_support.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
@@ -63,6 +73,7 @@ $(SRCROOT)/../core/crates/knode-ingest/src/windsurf.rs
 $(SRCROOT)/../core/crates/knode-md/Cargo.toml
 $(SRCROOT)/../core/crates/knode-md/src/lib.rs
 $(SRCROOT)/../core/crates/knode-service/Cargo.toml
+$(SRCROOT)/../core/crates/knode-service/build.rs
 $(SRCROOT)/../core/crates/knode-service/src/agents.rs
 $(SRCROOT)/../core/crates/knode-service/src/auth/log.rs
 $(SRCROOT)/../core/crates/knode-service/src/auth/mod.rs
@@ -70,6 +81,7 @@ $(SRCROOT)/../core/crates/knode-service/src/auth/registry.rs
 $(SRCROOT)/../core/crates/knode-service/src/capture.rs
 $(SRCROOT)/../core/crates/knode-service/src/client.rs
 $(SRCROOT)/../core/crates/knode-service/src/error.rs
+$(SRCROOT)/../core/crates/knode-service/src/index.rs
 $(SRCROOT)/../core/crates/knode-service/src/install.rs
 $(SRCROOT)/../core/crates/knode-service/src/keys.rs
 $(SRCROOT)/../core/crates/knode-service/src/lib.rs
@@ -77,6 +89,7 @@ $(SRCROOT)/../core/crates/knode-service/src/lock.rs
 $(SRCROOT)/../core/crates/knode-service/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-service/src/paths.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
+$(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
