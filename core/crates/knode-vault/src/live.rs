@@ -610,9 +610,7 @@ impl LiveFolder {
             .files()
             .iter()
             .filter(|(eid, path)| {
-                !on_disk.contains(*eid)
-                    && self.seen.contains_key(*path)
-                    && !dir.join(path).exists()
+                !on_disk.contains(*eid) && self.seen.contains_key(*path) && !dir.join(path).exists()
             })
             .map(|(eid, path)| (eid.clone(), path.clone()))
             .collect();
