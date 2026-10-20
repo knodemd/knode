@@ -149,8 +149,19 @@ struct NoteView: View {
     }
 
     private var source: some View {
-        MarkdownSourceEditor(editor: editor)
+        MarkdownSourceEditor(editor: editor, attachments: attachmentDrop)
             .id(editor.nodeID)
+    }
+
+    /// Files dropped in the text and images pasted into it are attached to the note and written
+    /// where they went.
+    private var attachmentDrop: AttachmentDrop? {
+        guard model.canAttach else { return nil }
+        let model = model
+        return AttachmentDrop(
+            files: { await model.attachFiles($0) },
+            image: { await model.attachPastedImage($0, named: $1) }
+        )
     }
 
     private var preview: some View {
