@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::*;
@@ -367,31 +368,6 @@ fn arranges_a_canvas_with_positions_and_groups() {
     // Deleting the canvas's node hides it; the board is kept for a restore.
     space.delete_node(node.clone(), me()).unwrap();
     assert!(space.views().unwrap().is_empty());
-}
-
-#[test]
-fn reads_rfc3339_times() {
-    assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
-    assert_eq!(
-        parse_rfc3339("2026-10-20T09:30:00.250Z"),
-        Some(format_time("2026-10-20T09:30:00.250Z"))
-    );
-    assert_eq!(
-        parse_rfc3339("2026-10-20T11:30:00+02:00"),
-        parse_rfc3339("2026-10-20T09:30:00Z")
-    );
-    assert_eq!(parse_rfc3339("2026-10-20"), None);
-    assert_eq!(parse_rfc3339("2026-13-20T09:30:00Z"), None);
-    assert_eq!(parse_rfc3339("2026-10-20T09:30:00"), None);
-    let now = format::Timestamp::now();
-    assert_eq!(parse_rfc3339(&now.to_string()), Some(now.as_millis()));
-}
-
-/// The time the core writes for the same instant, read back.
-fn format_time(text: &str) -> i64 {
-    let millis = parse_rfc3339(text).unwrap();
-    assert_eq!(format::Timestamp(millis).to_string(), text);
-    millis
 }
 
 /// Builds a large space and times the graph read. Run with

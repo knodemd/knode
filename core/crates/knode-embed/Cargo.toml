@@ -17,6 +17,9 @@ download = ["dep:ureq"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 # Use Apple Accelerate for matrix maths on the CPU.
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+# `test_support`: a tiny model with random weights, written on the fly, for tests that must not
+# download anything.
+test-support = []
 
 [dependencies]
 candle-core = "=0.11.0"

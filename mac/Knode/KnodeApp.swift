@@ -178,6 +178,12 @@ struct SpaceCommands: Commands {
             .keyboardShortcut("l", modifiers: [.command, .shift])
             .disabled(model.editor == nil || model.links == nil)
 
+            Button(model.isShowingAttachments ? "Hide Attachments" : "Show Attachments", systemImage: "paperclip") {
+                model.isShowingAttachments.toggle()
+            }
+            .keyboardShortcut("a", modifiers: [.command, .shift])
+            .disabled(model.editor == nil || !model.canAttach)
+
             Button(model.isShowingHistory ? "Hide History" : "Show History", systemImage: "clock.arrow.circlepath") {
                 model.toggleHistory()
             }

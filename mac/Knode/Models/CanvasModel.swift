@@ -469,7 +469,7 @@ final class CanvasModel {
                 try await store.removePositions(gone, from: view.id, space: spaceID)
             }
             for id in before.groups.keys where after.groups[id] == nil {
-                try await store.removeGroup(id, in: spaceID)
+                try await store.removeGroup(id, in: view.id, space: spaceID)
                 removedGroups.insert(id)
             }
         } catch {

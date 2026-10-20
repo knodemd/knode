@@ -3,9 +3,9 @@ import Foundation
 /// What the map of a space needs: typed links, graph views and canvases (section 18 of the
 /// format).
 ///
-/// `CoreSpaceStore` implements it with the Rust core, `RoutingSpaceStore` with the core in the app
-/// even while Knode Service holds the space (the service has no view methods yet), and
-/// `PreviewSpaceStore` in memory. Moving the viewport, positions and groups adds no change to the
+/// `CoreSpaceStore` implements it with the Rust core, `ServiceSpaceStore` through Knode Service,
+/// `RoutingSpaceStore` with whichever of the two holds the space, and `PreviewSpaceStore` in
+/// memory. Moving the viewport, positions and groups adds no change to the
 /// history of the space.
 public protocol MapStore: Sendable {
     /// Every kind of link: the built-in kinds, then the ones the space defined.
@@ -54,7 +54,7 @@ public protocol MapStore: Sendable {
     func setGroup(_ group: GroupDraft, in view: MapView.ID, space: Space.ID) async throws -> ViewGroupInfo
 
     /// Removes a group; its nodes stay on the canvas.
-    func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws
+    func removeGroup(_ id: ViewGroupInfo.ID, in view: MapView.ID, space: Space.ID) async throws
 }
 
 // MARK: - Models

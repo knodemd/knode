@@ -1,5 +1,5 @@
 //! A tiny BERT model with random weights and a word-level tokenizer, written on the fly so tests
-//! never download anything.
+//! never download anything. Built for this crate's tests and with the `test-support` feature.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,7 +14,10 @@ use tokenizers::processors::template::TemplateProcessing;
 
 use crate::model::{Manifest, Pooling};
 
-pub(crate) fn write_tiny_model(dir: &Path) {
+/// Writes a complete model folder into `dir`: 8 dimensions, a vocabulary of a few English words
+/// (`the`, `a`, `cat`, `dog`, `sat`, `ran`, `far`, `away`, `from`), and the `query: ` and
+/// `passage: ` prefixes. Its manifest names it `tiny-test`, from `test`.
+pub fn write_tiny_model(dir: &Path) {
     let words = [
         "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "a", "cat", "dog", "sat", "ran", "far", "away",
         "from", "query", "passage", ":",

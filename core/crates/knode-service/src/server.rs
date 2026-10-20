@@ -30,6 +30,7 @@ use crate::capture::{CaptureOptions, CaptureTask, Routes};
 use crate::lock::InstanceLock;
 use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
+use crate::search::{Index, IndexOptions};
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
 mod maps;
@@ -51,6 +52,8 @@ pub struct Config {
     pub home: PathBuf,
     /// Capture of agent conversations into the spaces, or `None` for no capture.
     pub capture: Option<CaptureOptions>,
+    /// Indexing of the open spaces for search by meaning, or `None` for search by words only.
+    pub index: Option<IndexOptions>,
 }
 
 impl Config {
@@ -59,13 +62,25 @@ impl Config {
         Config {
             home: home.into(),
             capture: None,
+            index: None,
         }
     }
 
     /// A service in the default Knode home (see [`knode_home`](crate::knode_home)) that
-    /// captures conversations as `config.toml` says. This is `knode service run`.
+    /// captures conversations and indexes spaces for search by meaning as `config.toml` says.
+    /// This is `knode service run`.
     pub fn from_env() -> Result<Self> {
-        Ok(Config::new(knode_home()?).with_capture(CaptureOptions::default()))
+        Ok(Config::new(knode_home()?)
+            .with_capture(CaptureOptions::default())
+            .with_index(IndexOptions::default()))
+    }
+
+    /// The same service, indexing the open spaces for search by meaning with these options,
+    /// while `embeddings` is on in `config.toml`. Builds without the `semantic` feature search
+    /// by words only.
+    pub fn with_index(mut self, options: IndexOptions) -> Self {
+        self.index = Some(options);
+        self
     }
 
     /// The same service, capturing conversations with these options.
@@ -188,6 +203,7 @@ struct Bound {
     socket: PathBuf,
     home: PathBuf,
     capture: Option<CaptureOptions>,
+    index: Option<IndexOptions>,
     auth: Auth,
 }
 
@@ -217,6 +233,7 @@ impl Bound {
             socket,
             home: config.home.clone(),
             capture: config.capture.clone(),
+            index: config.index.clone(),
             auth,
         })
     }
@@ -231,10 +248,12 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
         socket,
         home,
         capture,
+        index,
         auth,
     } = bound;
     let listener = UnixListener::from_std(listener)?;
     let state = Arc::new(State::new(auth));
+    let index = index.and_then(|options| state.index.start(state.clone(), &home, options));
     let capture = match capture {
         Some(options) => Some(CaptureTask::start(state.clone(), home, options)?),
         None => None,
@@ -276,7 +295,10 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
     drop(listener);
     let _ = fs::remove_file(&socket);
     connections.shutdown().await;
-    // Capture holds a space open: stop it before the spaces close.
+    // Indexing and capture hold spaces open: stop them before the spaces close.
+    if let Some(index) = index {
+        tokio::task::spawn_blocking(move || index.stop()).await?;
+    }
     if let Some(capture) = capture {
         tokio::task::spawn_blocking(move || capture.stop()).await?;
     }
@@ -338,6 +360,8 @@ pub(crate) struct State {
     /// the space and after `live`, never before either: a live folder merges the bodies edited
     /// in it through them.
     docs: Mutex<knode_sync::Docs>,
+    /// Search by meaning: the index of the open spaces.
+    pub(crate) index: Index,
 }
 
 impl State {
@@ -354,6 +378,7 @@ impl State {
             routes_generation: AtomicU64::new(0),
             live: Mutex::new(HashMap::new()),
             docs: Mutex::new(knode_sync::Docs::new()),
+            index: Index::new(),
         }
     }
 
@@ -374,11 +399,18 @@ impl State {
         let space = Arc::new(Mutex::new(Space::open(&key)?));
         // Hold the space while its live folder catches up, so no change is made before.
         let mut guard = lock_ignoring_poison(&space);
-        spaces.insert(key, space.clone());
+        spaces.insert(key.clone(), space.clone());
         drop(spaces);
         self.start_live(&mut guard);
         drop(guard);
+        self.index.changed(&key);
         Ok(space)
+    }
+
+    /// The space open at `path` (canonical), without opening it.
+    #[cfg_attr(not(semantic), allow(dead_code))]
+    pub(crate) fn open_space(&self, path: &Path) -> Option<Arc<Mutex<Space>>> {
+        self.open_spaces().ok()?.get(path).cloned()
     }
 
     /// Starts the live Markdown folder of an open space, if it has one, reading in the files
@@ -541,6 +573,7 @@ impl State {
             };
             folder.record(change.node_id, op);
         }
+        self.index.changed(&change.space);
         // No receivers is not an error: nobody is subscribed.
         let _ = self.changes.send(Notice::Node(change));
     }
@@ -681,6 +714,7 @@ impl State {
             spaces,
             clients: self.clients.load(Ordering::Relaxed),
             capture: lock_ignoring_poison(&self.capturing).clone(),
+            index: Some(self.index.status()),
         }
     }
 }
@@ -921,12 +955,9 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
                 _ => to_value(space.history(&p.id)?),
             }
         }
-        methods::SEARCH => {
-            let p: SearchParams = params(method, raw)?;
-            let space = state.space(&p.space)?;
-            let space = lock_ignoring_poison(&space);
-            to_value(space.search(&p.query, p.limit.min(MAX_LIMIT))?)
-        }
+        methods::SEARCH => crate::search::search(state, raw),
+        methods::INDEX_STATUS => crate::search::index_status(state),
+        methods::INDEX_RUN => crate::search::index_run(state, raw),
         methods::RECENT => {
             let p: RecentParams = params(method, raw)?;
             let space = state.space(&p.space)?;

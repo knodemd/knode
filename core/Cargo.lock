@@ -231,6 +231,12 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -1990,6 +1996,7 @@ dependencies = [
  "clap",
  "jsonc-parser",
  "knode-config",
+ "knode-embed",
  "knode-format",
  "knode-ingest",
  "knode-mcp",
@@ -2075,6 +2082,7 @@ name = "knode-mcp"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "knode-embed",
  "knode-format",
  "knode-service",
  "knode-sync",
@@ -2099,6 +2107,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "knode-config",
+ "knode-embed",
  "knode-format",
  "knode-ingest",
  "knode-sync",
@@ -2131,22 +2140,31 @@ dependencies = [
 name = "knode-vault"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "csv",
  "dom_query",
  "dom_smoothie",
+ "flate2",
  "knode-format",
  "knode-md",
  "knode-sync",
  "lopdf",
+ "md5",
  "notify",
  "pdf-extract",
+ "percent-encoding",
  "pulldown-cmark",
+ "quick-xml",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
+ "ulid",
  "ureq",
+ "zip",
 ]
 
 [[package]]
@@ -3101,6 +3119,15 @@ name = "pulp-wasm-simd-flag"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d8f70e07b9c3962945a74e59ca1c511bba65b6419468acc217c457d93f3c740"
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quick_cache"
