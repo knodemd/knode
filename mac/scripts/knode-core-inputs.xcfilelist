@@ -91,5 +91,14 @@ $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
 $(SRCROOT)/../core/crates/knode-vault/src/live.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/book.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/dates.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/document.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/kindle.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/markdown.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/mod.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/pdf.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/readwise.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/web.rs
 $(SRCROOT)/../core/crates/knode-vault/src/tags.rs
 $(SRCROOT)/../core/crates/knode-vault/src/time.rs
