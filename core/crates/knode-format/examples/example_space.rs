@@ -5,8 +5,18 @@
 //! ```
 
 use knode_format::{
-    NewNode, NodeUpdate, Properties, Provenance, Space, kinds, link_kinds, property_keys,
+    GraphViewSpec, LinkKindSpec, NewNode, NodeUpdate, PositionSpec, Properties, Provenance, Space,
+    Viewport, kinds, link_kinds, property_keys,
 };
+
+/// A plan of the beds, attached to the project (schema version 4).
+const BEDS_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"240\" height=\"120\" \
+viewBox=\"0 0 240 120\">\n\
+  <rect x=\"10\" y=\"10\" width=\"100\" height=\"100\" fill=\"#c9e4b4\" stroke=\"#4a7c3a\"/>\n\
+  <rect x=\"130\" y=\"10\" width=\"100\" height=\"100\" fill=\"#f3d9a4\" stroke=\"#a0702a\"/>\n\
+  <text x=\"60\" y=\"65\" text-anchor=\"middle\" font-size=\"14\">Tomato</text>\n\
+  <text x=\"180\" y=\"65\" text-anchor=\"middle\" font-size=\"14\">Basil</text>\n\
+</svg>\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
@@ -26,6 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NewNode::note(
             "Garden planner",
             "A small app to plan a vegetable garden by week.\n\n\
+             ![[beds.svg]]\n\n\
              - Data lives in [[SQLite for local data|SQLite]]\n\
              - Planting dates come from the [[Frost dates]]\n\
              - Open questions are in [[Ideas for v2]]\n",
@@ -122,6 +133,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     space.link(&ideas.id, &project.id, link_kinds::PART_OF, &me)?;
     space.link(&frost.id, &project.id, link_kinds::PART_OF, &codex)?;
+
+    // A kind of link the space defines, and links of it (schema version 4).
+    space.set_link_kind(
+        &LinkKindSpec::directed("depends-on", "depends on", "needed by")
+            .with_description("The source cannot work without the target."),
+        &me,
+    )?;
+    space.link(&project.id, &decision.id, "depends-on", &me)?;
+    space.link(&ideas.id, &frost.id, "depends-on", &codex)?;
+    space.link(&decision.id, &ideas.id, link_kinds::ANSWERS, &claude)?;
+
+    // A file attached to the project, shown by `![[beds.svg]]` in its body.
+    space.attach(&project.id, "beds.svg", BEDS_SVG.as_bytes(), &me)?;
+
+    // A graph view of the project, with where its nodes were put.
+    let view = space.set_graph_view(
+        &GraphViewSpec {
+            id: None,
+            name: "Garden planner".into(),
+            filter: Some(serde_json::json!({ "tags": ["project", "database", "reference"] })),
+        },
+        &me,
+    )?;
+    space.set_positions(
+        &view.id,
+        &[
+            PositionSpec::at(project.id, 0.0, 0.0),
+            PositionSpec::at(decision.id, -220.0, 140.0),
+            PositionSpec::at(conversation.id, -220.0, 300.0),
+            PositionSpec::at(frost.id, 220.0, 140.0),
+            PositionSpec::at(ideas.id, 0.0, -180.0),
+        ],
+        &me,
+    )?;
+    space.set_viewport(
+        &view.id,
+        &Viewport {
+            x: 0.0,
+            y: 60.0,
+            zoom: 1.0,
+        },
+        &me,
+    )?;
 
     // A later edit, so the history has more than one version.
     space.update_node(
