@@ -5,6 +5,7 @@ $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
+$(SRCROOT)/../core/crates/knode-ffi/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/maps.rs
@@ -93,6 +94,19 @@ $(SRCROOT)/../core/crates/knode-sync/src/files.rs
 $(SRCROOT)/../core/crates/knode-sync/src/lib.rs
 $(SRCROOT)/../core/crates/knode-sync/src/version.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
+$(SRCROOT)/../core/crates/knode-vault/src/apps/apple_notes.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/bear.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/dates.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/db.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/enml.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/evernote.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/folder.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/markdown.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/mod.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/notion.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/proto.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/source.rs
+$(SRCROOT)/../core/crates/knode-vault/src/apps/write.rs
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
 $(SRCROOT)/../core/crates/knode-vault/src/import.rs

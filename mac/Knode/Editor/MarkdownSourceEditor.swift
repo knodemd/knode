@@ -6,8 +6,11 @@ import SwiftUI
 /// Each edit the person makes is reported to the editor with the range it replaced, so it is
 /// sent as a splice. Text that changes under it, written by someone else, is patched in place:
 /// only the runs that differ are replaced, and the selection moves with the text around it.
+/// With `attachments`, files dropped in the text and images pasted into it are attached and
+/// written as `![[name]]` where they went.
 struct MarkdownSourceEditor: NSViewRepresentable {
     let editor: NoteEditorModel
+    var attachments: AttachmentDrop?
 
     static let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
 
@@ -16,9 +19,18 @@ struct MarkdownSourceEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
         scroll.drawsBackground = false
-        let textView = scroll.documentView as! NSTextView
+        let textView = AttachingTextView()
+        textView.autoresizingMask = [.width]
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.attachments = attachments
+        scroll.documentView = textView
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
@@ -38,6 +50,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.editor = editor
+        (context.coordinator.textView as? AttachingTextView)?.attachments = attachments
         // Read here, so the view updates when the body changes.
         context.coordinator.show(editor.body)
     }
