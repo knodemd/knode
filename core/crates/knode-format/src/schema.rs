@@ -10,6 +10,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sql/0001-initial.sql"),
     include_str!("sql/0002-properties.sql"),
     include_str!("sql/0003-v02.sql"),
+    include_str!("sql/0004-v03.sql"),
 ];
 
 /// The schema version this library writes: the `user_version` of an up to date `knode.db`.
@@ -106,10 +107,10 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_has_every_table_of_version_3() {
+    fn a_fresh_database_has_every_table_of_version_4() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(SCHEMA_VERSION, 4);
         for table in [
             "settings",
             "provenance",
@@ -126,6 +127,16 @@ mod tests {
             "grants",
             "changes",
             "link_history",
+            "link_kinds",
+            "views",
+            "positions",
+            "view_groups",
+            "embedding_models",
+            "embedding_chunks",
+            "blobs",
+            "attachments",
+            "loro_docs",
+            "loro_peers",
         ] {
             assert!(table_exists(&conn, table), "{table} is missing");
         }
@@ -155,7 +166,7 @@ mod tests {
         )
         .unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn).unwrap(), 3);
+        assert_eq!(version(&conn).unwrap(), SCHEMA_VERSION);
 
         let changes: Vec<(i64, i64, i64, String, String)> = conn
             .prepare("SELECT id, changed_at, changed_by, action, subject FROM changes ORDER BY id")
@@ -210,5 +221,117 @@ mod tests {
         assert!(migrate(&mut conn).is_err());
         assert_eq!(version(&conn).unwrap(), 2);
         assert!(!table_exists(&conn, "changes"));
+    }
+
+    fn trigger_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type = 'trigger' AND name = ?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    }
+
+    /// A version 3 database with one node, its history and a change.
+    fn version_3_database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for sql in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute_batch(
+            "INSERT INTO provenance (id, actor_kind, actor) VALUES (1, 'person', 'Ada');
+             INSERT INTO nodes (id, kind, title, title_key, body, plain, created_at, updated_at,
+                                created_by, updated_by)
+             VALUES ('01JABCDEFGHJKMNPQRSTVWXYZ0', 'note', 'A', 'a', 'one', 'one', 1, 1, 1, 1);
+             INSERT INTO changes (id, changed_at, changed_by, action, subject)
+             VALUES (1, 1, 1, 'node.create', '01JABCDEFGHJKMNPQRSTVWXYZ0');
+             INSERT INTO history (seq, node_id, op, changed_at, changed_by, kind, title, body,
+                                  change_id)
+             VALUES (1, '01JABCDEFGHJKMNPQRSTVWXYZ0', 'create', 1, 1, 'note', 'A', 'one', 1);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrates_a_version_3_database_adding_tables_and_changing_no_row() {
+        let mut conn = version_3_database();
+        let count = |conn: &Connection, table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        let before: Vec<i64> = ["nodes", "history", "changes", "provenance"]
+            .iter()
+            .map(|t| count(&conn, t))
+            .collect();
+        migrate(&mut conn).unwrap();
+        assert_eq!(version(&conn).unwrap(), 4);
+        let after: Vec<i64> = ["nodes", "history", "changes", "provenance"]
+            .iter()
+            .map(|t| count(&conn, t))
+            .collect();
+        assert_eq!(before, after);
+        for table in [
+            "link_kinds",
+            "views",
+            "positions",
+            "view_groups",
+            "embedding_models",
+            "embedding_chunks",
+            "blobs",
+            "attachments",
+            "loro_docs",
+            "loro_peers",
+        ] {
+            assert!(table_exists(&conn, table), "{table} is missing");
+            assert_eq!(count(&conn, table), 0, "{table} is not empty");
+        }
+        assert!(trigger_exists(&conn, "embedding_chunks_stale"));
+        assert!(trigger_exists(&conn, "loro_docs_body"));
+    }
+
+    #[test]
+    fn embedding_chunks_go_stale_and_loro_documents_fall_behind() {
+        let mut conn = version_3_database();
+        migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO embedding_models (id, name, dimensions, chunking, created_at)
+             VALUES (1, 'BAAI/bge-small-en-v1.5', 384, 'knode-1', 1);
+             INSERT INTO embedding_chunks (node_id, model_id, ord, text_start, text_end, embedded_at)
+             VALUES ('01JABCDEFGHJKMNPQRSTVWXYZ0', 1, 0, 0, 3, 1);
+             INSERT INTO loro_docs (node_id, version, updated_at)
+             VALUES ('01JABCDEFGHJKMNPQRSTVWXYZ0', '{}', 1);",
+        )
+        .unwrap();
+        let count = |conn: &Connection, table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        // Changing neither the title nor the text keeps both.
+        conn.execute("UPDATE nodes SET kind = 'idea'", []).unwrap();
+        assert_eq!(count(&conn, "embedding_chunks"), 1);
+        assert_eq!(count(&conn, "loro_docs"), 1);
+        // A new body drops the chunks and marks the document as behind.
+        conn.execute("UPDATE nodes SET body = 'two', plain = 'two'", [])
+            .unwrap();
+        assert_eq!(count(&conn, "embedding_chunks"), 0);
+        assert_eq!(count(&conn, "loro_docs"), 0);
+    }
+
+    #[test]
+    fn a_failed_migration_4_leaves_version_3() {
+        let mut conn = version_3_database();
+        conn.execute_batch("CREATE TABLE loro_peers (x TEXT)")
+            .unwrap();
+        assert!(migrate(&mut conn).is_err());
+        assert_eq!(version(&conn).unwrap(), 3);
+        assert!(!table_exists(&conn, "link_kinds"));
     }
 }

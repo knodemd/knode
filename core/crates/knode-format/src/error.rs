@@ -82,6 +82,14 @@ pub enum Error {
         /// The later changes, oldest first.
         later: Vec<ChangeId>,
     },
+    /// A link kind cannot be removed, or change direction, while links have it.
+    #[error("link kind {kind} is used by {links} links; remove them first")]
+    LinkKindInUse {
+        /// The kind.
+        kind: String,
+        /// How many links have it.
+        links: u64,
+    },
     /// Only a person may do this, never an agent.
     #[error("only a person can {0}")]
     PersonOnly(String),
