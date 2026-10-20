@@ -260,8 +260,10 @@ mod tests {
     fn migrates_a_version_3_database_adding_tables_and_changing_no_row() {
         let mut conn = version_3_database();
         let count = |conn: &Connection, table: &str| -> i64 {
-            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
-                .unwrap()
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
         };
         let before: Vec<i64> = ["nodes", "history", "changes", "provenance"]
             .iter()
@@ -307,8 +309,10 @@ mod tests {
         )
         .unwrap();
         let count = |conn: &Connection, table: &str| -> i64 {
-            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
-                .unwrap()
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
         };
         // Changing neither the title nor the text keeps both.
         conn.execute("UPDATE nodes SET kind = 'idea'", []).unwrap();
@@ -324,7 +328,8 @@ mod tests {
     #[test]
     fn a_failed_migration_4_leaves_version_3() {
         let mut conn = version_3_database();
-        conn.execute_batch("CREATE TABLE loro_peers (x TEXT)").unwrap();
+        conn.execute_batch("CREATE TABLE loro_peers (x TEXT)")
+            .unwrap();
         assert!(migrate(&mut conn).is_err());
         assert_eq!(version(&conn).unwrap(), 3);
         assert!(!table_exists(&conn, "link_kinds"));
