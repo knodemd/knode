@@ -25,9 +25,47 @@ enum EditorLayout: String, CaseIterable, Identifiable {
 
 struct NoteView: View {
     @Bindable var editor: NoteEditorModel
+    @Environment(AppModel.self) private var model
     @AppStorage("editorLayout") private var layout: EditorLayout = .split
 
     var body: some View {
+        @Bindable var model = model
+        Group {
+            if let history = model.history, let version = history.selectedVersion {
+                VersionComparisonView(history: history, version: version)
+            } else {
+                editorBody
+            }
+        }
+        .background(PaperBackground())
+        .inspector(isPresented: $model.isShowingHistory) {
+            if let history = model.history {
+                HistoryPanel(history: history)
+                    .inspectorColumnWidth(min: 240, ideal: 280, max: 380)
+            }
+        }
+        .toolbar {
+            ToolbarItem {
+                Picker("Layout", selection: $layout) {
+                    ForEach(EditorLayout.allCases) { layout in
+                        Label(layout.title, systemImage: layout.systemImage).tag(layout)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .help("Edit, preview, or both")
+                .disabled(model.history?.selectedVersion != nil)
+            }
+            ToolbarItem {
+                Toggle(isOn: $model.isShowingHistory) {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+                .help("Show who changed this note, and when (Command-Y)")
+            }
+        }
+        .onDisappear { Task { await editor.save() } }
+    }
+
+    private var editorBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
@@ -41,19 +79,6 @@ struct NoteView: View {
                 }
             }
         }
-        .background(PaperBackground())
-        .toolbar {
-            ToolbarItem {
-                Picker("Layout", selection: $layout) {
-                    ForEach(EditorLayout.allCases) { layout in
-                        Label(layout.title, systemImage: layout.systemImage).tag(layout)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .help("Edit, preview, or both")
-            }
-        }
-        .onDisappear { Task { await editor.save() } }
     }
 
     private var header: some View {

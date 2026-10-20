@@ -188,6 +188,22 @@ final class FakeKnodeService: @unchecked Sendable {
             node.updatedAt = clock
             spaces[path]?.nodes[id] = node
             return (node.json, (path, id, "update"))
+        case "history":
+            let id = params["id"] as? String ?? ""
+            guard let node = try space().nodes[id] else { return ([Any](), nil) }
+            // One version per node: its creation, then its current text when it changed.
+            var versions: [[String: Any]] = [[
+                "seq": 1, "node_id": id, "op": "create", "changed_at": node.createdAt, "changed_by": node.by,
+                "kind": "note", "title": node.title, "body": node.body, "tags": [String](), "change_id": 1,
+            ]]
+            if node.updatedAt != node.createdAt {
+                versions.append([
+                    "seq": 2, "node_id": id, "op": "update", "changed_at": node.updatedAt,
+                    "changed_by": ["kind": "agent", "actor": "claude-code", "session": "5f1c2a"],
+                    "kind": "note", "title": node.title, "body": node.body, "tags": [String](), "change_id": 2,
+                ])
+            }
+            return (versions, nil)
         case "recent":
             let nodes = try space().nodes.values.sorted { $0.updatedAt > $1.updatedAt }
             return (nodes.map { ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by] }, nil)

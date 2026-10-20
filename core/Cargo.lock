@@ -672,6 +672,7 @@ dependencies = [
 name = "knode-ffi"
 version = "0.0.0"
 dependencies = [
+ "knode-config",
  "knode-format",
  "tempfile",
  "thiserror",

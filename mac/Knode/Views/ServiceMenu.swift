@@ -1,10 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// The menu of the Knode menu bar item: whether Knode Service runs, what it has open, and the
-/// actions to open the app, start or stop the service and start it at login.
+/// The menu of the Knode menu bar item: whether Knode Service runs, what it has open, the space
+/// agents and capture write to, and the actions to open the app, start or stop the service and
+/// start it at login.
 struct ServiceMenu: View {
     let monitor: ServiceMonitor
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -12,6 +14,8 @@ struct ServiceMenu: View {
         if let error = monitor.errorMessage {
             Text(error)
         }
+        Divider()
+        spaceForAgents
         Divider()
         Button("Open Knode", systemImage: "macwindow") {
             openWindow(id: "main")
@@ -36,6 +40,26 @@ struct ServiceMenu: View {
         Divider()
         Button("Quit Knode", systemImage: "xmark.circle") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+
+    /// Which space agents and capture write to: `default_space` in `config.toml`, read again by
+    /// the service and the `knode` command, so no restart is needed.
+    private var spaceForAgents: some View {
+        Menu("Space for Agents", systemImage: "sparkles") {
+            let spaces = model.sidebarSpaces.filter { !$0.isExample && !$0.isMissing }
+            ForEach(spaces) { item in
+                Toggle(isOn: Binding(
+                    get: { item.isDefault },
+                    set: { on in model.setDefaultSpace(on ? item.url : nil) }
+                )) {
+                    Text(item.icon.map { "\($0) \(item.name)" } ?? item.name)
+                }
+            }
+            if spaces.isEmpty {
+                Text("No spaces yet")
+            }
+        }
+        .onAppear { model.reloadDefaultSpace() }
     }
 
     @ViewBuilder private var status: some View {
