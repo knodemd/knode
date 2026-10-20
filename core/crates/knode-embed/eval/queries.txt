@@ -1,0 +1,69 @@
+# Labelled queries for the search evaluation.
+# One query per line: type | relevant note ids, comma separated | query.
+# Types: exact (ids, names, commands), paraphrase (same language, different words),
+# cross-language (query and note in different languages), typo (misspelled words).
+exact | n025 | BUG-431
+exact | n001 | ADR-007
+exact | n021 | Halcón
+exact | n017 | Northwind
+exact | n157 | Contoso
+exact | n046 | journal_mode WAL
+exact | n040 | git reset --soft
+exact | n149 | api.atlas.dev
+exact | n050 | kubectl rollout restart
+exact | n117 | multilingual-e5-small
+exact | n031 | BUG-460
+exact | n035 | BUG-478
+exact | n085 | RRF
+exact | n138,n137 | Notion importer
+exact | n062 | arroz bomba
+paraphrase | n032 | the app took ages to open with lots of notes
+paraphrase | n035 | two saves overwrote each other and the newer text was lost
+paraphrase | n015,n036,n149 | what did we learn after the service went down
+paraphrase | n026 | files renamed on both laptops kept flipping back and forth
+paraphrase | n036 | the server ran out of storage space
+paraphrase | n006 | why we did not keep every change to payments as an event
+paraphrase | n088 | how to get more rest at night
+paraphrase | n104 | keeping the heating radiators working
+paraphrase | n094 | long term passive investing approach
+paraphrase | n078 | method for writing linked notes in my own words
+paraphrase | n071 | book about two systems of thinking and cognitive biases
+paraphrase | n102 | growing vegetables in pots outside
+paraphrase | n119 | limit how many calls a client can make
+paraphrase | n009 | ¿por qué dejamos Amazon Web Services?
+paraphrase | n089 | ejercicios para el hombro lesionado
+paraphrase | n105 | qué hacer al cambiar de casa
+paraphrase | n093 | impuestos anuales, plazo y deducciones
+paraphrase | n149 | the https certificate ran out
+paraphrase | n029 | daily note on the wrong date after the clocks changed
+paraphrase | n063 | coffee made without hot water
+cross-language | n055 | Spanish potato omelette recipe
+cross-language | n056,n067 | cold tomato soup from Andalusia
+cross-language | n004 | which sign-in method did we choose
+cross-language | n028 | search does not match accented letters
+cross-language | n034 | pasting from Word brings junk formatting
+cross-language | n014 | goals for the second quarter
+cross-language | n076 | book about finding meaning in suffering
+cross-language | n087 | strength training routine with squats
+cross-language | n120 | how do we keep backups safe
+cross-language | n086 | plan de entrenamiento para la media maratón
+cross-language | n057,n153 | cómo hacer pan con masa madre
+cross-language | n065 | salsa italiana de albahaca
+cross-language | n040 | deshacer el último commit sin perder los cambios
+cross-language | n037 | leer un fichero entero en Rust
+cross-language | n010 | por qué volvimos a una API REST
+cross-language | n122 | Swift 6 strict concurrency migration
+cross-language | n157 | client who wants to host sync on their own cloud
+cross-language | n092 | presupuesto mensual de gastos
+typo | n062 | paela valenciana
+typo | n065 | pesto genoveese
+typo | n040 | undo last comit
+typo | n032 | slow statup with many notes
+typo | n077,n151 | Designing Data Intensiv Applications
+typo | n068 | thai gren curry
+typo | n097 | japn trip packing
+typo | n072 | atomc habits
+typo | n125 | plugn sandbox webassembly
+typo | n059 | lentejas con chorrizo
+typo | n087 | rutina de fuersa
+typo | n050 | kubernets restart deployment
