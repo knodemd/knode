@@ -58,6 +58,13 @@ grant takes effect on the next call:
 - With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
   `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
   the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
+- The methods for link kinds, views, canvases and attachments follow the same levels: with
+  `read`, `link_kinds.list`, `links.of`, `links.back_labeled`, `views.list`, `view.get`, `graph`,
+  `canvas.board`, `positions.list`, `groups.list`, `attachments.list` and `attachment.read`; with
+  `write`, `link_kind.set`, `link_kind.remove`, `view.set`, `view.remove`, `view.viewport.set`,
+  `canvas.create`, `positions.set`, `positions.remove`, `group.set`, `group.remove`,
+  `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path` and
+  `conversations.import` name files on this machine and are for people only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
   `purge`, `markdown.folder.set` and every other method are for people only and fail with
   `forbidden`.
@@ -191,6 +198,52 @@ Space info is:
   "format": 0, "created_at": "2026-10-20T09:30:00.000Z", "nodes": 42 }
 ```
 
+### Link kinds, views, canvases and attachments
+
+These methods read and write what schema version 4 of the
+[.knode specification](https://github.com/knodemd/format) adds: kinds of link with labels (section
+18.1), graph views and canvases with the positions and groups of their nodes (section 18.2), and
+files attached to nodes (section 20). Their shapes are those of the specification.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `link_kinds.list` | `space` | Every kind of link a link can be made with: the built-in kinds, then the space's own, by name. Each is `{ "kind", "label", "inverse_label", "direction", "description", "built_in" }`, with `created_at`, `created_by`, `updated_at` and `updated_by` for a kind the space defines. `direction` is `directed` or `symmetric`. |
+| `link_kind.set` | `space`, `kind`, `label`, `inverse_label`?, `direction`? (default `directed`), `description`?, `by` | The kind. Defines it or changes its labels. Built-in kinds cannot be changed, and the direction of a kind cannot change while links have it (`invalid`). `link.create` takes only built-in and defined kinds. |
+| `link_kind.remove` | `space`, `kind`, `by` | `true` if the space defined such a kind. Fails with `invalid` while links have it. |
+| `links.of` | `space`, `id` | The links of the node as a reader shows them: going out, then coming in, each `{ "link", "outgoing", "node", "title", "label", "direction" }`, where `node` and `title` are the other end and `label` is how the link reads from this node (the kind's label going out, its inverse label coming in). A symmetric link between two nodes is shown once. |
+| `links.back_labeled` | `space`, `id` | The backlinks of the node, of every kind, in the shape of `links.of`. |
+| `views.list` | `space` | The graph views and the canvases whose node exists, oldest first: `{ "id", "kind", "name", "node_id"?, "settings", "created_at", "created_by", "updated_at", "updated_by" }`. `kind` is `graph` or `canvas`; a canvas has the `node_id` of its node and is named by its title. `settings` holds `viewport` (`{ "x", "y", "zoom" }`) and, for a graph view, `filter`. |
+| `view.get` | `space`, `id` | The view, or `null`. |
+| `view.set` | `space`, `id`?, `name`, `filter`?, `by` | The graph view: created without `id`, renamed or filtered with it. `filter` is an object with any of `node_kinds`, `tags`, `actors` (lists of text), `since`, `until` (RFC 3339) and `link_kinds`; a node is shown when it passes every key given. Left out, the view shows the whole space. |
+| `view.remove` | `space`, `id`, `by` | `true` if there was such a graph view. A canvas is removed by deleting its node. |
+| `view.viewport.set` | `space`, `id`, `x`, `y`, `zoom`, `by` | `null`. Saves the part of the view on screen. Adds no change and is not announced. |
+| `graph` | `space`, `view`?, `filter`? | `{ "nodes", "edges", "positions", "link_kinds" }`: the nodes `filter` keeps (`{ "id", "kind", "title", "tags", "created_at", "updated_at", "created_by", "updated_by" }`, newest change first), the links between them (`{ "from", "to", "kind" }`), the positions saved in `view` for the nodes shown, and every kind of link. Without `filter` the view's own applies; with neither, the whole space. |
+| `canvas.create` | `space`, `title`, `body`?, `tags`?, `by` | The canvas view. Creates a node of kind `canvas` (its title names the canvas, its body says what it is for) and its view, as one `node.create` change. |
+| `canvas.board` | `space`, `id` (the canvas node) | `{ "view", "title", "body", "items", "groups", "edges", "link_kinds" }`, or `null` when the node is not a canvas. `items` are the nodes on it, back to front: `{ "position", "kind", "title", "excerpt" }`; `edges` the links between them. |
+| `positions.list` | `space`, `view` | The positions of the nodes of the view that exist, back to front: `{ "view_id", "node_id", "x", "y", "width"?, "height"?, "z", "display", "group_id"?, "updated_at", "updated_by" }`. `x` and `y` are the centre, in points, `y` growing down; `display` is `open` or `collapsed`. |
+| `positions.set` | `space`, `view`, `positions` (a list of `{ "node_id", "x", "y", "width"?, "height"?, "z"?, "display"?, "group_id"? }`), `by` | `null`. Places the nodes in one write. `width` and `height` go together. Groups are only on a canvas. |
+| `positions.remove` | `space`, `view`, `nodes` (node ids) | How many of the nodes were in the view. The nodes are not deleted. |
+| `groups.list` | `space`, `view` | The groups of a canvas: `{ "id", "view_id", "label", "x", "y", "width", "height", "display", "updated_at", "updated_by" }`. |
+| `group.set` | `space`, `view`, `id`?, `label`?, `x`, `y`, `width`, `height`, `display`?, `by` | The group: added without `id`, changed with it. |
+| `group.remove` | `space`, `view`, `id` | `true` if the canvas had such a group. Its nodes stay on the canvas, outside any group. |
+| `attachments.list` | `space`, `id` | The files attached to the node, oldest first: `{ "node_id", "name", "hash", "size", "media_type", "created_at", "created_by" }`. `![[name]]` in the node's body shows the file. |
+| `attachment.read` | `space`, `id`, `name` | `{ "attachment", "content" }` with the bytes in base64, or `null` when the node has no attachment with this name. Files larger than 10 MiB fail with `invalid`: a person opens them from `attachment.path`. |
+| `attachment.add` | `space`, `id`, `name`, `content` (base64, at most 10 MiB of bytes), `by` | The attachment. Stores the bytes once, by their SHA-256, and attaches them under `name`; a name the node already uses for other content gets ` 2`, ` 3`... Attaching the same content under the same name again changes nothing. |
+| `attachment.add_file` | `space`, `id`, `path` (absolute), `by` | The attachment of the file at `path`, under its file name, up to 100 MB. People only. |
+| `attachment.remove` | `space`, `id`, `name`, `by` | `true` if there was such an attachment. The file stays in the space until a person purges unused files. |
+| `attachment.path` | `space`, `id`, `name` | Where the attachment's file is on this machine, or `null`. Never write to it. People only. |
+
+Link kinds, attachments added and removed, and graph views created, renamed, filtered or removed
+are changes in the history (`link_kind.set`, `link_kind.remove`, `attachment.add`,
+`attachment.remove`, `view.set`, `view.remove`). Viewports, positions and groups carry their own
+provenance and add no change.
+
+### Data exports
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `conversations.import` | `space`, `path` (absolute: a `.zip` as downloaded, or the folder it was extracted to), `by` | `{ "format", "agent", "created", "updated", "projects", "unchanged", "empty", "skipped" }`. Imports a Claude, ChatGPT or Google Takeout (Gemini Apps) data export: one `conversation` node per conversation, found again by its agent and session, so importing the same export twice writes nothing new. `agent` is `claude-ai`, `chatgpt` or `gemini-web`; `skipped` lists `{ "item", "reason" }`. A path that is not such an export fails with `invalid`. People only. |
+
 ## Changes
 
 After `subscribe`, the connection receives a `changed` notification after each write, in the
@@ -204,13 +257,17 @@ order the writes were made:
   space. Every change made after the answer to `subscribe` is delivered.
 - When a space is renamed, or its settings or folders change, the connection receives a `space`
   notification instead, with `what` set to `renamed` (and the new `name`), `settings` (and the
-  `key`) or `folders` (and the `folder` id):
+  `key`) or `folders` (and the `folder` id). When a kind of link is defined, changed or removed,
+  `what` is `link_kinds` (and the `link_kind`); when a graph view or a canvas is created, changed
+  or removed, or nodes or groups are placed on it, `what` is `views` (and the `view` id). Saving
+  a viewport is not announced:
 
   ```json
   {"jsonrpc":"2.0","method":"space","params":{"space":"/Users/ada/Knode/Personal.knode","what":"settings","key":"space.icon"}}
   ```
 - `op` is `create`, `update`, `delete`, `link` (a link from `node_id` was made) or `unlink` (one
-  was removed). Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
+  was removed). Attaching a file to a node or removing one sends `update` for the node; creating
+  a canvas sends `create` for its node. Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
   to the new title.
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
@@ -299,7 +356,7 @@ match on.
 | -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
 | -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
 | -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
-| -32024 | `folder` | A folder of Markdown files could not be read or written. |
+| -32024 | `folder` | A folder of Markdown files, or a data export, could not be read or written. |
 
 ```json
 {"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"node 01K83N6V4W5D2XQJ0Y7RZ9T1AB not found","data":{"kind":"not_found"}}}

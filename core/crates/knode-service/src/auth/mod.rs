@@ -192,6 +192,12 @@ enum Access {
 }
 
 fn access(method: &str) -> Access {
+    if crate::maps::READS.contains(&method) {
+        return Access::Read;
+    }
+    if crate::maps::WRITES.contains(&method) {
+        return Access::Write;
+    }
     match method {
         methods::SPACE_OPEN
         | methods::SETTINGS_GET
