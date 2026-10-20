@@ -131,17 +131,6 @@ struct VersionComparisonView: View {
             case .sideBySide: sideBySide
             }
         }
-        .alert(
-            "Undo this change anyway?",
-            isPresented: Binding(get: { history.conflict != nil }, set: { if !$0 { history.conflict = nil } }),
-            presenting: history.conflict
-        ) { conflict in
-            // The alert clears `conflict` as it closes: the action keeps its own copy.
-            Button("Undo Anyway", role: .destructive) { Task { await history.confirmForcedUndo(conflict) } }
-            Button("Cancel", role: .cancel) { history.conflict = nil }
-        } message: { conflict in
-            Text("\(conflict.message) To go back to this version without undoing a single change, use Restore This Version.")
-        }
     }
 
     private var header: some View {
@@ -232,6 +221,27 @@ struct VersionComparisonView: View {
             }
         }
         .frame(minWidth: 240)
+    }
+}
+
+/// Asks before an undo or a redo that would overwrite later changes to the note.
+struct UndoConflictAlert: ViewModifier {
+    @Bindable var history: NoteHistoryModel
+
+    func body(content: Content) -> some View {
+        content.alert(
+            history.conflict?.isRedo == true ? "Redo this change anyway?" : "Undo this change anyway?",
+            isPresented: Binding(get: { history.conflict != nil }, set: { if !$0 { history.conflict = nil } }),
+            presenting: history.conflict
+        ) { conflict in
+            // The alert clears `conflict` as it closes: the action keeps its own copy.
+            Button(conflict.isRedo ? "Redo Anyway" : "Undo Anyway", role: .destructive) {
+                Task { await history.confirmForcedUndo(conflict) }
+            }
+            Button("Cancel", role: .cancel) { history.conflict = nil }
+        } message: { conflict in
+            Text("\(conflict.message) To go back to a version without undoing a single change, use Restore This Version in the history.")
+        }
     }
 }
 

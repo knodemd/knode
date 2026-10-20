@@ -6,6 +6,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case newSpace
     case rename(URL)
     case icon(URL)
+    /// Which agents may do what in the space.
+    case access(URL)
 
     var id: Self { self }
 }
@@ -433,6 +435,20 @@ final class AppModel {
 
     func toggleHistory() {
         isShowingHistory.toggle()
+    }
+
+    /// Undoes the last change this person made to the open note, through its history: Edit >
+    /// Undo Last Change. Returns false when there was nothing of theirs to undo.
+    @discardableResult
+    func undoLastChange() async -> Bool {
+        await history?.undoLastChange() ?? false
+    }
+
+    /// Redoes the change this person undid last in the open note: Edit > Redo Last Change.
+    /// Returns false when there was nothing to redo.
+    @discardableResult
+    func redoLastChange() async -> Bool {
+        await history?.redoLastChange() ?? false
     }
 
     private func makeHistory() {

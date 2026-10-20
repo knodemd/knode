@@ -8,8 +8,9 @@ public enum ServiceError: Error, Equatable, LocalizedError {
     case unavailable(String)
     /// The service closed the connection, or it was closed here.
     case disconnected
-    /// The service answered with a JSON-RPC error. `kind` is its stable `data.kind`.
-    case remote(code: Int, kind: String?, message: String)
+    /// The service answered with a JSON-RPC error. `kind` is its stable `data.kind`; `later` is
+    /// `data.later` of an `undo_conflict`: the later changes an undo would overwrite.
+    case remote(code: Int, kind: String?, message: String, later: [Int64] = [])
     /// The answer could not be read.
     case badResponse(String)
 
@@ -17,7 +18,7 @@ public enum ServiceError: Error, Equatable, LocalizedError {
         switch self {
         case .unavailable: "Knode Service is not running."
         case .disconnected: "Knode Service stopped."
-        case .remote(_, _, let message): message.prefix(1).uppercased() + message.dropFirst() + "."
+        case .remote(_, _, let message, _): message.prefix(1).uppercased() + message.dropFirst() + "."
         case .badResponse(let message): "Knode Service sent an answer the app can't read: \(message)."
         }
     }
@@ -138,7 +139,7 @@ public final class ServiceConnection: Sendable {
             throw ServiceError.badResponse(String(describing: error))
         }
         if let error = response.error {
-            throw ServiceError.remote(code: error.code, kind: error.data?.kind, message: error.message)
+            throw ServiceError.remote(code: error.code, kind: error.data?.kind, message: error.message, later: error.data?.later ?? [])
         }
         guard let result = response.result else { throw ServiceError.badResponse("no result") }
         return result
@@ -259,6 +260,9 @@ public final class ServiceConnection: Sendable {
         var message: String
         var data: Details?
 
-        struct Details: Decodable { var kind: String? }
+        struct Details: Decodable {
+            var kind: String?
+            var later: [Int64]?
+        }
     }
 }

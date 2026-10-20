@@ -10,14 +10,15 @@ public actor PreviewSpaceStore: SpaceStore {
         var nodes: [Node.ID: Node]
         /// Every version of every node, oldest first.
         var versions: [NoteVersion] = []
-        /// The changes undone, and not redone.
-        var undone: Set<Int64> = []
+        /// Every change, oldest first: one per version, and the undos.
+        var changes: [ChangeRecord] = []
     }
 
     private var spaces: [Space.ID: Entry] = [:]
     private let now: @Sendable () -> Date
     private let seedExamples: Bool
     private let author: Author
+    public nonisolated let person: String
     private var sequence: Int64 = 0
 
     /// - Parameters:
@@ -27,6 +28,7 @@ public actor PreviewSpaceStore: SpaceStore {
     public init(seedExamples: Bool = true, person: String = "You", now: @escaping @Sendable () -> Date = { Date() }) {
         self.seedExamples = seedExamples
         self.author = Author(kind: .person, name: person)
+        self.person = person
         self.now = now
     }
 
@@ -46,7 +48,9 @@ public actor PreviewSpaceStore: SpaceStore {
         for (index, node) in nodes.sorted(by: { $0.createdAt < $1.createdAt }).enumerated() {
             // The examples are written by an agent, as captured notes would be.
             let by = index.isMultiple(of: 2) ? Author(kind: .agent, name: "claude-code", session: "example") : author
-            entry.versions.append(version(of: node, .create, by: by))
+            let created = version(of: node, .create, by: by)
+            entry.versions.append(created)
+            entry.changes.append(record(created, action: ChangeRecord.Action.create))
         }
         spaces[space.id] = entry
         return space
@@ -68,7 +72,7 @@ public actor PreviewSpaceStore: SpaceStore {
         let date = now()
         let node = Node(id: ULID.make(at: date), title: title, body: body, createdAt: date, updatedAt: date)
         spaces[space]?.nodes[node.id] = node
-        spaces[space]?.versions.append(version(of: node, .create, by: author))
+        append(version(of: node, .create, by: author), action: ChangeRecord.Action.create, in: space)
         return node
     }
 
@@ -80,7 +84,7 @@ public actor PreviewSpaceStore: SpaceStore {
         guard node != before else { return node }
         node.updatedAt = now()
         spaces[space]?.nodes[id] = node
-        spaces[space]?.versions.append(version(of: node, .update, by: author))
+        append(version(of: node, .update, by: author), action: ChangeRecord.Action.update, in: space)
         return node
     }
 
@@ -110,44 +114,81 @@ public actor PreviewSpaceStore: SpaceStore {
         try entry(space).versions.filter { $0.nodeID == node }.reversed()
     }
 
+    public func changes(of node: Node.ID, in space: Space.ID, limit: Int) async throws -> [ChangeRecord] {
+        Array(try entry(space).changes.filter { $0.subject == node }.reversed().prefix(limit))
+    }
+
     public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
         let entry = try entry(space)
         guard let old = entry.versions.first(where: { $0.nodeID == node && $0.seq == version }) else {
             throw SpaceStoreError.invalid("node \(node) has no version \(version)")
         }
-        return try put(old, in: space, restoredFrom: old.seq)
+        return try put(old, in: space, action: ChangeRecord.Action.restore, undoes: nil)
     }
 
+    /// Undoes a change by putting back the version before it. Undoing an undo redoes the change it
+    /// undid. Later changes to the note, other than undos of this change, are a conflict.
     public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
         let entry = try entry(space)
-        guard let undone = entry.versions.first(where: { $0.changeID == change }) else {
+        guard let record = entry.changes.first(where: { $0.id == change }),
+              let undone = entry.versions.first(where: { $0.changeID == change })
+        else {
             throw SpaceStoreError.invalid("change \(change) not found")
         }
-        guard !entry.undone.contains(change) else { throw SpaceStoreError.cannotUndo("change \(change) was already undone") }
+        if let undoneBy = activeUndo(of: change, in: entry.changes) {
+            throw SpaceStoreError.cannotUndo("change \(change) was already undone by change \(undoneBy)")
+        }
+        let chain = undoChain(of: change, in: entry.changes)
         let mine = entry.versions.filter { $0.nodeID == undone.nodeID }
-        let later = mine.filter { $0.seq > undone.seq }.compactMap(\.changeID)
+        let later = mine.filter { $0.seq > undone.seq }.compactMap(\.changeID).filter { !chain.contains($0) }
         if !later.isEmpty, !force {
             throw SpaceStoreError.undoConflict(change: change, later: later, message: "undoing change \(change) would overwrite later changes")
         }
         guard let before = mine.last(where: { $0.seq < undone.seq }) else {
             throw SpaceStoreError.cannotUndo("undoing the creation of a note deletes it")
         }
-        _ = try put(before, in: space, restoredFrom: before.seq)
-        spaces[space]?.undone.insert(change)
+        _ = try put(before, in: space, action: ChangeRecord.Action.undo, undoes: record.id)
     }
 
-    /// Writes an old version back as a new one.
-    private func put(_ old: NoteVersion, in space: Space.ID, restoredFrom: Int64) throws -> Node {
+    /// The undo of a change that is in effect: one that was not undone itself.
+    private func activeUndo(of change: Int64, in changes: [ChangeRecord]) -> Int64? {
+        changes.first { $0.undoes == change && activeUndo(of: $0.id, in: changes) == nil }?.id
+    }
+
+    /// A change with its undos, the undos of those, and so on.
+    private func undoChain(of change: Int64, in changes: [ChangeRecord]) -> Set<Int64> {
+        var chain: Set<Int64> = [change]
+        var open = [change]
+        while let next = open.popLast() {
+            for undo in changes where undo.undoes == next && chain.insert(undo.id).inserted {
+                open.append(undo.id)
+            }
+        }
+        return chain
+    }
+
+    /// Writes an old version back as a new one, as a change of its own.
+    private func put(_ old: NoteVersion, in space: Space.ID, action: String, undoes: Int64?) throws -> Node {
         guard var node = try entry(space).nodes[old.nodeID] else { throw SpaceStoreError.nodeNotFound(old.nodeID) }
-        guard node.title != old.title || node.body != old.body else { return node }
+        // Restoring the version the note already has writes nothing.
+        if action == ChangeRecord.Action.restore, node.title == old.title, node.body == old.body { return node }
         node.title = old.title
         node.body = old.body
         node.updatedAt = now()
         spaces[space]?.nodes[node.id] = node
         var restored = version(of: node, .update, by: author)
-        restored.restoredFrom = restoredFrom
-        spaces[space]?.versions.append(restored)
+        restored.restoredFrom = old.seq
+        append(restored, action: action, undoes: undoes, in: space)
         return node
+    }
+
+    private func append(_ version: NoteVersion, action: String, undoes: Int64? = nil, in space: Space.ID) {
+        spaces[space]?.versions.append(version)
+        spaces[space]?.changes.append(record(version, action: action, undoes: undoes))
+    }
+
+    private func record(_ version: NoteVersion, action: String, undoes: Int64? = nil) -> ChangeRecord {
+        ChangeRecord(id: version.changeID ?? version.seq, changedAt: version.changedAt, author: version.author, action: action, subject: version.nodeID, undoes: undoes)
     }
 
     private func version(of node: Node, _ operation: NoteVersion.Operation, by author: Author) -> NoteVersion {

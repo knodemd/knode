@@ -16,6 +16,7 @@ public actor ServiceSpaceStore: SpaceStore {
     static let excerptBatch = 200
 
     private let socketURL: URL
+    public nonisolated let person: String
     private let author: JSONValue
     private var connection: ServiceConnection?
     /// The open spaces: their URL and the path the service knows them by.
@@ -29,6 +30,7 @@ public actor ServiceSpaceStore: SpaceStore {
     ///   - person: who the app writes as, recorded in the provenance of every change.
     public init(socketURL: URL = KnodeHome.current.socketURL, person: String = CoreSpaceStore.currentUserName) {
         self.socketURL = socketURL
+        self.person = person
         author = ["kind": "person", "actor": .string(person)]
     }
 
@@ -115,8 +117,27 @@ public actor ServiceSpaceStore: SpaceStore {
         close(space)
     }
 
-    // Knode Service has no methods yet to rename a space, change its settings, restore a version
-    // or undo a change: `RoutingSpaceStore` does those with the core in the app.
+    public func changes(of node: Node.ID, in space: Space.ID, limit: Int) async throws -> [ChangeRecord] {
+        let path = try path(space)
+        let limit = Int64(min(max(limit, 1), 1000))
+        let changes = try await call("changes", ["space": .string(path), "subject": .string(node), "limit": .int(limit)], as: [WireChange].self, node: node)
+        return changes.map(ChangeRecord.init)
+    }
+
+    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "id": .string(node), "version": .int(version), "by": author]
+        return remember(try await call("restore", params, as: WireNode.self, node: node))
+    }
+
+    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "change": .int(change), "force": .bool(force), "by": author]
+        _ = try await call("undo", params, as: WireChange.self, change: change)
+    }
+
+    // Knode Service has no methods yet to rename a space or change its settings: `RoutingSpaceStore`
+    // does those with the core in the app.
 
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
         throw Self.notYet
@@ -127,14 +148,6 @@ public actor ServiceSpaceStore: SpaceStore {
     }
 
     public func setIcon(_ icon: String?, of space: Space.ID) async throws {
-        throw Self.notYet
-    }
-
-    public func restore(_ node: Node.ID, to version: Int64, in space: Space.ID) async throws -> Node {
-        throw Self.notYet
-    }
-
-    public func undo(change: Int64, in space: Space.ID, force: Bool) async throws {
         throw Self.notYet
     }
 
@@ -182,16 +195,19 @@ public actor ServiceSpaceStore: SpaceStore {
         }
     }
 
-    private func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil) async throws -> Result {
+    private func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil, change: Int64? = nil) async throws -> Result {
         do {
             return try await connected().call(method, params, as: type)
-        } catch ServiceError.remote(_, let kind, let message) {
-            throw Self.storeError(kind: kind, message: message, url: url, node: node)
+        } catch ServiceError.remote(_, let kind, let message, let later) {
+            throw Self.storeError(kind: kind, message: message, url: url, node: node, change: change, later: later)
         }
     }
 
-    static func storeError(kind: String?, message: String, url: URL?, node: Node.ID?) -> any Error {
+    static func storeError(kind: String?, message: String, url: URL?, node: Node.ID?, change: Int64? = nil, later: [Int64] = []) -> any Error {
         switch kind {
+        case "undo_conflict": return SpaceStoreError.undoConflict(change: change ?? 0, later: later, message: message)
+        case "cannot_undo", "already_undone": return SpaceStoreError.cannotUndo(message)
+        case "forbidden", "unauthenticated": return SpaceStoreError.personOnly(message)
         case "not_found": return node.map(SpaceStoreError.nodeNotFound) ?? SpaceStoreError.invalid(message)
         case "not_a_space": return url.map(SpaceStoreError.notASpace) ?? SpaceStoreError.invalid(message)
         case "already_exists": return url.map(SpaceStoreError.alreadyExists) ?? SpaceStoreError.invalid(message)
@@ -276,6 +292,15 @@ struct WireHistoryEntry: Decodable, Sendable {
     var restoredFrom: Int64?
 }
 
+struct WireChange: Decodable, Sendable {
+    var id: Int64
+    var changedAt: Int64
+    var changedBy: WireProvenance
+    var action: String
+    var subject: String
+    var undoes: Int64?
+}
+
 struct Changed: Decodable, Sendable {
     var space: String
     var nodeId: String
@@ -300,6 +325,18 @@ extension NodeSummary {
     }
 }
 
+extension Author {
+    init(_ provenance: WireProvenance) {
+        self.init(kind: Kind(rawValue: provenance.kind) ?? .system, name: provenance.actor, session: provenance.session, source: provenance.source)
+    }
+}
+
+extension ChangeRecord {
+    init(_ change: WireChange) {
+        self.init(id: change.id, changedAt: Date(unixMilliseconds: change.changedAt), author: Author(change.changedBy), action: change.action, subject: change.subject, undoes: change.undoes)
+    }
+}
+
 extension NoteVersion {
     init(_ entry: WireHistoryEntry) {
         self.init(
@@ -309,12 +346,7 @@ extension NoteVersion {
             changeID: entry.changeId,
             restoredFrom: entry.restoredFrom,
             changedAt: Date(unixMilliseconds: entry.changedAt),
-            author: Author(
-                kind: Author.Kind(rawValue: entry.changedBy.kind) ?? .system,
-                name: entry.changedBy.actor,
-                session: entry.changedBy.session,
-                source: entry.changedBy.source
-            ),
+            author: Author(entry.changedBy),
             title: entry.title,
             body: entry.body
         )
