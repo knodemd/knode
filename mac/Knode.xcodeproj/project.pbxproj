@@ -90,6 +90,7 @@
 		EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */; };
 		F348ECE1482AE3F782460575 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2E23B71E09926219E50DCB /* HistoryView.swift */; };
 		F353FDE35EEAD5E56A13857C /* SpaceFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */; };
+		F4AF196F7D42E171734EEA44 /* AttachingTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */; };
 		FBD3A639C5337FFAABD6F099 /* NoteHistoryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A860B482EA0900CE4C3451 /* NoteHistoryModel.swift */; };
 /* End PBXBuildFile section */
 
@@ -138,6 +139,7 @@
 		357B2C118E178D75931791A7 /* SpaceLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceLibrary.swift; sourceTree = "<group>"; };
 		3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
 		3B65FED5CAA2B40891950D07 /* Broadcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Broadcast.swift; sourceTree = "<group>"; };
+		3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachingTextView.swift; sourceTree = "<group>"; };
 		4907771A6F2739DB3E479FFB /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
 		4E9CD836D628011CD6A0F9CD /* MapStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapStyle.swift; sourceTree = "<group>"; };
 		4FD1E5F4F0D8E3D99B907C47 /* GraphLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphLayoutTests.swift; sourceTree = "<group>"; };
@@ -235,6 +237,7 @@
 			isa = PBXGroup;
 			children = (
 				A4192875931DFC4D972A9798 /* AgentsView.swift */,
+				3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */,
 				4907771A6F2739DB3E479FFB /* AttachmentViews.swift */,
 				ED6EF144F0296362C21D0881 /* CanvasView.swift */,
 				B9D00F921E755F4E322D2982 /* ContentView.swift */,
@@ -646,6 +649,7 @@
 				AEDA645803665F25A8706141 /* AgentsModel.swift in Sources */,
 				CC974D315B95BBE0AC44FEA5 /* AgentsView.swift in Sources */,
 				7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */,
+				F4AF196F7D42E171734EEA44 /* AttachingTextView.swift in Sources */,
 				441BF4E6029D68C0E790A2B4 /* AttachmentStore.swift in Sources */,
 				34137E60F6E6A49B2D571510 /* AttachmentViews.swift in Sources */,
 				66FD330E3841BD85C870EE01 /* Broadcast.swift in Sources */,
