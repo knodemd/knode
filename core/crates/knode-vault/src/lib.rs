@@ -70,6 +70,29 @@
 //! Importing the folder into another space keeps the id, dates and provenance of every node, so
 //! exporting the copy gives the same files.
 //!
+//! # Attachments
+//!
+//! Each attachment of a node is written as a file next to the node's file, under its name, as
+//! the format specification says (section 20.4): `![[beds.svg]]` in `Plan.md` finds `beds.svg`
+//! in the same folder, in Knode and in other Markdown editors. A `knode:blob/<hash>` link or image
+//! to one of the node's attachments is written with the name of that file instead. When the
+//! name is taken (by another node's attachment with other content, or by a file Knode did not
+//! write), the file gets ` 2`, ` 3`... before its extension; `.knode/files.json` keeps the file
+//! of each attachment, so an import gives every node its own. Attachments whose name a file
+//! cannot have here (hidden names and `.md` files) are not written and are listed in
+//! [`ExportReport::left_out`]. Files Knode wrote for attachments that are gone are removed.
+//!
+//! Import attaches those files back, under their names, with `knode:blob/<hash>` links again,
+//! and also the files a note from another app embeds or links to by name when they are next to
+//! it.
+//!
+//! # Kinds of link
+//!
+//! The kinds of link the space defines (format specification section 18.1) are written to
+//! `.knode/link-kinds.json`, with their labels and descriptions. Import defines the ones the
+//! space lacks, and any other kind the `links` of a file use, with its name as its label, so no
+//! link is dropped; links it cannot make are listed in [`ImportReport::unlinked`].
+//!
 //! # Notes from other apps
 //!
 //! A file whose frontmatter Knode did not write, such as a note of an Obsidian vault, keeps its
@@ -82,6 +105,7 @@
 
 #![warn(missing_docs)]
 
+mod attachments;
 mod frontmatter;
 mod import;
 mod live;
@@ -100,6 +124,8 @@ pub use mirror::{ExportReport, export};
 pub const STATE_DIR: &str = ".knode";
 /// The file, inside [`STATE_DIR`], that maps node ids to file paths.
 pub const FILES_MAP: &str = "files.json";
+/// The file, inside [`STATE_DIR`], that holds the kinds of link the space defines.
+pub const LINK_KINDS_FILE: &str = "link-kinds.json";
 
 /// The node properties this crate keeps. They are never written to the `properties` of a file:
 /// each one stands for something else of the file.

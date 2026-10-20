@@ -73,6 +73,7 @@ $(SRCROOT)/../core/crates/knode-service/src/paths.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
+$(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
 $(SRCROOT)/../core/crates/knode-vault/src/import.rs
 $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
