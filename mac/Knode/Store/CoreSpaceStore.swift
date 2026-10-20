@@ -206,14 +206,15 @@ extension Node {
             title: node.title,
             body: node.body,
             createdAt: Date(unixMilliseconds: node.createdAt),
-            updatedAt: Date(unixMilliseconds: node.updatedAt)
+            updatedAt: Date(unixMilliseconds: node.updatedAt),
+            kind: node.kind
         )
     }
 }
 
 extension NodeSummary {
     init(_ node: KnodeCore.NodeSummary, excerpt: String) {
-        self.init(id: node.id, title: node.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: node.updatedAt))
+        self.init(id: node.id, title: node.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: node.updatedAt), kind: node.kind)
     }
 }
 
@@ -259,5 +260,212 @@ extension NoteVersion {
             title: entry.title,
             body: entry.body
         )
+    }
+}
+
+// MARK: - Map
+
+extension CoreSpaceStore: MapStore {
+    public func linkKinds(in space: Space.ID) async throws -> [LinkKindInfo] {
+        let core = try self.core(space)
+        return try await run { try core.linkKinds() }.map(LinkKindInfo.init)
+    }
+
+    public func setLinkKind(_ kind: LinkKindInfo, in space: Space.ID) async throws -> LinkKindInfo {
+        let core = try self.core(space)
+        let author = author
+        let spec = LinkKindSpec(kind: kind.kind, label: kind.label, inverseLabel: kind.inverseLabel, direction: kind.direction.core, description: kind.description)
+        return LinkKindInfo(try await run { try core.setLinkKind(spec: spec, by: author) })
+    }
+
+    public func links(of node: Node.ID, in space: Space.ID) async throws -> [NodeLinkInfo] {
+        let core = try self.core(space)
+        return try await run { try core.nodeLinks(id: node) }.map(NodeLinkInfo.init)
+    }
+
+    public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.link(from: from, to: to, kind: kind, by: author) }
+    }
+
+    public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.unlink(from: from, to: to, kind: kind, by: author) }
+    }
+
+    public func mapViews(in space: Space.ID) async throws -> [MapView] {
+        let core = try self.core(space)
+        return try await run { try core.views() }.compactMap(MapView.init)
+    }
+
+    public func saveGraphView(id: MapView.ID?, name: String, filter: GraphFilter, in space: Space.ID) async throws -> MapView {
+        let core = try self.core(space)
+        let author = author
+        let filter = filter.isEmpty ? nil : filter.core
+        let view = try await run { try core.setGraphView(id: id, name: name, filter: filter, by: author) }
+        guard let view = MapView(view) else { throw SpaceStoreError.storage("the view could not be read back") }
+        return view
+    }
+
+    public func removeGraphView(_ id: MapView.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.removeView(id: id, by: author) }
+    }
+
+    public func setViewport(_ viewport: Viewport, of view: MapView.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        let value = KnodeCore.Viewport(x: viewport.x, y: viewport.y, zoom: viewport.zoom)
+        try await run { try core.setViewport(id: view, viewport: value, by: author) }
+    }
+
+    public func graph(in space: Space.ID, view: MapView.ID?, filter: GraphFilter) async throws -> GraphData {
+        let core = try self.core(space)
+        let filter = filter.core
+        let graph = try await run { try core.graph(view: view, filter: filter) }
+        return GraphData(
+            nodes: graph.nodes.map(GraphNodeInfo.init),
+            edges: graph.edges.map(GraphEdgeInfo.init),
+            positions: graph.positions.map(ViewPosition.init),
+            linkKinds: graph.linkKinds.map(LinkKindInfo.init)
+        )
+    }
+
+    public func setPositions(_ positions: [ViewPosition], in view: MapView.ID, space: Space.ID) async throws {
+        guard !positions.isEmpty else { return }
+        let core = try self.core(space)
+        let author = author
+        let values = positions.map(\.core)
+        try await run { try core.setPositions(view: view, positions: values, by: author) }
+    }
+
+    public func removePositions(_ nodes: [Node.ID], from view: MapView.ID, space: Space.ID) async throws {
+        let core = try self.core(space)
+        _ = try await run { try core.removePositions(view: view, nodes: nodes) }
+    }
+
+    public func createCanvas(title: String, in space: Space.ID) async throws -> MapView {
+        let core = try self.core(space)
+        let author = author
+        let view = try await run { try core.createCanvas(title: title, body: "", by: author) }
+        guard let view = MapView(view) else { throw SpaceStoreError.storage("the canvas could not be read back") }
+        return view
+    }
+
+    public func canvasBoard(of node: Node.ID, in space: Space.ID) async throws -> CanvasBoard? {
+        let core = try self.core(space)
+        guard let board = try await run({ try core.canvasBoard(node: node) }), let view = MapView(board.view) else { return nil }
+        return CanvasBoard(
+            view: view,
+            items: board.items.map { CanvasItem(position: ViewPosition($0.position), kind: $0.kind, title: $0.title, excerpt: $0.excerpt) },
+            groups: board.groups.map(ViewGroupInfo.init),
+            edges: board.edges.map(GraphEdgeInfo.init),
+            linkKinds: board.linkKinds.map(LinkKindInfo.init)
+        )
+    }
+
+    public func setGroup(_ group: GroupDraft, in view: MapView.ID, space: Space.ID) async throws -> ViewGroupInfo {
+        let core = try self.core(space)
+        let author = author
+        let spec = GroupSpec(id: group.id, label: group.label, x: group.x, y: group.y, width: group.width, height: group.height, collapsed: group.collapsed)
+        return ViewGroupInfo(try await run { try core.setGroup(view: view, spec: spec, by: author) })
+    }
+
+    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        _ = try await run { try core.removeGroup(id: id) }
+    }
+}
+
+extension LinkDirection {
+    init(_ direction: KnodeCore.LinkDirection) {
+        self = direction == .symmetric ? .symmetric : .directed
+    }
+
+    var core: KnodeCore.LinkDirection {
+        self == .symmetric ? .symmetric : .directed
+    }
+}
+
+extension LinkKindInfo {
+    init(_ kind: KnodeCore.LinkKind) {
+        self.init(kind: kind.kind, label: kind.label, inverseLabel: kind.inverseLabel, direction: LinkDirection(kind.direction), description: kind.description, builtIn: kind.builtIn)
+    }
+}
+
+extension NodeLinkInfo {
+    init(_ link: KnodeCore.NodeLink) {
+        self.init(
+            from: link.from, to: link.to, kind: link.kind, outgoing: link.outgoing, nodeID: link.node,
+            title: link.title, label: link.label, direction: LinkDirection(link.direction),
+            createdAt: Date(unixMilliseconds: link.createdAt), author: Author(link.createdBy)
+        )
+    }
+}
+
+extension GraphFilter {
+    init(_ filter: KnodeCore.GraphFilter) {
+        self.init(
+            nodeKinds: filter.nodeKinds, tags: filter.tags, actors: filter.actors,
+            since: filter.since.map(Date.init(unixMilliseconds:)), until: filter.until.map(Date.init(unixMilliseconds:)),
+            linkKinds: filter.linkKinds
+        )
+    }
+
+    var core: KnodeCore.GraphFilter {
+        KnodeCore.GraphFilter(
+            nodeKinds: nodeKinds, tags: tags, actors: actors,
+            since: since.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) },
+            until: until.map { Int64(($0.timeIntervalSince1970 * 1000).rounded()) },
+            linkKinds: linkKinds
+        )
+    }
+}
+
+extension MapView {
+    /// A view of a kind this version knows, or nil.
+    init?(_ view: KnodeCore.View) {
+        guard let kind = Kind(rawValue: view.kind) else { return nil }
+        self.init(
+            id: view.id, kind: kind, name: view.name, nodeID: view.nodeId,
+            viewport: view.viewport.map { Viewport(x: $0.x, y: $0.y, zoom: $0.zoom) },
+            filter: view.filter.map(GraphFilter.init) ?? GraphFilter()
+        )
+    }
+}
+
+extension ViewPosition {
+    init(_ position: KnodeCore.Position) {
+        let size: CGSize? = if let width = position.width, let height = position.height { CGSize(width: width, height: height) } else { nil }
+        self.init(nodeID: position.nodeId, x: position.x, y: position.y, size: size, z: position.z, collapsed: position.collapsed, groupID: position.groupId)
+    }
+
+    var core: KnodeCore.Position {
+        KnodeCore.Position(nodeId: nodeID, x: x, y: y, width: size.map { Double($0.width) }, height: size.map { Double($0.height) }, z: z, collapsed: collapsed, groupId: groupID)
+    }
+}
+
+extension ViewGroupInfo {
+    init(_ group: KnodeCore.ViewGroup) {
+        self.init(id: group.id, label: group.label, x: group.x, y: group.y, width: group.width, height: group.height, collapsed: group.collapsed)
+    }
+}
+
+extension GraphNodeInfo {
+    init(_ node: KnodeCore.GraphNode) {
+        self.init(
+            id: node.id, kind: node.kind, title: node.title, tags: node.tags,
+            createdAt: Date(unixMilliseconds: node.createdAt), updatedAt: Date(unixMilliseconds: node.updatedAt),
+            createdBy: node.createdBy, updatedBy: node.updatedBy
+        )
+    }
+}
+
+extension GraphEdgeInfo {
+    init(_ edge: KnodeCore.GraphEdge) {
+        self.init(from: edge.from, to: edge.to, kind: edge.kind)
     }
 }

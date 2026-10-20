@@ -44,6 +44,33 @@ history panel. When someone else changed the note after the picked change, the a
 person's own undone edits and undos in between do not count. Command-Z and Shift-Command-Z stay
 the text's own undo and redo while typing.
 
+## Map: graph, canvases and links
+
+**Show Graph** (Shift-Command-M, or the graph button in the toolbar) shows the space as a graph:
+every note and the links between them, laid out by force. Kinds of note are told apart by glyph in
+the brand inks; `mentions` links are faint and typed links dashed. Drag the background or scroll to
+pan, pinch or scroll with Command to zoom, drag a note to move it and click one to open it. Pointing
+at a note or a link shows how each link reads, such as *part of*. The bar above the graph filters by
+kind, link kind, tag, person or agent and date, finds a note by title and centres it, and saves what
+is shown as a **named graph view**: its filter, its viewport and where every note is, so it opens
+the same way next time, on any machine.
+
+**New Canvas** (Option-Command-N) makes a canvas: a node of kind `canvas` that opens as a board.
+Drag notes from the list onto it or use **Add Notes**, then move, resize, collapse, group, link and
+remove them, and zoom and pan around. A group moves the notes in it; a note dropped inside a group
+joins it. Positions, sizes, groups and the viewport are saved at once and add no change to the
+history; Edit > Undo undoes and redoes moves, adds and removals made on the board in this session.
+
+**Show Links** (Shift-Command-L) shows the links of the open note beside it: links going out and
+backlinks, each with the label it reads with from this note (*has part*, *mentioned in*). **Add
+Link** links the note to another with a kind, or defines a new kind first: its label, the inverse
+label read from the other note, whether it reads the same both ways, and what it means.
+
+Knode Service has no methods yet for link kinds, labelled links, views, positions or canvases. The
+app reads and writes them through the core in the app even while the service holds the space, as it
+does for renaming; making and removing a link goes through the service when it runs, so its other
+clients see it.
+
 ## Agents and access
 
 **Settings > Agents** lists the agents of this machine: their kind, when they were added and
@@ -153,12 +180,12 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 
 | Path | What it holds |
 |---|---|
-| `Knode/Store` | `SpaceStore`, the models, `CoreSpaceStore`, `RoutingSpaceStore`, `PreviewSpaceStore`, the list of spaces (`SpaceLibrary`), the recent spaces and the default space (`KnodeSettings`) |
+| `Knode/Store` | `SpaceStore`, `MapStore` (links, views and canvases), the models, `CoreSpaceStore`, `RoutingSpaceStore`, `PreviewSpaceStore`, the list of spaces (`SpaceLibrary`), the recent spaces and the default space (`KnodeSettings`) |
 | `Knode/Service` | The socket client, `ServiceSpaceStore`, the agents and grants (`AgentDirectory`), the menu bar status and the `knode` runner |
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
-| `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change) and `AgentsModel` (agents and their access) |
+| `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
-| `Knode/Views` | The window, the note editor, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
+| `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |
 | `project.yml` | The [XcodeGen](https://github.com/yonaskolb/XcodeGen) source of `Knode.xcodeproj` |

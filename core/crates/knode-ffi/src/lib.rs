@@ -13,6 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use knode_format as format;
 use knode_format::NodeId;
 
+mod maps;
+
+pub use maps::*;
+
 uniffi::setup_scaffolding!();
 
 /// The version of this crate.

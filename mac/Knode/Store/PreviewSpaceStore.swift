@@ -12,6 +12,13 @@ public actor PreviewSpaceStore: SpaceStore {
         var versions: [NoteVersion] = []
         /// Every change, oldest first: one per version, and the undos.
         var changes: [ChangeRecord] = []
+        /// Links made by hand; `mentions` links are read from the bodies.
+        var links: [GraphEdgeInfo] = []
+        /// The kinds of link the space defined.
+        var linkKinds: [LinkKindInfo] = []
+        var views: [MapView] = []
+        var positions: [MapView.ID: [Node.ID: ViewPosition]] = [:]
+        var groups: [MapView.ID: [ViewGroupInfo]] = [:]
     }
 
     private var spaces: [Space.ID: Entry] = [:]
@@ -220,6 +227,244 @@ public actor PreviewSpaceStore: SpaceStore {
     private func entry(_ id: Space.ID) throws -> Entry {
         guard let entry = spaces[id] else { throw SpaceStoreError.spaceNotFound(id) }
         return entry
+    }
+}
+
+// MARK: - Map
+
+extension PreviewSpaceStore: MapStore {
+    public func linkKinds(in space: Space.ID) async throws -> [LinkKindInfo] {
+        LinkKindInfo.builtIns + (try entry(space).linkKinds.sorted { $0.kind < $1.kind })
+    }
+
+    public func setLinkKind(_ kind: LinkKindInfo, in space: Space.ID) async throws -> LinkKindInfo {
+        let entry = try entry(space)
+        guard LinkKindInfo.isValidName(kind.kind) else {
+            throw SpaceStoreError.invalid("a link kind's name is lower-case letters, digits and -, starting with a letter")
+        }
+        guard !LinkKindInfo.builtIns.contains(where: { $0.kind == kind.kind }) else {
+            throw SpaceStoreError.invalid("\(kind.kind) is a built-in kind")
+        }
+        let label = kind.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw SpaceStoreError.invalid("a link kind needs a label") }
+        var stored = kind
+        stored.label = label
+        stored.inverseLabel = kind.inverseLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        stored.builtIn = false
+        if let old = entry.linkKinds.first(where: { $0.kind == kind.kind }), old.direction != kind.direction,
+           entry.links.contains(where: { $0.kind == kind.kind }) {
+            throw SpaceStoreError.invalid("the direction of a kind cannot change while links have it")
+        }
+        spaces[space]?.linkKinds.removeAll { $0.kind == kind.kind }
+        spaces[space]?.linkKinds.append(stored)
+        return stored
+    }
+
+    public func links(of node: Node.ID, in space: Space.ID) async throws -> [NodeLinkInfo] {
+        let entry = try entry(space)
+        let kinds = try await linkKinds(in: space)
+        let edges = allEdges(entry)
+        func kind(_ name: String) -> LinkKindInfo { kinds.first { $0.kind == name } ?? LinkKindInfo(kind: name, label: name) }
+        func info(_ edge: GraphEdgeInfo, outgoing: Bool) -> NodeLinkInfo? {
+            let other = outgoing ? edge.to : edge.from
+            guard let title = entry.nodes[other]?.title else { return nil }
+            let kind = kind(edge.kind)
+            return NodeLinkInfo(from: edge.from, to: edge.to, kind: edge.kind, outgoing: outgoing, nodeID: other, title: title, label: kind.label(outgoing: outgoing), direction: kind.direction, createdAt: now(), author: author)
+        }
+        let out = edges.filter { $0.from == node }.compactMap { info($0, outgoing: true) }
+        let back = edges.filter { $0.to == node && $0.from != node }.filter { edge in
+            !(kind(edge.kind).direction == .symmetric && out.contains { $0.kind == edge.kind && $0.nodeID == edge.from })
+        }.compactMap { info($0, outgoing: false) }
+        let order: (NodeLinkInfo, NodeLinkInfo) -> Bool = { ($0.kind, $0.title.lowercased()) < ($1.kind, $1.title.lowercased()) }
+        return out.sorted(by: order) + back.sorted(by: order)
+    }
+
+    public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        let entry = try entry(space)
+        let kind = kind.isEmpty ? LinkKindInfo.related : kind
+        guard entry.nodes[from] != nil else { throw SpaceStoreError.nodeNotFound(from) }
+        guard entry.nodes[to] != nil else { throw SpaceStoreError.nodeNotFound(to) }
+        guard kind != LinkKindInfo.mentions else { throw SpaceStoreError.invalid("mentions links come only from [[links]] in a body") }
+        guard let known = try await linkKinds(in: space).first(where: { $0.kind == kind }) else {
+            throw SpaceStoreError.invalid("unknown link kind \"\(kind)\": define it first with a label")
+        }
+        let edge = GraphEdgeInfo(from: from, to: to, kind: kind)
+        let reverse = GraphEdgeInfo(from: to, to: from, kind: kind)
+        if entry.links.contains(edge) || (known.direction == .symmetric && entry.links.contains(reverse)) { return }
+        spaces[space]?.links.append(edge)
+    }
+
+    public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        _ = try entry(space)
+        let symmetric = try await linkKinds(in: space).first { $0.kind == kind }?.direction == .symmetric
+        spaces[space]?.links.removeAll { edge in
+            edge.kind == kind && ((edge.from == from && edge.to == to) || (symmetric && edge.from == to && edge.to == from))
+        }
+    }
+
+    public func mapViews(in space: Space.ID) async throws -> [MapView] {
+        let entry = try entry(space)
+        return entry.views.compactMap { view in
+            guard view.kind == .canvas else { return view }
+            guard let node = view.nodeID.flatMap({ entry.nodes[$0] }) else { return nil }
+            var view = view
+            view.name = node.title
+            return view
+        }
+    }
+
+    public func saveGraphView(id: MapView.ID?, name: String, filter: GraphFilter, in space: Space.ID) async throws -> MapView {
+        let entry = try entry(space)
+        let name = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard (1...128).contains(name.count) else { throw SpaceStoreError.invalid("the name of a graph view is 1 to 128 characters") }
+        if let id {
+            guard let index = entry.views.firstIndex(where: { $0.id == id && $0.kind == .graph }) else {
+                throw SpaceStoreError.invalid("no graph view has the id \(id)")
+            }
+            spaces[space]?.views[index].name = name
+            spaces[space]?.views[index].filter = filter
+            return spaces[space]!.views[index]
+        }
+        let view = MapView(id: ULID.make(at: now()), kind: .graph, name: name, filter: filter)
+        spaces[space]?.views.append(view)
+        return view
+    }
+
+    public func removeGraphView(_ id: MapView.ID, in space: Space.ID) async throws {
+        _ = try entry(space)
+        spaces[space]?.views.removeAll { $0.id == id && $0.kind == .graph }
+        spaces[space]?.positions[id] = nil
+    }
+
+    public func setViewport(_ viewport: Viewport, of view: MapView.ID, in space: Space.ID) async throws {
+        let entry = try entry(space)
+        guard viewport.zoom > 0, let index = entry.views.firstIndex(where: { $0.id == view }) else {
+            throw SpaceStoreError.invalid("no view has the id \(view)")
+        }
+        spaces[space]?.views[index].viewport = viewport
+    }
+
+    public func graph(in space: Space.ID, view: MapView.ID?, filter: GraphFilter) async throws -> GraphData {
+        let entry = try entry(space)
+        let nodes = entry.nodes.values.sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }.map { node in
+            let versions = entry.versions.filter { $0.nodeID == node.id }
+            return GraphNodeInfo(
+                id: node.id, kind: node.kind, title: node.title, tags: [],
+                createdAt: node.createdAt, updatedAt: node.updatedAt,
+                createdBy: versions.first?.author.name ?? person, updatedBy: versions.last?.author.name ?? person
+            )
+        }.filter { Self.keeps(filter, $0) }
+        let shown = Set(nodes.map(\.id))
+        let edges = allEdges(entry).filter { shown.contains($0.from) && shown.contains($0.to) && (filter.linkKinds?.contains($0.kind) ?? true) }
+        let positions = view.flatMap { entry.positions[$0] }.map { Array($0.values).filter { shown.contains($0.nodeID) } } ?? []
+        return GraphData(nodes: nodes, edges: edges, positions: positions, linkKinds: try await linkKinds(in: space))
+    }
+
+    /// Whether a node passes a filter, as the core decides.
+    static func keeps(_ filter: GraphFilter, _ node: GraphNodeInfo) -> Bool {
+        (filter.nodeKinds?.contains(node.kind) ?? true)
+            && (filter.tags.map { !Set($0).isDisjoint(with: node.tags) } ?? true)
+            && (filter.actors.map { $0.contains(node.createdBy) || $0.contains(node.updatedBy) } ?? true)
+            && (filter.since.map { node.updatedAt >= $0 } ?? true)
+            && (filter.until.map { node.updatedAt < $0 } ?? true)
+    }
+
+    public func setPositions(_ positions: [ViewPosition], in view: MapView.ID, space: Space.ID) async throws {
+        let entry = try entry(space)
+        guard let found = entry.views.first(where: { $0.id == view }) else { throw SpaceStoreError.invalid("no view has the id \(view)") }
+        for position in positions {
+            guard entry.nodes[position.nodeID] != nil else { throw SpaceStoreError.nodeNotFound(position.nodeID) }
+            if let group = position.groupID, found.kind != .canvas || !(entry.groups[view] ?? []).contains(where: { $0.id == group }) {
+                throw SpaceStoreError.invalid("no group \(group) on this canvas")
+            }
+        }
+        for position in positions {
+            spaces[space]?.positions[view, default: [:]][position.nodeID] = position
+        }
+    }
+
+    public func removePositions(_ nodes: [Node.ID], from view: MapView.ID, space: Space.ID) async throws {
+        _ = try entry(space)
+        for node in nodes { spaces[space]?.positions[view]?[node] = nil }
+    }
+
+    public func createCanvas(title: String, in space: Space.ID) async throws -> MapView {
+        _ = try entry(space)
+        let date = now()
+        let node = Node(id: ULID.make(at: date), title: title, body: "", createdAt: date, updatedAt: date, kind: NodeKind.canvas)
+        spaces[space]?.nodes[node.id] = node
+        append(version(of: node, .create, by: author), action: ChangeRecord.Action.create, in: space)
+        let view = MapView(id: ULID.make(at: date), kind: .canvas, name: title, nodeID: node.id)
+        spaces[space]?.views.append(view)
+        return view
+    }
+
+    public func canvasBoard(of node: Node.ID, in space: Space.ID) async throws -> CanvasBoard? {
+        let entry = try entry(space)
+        guard var view = entry.views.first(where: { $0.kind == .canvas && $0.nodeID == node }) else { return nil }
+        view.name = entry.nodes[node]?.title ?? view.name
+        let items = (entry.positions[view.id] ?? [:]).values
+            .compactMap { position -> CanvasItem? in
+                guard let node = entry.nodes[position.nodeID] else { return nil }
+                return CanvasItem(position: position, kind: node.kind, title: node.title, excerpt: NodeSummary.excerpt(of: node.body))
+            }
+            .sorted { ($0.position.z, $0.id) < ($1.position.z, $1.id) }
+        let on = Set(items.map(\.id))
+        let edges = allEdges(entry).filter { on.contains($0.from) && on.contains($0.to) }
+        return CanvasBoard(view: view, items: items, groups: entry.groups[view.id] ?? [], edges: edges, linkKinds: try await linkKinds(in: space))
+    }
+
+    public func setGroup(_ group: GroupDraft, in view: MapView.ID, space: Space.ID) async throws -> ViewGroupInfo {
+        let entry = try entry(space)
+        guard entry.views.contains(where: { $0.id == view && $0.kind == .canvas }) else { throw SpaceStoreError.invalid("groups are only on a canvas") }
+        guard group.width > 0, group.height > 0 else { throw SpaceStoreError.invalid("the size of a group must be greater than 0") }
+        let id = group.id ?? ULID.make(at: now())
+        let stored = ViewGroupInfo(id: id, label: group.label.trimmingCharacters(in: .whitespaces), x: group.x, y: group.y, width: group.width, height: group.height, collapsed: group.collapsed)
+        var groups = entry.groups[view] ?? []
+        if let index = groups.firstIndex(where: { $0.id == id }) { groups[index] = stored } else { groups.append(stored) }
+        spaces[space]?.groups[view] = groups
+        return stored
+    }
+
+    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
+        let entry = try entry(space)
+        for (view, groups) in entry.groups where groups.contains(where: { $0.id == id }) {
+            spaces[space]?.groups[view]?.removeAll { $0.id == id }
+            for (node, position) in entry.positions[view] ?? [:] where position.groupID == id {
+                spaces[space]?.positions[view]?[node]?.groupID = nil
+            }
+        }
+    }
+
+    /// The links made by hand and the `mentions` links read from `[[links]]` in the bodies.
+    private func allEdges(_ entry: Entry) -> [GraphEdgeInfo] {
+        var byTitle: [String: Node.ID] = [:]
+        for node in entry.nodes.values.sorted(by: { $0.createdAt < $1.createdAt }) where byTitle[node.title.lowercased()] == nil {
+            byTitle[node.title.lowercased()] = node.id
+        }
+        var edges: [GraphEdgeInfo] = []
+        for node in entry.nodes.values {
+            var seen = Set<Node.ID>()
+            for title in Self.wikiLinks(in: node.body) {
+                if let target = byTitle[title.lowercased()], seen.insert(target).inserted {
+                    edges.append(GraphEdgeInfo(from: node.id, to: target, kind: LinkKindInfo.mentions))
+                }
+            }
+        }
+        return edges.sorted { ($0.from, $0.to) < ($1.from, $1.to) } + entry.links
+    }
+
+    /// The titles of the `[[links]]` in a Markdown body.
+    static func wikiLinks(in body: String) -> [String] {
+        var titles: [String] = []
+        var rest = body[...]
+        while let open = rest.range(of: "[["), let close = rest[open.upperBound...].range(of: "]]") {
+            let inner = rest[open.upperBound..<close.lowerBound]
+            let title = inner.split(separator: "|", maxSplits: 1).first.map(String.init) ?? ""
+            if !title.isEmpty, !title.contains("\n") { titles.append(title.trimmingCharacters(in: .whitespaces)) }
+            rest = rest[close.upperBound...]
+        }
+        return titles
     }
 }
 

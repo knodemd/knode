@@ -101,6 +101,12 @@ struct SpaceCommands: Commands {
             .keyboardShortcut("n")
             .disabled(model.selectedSpaceID == nil)
 
+            Button("New Canvas", systemImage: "rectangle.on.rectangle.angled") {
+                Task { await model.createCanvas() }
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(!model.hasMap)
+
             Button("New Space…", systemImage: "plus.square.on.square") {
                 model.sheet = .newSpace
             }
@@ -160,6 +166,18 @@ struct SpaceCommands: Commands {
         }
 
         CommandGroup(after: .sidebar) {
+            Button(model.mode == .graph ? "Show Notes" : "Show Graph", systemImage: "point.3.connected.trianglepath.dotted") {
+                model.toggleGraph()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(!model.hasMap)
+
+            Button(model.isShowingLinks ? "Hide Links" : "Show Links", systemImage: "link") {
+                model.toggleLinks()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(model.editor == nil || model.links == nil)
+
             Button(model.isShowingHistory ? "Hide History" : "Show History", systemImage: "clock.arrow.circlepath") {
                 model.toggleHistory()
             }

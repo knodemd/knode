@@ -1790,6 +1790,7 @@ version = "0.0.0"
 dependencies = [
  "knode-config",
  "knode-format",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "uniffi",
