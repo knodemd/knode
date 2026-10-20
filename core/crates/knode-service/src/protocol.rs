@@ -97,15 +97,15 @@ pub mod codes {
     pub const STORAGE: i64 = -32006;
     /// The change cannot be undone: its kind of change is not undone, or the versions it
     /// needs were purged.
-    pub const CANNOT_UNDO: i64 = -32010;
+    pub const CANNOT_UNDO: i64 = -32020;
     /// The change was already undone.
-    pub const ALREADY_UNDONE: i64 = -32011;
+    pub const ALREADY_UNDONE: i64 = -32021;
     /// Undoing the change would overwrite later changes; `data.later` lists them.
-    pub const UNDO_CONFLICT: i64 = -32012;
+    pub const UNDO_CONFLICT: i64 = -32022;
     /// Only a person can do this.
-    pub const PERSON_ONLY: i64 = -32013;
+    pub const PERSON_ONLY: i64 = -32023;
     /// A folder of Markdown files could not be read or written.
-    pub const FOLDER: i64 = -32014;
+    pub const FOLDER: i64 = -32024;
 }
 
 /// An error answered by the service: a JSON-RPC error object.

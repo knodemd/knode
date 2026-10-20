@@ -177,11 +177,11 @@ match on.
 | -32004 | `invalid` | A value breaks a rule of the format, such as an empty title or a bad kind. |
 | -32005 | `unsupported` | The space was written by a newer version of Knode, or its files do not agree. |
 | -32006 | `storage` | The files of the space could not be read or written. |
-| -32010 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
-| -32011 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
-| -32012 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
-| -32013 | `person_only` | Only a person can do this, such as purge or change the live Markdown folder. |
-| -32014 | `folder` | A folder of Markdown files could not be read or written. |
+| -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
+| -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
+| -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
+| -32023 | `person_only` | Only a person can do this, such as purge or change the live Markdown folder. |
+| -32024 | `folder` | A folder of Markdown files could not be read or written. |
 
 ```json
 {"jsonrpc":"2.0","id":7,"error":{"code":-32001,"message":"node 01K83N6V4W5D2XQJ0Y7RZ9T1AB not found","data":{"kind":"not_found"}}}
