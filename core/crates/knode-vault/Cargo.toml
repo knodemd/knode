@@ -1,6 +1,6 @@
 [package]
 name = "knode-vault"
-description = "Markdown in and out of .knode spaces: export, import (Obsidian vaults too) and a live Markdown folder."
+description = "Markdown in and out of .knode spaces: export, import (Obsidian vaults too) and a live Markdown folder, both ways."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,8 +24,10 @@ dom_smoothie = "=0.18.2"
 flate2 = "=1.1.10"
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-md = { path = "../knode-md", version = "=0.0.0" }
+knode-sync = { path = "../knode-sync", version = "=0.0.0" }
 lopdf = { version = "=0.42.0", default-features = false }
 md5 = "=0.7.0"
+notify = "=8.2.0"
 pdf-extract = "=0.12.1"
 percent-encoding = "=2.3.2"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
@@ -38,6 +40,5 @@ thiserror = "=2.0.21"
 ulid = "=3.0.0"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-
 [dev-dependencies]
 tempfile = "=3.27.0"

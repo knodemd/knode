@@ -22,3 +22,11 @@ license = "Apache-2.0"
 repository = "https://github.com/knodemd/knode"
 homepage = "https://knode.md"
 authors = ["Knode, a project by aaangelmartin"]
+
+# gemm-f16 (candle's matrix maths for half floats) picks its FP16 kernels at run time, but its
+# inline assembly helpers are only valid inside those FP16 functions. Unoptimised builds keep
+# them as separate functions, which the assembler rejects on aarch64 Linux, where FP16 is not
+# part of the baseline. Optimising this one crate inlines them, so debug and test builds work
+# there without building the whole binary for FP16 (knodemd/knode#108).
+[profile.dev.package.gemm-f16]
+opt-level = 3

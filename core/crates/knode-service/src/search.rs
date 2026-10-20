@@ -1,8 +1,7 @@
 //! `search` by words, by meaning or both, and the index that search by meaning reads: the
 //! shapes of `search`, `index.status` and `index.run`.
 //!
-//! Search by meaning needs the `semantic` feature (on by default, on every platform but
-//! aarch64 Linux for now). With it, Knode Service downloads a small embedding model once into
+//! Search by meaning needs the `semantic` feature (on by default). With it, Knode Service downloads a small embedding model once into
 //! `$KNODE_HOME/models`, indexes the open spaces in the background and ranks words and meaning
 //! together (section 19 of the .knode specification). Without it, or while the model is not
 //! ready, `search` is by words and says why.
