@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use knode_format::{Provenance, Space};
-use knode_service::MarkdownFolder;
+use knode_service::{DeletedNote, MarkdownFolder};
 use knode_vault::ExportReport;
 
 use crate::service;
@@ -68,6 +68,76 @@ pub fn folder(space: &Path, dir: Option<&Path>, off: bool, by: &Provenance) -> R
     }
     if let Some(warning) = &folder.warning {
         eprintln!("warning: {warning}");
+    }
+    Ok(())
+}
+
+/// Lists the notes whose file was deleted from the live Markdown folder, or keeps or deletes
+/// one of them (by id or title) or `all`.
+pub fn deleted(
+    space: &Path,
+    keep: Option<&str>,
+    delete: Option<&str>,
+    by: &Provenance,
+) -> Result<()> {
+    let client = service::client();
+    let mut opened = match client {
+        Some(_) => None,
+        None => Some(Space::open(space)?),
+    };
+    let notes = match (&client, &opened) {
+        (Some(client), _) => client.deleted_notes(space)?,
+        (None, Some(opened)) => knode_service::markdown::deleted_notes(opened)?,
+        (None, None) => unreachable!(),
+    };
+    let (target, keeping) = match (keep, delete) {
+        (Some(node), _) => (node, true),
+        (None, Some(node)) => (node, false),
+        (None, None) => {
+            if notes.is_empty() {
+                println!("No note waits: no file was deleted from the live Markdown folder.");
+            }
+            for note in &notes {
+                println!("{}  {}  (was {})", note.id, note.title, note.path);
+            }
+            return Ok(());
+        }
+    };
+    let chosen: Vec<&DeletedNote> = if target == "all" {
+        notes.iter().collect()
+    } else {
+        let found: Vec<&DeletedNote> = notes
+            .iter()
+            .filter(|n| n.id.to_string() == target || n.title.eq_ignore_ascii_case(target))
+            .collect();
+        if found.is_empty() {
+            bail!("no note named {target:?} waits; `knode markdown deleted` lists them");
+        }
+        found
+    };
+    for note in &chosen {
+        match (&client, &mut opened) {
+            (Some(client), _) if keeping => {
+                client.keep_deleted(space, &note.id)?;
+            }
+            (Some(client), _) => client.delete_node(space, &note.id, by)?,
+            (None, Some(opened)) if keeping => {
+                knode_service::markdown::keep_deleted(opened, &note.id)?;
+            }
+            (None, Some(opened)) => opened.delete_node(&note.id, by)?,
+            (None, None) => unreachable!(),
+        }
+    }
+    if keeping {
+        println!(
+            "Kept {}; Knode Service writes their files again.",
+            plural(chosen.len(), "note")
+        );
+    } else {
+        println!(
+            "Deleted {}. Their history keeps them: `knode restore` recovers one.",
+            plural(chosen.len(), "note")
+        );
     }
     Ok(())
 }

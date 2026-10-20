@@ -87,6 +87,10 @@ final class AppModel {
     }
     /// The files attached to the open note.
     private(set) var attachments: NoteAttachmentsModel?
+    /// The notes of the selected space whose file was deleted from its live Markdown folder.
+    private(set) var deletedNotes: DeletedNotesModel?
+    /// Whether the sheet that asks what to do with them is shown.
+    var isShowingDeletedNotes = false
     /// Whether the attachments of the open note are shown, in place of its links or history.
     var isShowingAttachments = false {
         didSet {
@@ -259,6 +263,20 @@ final class AppModel {
         searchText = ""
         pendingSearch?.cancel()
         await reload()
+        await makeDeletedNotes()
+    }
+
+    /// Asks the selected space for the notes whose file was deleted from its Markdown folder.
+    private func makeDeletedNotes() async {
+        isShowingDeletedNotes = false
+        guard let space = selectedSpaceID, let store = store(for: space) as? any DeletedNotesStore & SpaceStore else {
+            deletedNotes = nil
+            return
+        }
+        let model = DeletedNotesModel(spaceID: space, store: store)
+        model.onChange = { [weak self] in await self?.reload() }
+        deletedNotes = model
+        await model.load()
     }
 
     /// The spaces in the sidebar: the library, then the example space while it is open.
@@ -847,6 +865,7 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(100))
             self?.pendingReload = nil
             await self?.reload()
+            await self?.deletedNotes?.load()
         }
     }
 

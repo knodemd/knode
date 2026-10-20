@@ -74,8 +74,8 @@ pub use maps::{
 };
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
 pub use protocol::{
-    Change, ChangeKind, DocEdited, DocSplice, DocText, Event, MarkdownFolder, RpcError, SpaceInfo,
-    Status,
+    Change, ChangeKind, DeletedNote, DocEdited, DocSplice, DocText, Event, MarkdownFolder,
+    RpcError, SpaceInfo, Status,
 };
 pub use search::{IndexOptions, IndexStatus, ModelState, ModelStatus, SearchResults, SpaceIndex};
 pub use server::{Config, ServiceHandle, run, start};

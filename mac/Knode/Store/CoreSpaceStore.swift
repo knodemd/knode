@@ -579,3 +579,24 @@ extension AttachmentInfo {
         )
     }
 }
+
+// MARK: - Notes deleted from the live Markdown folder
+
+extension CoreSpaceStore: DeletedNotesStore {
+    public func deletedNotes(in space: Space.ID) async throws -> [DeletedNote] {
+        let core = try self.core(space)
+        return try await run { try core.markdownDeleted() }.map { DeletedNote(id: $0.id, title: $0.title, path: $0.path) }
+    }
+
+    /// Removes the mark. Knode Service writes the file again the next time it writes the space.
+    public func keepDeletedNote(_ id: Node.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        _ = try await run { try core.keepMarkdownDeleted(id: id) }
+    }
+
+    public func deleteNode(_ id: Node.ID, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        try await run { try core.deleteNode(id: id, by: author) }
+    }
+}

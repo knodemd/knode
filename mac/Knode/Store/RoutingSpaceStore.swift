@@ -324,3 +324,27 @@ extension RoutingSpaceStore: MapStore, AttachmentStore {
         }
     }
 }
+
+// Through Knode Service while it holds the space, so the live folder hears of each change at once.
+extension RoutingSpaceStore: DeletedNotesStore {
+    public func deletedNotes(in space: Space.ID) async throws -> [DeletedNote] {
+        try await deleted(space) { store in try await store.deletedNotes(in: space) }
+    }
+
+    public func keepDeletedNote(_ id: Node.ID, in space: Space.ID) async throws {
+        try await deleted(space) { store in try await store.keepDeletedNote(id, in: space) }
+    }
+
+    public func deleteNode(_ id: Node.ID, in space: Space.ID) async throws {
+        try await deleted(space, retry: false) { store in try await store.deleteNode(id, in: space) }
+    }
+
+    private func deleted<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any DeletedNotesStore) async throws -> T) async throws -> T {
+        try await route(space, retry: retry) { store in
+            guard let store = store as? any DeletedNotesStore else {
+                throw SpaceStoreError.unsupported("this space has no Markdown folder")
+            }
+            return try await work(store)
+        }
+    }
+}

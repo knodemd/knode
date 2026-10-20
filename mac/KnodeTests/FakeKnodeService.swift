@@ -26,6 +26,8 @@ final class FakeKnodeService: @unchecked Sendable {
         var nodes: [String: StoredNode] = [:]
         var settings: [String: String] = [:]
         var folders: [[String: Any]] = []
+        /// The notes marked `markdown.deleted`, with the path their file had.
+        var deletedFiles: [String: String] = [:]
     }
 
     let socketURL: URL
@@ -101,6 +103,17 @@ final class FakeKnodeService: @unchecked Sendable {
             spaces[path]?.nodes[id]?.updatedAt = clock
         }
         notify(space: path, node: id, op: "update")
+    }
+
+    /// Marks a note as the live Markdown folder does when its file is deleted.
+    func folderDeletesFile(of id: String, in path: String, file: String) {
+        lock.withLock { spaces[path]?.deletedFiles[id] = file }
+        notify(space: path, node: id, op: "update")
+    }
+
+    /// The notes marked `markdown.deleted`.
+    func deletedFiles(in path: String) -> [String: String] {
+        lock.withLock { spaces[path]?.deletedFiles ?? [:] }
     }
 
     /// Renames a space as another client would, and tells the subscribers.
@@ -355,6 +368,23 @@ final class FakeKnodeService: @unchecked Sendable {
             node.updatedAt = clock
             spaces[path]?.nodes[id] = node
             return (node.json, (path, id, "update"))
+        case "node.delete":
+            let id = params["id"] as? String ?? ""
+            guard try space().nodes[id] != nil else { throw RPCError(code: -32001, kind: "not_found", message: "node \(id) not found") }
+            spaces[path]?.nodes[id] = nil
+            spaces[path]?.deletedFiles[id] = nil
+            return (NSNull(), (path, id, "delete"))
+        case "markdown.deleted.list":
+            let space = try space()
+            let marked = space.deletedFiles.compactMap { id, file in
+                space.nodes[id].map { ["id": id, "title": $0.title, "path": file] as [String: Any] }
+            }
+            return (marked.sorted { ($0["path"] as? String ?? "") < ($1["path"] as? String ?? "") }, nil)
+        case "markdown.deleted.keep":
+            let id = params["id"] as? String ?? ""
+            let kept = try space().deletedFiles[id] != nil
+            spaces[path]?.deletedFiles[id] = nil
+            return (kept, kept ? (path, id, "update") : nil)
         case "history":
             let id = params["id"] as? String ?? ""
             guard let node = try space().nodes[id] else { return ([Any](), nil) }
