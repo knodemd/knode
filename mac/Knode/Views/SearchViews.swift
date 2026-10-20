@@ -85,6 +85,8 @@ struct SearchResultRow: View {
                 Text(hit.summary.updatedAt, format: .relative(presentation: .named))
                     .kLineStyle(10)
                     .foregroundStyle(theme.muted)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
             }
         }
         .padding(.vertical, 2)
@@ -119,6 +121,7 @@ struct MatchBadge: View {
 
     var body: some View {
         KChip("\(title) \(rank)", icon: glyph, kind: .accent)
+            .fixedSize()
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(title), place \(rank)")
     }

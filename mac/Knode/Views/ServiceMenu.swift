@@ -59,10 +59,10 @@ private struct ServiceMenuPanel: View {
         HStack(spacing: KSpace.x3) {
             KnodeMark()
                 .foregroundStyle(theme.isDark ? theme.indigo : theme.fg)
-                .frame(height: 22)
+                .frame(height: 16)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Knode Service").font(KFont.ui(13, .semibold))
-                Text(statusLine).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
+                Text(statusLine).font(KFont.ui(12)).foregroundStyle(theme.muted).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: KSpace.x2)
             ServiceStatusChip(state: monitor.state)

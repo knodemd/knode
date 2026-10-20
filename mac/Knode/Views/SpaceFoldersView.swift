@@ -158,19 +158,20 @@ struct FolderRow: View {
                     .truncationMode(.middle)
                     .kTooltip(folder.localURL?.path(percentEncoded: false) ?? folder.path)
                 HStack(spacing: 6) {
-                    Text(kindLabel).font(KFont.ui(12)).foregroundStyle(theme.muted)
+                    Text(kindLabel).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(2)
                     if folder.isMissing {
                         KChip("Not on this Mac", icon: .warning)
+                            .fixedSize()
                             .kTooltip("The folder is kept and skipped until it exists here.")
                     }
                 }
             }
             Spacer(minLength: KSpace.x2)
             if folder.knownKind != nil {
-                Toggle(captureLabel, isOn: Binding(get: { folder.capture }, set: { setCapture($0) }))
+                Toggle(isOn: Binding(get: { folder.capture }, set: { setCapture($0) })) { EmptyView() }
                     .toggleStyle(KToggleStyle())
-                    .labelsHidden()
                     .fixedSize()
+                    .accessibilityLabel(captureLabel)
                     .kTooltip(captureLabel)
                     .disabled(isBusy)
             }
