@@ -10,12 +10,21 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+base64 = "=0.22.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
+flate2 = "=1.1.10"
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-md = { path = "../knode-md", version = "=0.0.0" }
+md5 = "=0.7.0"
+percent-encoding = "=2.3.2"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+quick-xml = "=0.42.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 thiserror = "=2.0.21"
+ulid = "=3.0.0"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"

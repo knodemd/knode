@@ -105,6 +105,7 @@
 
 #![warn(missing_docs)]
 
+pub mod apps;
 mod attachments;
 mod frontmatter;
 mod import;
