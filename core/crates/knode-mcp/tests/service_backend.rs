@@ -156,3 +156,103 @@ fn history_and_undo_go_through_the_service() {
     assert_eq!(backend.history(&plan).unwrap().len(), 3);
     service.stop().unwrap();
 }
+
+#[test]
+fn canvases_kinds_and_attachments_go_through_the_service_as_the_agent() {
+    use knode_format::{GrantLevel, LinkKindSpec, NewNode, Provenance};
+    use knode_service::FolderInput;
+    use knode_service::keys::{fingerprint, generate_key};
+
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = std::fs::canonicalize(dir.path())
+        .unwrap()
+        .join("Work.knode");
+    let person = Client::connect(&socket).unwrap();
+    let me = Provenance::person("Ada");
+    person.create_space(&space, "Work").unwrap();
+    let notes = std::fs::canonicalize(dir.path()).unwrap().join("notes");
+    std::fs::create_dir(&notes).unwrap();
+    std::fs::write(notes.join("sketch.svg"), "<svg/>").unwrap();
+    person
+        .set_folder(
+            &space,
+            &FolderInput {
+                id: None,
+                kind: "notes".into(),
+                path: notes.to_string_lossy().into_owned(),
+                capture: true,
+                rules: json!({}),
+            },
+            &me,
+        )
+        .unwrap();
+    person
+        .set_link_kind(
+            &space,
+            &LinkKindSpec::symmetric("sibling-of", "sibling of"),
+            &me,
+        )
+        .unwrap();
+    let canvas = person.create_canvas(&space, "Launch", "", &me).unwrap();
+    let plan = person
+        .create_node(&space, NewNode::note("Plan", ""), &me)
+        .unwrap();
+    person
+        .set_positions(
+            &space,
+            &canvas.id,
+            &[knode_service::PositionInput::at(plan.id, 0.0, 0.0)],
+            &me,
+        )
+        .unwrap();
+
+    let key = generate_key().unwrap();
+    person
+        .add_agent("claude-code", "claude-code", &fingerprint(&key), &me)
+        .unwrap();
+    person
+        .set_grant("claude-code", &space, GrantLevel::Write, &me)
+        .unwrap();
+    let agent = {
+        let socket = socket.clone();
+        ServiceBackend::new(space.clone(), move || {
+            Client::connect_as_agent(&socket, &key)
+        })
+        .unwrap()
+    };
+
+    let out = run(&agent, "link_kinds", json!({}));
+    assert!(
+        out.text.contains("`sibling-of`: sibling of (both ways)"),
+        "{}",
+        out.text
+    );
+    let out = run(&agent, "read_canvas", json!({ "canvas": "Launch" }));
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("[[Plan]] (note"), "{}", out.text);
+
+    let path = notes.join("sketch.svg");
+    let out = run(
+        &agent,
+        "attach_file",
+        json!({ "node": "Plan", "path": path.to_string_lossy() }),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let attachment = &out.structured.unwrap()["attachment"];
+    assert_eq!(attachment["created_by"]["actor"], "claude-code");
+    let out = run(
+        &agent,
+        "read_attachment",
+        json!({ "node": "Plan", "name": "sketch.svg" }),
+    );
+    assert_eq!(out.structured.unwrap()["text"], "<svg/>");
+    // The agent never names a file to the service: attaching by path is for people.
+    let refused = agent.attach_file(&plan.id, &path, &me);
+    assert!(
+        matches!(refused, Err(BackendError::Invalid(_))),
+        "{refused:?}"
+    );
+    service.stop().unwrap();
+}

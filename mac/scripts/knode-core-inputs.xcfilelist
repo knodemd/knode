@@ -19,6 +19,7 @@ $(SRCROOT)/../core/crates/knode-format/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-format/src/chunking.rs
 $(SRCROOT)/../core/crates/knode-format/src/embeddings.rs
 $(SRCROOT)/../core/crates/knode-format/src/error.rs
+$(SRCROOT)/../core/crates/knode-format/src/graph.rs
 $(SRCROOT)/../core/crates/knode-format/src/history.rs
 $(SRCROOT)/../core/crates/knode-format/src/lib.rs
 $(SRCROOT)/../core/crates/knode-format/src/links.rs
@@ -69,15 +70,18 @@ $(SRCROOT)/../core/crates/knode-service/src/auth/mod.rs
 $(SRCROOT)/../core/crates/knode-service/src/auth/registry.rs
 $(SRCROOT)/../core/crates/knode-service/src/capture.rs
 $(SRCROOT)/../core/crates/knode-service/src/client.rs
+$(SRCROOT)/../core/crates/knode-service/src/client/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/error.rs
 $(SRCROOT)/../core/crates/knode-service/src/install.rs
 $(SRCROOT)/../core/crates/knode-service/src/keys.rs
 $(SRCROOT)/../core/crates/knode-service/src/lib.rs
 $(SRCROOT)/../core/crates/knode-service/src/lock.rs
+$(SRCROOT)/../core/crates/knode-service/src/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-service/src/paths.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs

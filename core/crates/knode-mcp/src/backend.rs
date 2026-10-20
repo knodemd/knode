@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use knode_format::{
-    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit, Space,
+    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    Space, View, view_kinds,
 };
 
 /// What can go wrong in a backend. Every error is shown to the agent as a tool error, so the
@@ -36,6 +37,7 @@ impl From<knode_format::Error> for BackendError {
             | knode_format::Error::CannotUndo { .. }
             | knode_format::Error::AlreadyUndone { .. }
             | knode_format::Error::UndoConflict { .. }
+            | knode_format::Error::LinkKindInUse { .. }
             | knode_format::Error::PersonOnly(_) => BackendError::Invalid(error.to_string()),
             other => BackendError::Failed(other.to_string()),
         }
@@ -84,6 +86,71 @@ pub trait Backend: Send + Sync + 'static {
     fn knows_the_agent(&self) -> bool {
         false
     }
+    /// `link_kinds.list`: every kind of link the space knows.
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>>;
+    /// `link_kind.set`: defines a kind of link, or changes its labels.
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind>;
+    /// `link_kind.remove`: removes a kind of link the space defined.
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool>;
+    /// `links.of`: the links of a node, going out then coming in, with their labels.
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>>;
+    /// `views.list`: the graph views and canvases, a canvas named by its node's title.
+    fn views(&self) -> BackendResult<Vec<View>>;
+    /// `canvas.board`: a canvas with its nodes, groups and links, or `None`.
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>>;
+    /// `attachments.list`: the files attached to a node.
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>>;
+    /// `attachment.read`: an attachment with its bytes, or `None`.
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>>;
+    /// `attachment.add`: attaches bytes to a node under a name.
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment>;
+    /// `attachment.add_file`: attaches a file on this machine. Only a person may, through Knode
+    /// Service.
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment>;
+    /// `folders.list`: the folders that feed the space, where they are on this machine.
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>>;
+}
+
+/// A folder that feeds the space, as this machine sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFolder {
+    /// `project`, `notes` or `agent`.
+    pub kind: String,
+    /// Whether the folder is captured and read.
+    pub capture: bool,
+    /// The folder on this machine, or `None` when its path cannot be resolved here.
+    pub path: Option<PathBuf>,
+}
+
+/// A folder recorded as `~/...` or absolute, on this machine.
+pub(crate) fn resolve_folder(path: &str) -> Option<PathBuf> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+        return Some(PathBuf::from(home).join(rest));
+    }
+    let path = PathBuf::from(path);
+    path.is_absolute().then_some(path)
+}
+
+/// A view with a canvas named by its node's title.
+fn named(space: &Space, mut view: View) -> knode_format::Result<View> {
+    if view.kind == view_kinds::CANVAS
+        && let Some(node) = view.node_id
+        && let Some(found) = space.get_node(&node)?
+    {
+        view.name = found.title;
+    }
+    Ok(view)
 }
 
 /// A backend that opens the space directly with `knode-format`.
@@ -136,7 +203,10 @@ impl DirectBackend {
         }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Space) -> knode_format::Result<T>) -> BackendResult<T> {
+    pub(crate) fn with<T>(
+        &self,
+        f: impl FnOnce(&mut Space) -> knode_format::Result<T>,
+    ) -> BackendResult<T> {
         let path = match &self.target {
             Target::Path(path) => path,
             Target::Missing(message) => return Err(BackendError::Unavailable(message.clone())),
@@ -219,6 +289,88 @@ impl Backend for DirectBackend {
     fn restore(&self, id: &NodeId, version: i64, by: &Provenance) -> BackendResult<Node> {
         self.with(|s| s.restore(id, version, by))
     }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        self.with(|s| s.link_kinds())
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        self.with(|s| s.set_link_kind(spec, by))
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        self.with(|s| s.remove_link_kind(kind, by))
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        self.with(|s| s.node_links(id))
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        self.with(|s| {
+            let views = s.views()?;
+            views.into_iter().map(|v| named(s, v)).collect()
+        })
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        self.with(|s| {
+            Ok(s.canvas_board(node)?.map(|mut board| {
+                board.view.name = board.title.clone();
+                board
+            }))
+        })
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        self.with(|s| s.attachments(id))
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        self.with(|s| {
+            let Some(attachment) = s.attachment(id, name)? else {
+                return Ok(None);
+            };
+            let bytes = s.read_blob(&attachment.hash)?.ok_or_else(|| {
+                knode_format::Error::Invalid(format!(
+                    "the file of {} is not on this machine yet",
+                    attachment.name
+                ))
+            })?;
+            Ok(Some((attachment, bytes)))
+        })
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        self.with(|s| s.attach(id, name, bytes, by))
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        self.with(|s| s.attach_file(id, path, by))
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        self.with(|s| {
+            Ok(s.folders()?
+                .into_iter()
+                .map(|f| LocalFolder {
+                    path: resolve_folder(&f.path),
+                    kind: f.kind,
+                    capture: f.capture,
+                })
+                .collect())
+        })
+    }
 }
 
 /// A boxed backend is a backend, so the backend can be picked at run time.
@@ -285,5 +437,59 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn knows_the_agent(&self) -> bool {
         (**self).knows_the_agent()
+    }
+
+    fn link_kinds(&self) -> BackendResult<Vec<LinkKind>> {
+        (**self).link_kinds()
+    }
+
+    fn set_link_kind(&self, spec: &LinkKindSpec, by: &Provenance) -> BackendResult<LinkKind> {
+        (**self).set_link_kind(spec, by)
+    }
+
+    fn remove_link_kind(&self, kind: &str, by: &Provenance) -> BackendResult<bool> {
+        (**self).remove_link_kind(kind, by)
+    }
+
+    fn node_links(&self, id: &NodeId) -> BackendResult<Vec<NodeLink>> {
+        (**self).node_links(id)
+    }
+
+    fn views(&self) -> BackendResult<Vec<View>> {
+        (**self).views()
+    }
+
+    fn canvas_board(&self, node: &NodeId) -> BackendResult<Option<CanvasBoard>> {
+        (**self).canvas_board(node)
+    }
+
+    fn attachments(&self, id: &NodeId) -> BackendResult<Vec<Attachment>> {
+        (**self).attachments(id)
+    }
+
+    fn read_attachment(
+        &self,
+        id: &NodeId,
+        name: &str,
+    ) -> BackendResult<Option<(Attachment, Vec<u8>)>> {
+        (**self).read_attachment(id, name)
+    }
+
+    fn attach(
+        &self,
+        id: &NodeId,
+        name: &str,
+        bytes: &[u8],
+        by: &Provenance,
+    ) -> BackendResult<Attachment> {
+        (**self).attach(id, name, bytes, by)
+    }
+
+    fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment> {
+        (**self).attach_file(id, path, by)
+    }
+
+    fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
+        (**self).folders()
     }
 }

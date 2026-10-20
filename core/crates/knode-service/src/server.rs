@@ -30,6 +30,8 @@ use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
+mod maps;
+
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
 const CHANGE_BUFFER: usize = 1024;
 /// How many outgoing messages wait for a slow connection.
@@ -534,9 +536,11 @@ impl State {
             name: None,
             key: None,
             folder: None,
+            link_kind: None,
+            view: None,
         };
         detail(&mut event);
-        if what != SpaceEventKind::Renamed {
+        if matches!(what, SpaceEventKind::Settings | SpaceEventKind::Folders) {
             self.reroute(space);
             self.wake_capture();
         }
@@ -967,10 +971,12 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             }
             to_value(folder)
         }
-        _ => Err(RpcError::new(
-            codes::METHOD_NOT_FOUND,
-            format!("no method named {method:?}"),
-        )),
+        _ => maps::call(state, method, raw).unwrap_or_else(|| {
+            Err(RpcError::new(
+                codes::METHOD_NOT_FOUND,
+                format!("no method named {method:?}"),
+            ))
+        }),
     }
 }
 
