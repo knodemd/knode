@@ -9,12 +9,26 @@ use knode_format::{ChangeId, NodeId, NodeUpdate, Provenance, Space};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::spaces::{FolderInput, SpaceEvent};
+
 /// The method names.
 pub mod methods {
     /// Creates a space.
     pub const SPACE_CREATE: &str = "space.create";
     /// Opens a space.
     pub const SPACE_OPEN: &str = "space.open";
+    /// Renames a space. People only.
+    pub const SPACE_RENAME: &str = "space.rename";
+    /// The settings of a space.
+    pub const SETTINGS_GET: &str = "settings.get";
+    /// Changes a setting of a space. People only.
+    pub const SETTINGS_SET: &str = "settings.set";
+    /// The folders that feed a space.
+    pub const FOLDERS_LIST: &str = "folders.list";
+    /// Adds or changes a folder of a space. People only.
+    pub const FOLDERS_SET: &str = "folders.set";
+    /// Removes a folder of a space. People only.
+    pub const FOLDERS_REMOVE: &str = "folders.remove";
     /// Creates a node.
     pub const NODE_CREATE: &str = "node.create";
     /// Reads a node.
@@ -77,6 +91,8 @@ pub mod methods {
     pub const GRANTS_SET: &str = "grants.set";
     /// Notification: a node changed.
     pub const CHANGED: &str = "changed";
+    /// Notification: a space was renamed, or its settings or folders changed.
+    pub const SPACE: &str = "space";
     /// Notification: this connection fell behind and missed changes.
     pub const LAGGED: &str = "lagged";
 }
@@ -241,6 +257,8 @@ pub struct Change {
 pub enum Event {
     /// A node changed.
     Changed(Change),
+    /// A space was renamed, or its settings or folders changed.
+    Space(SpaceEvent),
     /// The connection fell behind and missed this many changes; reload what is shown.
     Lagged {
         /// How many changes were missed.
@@ -290,7 +308,7 @@ pub struct Status {
     pub spaces: Vec<PathBuf>,
     /// How many clients are connected, this one included.
     pub clients: u64,
-    /// The space agent conversations are captured into, or `None` when capture is off.
+    /// The default space while capture runs, where conversations of no folder go, or `None`.
     #[serde(default)]
     pub capture: Option<PathBuf>,
 }
@@ -300,6 +318,36 @@ pub struct Status {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SpaceParams {
     pub space: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SpaceRenameParams {
+    pub space: PathBuf,
+    pub name: String,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SettingsSetParams {
+    pub space: PathBuf,
+    pub key: String,
+    pub value: Option<String>,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct FolderSetParams {
+    pub space: PathBuf,
+    #[serde(flatten)]
+    pub folder: FolderInput,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct FolderRemoveParams {
+    pub space: PathBuf,
+    pub id: String,
+    pub by: Provenance,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

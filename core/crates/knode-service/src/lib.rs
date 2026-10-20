@@ -7,8 +7,9 @@
 //! described in `PROTOCOL.md`.
 //!
 //! - [`run`] runs the service until SIGTERM: this is `knode service run`. With
-//!   [`Config::from_env`] it also captures agent conversations into the default space (see
-//!   [`CaptureOptions`]).
+//!   [`Config::from_env`] it also captures agent conversations into the spaces whose folders
+//!   they belong to, or the default space (see [`CaptureOptions`]).
+//! - [`spaces`] holds the rules for the name, settings and folders of a space.
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
@@ -41,6 +42,7 @@ pub mod markdown;
 mod paths;
 pub mod protocol;
 mod server;
+pub mod spaces;
 
 pub use agents::{AgentInfo, Identity, KeyInfo, SpaceGrant};
 pub use auth::{ACCESS_LOG_FILE, AGENTS_FILE};
@@ -58,6 +60,7 @@ pub use knode_ingest::{Agent, WatchOptions};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
 pub use protocol::{Change, ChangeKind, Event, MarkdownFolder, RpcError, SpaceInfo, Status};
 pub use server::{Config, ServiceHandle, run, start};
+pub use spaces::{FolderInfo, FolderInput, SpaceEvent, SpaceEventKind};
 
 /// The version of this crate.
 pub fn version() -> &'static str {

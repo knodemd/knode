@@ -58,9 +58,11 @@ pub fn set_live_folder(
 }
 
 /// A path as the specification records the paths of folders (section 15.3): absolute and
-/// normal, with `/` separators, relative to the home folder as `~/...` when it is inside it.
+/// normal, in Unicode NFC, with `/` separators, relative to the home folder as `~/...` when it is inside it.
 pub fn record_path(path: &Path) -> String {
-    let path = normalize(path);
+    use unicode_normalization::UnicodeNormalization;
+    let path: String = path.to_string_lossy().nfc().collect();
+    let path = normalize(Path::new(&path));
     if let Some(home) = home() {
         if let Ok(rest) = path.strip_prefix(&home) {
             let rest = slashes(rest);
@@ -128,6 +130,8 @@ mod tests {
             record_path(Path::new("/Volumes/Work/notes")),
             "/Volumes/Work/notes"
         );
+        // Decomposed accents are recorded composed.
+        assert_eq!(record_path(&home.join("Cafe\u{301}")), "~/Caf\u{e9}");
         assert_eq!(resolve_path("~/Notes"), Some(home.join("Notes")));
         assert_eq!(resolve_path("~"), Some(home));
         assert_eq!(

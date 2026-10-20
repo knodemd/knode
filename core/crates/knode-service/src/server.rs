@@ -24,10 +24,11 @@ use tokio::task::JoinSet;
 
 use crate::Result;
 use crate::auth::{self, Auth, Session};
-use crate::capture::{CaptureOptions, CaptureTask};
+use crate::capture::{CaptureOptions, CaptureTask, Routes};
 use crate::lock::InstanceLock;
 use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
+use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
 const CHANGE_BUFFER: usize = 1024;
@@ -44,7 +45,7 @@ const SOCKET_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
 pub struct Config {
     /// The Knode home. The socket is `service.sock` and the lock `service.lock` inside it.
     pub home: PathBuf,
-    /// Capture of agent conversations into the default space, or `None` for no capture.
+    /// Capture of agent conversations into the spaces, or `None` for no capture.
     pub capture: Option<CaptureOptions>,
 }
 
@@ -288,17 +289,42 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
 /// Each open space, by canonical path.
 type OpenSpaces = HashMap<PathBuf, Arc<Mutex<Space>>>;
 
+/// What subscribed connections hear about.
+#[derive(Debug, Clone)]
+pub(crate) enum Notice {
+    /// A node changed: `changed`.
+    Node(Change),
+    /// A space was renamed, or its settings or folders changed: `space`.
+    Space(SpaceEvent),
+}
+
+impl Notice {
+    fn space(&self) -> &Path {
+        match self {
+            Notice::Node(change) => &change.space,
+            Notice::Space(event) => &event.space,
+        }
+    }
+}
+
 /// What every connection shares: the open spaces and the change feed.
 pub(crate) struct State {
     /// Each open space, by canonical path. A space is only used with its mutex held, so writes
     /// to one space happen one at a time, in one place.
     spaces: Mutex<OpenSpaces>,
-    changes: broadcast::Sender<Change>,
+    changes: broadcast::Sender<Notice>,
     clients: AtomicU64,
     /// Set when the service is stopping: no space opens after that.
     closing: AtomicBool,
     /// The space conversations are captured into, while capture runs.
     capturing: Mutex<Option<PathBuf>>,
+    /// Wakes capture up to read the folders and settings of the spaces again.
+    capture_wake: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    /// Where captured conversations go. Locked after a space, never before one.
+    routes: Mutex<Routes>,
+    /// Counts the changes clients made to the routes, so capture never overwrites one with
+    /// folders it read before it.
+    routes_generation: AtomicU64,
     /// The owner token, the agents of this machine and the access log.
     pub(crate) auth: Auth,
     /// The live Markdown folder of each open space that has one, by canonical path of the
@@ -315,6 +341,9 @@ impl State {
             clients: AtomicU64::new(0),
             closing: AtomicBool::new(false),
             capturing: Mutex::new(None),
+            capture_wake: Mutex::new(None),
+            routes: Mutex::new(Routes::default()),
+            routes_generation: AtomicU64::new(0),
             live: Mutex::new(HashMap::new()),
         }
     }
@@ -465,11 +494,88 @@ impl State {
             folder.record(node_id, op);
         }
         // No receivers is not an error: nobody is subscribed.
-        let _ = self.changes.send(Change {
+        let _ = self.changes.send(Notice::Node(Change {
             space: space.to_path_buf(),
             node_id,
             op,
-        });
+        }));
+    }
+
+    /// Announces that a space was renamed, or that its settings or folders changed. Capture
+    /// reads the folders and settings again.
+    fn notify_space(
+        &self,
+        space: &Space,
+        what: SpaceEventKind,
+        detail: impl FnOnce(&mut SpaceEvent),
+    ) {
+        let mut event = SpaceEvent {
+            space: space.path().to_path_buf(),
+            what,
+            name: None,
+            key: None,
+            folder: None,
+        };
+        detail(&mut event);
+        if what != SpaceEventKind::Renamed {
+            self.reroute(space);
+            self.wake_capture();
+        }
+        let _ = self.changes.send(Notice::Space(event));
+    }
+
+    /// Where captured conversations go.
+    pub(crate) fn routes(&self) -> MutexGuard<'_, Routes> {
+        lock_ignoring_poison(&self.routes)
+    }
+
+    /// How many times clients changed the routes.
+    pub(crate) fn routes_generation(&self) -> u64 {
+        self.routes_generation.load(Ordering::SeqCst)
+    }
+
+    /// Replaces the routes with those capture read, unless a client changed them since
+    /// `generation`. Returns whether they were replaced.
+    pub(crate) fn set_routes(&self, routes: Routes, generation: u64) -> bool {
+        let mut current = self.routes();
+        if self.routes_generation() != generation {
+            return false;
+        }
+        *current = routes;
+        true
+    }
+
+    /// Reads the folders and settings of a space again into the routes, after a client
+    /// changed them: capture follows the change before the client hears back. Called with the
+    /// space locked.
+    fn reroute(&self, space: &Space) {
+        let mut routes = self.routes();
+        self.routes_generation.fetch_add(1, Ordering::SeqCst);
+        if let Err(e) = routes.replace(space) {
+            eprintln!(
+                "Knode Service: cannot read the folders of {}: {e}",
+                space.path().display()
+            );
+        }
+    }
+
+    /// Asks capture to read the folders and settings of the spaces again now.
+    pub(crate) fn wake_capture(&self) {
+        if let Some(wake) = lock_ignoring_poison(&self.capture_wake).as_ref() {
+            let _ = wake.send(());
+        }
+    }
+
+    /// Where [`State::wake_capture`] sends its wake-ups, or `None` when capture stops.
+    pub(crate) fn set_capture_wake(&self, wake: Option<std::sync::mpsc::Sender<()>>) {
+        *lock_ignoring_poison(&self.capture_wake) = wake;
+    }
+
+    /// The canonical paths of the spaces the service has open.
+    pub(crate) fn open_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = lock_ignoring_poison(&self.spaces).keys().cloned().collect();
+        paths.sort();
+        paths
     }
 
     /// Announces every node written by the changes made after `after`, oldest first: for the
@@ -522,8 +628,7 @@ impl State {
     }
 
     pub(crate) fn status(&self) -> Status {
-        let mut spaces: Vec<PathBuf> = lock_ignoring_poison(&self.spaces).keys().cloned().collect();
-        spaces.sort();
+        let spaces = self.open_paths();
         Status {
             version: crate::version().to_string(),
             pid: std::process::id(),
@@ -591,6 +696,68 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
             to_value(SpaceInfo::of(&space)?)
+        }
+        methods::SPACE_RENAME => {
+            let p: SpaceRenameParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let before = space.manifest().name.clone();
+            let info = spaces::rename(&mut space, &p.name, &p.by)?;
+            if info.name != before {
+                state.notify_space(&space, SpaceEventKind::Renamed, |e| {
+                    e.name = Some(info.name.clone());
+                });
+            }
+            to_value(info)
+        }
+        methods::SETTINGS_GET => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(spaces::settings(&space)?)
+        }
+        methods::SETTINGS_SET => {
+            let p: SettingsSetParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let changed = spaces::set_setting(&mut space, &p.key, p.value.as_deref(), &p.by)?;
+            if changed {
+                state.notify_space(&space, SpaceEventKind::Settings, |e| {
+                    e.key = Some(p.key.clone());
+                });
+            }
+            to_value(spaces::settings(&space)?)
+        }
+        methods::FOLDERS_LIST => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(spaces::folders(&space)?)
+        }
+        methods::FOLDERS_SET => {
+            let p: FolderSetParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let folder = spaces::set_folder(&mut space, &p.folder, &p.by)?;
+            if last_change(&space)? != mark {
+                state.notify_space(&space, SpaceEventKind::Folders, |e| {
+                    e.folder = Some(folder.folder.id.clone());
+                });
+            }
+            to_value(folder)
+        }
+        methods::FOLDERS_REMOVE => {
+            let p: FolderRemoveParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let removed = spaces::remove_folder(&mut space, &p.id, &p.by)?;
+            if removed {
+                state.notify_space(&space, SpaceEventKind::Folders, |e| {
+                    e.folder = Some(p.id.clone());
+                });
+            }
+            to_value(removed)
         }
         methods::NODE_CREATE => {
             let p: NodeCreateParams = params(method, raw)?;
@@ -771,8 +938,14 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let p: MarkdownFolderSetParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
             let folder = crate::markdown::set_live_folder(&mut space, p.folder.as_deref(), &p.by)?;
             state.start_live(&space);
+            if last_change(&space)? != mark {
+                state.notify_space(&space, SpaceEventKind::Settings, |e| {
+                    e.key = Some(knode_format::setting_keys::MARKDOWN_FOLDER.to_string());
+                });
+            }
             to_value(folder)
         }
         _ => Err(RpcError::new(
@@ -792,11 +965,11 @@ enum Filter {
 }
 
 impl Filter {
-    fn wants(&self, change: &Change) -> bool {
+    fn wants(&self, space: &Path) -> bool {
         match self {
             Filter::Nothing => false,
             Filter::All => true,
-            Filter::Spaces(spaces) => spaces.contains(&change.space),
+            Filter::Spaces(spaces) => spaces.contains(space),
         }
     }
 }
@@ -941,15 +1114,15 @@ async fn subscribe(
         *forwarder = Some(tokio::spawn(async move {
             loop {
                 let message = match changes.recv().await {
-                    Ok(change) => {
-                        if !lock_ignoring_poison(&filter).wants(&change) {
+                    Ok(notice) => {
+                        if !lock_ignoring_poison(&filter).wants(notice.space()) {
                             continue;
                         }
                         // An agent hears only about the spaces it may see, checked on each
                         // change so a lower grant takes effect at once.
                         if let Some(agent) = &agent {
                             let (state, agent, space) =
-                                (state.clone(), agent.clone(), change.space.clone());
+                                (state.clone(), agent.clone(), notice.space().to_path_buf());
                             let visible = tokio::task::spawn_blocking(move || {
                                 auth::can_read(&state, &agent, &space)
                             })
@@ -959,7 +1132,10 @@ async fn subscribe(
                                 continue;
                             }
                         }
-                        notification(methods::CHANGED, &change)
+                        match &notice {
+                            Notice::Node(change) => notification(methods::CHANGED, change),
+                            Notice::Space(event) => notification(methods::SPACE, event),
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(missed)) => {
                         notification(methods::LAGGED, &LaggedParams { missed })
