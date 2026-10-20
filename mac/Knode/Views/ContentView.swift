@@ -15,6 +15,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("sidebarCollapsed") private var collapsed = false
     @State private var level: SidebarLevel = .spaces
+    @State private var overlays = KOverlays()
 
     var body: some View {
         @Bindable var model = model
@@ -46,7 +47,7 @@ struct ContentView: View {
             default: EmptyView()
             }
         }
-        .sheet(item: $model.panelSheet) { sheet in
+        .kSheet(item: $model.panelSheet, width: nil) { sheet in
             switch sheet {
             case .access(let url): SpaceAccessSheet(url: url)
             case .folders(let url): SpaceFoldersSheet(url: url)
@@ -66,6 +67,12 @@ struct ContentView: View {
                 }
             }
         }
+        .kSheet(isPresented: $model.isShowingDeletedNotes, width: nil) {
+            if let deleted = model.deletedNotes {
+                DeletedNotesSheet(deleted: deleted)
+            }
+        }
+        .kOverlayHost(overlays)
     }
 
     private func toggleSidebar() {
@@ -74,13 +81,13 @@ struct ContentView: View {
 }
 
 extension AppModel {
-    /// The sheets drawn with our own sheet: new space, rename and icon.
+    /// The sheets drawn with our own sheet at their own width: new space, rename and icon.
     var ownSheet: SpaceSheet? {
         get { sheet.flatMap { $0.isPanel ? nil : $0 } }
         set { if newValue != nil || !(sheet?.isPanel ?? false) { sheet = newValue } }
     }
 
-    /// The sheets that still use the system sheet: agent access and folders.
+    /// The sheets that set their own width: agent access and folders.
     var panelSheet: SpaceSheet? {
         get { sheet.flatMap { $0.isPanel ? $0 : nil } }
         set { if newValue != nil || (sheet?.isPanel ?? false) { sheet = newValue } }
@@ -517,11 +524,6 @@ private struct SpaceSidebar: View {
             }
             .padding(KSpace.x3)
             .overlay(alignment: .top) { KDivider() }
-        }
-        .sheet(isPresented: $model.isShowingDeletedNotes) {
-            if let deleted = model.deletedNotes {
-                DeletedNotesSheet(deleted: deleted)
-            }
         }
     }
 }

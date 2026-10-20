@@ -7,7 +7,6 @@ struct SpaceFoldersSheet: View {
     @Environment(AppModel.self) private var model
     let url: URL
     @State private var folders: SpaceFoldersModel?
-    @State private var overlays = KOverlays()
 
     var body: some View {
         KSheetSurface(width: 580) {
@@ -25,7 +24,6 @@ struct SpaceFoldersSheet: View {
             }
         }
         .frame(minHeight: 460, alignment: .top)
-        .kOverlayHost(overlays)
         .knodeTheme()
         .task {
             folders = await model.foldersModel(at: url)
