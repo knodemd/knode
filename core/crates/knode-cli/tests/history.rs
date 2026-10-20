@@ -256,3 +256,34 @@ fn without_the_service_the_commands_open_the_space_directly() {
     let space = Space::open(sb.space("work")).unwrap();
     assert_eq!(space.node_count().unwrap(), 0, "the import was undone");
 }
+
+#[test]
+fn notes_deleted_from_the_live_markdown_folder() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let out = sb.ok(&["markdown", "deleted"]);
+    assert!(out.contains("No note waits"), "{out}");
+
+    let dir = sb.path("Live");
+    sb.ok(&["markdown", "folder", dir.to_str().unwrap()]);
+    let notes = sb.path("notes");
+    fs::create_dir_all(&notes).unwrap();
+    fs::write(notes.join("Idea.md"), "Live.\n").unwrap();
+    fs::write(notes.join("Plan.md"), "Soon.\n").unwrap();
+    sb.ok(&["import", notes.to_str().unwrap()]);
+    wait_for("Idea.md", || dir.join("Idea.md").exists());
+    wait_for("Plan.md", || dir.join("Plan.md").exists());
+    fs::remove_file(dir.join("Idea.md")).unwrap();
+    fs::remove_file(dir.join("Plan.md")).unwrap();
+    wait_for("the marks", || {
+        sb.ok(&["markdown", "deleted"]).lines().count() == 2
+    });
+
+    let out = sb.ok(&["markdown", "deleted", "--keep", "idea"]);
+    assert!(out.starts_with("Kept 1 note"), "{out}");
+    wait_for("Idea.md again", || dir.join("Idea.md").exists());
+    let out = sb.ok(&["markdown", "deleted", "--delete", "all"]);
+    assert!(out.starts_with("Deleted 1 note"), "{out}");
+    let out = sb.ok(&["markdown", "deleted"]);
+    assert!(out.contains("No note waits"), "{out}");
+}

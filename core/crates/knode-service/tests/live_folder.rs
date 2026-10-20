@@ -197,3 +197,51 @@ fn a_folder_edit_merges_with_an_open_editor_through_the_document() {
     drop(client);
     service.stop().unwrap();
 }
+
+#[test]
+fn a_note_whose_file_was_deleted_waits_to_be_kept_or_deleted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let service = start(Config::new(tmp.path().join("home"))).unwrap();
+    let client = Client::connect(tmp.path().join("home/service.sock")).unwrap();
+    let space = client
+        .create_space(tmp.path().join("Live.knode"), "Live")
+        .unwrap()
+        .path;
+    let plan = client
+        .create_node(&space, NewNode::note("Plan", "Draft."), &ada())
+        .unwrap();
+    let idea = client
+        .create_node(&space, NewNode::note("Idea", "Maybe."), &ada())
+        .unwrap();
+    let dir = tmp.path().join("Live notes");
+    client
+        .set_markdown_folder(&space, Some(&dir), &ada())
+        .unwrap();
+    assert!(file_with(&dir, "Plan.md", "Draft."));
+    assert!(client.deleted_notes(&space).unwrap().is_empty());
+
+    fs::remove_file(dir.join("Plan.md")).unwrap();
+    fs::remove_file(dir.join("Idea.md")).unwrap();
+    eventually("the marks", || {
+        client.deleted_notes(&space).unwrap().len() == 2
+    });
+    let deleted = client.deleted_notes(&space).unwrap();
+    let marked = deleted.iter().find(|d| d.id == plan.id).unwrap();
+    assert_eq!(marked.title, "Plan");
+    assert_eq!(marked.path, "Plan.md");
+
+    // Kept: the mark goes and the file comes back.
+    assert!(client.keep_deleted(&space, &plan.id).unwrap());
+    assert!(!client.keep_deleted(&space, &plan.id).unwrap());
+    eventually("the file written again", || {
+        file_with(&dir, "Plan.md", "Draft.")
+    });
+    // Deleted: the note goes, and nothing waits any more.
+    client.delete_node(&space, &idea.id, &ada()).unwrap();
+    assert!(client.deleted_notes(&space).unwrap().is_empty());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!dir.join("Idea.md").exists());
+
+    drop(client);
+    service.stop().unwrap();
+}

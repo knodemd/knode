@@ -154,6 +154,8 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `vault.import` | `space`, `dir` (absolute), `by` | `{ "created", "updated", "unchanged", "skipped", "attachments", "links" }`. Reads every `.md` file under `dir`, written by `vault.export` or from an Obsidian vault. `skipped` lists `{ "path", "reason" }`. |
 | `markdown.folder.get` | `space` | The live Markdown folder: `{ "folder", "path", "warning"? }`. |
 | `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
+| `markdown.deleted.list` | `space` | The notes whose file was deleted from the live Markdown folder, newest first: `[{ "id", "title", "path" }]`, where `path` is the path the file had. People only. |
+| `markdown.deleted.keep` | `space`, `id` | `true` if the note was marked. Removes its `markdown.deleted` property, so the folder writes its file again. To delete the note instead, use `node.delete`. People only. |
 | `doc.open` | `space`, `id` | `{ "text", "version" }`: the body and the version of its document, made from the body the first time. See Editing together. |
 | `doc.edit` | `space`, `id`, `version`?, `splices` or `text`, `by` | `{ "version", "seen", "text"? }`. Edits the body at `version`, merged with what others wrote since. |
 | `doc.peer` | `space`, `by` | `{ "peer" }`: a new Loro peer id, in decimal, for an editor that keeps its own copy of documents. People only. |
@@ -392,6 +394,11 @@ is inside it). While it is on, the service writes the whole space to it when it 
 writes each change within a few seconds, and writes what is left when it stops. A folder inside
 iCloud Drive, Dropbox, OneDrive or Google Drive gets a `warning`: two programs syncing the same
 files can make conflicted copies. A write that fails is logged and tried again a second later.
+
+A file deleted from the folder never deletes its note. The note is marked with the property
+`markdown.deleted` (the path the file had), is no longer written to the folder, and waits for a
+person: `markdown.deleted.list` lists those notes, `markdown.deleted.keep` keeps one and writes
+its file again, and `node.delete` deletes it, which can be undone.
 
 ## Capture
 

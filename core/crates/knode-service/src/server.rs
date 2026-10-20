@@ -1036,6 +1036,23 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = lock_ignoring_poison(&space);
             to_value(crate::markdown::live_folder(&space)?)
         }
+        methods::MARKDOWN_DELETED_LIST => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(crate::markdown::deleted_notes(&space)?)
+        }
+        methods::MARKDOWN_DELETED_KEEP => {
+            let p: NodeParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let kept = crate::markdown::keep_deleted(&mut space, &p.id)?;
+            if kept {
+                // The live folder hears of it, and writes the file again.
+                state.notify(&space, p.id, ChangeKind::Update);
+            }
+            to_value(kept)
+        }
         methods::MARKDOWN_FOLDER_SET => {
             let p: MarkdownFolderSetParams = params(method, raw)?;
             let space = state.space(&p.space)?;

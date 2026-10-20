@@ -440,3 +440,35 @@ fn turns_search_by_meaning_on_and_off() {
     let text = std::fs::read_to_string(paths.config_file()).unwrap();
     assert!(!text.contains("embeddings"), "{text}");
 }
+
+#[test]
+fn lists_and_keeps_notes_deleted_from_the_markdown_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let note = space
+        .create_node("Plan".into(), "Draft.".into(), me())
+        .unwrap();
+    assert!(space.markdown_deleted().unwrap().is_empty());
+
+    let id = parse_id(&note.id).unwrap();
+    space
+        .lock()
+        .set_property(
+            &id,
+            "markdown.deleted",
+            "Plan.md",
+            &format::Provenance::person("Ada"),
+        )
+        .unwrap();
+    assert_eq!(
+        space.markdown_deleted().unwrap(),
+        vec![DeletedNote {
+            id: note.id.clone(),
+            title: "Plan".into(),
+            path: "Plan.md".into(),
+        }]
+    );
+    assert!(space.keep_markdown_deleted(note.id.clone()).unwrap());
+    assert!(!space.keep_markdown_deleted(note.id.clone()).unwrap());
+    assert!(space.markdown_deleted().unwrap().is_empty());
+}

@@ -729,6 +729,22 @@ impl Client {
         self.request(methods::MARKDOWN_FOLDER_SET, params)
     }
 
+    /// The notes whose file was deleted from the live Markdown folder of the space, newest
+    /// first, waiting for a person to delete them or keep them.
+    pub fn deleted_notes(&self, space: impl AsRef<Path>) -> Result<Vec<DeletedNote>> {
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::MARKDOWN_DELETED_LIST, params)
+    }
+
+    /// Keeps a note whose file was deleted from the live Markdown folder: its file is written
+    /// again. Returns whether the note was marked. Only a person can keep it.
+    pub fn keep_deleted(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<bool> {
+        let params = self.node_params(space.as_ref(), id)?;
+        self.request(methods::MARKDOWN_DELETED_KEEP, params)
+    }
+
     fn node_params(&self, space: &Path, id: &NodeId) -> Result<NodeParams> {
         Ok(NodeParams {
             space: space_path(space)?,

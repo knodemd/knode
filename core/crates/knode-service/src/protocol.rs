@@ -78,6 +78,11 @@ pub mod methods {
     pub const MARKDOWN_FOLDER_GET: &str = "markdown.folder.get";
     /// Turns the live Markdown folder of a space on, moves it, or turns it off. People only.
     pub const MARKDOWN_FOLDER_SET: &str = "markdown.folder.set";
+    /// The notes whose file was deleted from the live Markdown folder, waiting for a person.
+    pub const MARKDOWN_DELETED_LIST: &str = "markdown.deleted.list";
+    /// Keeps a note whose file was deleted from the live Markdown folder: its file is written
+    /// again.
+    pub const MARKDOWN_DELETED_KEEP: &str = "markdown.deleted.keep";
     /// Starts `changed` notifications on this connection.
     pub const SUBSCRIBE: &str = "subscribe";
     /// Stops `changed` notifications on this connection.
@@ -648,6 +653,18 @@ pub(crate) struct VaultImportParams {
     pub space: PathBuf,
     pub dir: PathBuf,
     pub by: Provenance,
+}
+
+/// A note whose file was deleted from the live Markdown folder: an item of the result of
+/// `markdown.deleted.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletedNote {
+    /// The note.
+    pub id: NodeId,
+    /// Its title.
+    pub title: String,
+    /// The path the file had in the folder.
+    pub path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

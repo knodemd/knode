@@ -448,6 +448,17 @@ impl From<format::Change> for Change {
     }
 }
 
+/// A note whose file was deleted from the live Markdown folder.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DeletedNote {
+    /// The note's id.
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// The path the file had in the folder.
+    pub path: String,
+}
+
 /// An open `.knode` space. Safe to share between threads: calls take turns.
 #[derive(uniffi::Object)]
 pub struct KnodeSpace {
@@ -533,6 +544,31 @@ impl KnodeSpace {
     pub fn delete_node(&self, id: String, by: Provenance) -> Result<()> {
         let id = parse_id(&id)?;
         Ok(self.lock().delete_node(&id, &by.into())?)
+    }
+
+    /// The notes whose file was deleted from the live Markdown folder, newest first, waiting
+    /// for a person to delete them or keep them. The same as `markdown.deleted.list`.
+    pub fn markdown_deleted(&self) -> Result<Vec<DeletedNote>> {
+        let notes = knode_service::markdown::deleted_notes(&self.lock())?;
+        Ok(notes
+            .into_iter()
+            .map(|n| DeletedNote {
+                id: n.id.to_string(),
+                title: n.title,
+                path: n.path,
+            })
+            .collect())
+    }
+
+    /// Keeps a note whose file was deleted from the live Markdown folder: removes its mark, so
+    /// the folder writes its file again the next time Knode Service writes the space. Returns
+    /// whether the note was marked.
+    pub fn keep_markdown_deleted(&self, id: String) -> Result<bool> {
+        let id = parse_id(&id)?;
+        Ok(knode_service::markdown::keep_deleted(
+            &mut self.lock(),
+            &id,
+        )?)
     }
 
     /// Searches titles and text by words, best match first, at most `limit` hits.

@@ -220,6 +220,16 @@ enum MarkdownAction {
         #[arg(long)]
         off: bool,
     },
+    /// List the notes whose file was deleted from the live Markdown folder, and keep them
+    /// (their files are written again) or delete them in Knode too.
+    Deleted {
+        /// Keep a note, by id or title, or `all`: its file is written again.
+        #[arg(long, value_name = "NODE", conflicts_with = "delete")]
+        keep: Option<String>,
+        /// Delete a note, by id or title, or `all`, in Knode too. `knode restore` recovers it.
+        #[arg(long, value_name = "NODE")]
+        delete: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -319,6 +329,12 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
             markdown::folder(&space, dir.as_deref(), off, &person())
+        }
+        Command::Markdown {
+            action: MarkdownAction::Deleted { keep, delete },
+        } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            markdown::deleted(&space, keep.as_deref(), delete.as_deref(), &person())
         }
         Command::Connect { agent, print, list } => match agent {
             Some(agent) if !list => connect::run(&paths, agent, print, cli.space.as_deref()),

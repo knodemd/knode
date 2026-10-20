@@ -10,11 +10,35 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use knode_format::{Provenance, Space, setting_keys};
+use knode_format::{NodeId, Provenance, Space, setting_keys};
 use knode_sync::Docs;
 use knode_vault::{LiveFolder, PullReport};
 
-use crate::protocol::MarkdownFolder;
+use crate::protocol::{DeletedNote, MarkdownFolder};
+
+/// The notes of `space` whose file was deleted from its live Markdown folder, newest first,
+/// with the path the file had. Each waits for a person to delete it or keep it
+/// ([`keep_deleted`]). See [`knode_vault::property_keys::DELETED`].
+pub fn deleted_notes(space: &Space) -> knode_format::Result<Vec<DeletedNote>> {
+    let mut out = Vec::new();
+    for summary in space.recent(usize::MAX)? {
+        if let Some(path) = space.property(&summary.id, knode_vault::property_keys::DELETED)? {
+            out.push(DeletedNote {
+                id: summary.id,
+                title: summary.title,
+                path,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Keeps a note whose file was deleted from the live Markdown folder: removes its
+/// [`markdown.deleted`](knode_vault::property_keys::DELETED) property, so the folder writes its
+/// file again once it hears of the change. Returns whether the note was marked.
+pub fn keep_deleted(space: &mut Space, id: &NodeId) -> knode_format::Result<bool> {
+    space.remove_property(id, knode_vault::property_keys::DELETED)
+}
 
 /// The live Markdown folder of `space`.
 pub fn live_folder(space: &Space) -> knode_format::Result<MarkdownFolder> {
