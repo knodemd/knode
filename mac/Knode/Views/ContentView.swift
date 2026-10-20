@@ -238,8 +238,18 @@ struct NodeListView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !model.searchText.isEmpty, let note = model.searchResults?.note {
-                SearchNoteBanner(note: note)
+            VStack(spacing: 0) {
+                if let deleted = model.deletedNotes, !deleted.waiting.isEmpty {
+                    DeletedNotesBanner(deleted: deleted) { model.isShowingDeletedNotes = true }
+                }
+                if !model.searchText.isEmpty, let note = model.searchResults?.note {
+                    SearchNoteBanner(note: note)
+                }
+            }
+        }
+        .sheet(isPresented: $model.isShowingDeletedNotes) {
+            if let deleted = model.deletedNotes {
+                DeletedNotesSheet(deleted: deleted)
             }
         }
         .navigationTitle(model.selectedSpace?.name ?? "Knode")
