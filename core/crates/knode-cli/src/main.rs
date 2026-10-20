@@ -21,8 +21,9 @@ use knode_mcp::Backend;
 #[derive(Debug, Parser)]
 #[command(name = "knode", version, long_about = None)]
 struct Cli {
-    /// The space to use, a .knode path. Defaults to KNODE_SPACE, then the default space.
-    #[arg(long, global = true, value_name = "PATH")]
+    /// The space to use: a .knode path, or the name of a space Knode knows. Defaults to
+    /// KNODE_SPACE, then the default space.
+    #[arg(long, global = true, value_name = "SPACE")]
     space: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -221,10 +222,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Agents { action } => agents::run(&paths, action),
         Command::Spaces { action, json } => spaces::run(&paths, action, json),
         Command::Folders { action } => {
-            let space = match cli.space.as_deref() {
-                Some(flag) if !flag.exists() => spaces::find(&paths, &flag.to_string_lossy())?,
-                flag => existing_space(&paths, flag)?,
-            };
+            let space = existing_space(&paths, cli.space.as_deref())?;
             spaces::folders(&space, action)
         }
         Command::Service { action } => service::run(&paths, action),
@@ -251,8 +249,11 @@ pub(crate) fn resolve(paths: &Paths, flag: Option<&Path>) -> Result<ResolvedSpac
     Ok(knode_config::resolve_space_from_env(flag, &config)?)
 }
 
-/// The space to use, which must exist.
+/// The space to use, which must exist. `--space` may also name a space Knode knows.
 fn existing_space(paths: &Paths, flag: Option<&Path>) -> Result<PathBuf> {
+    if let Some(flag) = flag.filter(|f| !f.exists() && f.extension().is_none()) {
+        return spaces::find(paths, &flag.to_string_lossy());
+    }
     let resolved = resolve(paths, flag)?;
     let path = &resolved.path;
     if !path.exists() {
