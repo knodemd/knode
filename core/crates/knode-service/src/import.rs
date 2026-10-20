@@ -477,13 +477,11 @@ fn detect(path: &Path) -> Result<Input, ImportError> {
             Some("pdf") => return Ok(Input::Pdf(p)),
             Some("html" | "htm") => {
                 let head = read_start(path, 2 * 1024 * 1024);
-                return Ok(
-                    if head.contains("bookTitle") && head.contains("noteText") {
-                        Input::KindleNotebook(p)
-                    } else {
-                        Input::Html(p)
-                    },
-                );
+                return Ok(if head.contains("bookTitle") && head.contains("noteText") {
+                    Input::KindleNotebook(p)
+                } else {
+                    Input::Html(p)
+                });
             }
             Some("jsonl") => return Ok(Input::Session(p)),
             Some("csv") if is_readwise_csv(path) => return Ok(Input::ReadwiseCsv(p)),
@@ -602,7 +600,11 @@ fn collect_md(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 }
 
 /// Imports what [`prepare`] found into `space`, written by `by` (a session, by its agent).
-pub fn run(space: &mut Space, what: &Prepared, by: &Provenance) -> Result<ImportResult, ImportError> {
+pub fn run(
+    space: &mut Space,
+    what: &Prepared,
+    by: &Provenance,
+) -> Result<ImportResult, ImportError> {
     let mut result = ImportResult::new(what.source(), what.format(), what.from());
     match &what.input {
         Input::Export(path) => {

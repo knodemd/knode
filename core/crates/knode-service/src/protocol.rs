@@ -280,8 +280,7 @@ impl From<crate::import::ImportError> for RpcError {
         let message = e.to_string();
         let (code, kind) = match e {
             E::Space(e) => return e.into(),
-            E::NotFound(_) => (codes::INVALID, "not_found"),
-            E::Unknown(_) => (codes::INVALID, "invalid"),
+            E::NotFound(_) | E::Unknown(_) => (codes::INVALID, "invalid"),
             E::NoAccess(_) => (codes::NO_ACCESS, "no_access"),
             _ => (codes::FOLDER, "folder"),
         };

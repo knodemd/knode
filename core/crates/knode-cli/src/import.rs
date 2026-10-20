@@ -104,7 +104,11 @@ fn print(result: &ImportResult) {
         summary.push_str(&format!(
             ", {} edited in Knode and left as {}",
             result.edited,
-            if result.edited == 1 { "it is" } else { "they are" }
+            if result.edited == 1 {
+                "it is"
+            } else {
+                "they are"
+            }
         ));
     }
     if result.highlights > 0 {
@@ -154,7 +158,10 @@ fn line(node: &ImportedNode) -> String {
     };
     let mut line = format!("{outcome}: {}", node.title);
     if node.highlights > 0 {
-        line.push_str(&format!(" ({} added)", plural(node.highlights, "highlight")));
+        line.push_str(&format!(
+            " ({} added)",
+            plural(node.highlights, "highlight")
+        ));
     }
     if let Some(note) = &node.note {
         line.push_str(&format!(" - {note}"));

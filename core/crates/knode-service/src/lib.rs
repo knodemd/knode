@@ -63,11 +63,11 @@ pub use client::{
     connect_or_spawn_with, stop_service,
 };
 pub use error::{Error, Result};
+pub use import::{ImportOutcome, ImportResult, ImportSource, ImportedNode};
 pub use install::{
     LAUNCH_AGENT_LABEL, LoginKind, LoginService, SYSTEMD_UNIT, launch_agent_path,
     launch_agent_plist, systemd_unit, systemd_unit_path,
 };
-pub use import::{ImportOutcome, ImportResult, ImportSource, ImportedNode};
 pub use knode_ingest::{Agent, WatchOptions};
 pub use maps::{
     AttachmentContent, ConversationImport, MAX_INLINE_ATTACHMENT, PositionInput, SkippedItem,
