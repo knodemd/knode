@@ -6,6 +6,8 @@ $(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
+$(SRCROOT)/../core/crates/knode-ffi/src/maps.rs
+$(SRCROOT)/../core/crates/knode-ffi/src/maps_tests.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/tests.rs
 $(SRCROOT)/../core/crates/knode-ffi/uniffi.toml
 $(SRCROOT)/../core/crates/knode-format/Cargo.toml
