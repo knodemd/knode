@@ -19,7 +19,7 @@ use crate::{LinkDirection, attachments, links};
 const SPACE_ID_KEY: &str = "space.id";
 
 /// Columns of a [`NodeSummary`], with `n` as `nodes` and `u` as the provenance of the last change.
-const SUMMARY_COLUMNS: &str = "n.id, n.kind, n.title, n.created_at, n.updated_at, \
+pub(crate) const SUMMARY_COLUMNS: &str = "n.id, n.kind, n.title, n.created_at, n.updated_at, \
      u.actor_kind, u.actor, u.session, u.source";
 
 /// An open `.knode` space.
@@ -846,7 +846,7 @@ pub(crate) fn provenance(row: &Row<'_>, start: usize) -> rusqlite::Result<Proven
     })
 }
 
-fn summary(row: &Row<'_>) -> rusqlite::Result<NodeSummary> {
+pub(crate) fn summary(row: &Row<'_>) -> rusqlite::Result<NodeSummary> {
     Ok(NodeSummary {
         id: node_id(row, 0)?,
         kind: row.get(1)?,

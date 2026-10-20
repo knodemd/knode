@@ -14,6 +14,8 @@ $(SRCROOT)/../core/crates/knode-ffi/uniffi.toml
 $(SRCROOT)/../core/crates/knode-format/Cargo.toml
 $(SRCROOT)/../core/crates/knode-format/src/access.rs
 $(SRCROOT)/../core/crates/knode-format/src/attachments.rs
+$(SRCROOT)/../core/crates/knode-format/src/chunking.rs
+$(SRCROOT)/../core/crates/knode-format/src/embeddings.rs
 $(SRCROOT)/../core/crates/knode-format/src/error.rs
 $(SRCROOT)/../core/crates/knode-format/src/history.rs
 $(SRCROOT)/../core/crates/knode-format/src/lib.rs
@@ -27,6 +29,7 @@ $(SRCROOT)/../core/crates/knode-format/src/sql/0002-properties.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0003-v02.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0004-v03.sql
 $(SRCROOT)/../core/crates/knode-format/src/types.rs
+$(SRCROOT)/../core/crates/knode-format/src/vector.rs
 $(SRCROOT)/../core/crates/knode-format/src/views.rs
 $(SRCROOT)/../core/crates/knode-md/Cargo.toml
 $(SRCROOT)/../core/crates/knode-md/src/lib.rs

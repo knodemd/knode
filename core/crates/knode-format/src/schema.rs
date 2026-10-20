@@ -29,6 +29,8 @@ pub(crate) fn configure(conn: &Connection) -> Result<()> {
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;",
     )?;
+    // Search by meaning is optional: a space opens whether or not sqlite-vec loads.
+    crate::vector::load(conn);
     Ok(())
 }
 

@@ -27,5 +27,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # knode-format without sqlite-vec: spaces still open and search by words.
+      - run: cargo clippy -p knode-format --no-default-features --all-targets -- -D warnings
+      - run: cargo test -p knode-format --no-default-features
       - name: Mac build input lists are up to date
         run: ../mac/scripts/update-inputs.sh --check

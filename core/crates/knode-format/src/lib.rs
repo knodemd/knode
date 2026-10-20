@@ -1,5 +1,5 @@
-//! Read and write `.knode` spaces: nodes, links, provenance, history, search, views and
-//! attachments.
+//! Read and write `.knode` spaces: nodes, links, provenance, history, search, views,
+//! attachments and embeddings.
 //!
 //! A space is a `.knode` package, a folder the Finder shows as one file:
 //!
@@ -38,6 +38,12 @@
 //! # Ok::<(), knode_format::Error>(())
 //! ```
 //!
+//! Search by meaning (spec section 19) stores the vectors of an embedding model in
+//! [sqlite-vec](https://github.com/asg017/sqlite-vec) tables. With the `vector-search` feature
+//! (on by default) sqlite-vec is compiled in and loaded into every connection; without it, spaces
+//! still open and search by words. See [`Space::add_embedding_model`], [`Space::stale_nodes`],
+//! [`Space::store_chunks`], [`Space::vector_search`] and [`Space::hybrid_search`].
+//!
 //! A [`Space`] holds one SQLite connection. It is [`Send`] but not [`Sync`]: share it behind a
 //! mutex. At runtime only Knode Service opens a space; tools and tests open it directly.
 
@@ -45,6 +51,8 @@
 
 mod access;
 mod attachments;
+mod chunking;
+mod embeddings;
 mod error;
 mod history;
 mod links;
@@ -53,9 +61,18 @@ mod manifest;
 mod schema;
 mod space;
 mod types;
+mod vector;
 mod views;
 
 pub use attachments::{Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, blob_url_hash};
+pub use chunking::{
+    CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS, CHUNKING, TextChunk, chunk_blocks, chunk_markdown,
+    chunk_node_text, embedding_text,
+};
+pub use embeddings::{
+    ChunkVector, DEFAULT_HYBRID_RESULTS, EmbeddingModel, EmbeddingModelSpec, HYBRID_LIST_SIZE,
+    HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, VectorHit, rrf_score,
+};
 pub use error::{Error, Result};
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};

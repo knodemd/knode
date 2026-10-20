@@ -46,6 +46,9 @@ pub enum Error {
     /// Running the model failed.
     #[error("inference: {0}")]
     Inference(#[from] candle_core::Error),
+    /// Reading or writing the space failed.
+    #[error(transparent)]
+    Space(#[from] knode_format::Error),
 }
 
 /// A `Result` whose error is [`Error`].
