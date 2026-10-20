@@ -189,3 +189,94 @@ extension ServiceError {
         }
     }
 }
+
+// MARK: - Map
+
+// Knode Service has no methods yet for link kinds, labelled links, views, positions or canvases:
+// these go straight to the space through the core in the app, as renaming does. Making and removing
+// a link goes through the service while it holds the space, so its other clients see the change.
+extension RoutingSpaceStore: MapStore {
+    public func linkKinds(in space: Space.ID) async throws -> [LinkKindInfo] {
+        try await direct(space) { core in try await core.linkKinds(in: space) }
+    }
+
+    public func setLinkKind(_ kind: LinkKindInfo, in space: Space.ID) async throws -> LinkKindInfo {
+        try await direct(space) { core in try await core.setLinkKind(kind, in: space) }
+    }
+
+    public func links(of node: Node.ID, in space: Space.ID) async throws -> [NodeLinkInfo] {
+        try await direct(space) { core in try await core.links(of: node, in: space) }
+    }
+
+    public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        if open[space]?.backend == .service {
+            try await route(space, retry: false) { store in
+                if let service = store as? ServiceSpaceStore {
+                    try await service.link(from: from, to: to, kind: kind, in: space)
+                } else if let core = store as? CoreSpaceStore {
+                    try await core.link(from: from, to: to, kind: kind, in: space)
+                }
+            }
+        } else {
+            try await direct(space) { core in try await core.link(from: from, to: to, kind: kind, in: space) }
+        }
+    }
+
+    public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
+        if open[space]?.backend == .service {
+            try await route(space, retry: false) { store in
+                if let service = store as? ServiceSpaceStore {
+                    try await service.unlink(from: from, to: to, kind: kind, in: space)
+                } else if let core = store as? CoreSpaceStore {
+                    try await core.unlink(from: from, to: to, kind: kind, in: space)
+                }
+            }
+        } else {
+            try await direct(space) { core in try await core.unlink(from: from, to: to, kind: kind, in: space) }
+        }
+    }
+
+    public func mapViews(in space: Space.ID) async throws -> [MapView] {
+        try await direct(space) { core in try await core.mapViews(in: space) }
+    }
+
+    public func saveGraphView(id: MapView.ID?, name: String, filter: GraphFilter, in space: Space.ID) async throws -> MapView {
+        try await direct(space) { core in try await core.saveGraphView(id: id, name: name, filter: filter, in: space) }
+    }
+
+    public func removeGraphView(_ id: MapView.ID, in space: Space.ID) async throws {
+        try await direct(space) { core in try await core.removeGraphView(id, in: space) }
+    }
+
+    public func setViewport(_ viewport: Viewport, of view: MapView.ID, in space: Space.ID) async throws {
+        try await direct(space) { core in try await core.setViewport(viewport, of: view, in: space) }
+    }
+
+    public func graph(in space: Space.ID, view: MapView.ID?, filter: GraphFilter) async throws -> GraphData {
+        try await direct(space) { core in try await core.graph(in: space, view: view, filter: filter) }
+    }
+
+    public func setPositions(_ positions: [ViewPosition], in view: MapView.ID, space: Space.ID) async throws {
+        try await direct(space) { core in try await core.setPositions(positions, in: view, space: space) }
+    }
+
+    public func removePositions(_ nodes: [Node.ID], from view: MapView.ID, space: Space.ID) async throws {
+        try await direct(space) { core in try await core.removePositions(nodes, from: view, space: space) }
+    }
+
+    public func createCanvas(title: String, in space: Space.ID) async throws -> MapView {
+        try await direct(space) { core in try await core.createCanvas(title: title, in: space) }
+    }
+
+    public func canvasBoard(of node: Node.ID, in space: Space.ID) async throws -> CanvasBoard? {
+        try await direct(space) { core in try await core.canvasBoard(of: node, in: space) }
+    }
+
+    public func setGroup(_ group: GroupDraft, in view: MapView.ID, space: Space.ID) async throws -> ViewGroupInfo {
+        try await direct(space) { core in try await core.setGroup(group, in: view, space: space) }
+    }
+
+    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
+        try await direct(space) { core in try await core.removeGroup(id, in: space) }
+    }
+}

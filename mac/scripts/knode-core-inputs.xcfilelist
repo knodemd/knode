@@ -7,6 +7,8 @@ $(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/lib.rs
+$(SRCROOT)/../core/crates/knode-ffi/src/maps.rs
+$(SRCROOT)/../core/crates/knode-ffi/src/maps_tests.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/tests.rs
 $(SRCROOT)/../core/crates/knode-ffi/uniffi.toml
 $(SRCROOT)/../core/crates/knode-format/Cargo.toml
@@ -18,6 +20,7 @@ $(SRCROOT)/../core/crates/knode-format/src/error.rs
 $(SRCROOT)/../core/crates/knode-format/src/history.rs
 $(SRCROOT)/../core/crates/knode-format/src/lib.rs
 $(SRCROOT)/../core/crates/knode-format/src/links.rs
+$(SRCROOT)/../core/crates/knode-format/src/loro.rs
 $(SRCROOT)/../core/crates/knode-format/src/manifest.rs
 $(SRCROOT)/../core/crates/knode-format/src/schema.rs
 $(SRCROOT)/../core/crates/knode-format/src/space.rs
