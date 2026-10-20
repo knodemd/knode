@@ -111,6 +111,9 @@ jobs:
           rustc --version
           sudo apt-get update -q
           sudo apt-get install -y -q musl-tools
+          # sqlite-vec names the BSD integer types (u_int8_t and others), which glibc
+          # declares but musl does not by default; map them to the standard ones.
+          echo "TARGET_CFLAGS=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
 
       - name: Build the release binary
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
