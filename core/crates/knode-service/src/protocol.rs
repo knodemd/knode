@@ -94,6 +94,16 @@ pub mod methods {
     pub const AGENTS_REVOKE: &str = "agents.revoke";
     /// Sets what an agent may do in a space. People only.
     pub const GRANTS_SET: &str = "grants.set";
+    /// Opens a node's body for editing together: its text and the version of its document.
+    pub const DOC_OPEN: &str = "doc.open";
+    /// Edits a node's body with splices or a new text, based on the version the editor has.
+    pub const DOC_EDIT: &str = "doc.edit";
+    /// Records a new Loro peer for an editor that keeps its own copy of a document. People only.
+    pub const DOC_PEER: &str = "doc.peer";
+    /// Merges Loro updates made by an editor that keeps its own copy of a document. People only.
+    pub const DOC_MERGE: &str = "doc.merge";
+    /// The Loro updates of a node's document made since a version.
+    pub const DOC_UPDATES: &str = "doc.updates";
     /// Notification: a node changed.
     pub const CHANGED: &str = "changed";
     /// Notification: a space was renamed, or its settings or folders changed.
@@ -196,6 +206,12 @@ pub mod codes {
     pub const UNDO_CONFLICT: i64 = -32022;
     /// A folder of Markdown files could not be read or written.
     pub const FOLDER: i64 = -32024;
+    /// An edit was based on a version of a document that the service does not have: open the
+    /// document again with `doc.open`.
+    pub const UNKNOWN_VERSION: i64 = -32030;
+    /// Loro updates depend on edits the document does not have yet: send them from an earlier
+    /// version.
+    pub const MISSING_HISTORY: i64 = -32031;
 }
 
 /// An error answered by the service: a JSON-RPC error object.
@@ -249,6 +265,23 @@ impl From<knode_vault::Error> for RpcError {
             knode_vault::Error::Space(e) => e.into(),
             other => RpcError::new(codes::FOLDER, other.to_string()).with_kind("folder"),
         }
+    }
+}
+
+impl From<knode_sync::Error> for RpcError {
+    fn from(e: knode_sync::Error) -> Self {
+        use knode_sync::Error as E;
+        let message = e.to_string();
+        let (code, kind) = match e {
+            E::Format(e) => return e.into(),
+            E::NotFound(_) => (codes::NOT_FOUND, "not_found"),
+            E::Invalid(_) | E::UnknownPeer(_) => (codes::INVALID, "invalid"),
+            E::UnknownVersion(_) => (codes::UNKNOWN_VERSION, "unknown_version"),
+            E::MissingHistory => (codes::MISSING_HISTORY, "missing_history"),
+            E::Io(_) => (codes::STORAGE, "storage"),
+            E::Loro(_) => (codes::INTERNAL_ERROR, "internal"),
+        };
+        RpcError::new(code, message).with_kind(kind)
     }
 }
 
@@ -311,6 +344,69 @@ pub struct Change {
     pub node_id: NodeId,
     /// What happened to it.
     pub op: ChangeKind,
+    /// For a body written through its Loro document (section 21 of the specification): the
+    /// version of the document the body holds now. An open editor whose version differs catches
+    /// up with `doc.edit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Who made the change, for a body written through its Loro document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Provenance>,
+    /// The Loro updates of the write, in base64, for an editor that keeps its own copy of the
+    /// document and imports them. Only sent to connections that subscribed with `updates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
+}
+
+impl Change {
+    /// A change with no document version: every write that does not go through Loro.
+    pub fn new(space: PathBuf, node_id: NodeId, op: ChangeKind) -> Self {
+        Change {
+            space,
+            node_id,
+            op,
+            version: None,
+            by: None,
+            update: None,
+        }
+    }
+}
+
+/// A node's body as `doc.open` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocText {
+    /// The body, equal to the node's `body`.
+    pub text: String,
+    /// The version of the body's document: pass it back with the next edit.
+    pub version: String,
+}
+
+/// One splice of a body in `doc.edit`: at `at`, delete `delete` characters and insert `insert`.
+/// Positions and lengths count Unicode scalar values, not bytes or UTF-16 units.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocSplice {
+    /// Where, in characters from the start.
+    pub at: usize,
+    /// How many characters to delete there.
+    #[serde(default)]
+    pub delete: usize,
+    /// What to insert there.
+    #[serde(default)]
+    pub insert: String,
+}
+
+/// What `doc.edit` did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocEdited {
+    /// The version of the document the body holds now.
+    pub version: String,
+    /// The version holding what the editor had and its edit, without what others wrote since its
+    /// base: the text the editor has now. Base the next edit on it.
+    pub seen: String,
+    /// The body now, when others wrote since the editor's base (`version` differs from `seen`):
+    /// the editor shows it once it has no edit waiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A notification received by a subscribed [`Client`](crate::Client).
@@ -451,6 +547,10 @@ pub(crate) struct NodeUpdateParams {
     pub id: NodeId,
     #[serde(flatten)]
     pub update: NodeUpdate,
+    /// The version of the body's document the caller read: a new body is merged with what
+    /// others wrote since, instead of replacing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub by: Provenance,
 }
 
@@ -571,6 +671,9 @@ pub(crate) struct RecentParams {
 pub(crate) struct SubscribeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<PathBuf>,
+    /// Whether `changed` notifications carry the Loro updates of body writes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub updates: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

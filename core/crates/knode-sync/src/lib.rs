@@ -160,6 +160,11 @@ pub struct Written {
     pub node: Node,
     /// The version of the document the body holds now.
     pub version: Version,
+    /// The version holding what the writer saw and its edit, without the edits others made since
+    /// its base: the text the writer has now. Equal to `version` unless others edited meanwhile.
+    /// An editor that keeps its own text passes it with its next edit, so that edit applies to
+    /// exactly that text, and catches up with `version` when it has no edit waiting.
+    pub seen: Version,
     /// The Loro updates the write made, to send to the other editors of the node, who import
     /// them. Empty when nothing changed.
     pub update: Vec<u8>,
@@ -325,12 +330,13 @@ impl Docs {
                 return Err(Error::UnknownVersion(base.to_json()));
             }
             let before = docs.loaded(space, node).doc.oplog_vv();
-            if base == current {
+            let seen = if base == current {
                 let peer = docs.peer_for(space, by)?;
                 let loaded = docs.loaded(space, node);
                 loaded.doc.set_peer_id(peer)?;
                 apply_change(&loaded.text(), &edit.change)?;
                 loaded.doc.commit();
+                loaded.version()
             } else {
                 // The writer saw an older version: edit a fork at it and merge. The fork may go
                 // on with this program's peer only if it has every operation made as it.
@@ -347,8 +353,11 @@ impl Docs {
                 fork.commit();
                 let update = fork.export(ExportMode::updates(&base_vv))?;
                 loaded.doc.import(&update)?;
-            }
-            docs.write(space, node, &before, by)
+                Version::from_loro(&fork.oplog_vv())
+            };
+            let mut written = docs.write(space, node, &before, by)?;
+            written.seen = seen;
+            Ok(written)
         })
     }
 
@@ -660,6 +669,7 @@ impl Docs {
             let current = space.get_node(node)?.ok_or(Error::NotFound(*node))?;
             return Ok(Written {
                 node: current,
+                seen: version.clone(),
                 version,
                 update: Vec::new(),
             });
@@ -674,6 +684,7 @@ impl Docs {
         }
         Ok(Written {
             node: written,
+            seen: version.clone(),
             version,
             update,
         })

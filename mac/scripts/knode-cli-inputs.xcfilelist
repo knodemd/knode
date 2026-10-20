@@ -93,6 +93,7 @@ $(SRCROOT)/../core/crates/knode-service/src/auth/registry.rs
 $(SRCROOT)/../core/crates/knode-service/src/capture.rs
 $(SRCROOT)/../core/crates/knode-service/src/client.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/maps.rs
+$(SRCROOT)/../core/crates/knode-service/src/coedit.rs
 $(SRCROOT)/../core/crates/knode-service/src/error.rs
 $(SRCROOT)/../core/crates/knode-service/src/index.rs
 $(SRCROOT)/../core/crates/knode-service/src/install.rs
@@ -107,6 +108,11 @@ $(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs
+$(SRCROOT)/../core/crates/knode-sync/Cargo.toml
+$(SRCROOT)/../core/crates/knode-sync/src/error.rs
+$(SRCROOT)/../core/crates/knode-sync/src/files.rs
+$(SRCROOT)/../core/crates/knode-sync/src/lib.rs
+$(SRCROOT)/../core/crates/knode-sync/src/version.rs
 $(SRCROOT)/../core/crates/knode-vault/Cargo.toml
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
@@ -115,5 +121,14 @@ $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
 $(SRCROOT)/../core/crates/knode-vault/src/live.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/book.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/dates.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/document.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/kindle.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/markdown.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/mod.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/pdf.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/readwise.rs
+$(SRCROOT)/../core/crates/knode-vault/src/reading/web.rs
 $(SRCROOT)/../core/crates/knode-vault/src/tags.rs
 $(SRCROOT)/../core/crates/knode-vault/src/time.rs

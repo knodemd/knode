@@ -249,7 +249,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 kind, tags, who wrote it and when, its links and backlinks with how each reads \
                 (such as part of, has part), and its attached files. Pass the id from search or \
                 recent, or the node's exact title. [[Title]] in the text is a link to another \
-                node you can read the same way; read_attachment reads an attached file.",
+                node you can read the same way; read_attachment reads an attached file. The version it returns lets write_node \
+                merge your rewrite with what others change meanwhile.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -265,7 +266,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "backlinks": { "type": "array", "items": link, "description": "Links to this node." },
                     "labeled_links": { "type": "array", "items": labeled, "description": "Links going out, then backlinks, each with how it reads from this node. A link of a symmetric kind between two nodes is listed once." },
                     "attachments": { "type": "array", "items": attachment, "description": "Files attached to this node." },
-                    "same_title": { "type": "array", "items": summary, "description": "Other nodes with the same title." }
+                    "same_title": { "type": "array", "items": summary, "description": "Other nodes with the same title." },
+                    "version": { "type": ["string", "null"], "description": "The version of the text read. Pass it to write_node with a new body." }
                 },
                 "required": ["node", "links", "backlinks", "labeled_links", "attachments", "same_title"]
             }),
@@ -282,8 +284,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 (GitHub Flavored), and link other nodes by writing [[Their title]]. With an id, \
                 edits that node. Without one, edits the node with this exact title if there is \
                 one, or creates it. Fields left out stay as they are; set append to add to the \
-                end of the body instead of replacing it. Search first to avoid duplicates. Keep \
-                one topic per node, with a short, specific title.",
+                end of the body instead of replacing it. When you rewrite a body you read, pass \
+                the version read_node gave: if the user or another agent changed the node since, \
+                your edit is merged with theirs instead of overwriting it. Search first to avoid \
+                duplicates. Keep one topic per node, with a short, specific title.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -291,6 +295,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "title": { "type": "string", "description": "The title. Required to create a node; with an id, renames it, and [[links]] to it follow." },
                     "body": { "type": "string", "description": "The text, in Markdown. Replaces the body unless append is true." },
                     "append": { "type": "boolean", "default": false, "description": "Add body to the end of the existing text, after a blank line." },
+                    "version": { "type": "string", "description": "The version read_node gave for the text you rewrote. Changes made since are kept. Left out, the version you last read is used." },
                     "kind": { "type": "string", "description": "What the node is: note (the default), decision, idea, source, or another lower-case word." },
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags, replacing the current ones." }
                 }
@@ -299,7 +304,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "result": { "type": "string", "enum": ["created", "updated", "unchanged"] },
-                    "node": summary
+                    "node": summary,
+                    "merged": { "type": "boolean", "description": "True when others changed the body since the version you read, and your edit was merged with theirs." }
                 },
                 "required": ["result", "node"]
             }),
@@ -546,6 +552,15 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
             return Err(ToolOutput::error("Pass the id of the node, or its title."));
         }
     };
+    let mut node = node;
+    // The body and its version together, so a rewrite of it merges from exactly this text.
+    let version = match backend.open_body(&node.id)? {
+        Some(doc) => {
+            node.body = doc.text;
+            Some(doc.version)
+        }
+        None => None,
+    };
     let links = backend.links_from(&node.id)?;
     let backlinks = backend.backlinks(&node.id)?;
     let labeled = backend.node_links(&node.id)?;
@@ -599,6 +614,12 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
         let ids: Vec<String> = same_title.iter().map(|n| format!("`{}`", n.id)).collect();
         let _ = writeln!(text, "- other nodes with this title: {}", ids.join(", "));
     }
+    if let Some(version) = &version {
+        let _ = writeln!(
+            text,
+            "- version: `{version}` (pass it to write_node with a new body)"
+        );
+    }
 
     let structured = json!({
         "node": node_json(&node),
@@ -613,6 +634,7 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
         })).collect::<Vec<_>>(),
         "attachments": attachments.iter().map(maps::attachment_json).collect::<Vec<_>>(),
         "same_title": same_title.iter().map(summary_json).collect::<Vec<_>>(),
+        "version": version,
     });
     Ok(ToolOutput::ok(text, structured))
 }
@@ -626,6 +648,7 @@ struct WriteArgs {
     append: bool,
     kind: Option<String>,
     tags: Option<Vec<String>>,
+    version: Option<String>,
 }
 
 fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance) -> Outcome {
@@ -654,12 +677,12 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
         }
     };
 
+    let mut merged = false;
     let (result, node) = match existing {
         Some((current, new_title)) => {
-            let body = match (args.body, args.append) {
-                (Some(extra), true) if current.body.trim().is_empty() => Some(extra),
-                (Some(extra), true) => Some(format!("{}\n\n{}", current.body.trim_end(), extra)),
-                (body, _) => body,
+            let (body, appended) = match (args.body, args.append) {
+                (Some(extra), true) => (None, Some(extra)),
+                (body, _) => (body, None),
             };
             let update = NodeUpdate {
                 kind,
@@ -668,7 +691,13 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
                 tags: args.tags,
             };
             let before = current.updated_at;
-            let node = backend.update_node(&current.id, update, by)?;
+            let written = backend.write_body(&current.id, update, args.version.as_deref(), by)?;
+            merged = written.merged;
+            let mut node = written.node;
+            if let Some(extra) = appended {
+                // Added at the end of the text as it is now, merged with edits made meanwhile.
+                node = backend.append_body(&current.id, &extra, by)?.node;
+            }
             let result = if node.updated_at == before && node == current {
                 "unchanged"
             } else {
@@ -692,13 +721,21 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
         "updated" => "Updated",
         _ => "No change to",
     };
-    let text = format!(
+    let mut text = format!(
         "{verb} {} [[{}]] (id `{}`).\n",
         node.kind, node.title, node.id
     );
+    if merged {
+        text.push_str(
+            "Someone else changed this node since you read it. Your edit was merged with \
+             theirs, so nothing they wrote was overwritten. Read it again with read_node to see \
+             the result before changing it further.\n",
+        );
+    }
     let structured = json!({
         "result": result,
         "node": summary_json(&summary_of(&node)),
+        "merged": merged,
     });
     Ok(ToolOutput::ok(text, structured))
 }
@@ -1124,6 +1161,58 @@ mod tests {
     fn unknown_tools_are_none() {
         let (_dir, backend) = backend();
         assert!(call(&backend, "a", "delete_everything", Map::new()).is_none());
+    }
+
+    #[test]
+    fn a_rewrite_based_on_the_version_read_keeps_later_edits() {
+        let (_dir, backend) = backend();
+        let out = run(
+            &backend,
+            "write_node",
+            json!({ "title": "Plan", "body": "Ship the format." }),
+        );
+        let id = out.structured.unwrap()["node"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let read = run(&backend, "read_node", json!({ "id": id }));
+        check_schema("read_node", &read);
+        let version = read.structured.unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Another agent adds a line meanwhile.
+        let other = call(
+            &backend,
+            "other-agent",
+            "write_node",
+            args(json!({ "id": id, "body": "Their line.", "append": true })),
+        )
+        .unwrap();
+        assert!(!other.is_error, "{}", other.text);
+
+        let out = run(
+            &backend,
+            "write_node",
+            json!({ "id": id, "body": "Ship the format first.", "version": version }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        check_schema("write_node", &out);
+        assert!(out.text.contains("merged"), "{}", out.text);
+        let node = backend
+            .get_node(&NodeId::parse(&id).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.body, "Ship the format first.\n\nTheir line.");
+
+        let bad = run(
+            &backend,
+            "write_node",
+            json!({ "id": id, "body": "x", "version": "v1" }),
+        );
+        assert!(bad.is_error);
+        assert!(bad.text.contains("read_node"), "{}", bad.text);
     }
 
     #[test]
