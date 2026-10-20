@@ -210,6 +210,7 @@ struct Bound {
 
 impl Bound {
     fn bind(config: &Config) -> Result<Self> {
+        crate::paths::check_socket_path(&config.socket_path())?;
         if !config.home.exists() {
             fs::DirBuilder::new()
                 .recursive(true)

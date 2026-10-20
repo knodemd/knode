@@ -73,7 +73,9 @@ pub use knode_ingest::{Agent, WatchOptions};
 pub use maps::{
     AttachmentContent, ConversationImport, MAX_INLINE_ATTACHMENT, PositionInput, SkippedItem,
 };
-pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
+pub use paths::{
+    LOCK_FILE, LOG_FILE, SOCKET_FILE, SOCKET_PATH_MAX, check_socket_path, knode_home, socket_path,
+};
 pub use protocol::{
     Change, ChangeKind, DeletedNote, DocEdited, DocSplice, DocText, Event, MarkdownFolder,
     RpcError, SpaceInfo, Status,
