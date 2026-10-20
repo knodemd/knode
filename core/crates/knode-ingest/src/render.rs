@@ -119,7 +119,7 @@ fn code(text: &str) -> String {
 }
 
 /// Moves ATX headings outside code blocks two levels down, up to level 6.
-fn demote_headings(text: &str) -> String {
+pub(crate) fn demote_headings(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     let mut fence: Option<(char, usize)> = None;
     for (i, line) in text.split('\n').enumerate() {

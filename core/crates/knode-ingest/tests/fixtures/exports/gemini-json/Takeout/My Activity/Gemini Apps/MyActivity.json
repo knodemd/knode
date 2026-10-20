@@ -1,0 +1,34 @@
+[
+  {
+    "header": "Gemini Apps",
+    "title": "Prompted And on the moon?",
+    "time": "2025-03-06T09:10:00.000Z",
+    "products": ["Gemini Apps"],
+    "activityControls": ["Gemini Apps Activity"],
+    "safeHtmlItem": [{"html": "<p>About <strong>1.62 m/s²</strong>, a sixth of Earth's.</p>"}]
+  },
+  {
+    "header": "Gemini Apps",
+    "title": "Gave feedback: Good response",
+    "time": "2025-03-06T09:06:00.000Z",
+    "products": ["Gemini Apps"],
+    "activityControls": ["Gemini Apps Activity"]
+  },
+  {
+    "header": "Gemini Apps",
+    "title": "Prompted What is the gravity on Mars?",
+    "time": "2025-03-06T09:05:00.000Z",
+    "products": ["Gemini Apps"],
+    "activityControls": ["Gemini Apps Activity"],
+    "safeHtmlItem": [{"html": "<p>Gravity on Mars is about <strong>3.71 m/s²</strong>.</p><ul><li>38% of Earth's</li><li>Varies slightly</li></ul>"}],
+    "attachedFiles": ["mars.png"]
+  },
+  {
+    "header": "Gemini Apps",
+    "title": "Prompted Plan a picnic menu",
+    "time": "2025-03-07T15:00:00.000Z",
+    "products": ["Gemini Apps"],
+    "activityControls": ["Gemini Apps Activity"],
+    "safeHtmlItem": [{"html": "<h3>Menu</h3><ol><li>Sandwiches</li><li>Fruit</li></ol>"}]
+  }
+]

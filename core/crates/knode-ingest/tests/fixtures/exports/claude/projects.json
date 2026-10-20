@@ -1,0 +1,16 @@
+[
+  {
+    "uuid": "b1b1b1b1-0000-4000-8000-000000000001",
+    "name": "Garden planning",
+    "description": "Notes for the vegetable garden.",
+    "is_private": true,
+    "is_starter_project": false,
+    "prompt_template": "Answer briefly and in metric units.",
+    "created_at": "2025-03-01T09:00:00.000000Z",
+    "updated_at": "2025-03-01T09:00:00.000000Z",
+    "creator": {"uuid": "a0a0a0a0-0000-4000-8000-000000000001", "full_name": "Example Person"},
+    "docs": [
+      {"uuid": "d1d1d1d1-0000-4000-8000-000000000001", "filename": "beds.md", "content": "# Beds\nThree raised beds, 1.2 m wide.", "created_at": "2025-03-01T09:01:00.000000Z"}
+    ]
+  }
+]

@@ -1,0 +1,46 @@
+[
+  {
+    "title": "Bread hydration",
+    "create_time": 1740909600.123,
+    "update_time": 1740909900.5,
+    "mapping": {
+      "root-1": {"id": "root-1", "message": null, "parent": null, "children": ["sys-1"]},
+      "sys-1": {"id": "sys-1", "message": {"id": "sys-1", "author": {"role": "system", "name": null, "metadata": {}}, "create_time": null, "update_time": null, "content": {"content_type": "text", "parts": [""]}, "status": "finished_successfully", "end_turn": true, "weight": 0.0, "metadata": {"is_visually_hidden_from_conversation": true}, "recipient": "all"}, "parent": "root-1", "children": ["ctx-1"]},
+      "ctx-1": {"id": "ctx-1", "message": {"id": "ctx-1", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": null, "content": {"content_type": "user_editable_context", "user_profile": "Lives somewhere", "user_instructions": "Be short"}, "status": "finished_successfully", "weight": 1.0, "metadata": {"is_visually_hidden_from_conversation": true, "is_user_system_message": true}, "recipient": "all"}, "parent": "sys-1", "children": ["u-1"]},
+      "u-1": {"id": "u-1", "message": {"id": "u-1", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1740909601.0, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-example1", "size_bytes": 1000, "width": 512, "height": 512}, "What hydration is this dough?"]}, "status": "finished_successfully", "weight": 1.0, "metadata": {}, "recipient": "all"}, "parent": "ctx-1", "children": ["a-old", "think-1"]},
+      "a-old": {"id": "a-old", "message": {"id": "a-old", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909610.0, "content": {"content_type": "text", "parts": ["An answer that was regenerated."]}, "status": "finished_successfully", "end_turn": true, "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "all"}, "parent": "u-1", "children": []},
+      "think-1": {"id": "think-1", "message": {"id": "think-1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909611.0, "content": {"content_type": "thoughts", "thoughts": [{"summary": "Estimating", "content": "Looks wet."}]}, "status": "finished_successfully", "weight": 1.0, "metadata": {"model_slug": "o3"}, "recipient": "all"}, "parent": "u-1", "children": ["code-1"]},
+      "code-1": {"id": "code-1", "message": {"id": "code-1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909612.0, "content": {"content_type": "code", "language": "python", "text": "flour = 500\nwater = 375\nprint(water / flour)"}, "status": "finished_successfully", "end_turn": false, "weight": 1.0, "metadata": {"model_slug": "o3"}, "recipient": "python"}, "parent": "think-1", "children": ["out-1"]},
+      "out-1": {"id": "out-1", "message": {"id": "out-1", "author": {"role": "tool", "name": "python", "metadata": {}}, "create_time": 1740909613.0, "content": {"content_type": "execution_output", "text": "0.75"}, "status": "finished_successfully", "weight": 1.0, "metadata": {"aggregate_result": {"status": "success"}}, "recipient": "all"}, "parent": "code-1", "children": ["web-1"]},
+      "web-1": {"id": "web-1", "message": {"id": "web-1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909614.0, "content": {"content_type": "text", "parts": ["{\"search_query\": [{\"q\": \"sourdough hydration chart\"}]}"]}, "status": "finished_successfully", "weight": 1.0, "metadata": {"model_slug": "o3"}, "recipient": "web.run"}, "parent": "out-1", "children": ["web-out-1"]},
+      "web-out-1": {"id": "web-out-1", "message": {"id": "web-out-1", "author": {"role": "tool", "name": "web.run", "metadata": {}}, "create_time": 1740909615.0, "content": {"content_type": "tether_browsing_display", "result": "a page", "summary": ""}, "status": "finished_successfully", "weight": 1.0, "metadata": {}, "recipient": "all"}, "parent": "web-1", "children": ["a-1"]},
+      "a-1": {"id": "a-1", "message": {"id": "a-1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909620.0, "content": {"content_type": "text", "parts": ["That is **75%** hydration citeturn0search0."]}, "status": "finished_successfully", "end_turn": true, "weight": 1.0, "metadata": {"model_slug": "o3"}, "recipient": "all"}, "parent": "web-out-1", "children": ["u-2"]},
+      "u-2": {"id": "u-2", "message": {"id": "u-2", "author": {"role": "user", "name": null, "metadata": {}}, "create_time": 1740909800.0, "content": {"content_type": "text", "parts": ["Draw me a loaf"]}, "status": "finished_successfully", "weight": 1.0, "metadata": {}, "recipient": "all"}, "parent": "a-1", "children": ["dalle-1"]},
+      "dalle-1": {"id": "dalle-1", "message": {"id": "dalle-1", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909801.0, "content": {"content_type": "text", "parts": ["{\"prompt\": \"A rustic sourdough loaf\", \"size\": \"1024x1024\"}"]}, "status": "finished_successfully", "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "dalle.text2im"}, "parent": "u-2", "children": ["dalle-out-1"]},
+      "dalle-out-1": {"id": "dalle-out-1", "message": {"id": "dalle-out-1", "author": {"role": "tool", "name": "dalle.text2im", "metadata": {}}, "create_time": 1740909830.0, "content": {"content_type": "multimodal_text", "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-example2", "width": 1024, "height": 1024}]}, "status": "finished_successfully", "weight": 1.0, "metadata": {}, "recipient": "all"}, "parent": "dalle-1", "children": ["a-2"]},
+      "a-2": {"id": "a-2", "message": {"id": "a-2", "author": {"role": "assistant", "name": null, "metadata": {}}, "create_time": 1740909840.0, "content": {"content_type": "text", "parts": ["Here is your loaf."]}, "status": "finished_successfully", "end_turn": true, "weight": 1.0, "metadata": {"model_slug": "gpt-4o"}, "recipient": "all"}, "parent": "dalle-out-1", "children": []}
+    },
+    "moderation_results": [],
+    "current_node": "a-2",
+    "plugin_ids": null,
+    "conversation_id": "67c4a1b0-0000-8000-8000-000000000001",
+    "conversation_template_id": null,
+    "gizmo_id": null,
+    "is_archived": false,
+    "safe_urls": [],
+    "default_model_slug": "auto",
+    "id": "67c4a1b0-0000-8000-8000-000000000001"
+  },
+  {
+    "title": "New chat",
+    "create_time": 1741000000.0,
+    "update_time": 1741000000.0,
+    "mapping": {
+      "root-2": {"id": "root-2", "message": null, "parent": null, "children": []}
+    },
+    "current_node": "root-2",
+    "conversation_id": "67c4a1b0-0000-8000-8000-000000000002",
+    "default_model_slug": "gpt-4o",
+    "id": "67c4a1b0-0000-8000-8000-000000000002"
+  }
+]
