@@ -52,14 +52,15 @@ grant takes effect on the next call:
 - With `none` the space is **invisible**: a call that names it fails exactly as for a space that
   does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
   its changes are not sent to the agent.
-- With `read`, `space.open`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
+- With `read`, `space.open`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
   `markdown.folder.get` and `subscribe` are allowed; writes fail with `forbidden`.
 - With `write`, `node.create`, `node.update`, `node.delete`, `link.create`, `link.delete`,
   `undo`, `restore` and `vault.import` are allowed too. An agent may only `undo` a change made by
   the agent its key belongs to, and never with `force`; any other undo fails with `forbidden`.
-- Creating spaces, managing agents, keys and grants, `purge`, `markdown.folder.set` and every other
-  method are for people only and fail with `forbidden`.
+- Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
+  `purge`, `markdown.folder.set` and every other method are for people only and fail with
+  `forbidden`.
 - An agent's changes are recorded with `kind` `agent` and, as `actor`, the name of the agent its
   key belongs to, whatever `by` says. `session` and `source` are kept.
 
@@ -115,6 +116,12 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | --- | --- | --- |
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
+| `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
+| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. |
+| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
+| `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
+| `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
+| `folders.remove` | `space`, `id`, `by` | `true` if there was such a folder. Nothing captured or imported from it is removed. People only. |
 | `node.create` | `space`, `title`, `body`?, `kind`? (default `note`), `tags`?, `by` | The node. |
 | `node.get` | `space`, `id` | The node, or `null` when no node has this id. |
 | `node.find_by_title` | `space`, `title` | Node summaries with this title, oldest first. Titles are compared without regard to case or extra spaces; a `[[link]]` with this title points at the first one. |
@@ -139,7 +146,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `markdown.folder.set` | `space`, `folder` (absolute, or `null` to turn it off), `by` | The live Markdown folder as it is now. Only a person can change it. |
 | `subscribe` | `space`? | `true`. Starts `changed` notifications; see below. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the space conversations are captured into, or `null`. An agent only sees the spaces it may read. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. An agent only sees the spaces it may read. |
 | `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
 | `agents.list` | none | The agents of this machine. People only. |
 | `agents.add` | `name`, `kind`, `fingerprint`, `by` | The agent. Adds it with the fingerprint of its new key, or gives an agent of that name the new key and revokes its old ones, in every space it was given. People only. |
@@ -157,6 +164,25 @@ An agent, as `agents.list`, `agents.add` and `agents.revoke` return it, is:
 
 `level` is `null` for a space that cannot be opened now. The agents of a machine, with the
 fingerprints of their keys, are kept in `$KNODE_HOME/agents.json`.
+
+A folder, as `folders.list` and `folders.set` return it, is the row of the `folders` table of the
+[.knode specification](https://github.com/knodemd/format) (section 15.2), with where it is on this
+machine:
+
+```json
+{ "id": "01K83N6V4W5D2XQJ0Y7RZ9T1AB", "kind": "project", "path": "~/Developer/site",
+  "capture": true, "rules": { "exclude": ["node_modules/**"] },
+  "created_at": 1792489800123, "created_by": { "kind": "person", "actor": "Ada" },
+  "updated_at": 1792489800123, "updated_by": { "kind": "person", "actor": "Ada" },
+  "local": "/Users/ada/Developer/site", "missing": false }
+```
+
+`path` is recorded as the specification says (section 15.3): relative to the home folder as `~/...`
+when it is inside it, so the same space finds the same folders on another machine. `local` is
+`null` when the path cannot be resolved here; `missing` is `true` when the folder does not exist
+on this machine, where it is kept and skipped. `rules` holds `exclude` (patterns of folders left
+out, for `project` and `notes`), `include` (for `notes`) and `agent` (required for `agent`
+folders: the agent whose sessions it holds, such as `claude-code`).
 
 Space info is:
 
@@ -176,6 +202,13 @@ order the writes were made:
 
 - `subscribe` with `space` adds that space; without `space`, the connection hears about every
   space. Every change made after the answer to `subscribe` is delivered.
+- When a space is renamed, or its settings or folders change, the connection receives a `space`
+  notification instead, with `what` set to `renamed` (and the new `name`), `settings` (and the
+  `key`) or `folders` (and the `folder` id):
+
+  ```json
+  {"jsonrpc":"2.0","method":"space","params":{"space":"/Users/ada/Knode/Personal.knode","what":"settings","key":"space.icon"}}
+  ```
 - `op` is `create`, `update`, `delete`, `link` (a link from `node_id` was made) or `unlink` (one
   was removed). Renaming a node also sends `update` for each node whose `[[links]]` were rewritten
   to the new title.
@@ -207,21 +240,41 @@ files can make conflicted copies. A write that fails is logged and tried again a
 
 ## Capture
 
-Knode Service captures every Claude Code and Codex conversation into the default space: one
-`conversation` node per session, kept current while the agent writes it. It reads
-`$KNODE_HOME/config.toml` when it starts and again every few seconds:
+Knode Service captures agent conversations (Claude Code, Codex and the other agents Knode reads)
+into spaces: one `conversation` node per session, kept current while the agent writes it. Where
+each conversation goes follows section 15.5 of the
+[.knode specification](https://github.com/knodemd/format):
 
-- `default_space` is the space conversations go to. With none, nothing is captured.
-- `capture = false` turns capture off. It is on when left out.
+1. The `project` folders of every space the service knows are matched against the folder the
+   conversation was held in. The most specific folder wins, and the same folder may feed more
+   than one space.
+2. The conversation is written to each of those spaces where the folder's `capture` is on, its
+   `exclude` rules do not leave the conversation's folder out, and the space's
+   `capture.enabled` is `on`. If none qualifies, it is **not stored anywhere**: capture off for a
+   project means nothing of it is kept, not that it goes somewhere else.
+3. A conversation of no project goes to the space of the `agent` folder it was read from, or
+   else to the default space, if that space's `capture.enabled` is `on`.
+
+The service knows the spaces named in `$KNODE_HOME/config.toml` (`default_space` and `spaces`,
+which `knode init` and the app keep) and every space it has open. It reads the file and the
+folders of those spaces when it starts, again every few seconds, and at once when a client
+changes folders or settings: a change applies to conversations written after the call answers.
+
+- `default_space` is the space conversations of no folder go to. With none, only conversations
+  of the spaces' folders are captured.
+- `spaces = ["/path/to/Work.knode"]` lists the other spaces Knode knows.
+- `capture = false` turns capture off everywhere. It is on when left out.
 - `capture_exclude = ["/path/to/project"]` leaves out the conversations held in these projects
-  and in every folder inside them.
+  and in every folder inside them, whatever the folders of the spaces say.
 
-Capture follows `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) and `~/.codex/sessions`
-(or `$CODEX_HOME/sessions`). What it has read is saved in `$KNODE_HOME/capture/state.json`, so
-after a restart it only reads what is new. Its writes are made with the provenance
-`{ "kind": "agent", "actor": "claude-code" | "codex", "session": "<session id>" }`, go through
-the same space as every client's, one at a time, and are announced with `changed` like any other
-write.
+Capture follows the agents' own session folders (such as `~/.claude/projects`, or
+`$CLAUDE_CONFIG_DIR/projects`, and `~/.codex/sessions`, or `$CODEX_HOME/sessions`) and the
+`agent` folders of the spaces. What it has read is saved in `$KNODE_HOME/capture/state.json`, so
+after a restart it only reads what is new; the text of a conversation that goes nowhere is not
+kept there either. Its writes are made with the provenance
+`{ "kind": "agent", "actor": "claude-code" | "codex" | ..., "session": "<session id>" }`, go
+through the same space as every client's, one at a time, and are announced with `changed` like
+any other write. `service.status` gives the default space as `capture` while capture runs.
 
 ## Errors
 
