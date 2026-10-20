@@ -30,6 +30,10 @@
 //! To keep a space current, [`Capture`] writes one `conversation` node per session and updates
 //! it as the session grows, saving what it has read in a state file; [`Watcher`] follows the
 //! session folders and hands [`Capture`] the files that changed.
+//!
+//! Conversations held on the web come from the data export of each service instead:
+//! [`import_export`] reads a claude.ai export, a ChatGPT export or Gemini Apps activity from
+//! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 
 mod aider;
 mod amp;

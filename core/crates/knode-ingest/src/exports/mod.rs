@@ -207,9 +207,18 @@ pub fn detect_export(path: impl AsRef<Path>) -> Result<ExportFormat, ImportError
 /// `claude-ai`, `chatgpt` or `gemini-web`, the export's conversation id as the session, the
 /// model when the export names it, and the times).
 ///
-/// `path` is the `.zip` as downloaded or the folder it was extracted to; see the [module
-/// documentation](self) for the exports read. Each write has the provenance `by` with the
-/// conversation id as its session and `path` as its source.
+/// `path` is the `.zip` as downloaded or the folder it was extracted to. Large JSON files are
+/// streamed one conversation at a time. The exports read:
+///
+/// | Export | Agent id | Status |
+/// | --- | --- | --- |
+/// | claude.ai data export (`conversations.json`, `projects.json`) | `claude-ai` | Fields as seen in exports; Anthropic does not document them |
+/// | ChatGPT data export (`conversations.json`) | `chatgpt` | Fields as seen in exports; OpenAI does not document them |
+/// | Google Takeout, My Activity, Gemini Apps (`MyActivity.json` or `.html`) | `gemini-web` | Not verified against a real export; English prompts and dates only |
+/// | Perplexity | - | Not available: Perplexity has no export of all threads |
+///
+/// Each write has the provenance `by` with the conversation id as its session and `path` as its
+/// source.
 ///
 /// A conversation is found again by its agent and session, so importing an export again, or a
 /// newer export of the same account, updates the nodes instead of duplicating them; a
