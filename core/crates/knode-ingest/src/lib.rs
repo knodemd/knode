@@ -30,6 +30,10 @@
 //! To keep a space current, [`Capture`] writes one `conversation` node per session and updates
 //! it as the session grows, saving what it has read in a state file; [`Watcher`] follows the
 //! session folders and hands [`Capture`] the files that changed.
+//!
+//! Conversations held on the web come from the data export of each service instead:
+//! [`import_export`] reads a claude.ai export, a ChatGPT export or Gemini Apps activity from
+//! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 
 mod aider;
 mod amp;
@@ -40,6 +44,7 @@ pub mod codex;
 mod copilot;
 mod cursor;
 mod discover;
+mod exports;
 mod filter;
 mod gemini;
 mod model;
@@ -52,10 +57,14 @@ mod watch;
 mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
-pub use capture::{Capture, CaptureError, CaptureReport, Captured};
+pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,
     SessionFile, WINDSURF_ROOT_VARIABLE, default_root, default_roots, discover, discover_all,
+};
+pub use exports::{
+    CLAUDE_PROJECT_PROPERTY, ExportFormat, ImportError, ImportReport, Imported, Skipped,
+    detect_export, import_export,
 };
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
@@ -82,7 +91,10 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &serde_json::Value)
         | Agent::Cursor
         | Agent::Windsurf
         | Agent::Cline
-        | Agent::RooCode => {}
+        | Agent::RooCode
+        | Agent::ClaudeAi
+        | Agent::ChatGpt
+        | Agent::GeminiWeb => {}
     }
 }
 

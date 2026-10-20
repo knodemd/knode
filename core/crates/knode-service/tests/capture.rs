@@ -249,3 +249,127 @@ fn a_restarted_service_does_not_capture_twice() {
     });
     assert_eq!(client.recent(&space, 10).unwrap().len(), 1);
 }
+
+fn me() -> Provenance {
+    Provenance::person("tester")
+}
+
+/// The conversations of a space, by title.
+fn conversations(client: &Client, space: &Path) -> Vec<String> {
+    client
+        .recent(space, 100)
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.kind == kinds::CONVERSATION)
+        .map(|n| n.title)
+        .collect()
+}
+
+#[test]
+fn routes_conversations_by_the_folders_of_every_space() {
+    let fixture = Fixture::new();
+    let work_path = fixture.dir.path().join("Work.knode");
+    drop(Space::create(&work_path, "Work").unwrap());
+    let work = fs::canonicalize(&work_path).unwrap();
+    let personal = fs::canonicalize(fixture.space()).unwrap();
+    let client = fixture.client();
+    let project = |path: &str, capture: bool| knode_service::FolderInput {
+        id: None,
+        kind: "project".into(),
+        path: path.into(),
+        capture,
+        rules: json!({ "exclude": ["scratch/**"] }),
+    };
+    // Work is fed by /Users/example/work, but not by its secret folder.
+    client
+        .set_folder(&work, &project("/Users/example/work", true), &me())
+        .unwrap();
+    let secret = client
+        .set_folder(&work, &project("/Users/example/work/secret", false), &me())
+        .unwrap();
+
+    let at_work = "/Users/example/work/app";
+    append(
+        &fixture.session(at_work, "w-1"),
+        &record(at_work, "w-1", "user", 0, "Plan the work release"),
+    );
+    append(
+        &fixture.session(PROJECT, "p-1"),
+        &record(PROJECT, "p-1", "user", 0, "Plan a holiday"),
+    );
+    let hidden = "/Users/example/work/secret/x";
+    let hidden_session = fixture.session(hidden, "s-1");
+    append(
+        &hidden_session,
+        &record(hidden, "s-1", "user", 0, "Secret plans"),
+    );
+    let scratch = "/Users/example/work/scratch/tmp";
+    append(
+        &fixture.session(scratch, "t-1"),
+        &record(scratch, "t-1", "user", 0, "Scratch plans"),
+    );
+
+    // The service knows Work from config.toml, and Personal is the default.
+    fixture.write_config(&format!("spaces = [{:?}]\n", work.to_str().unwrap()));
+    wait_until("both spaces to have their conversation", || {
+        conversations(&client, &personal).len() == 1 && conversations(&client, &work).len() == 1
+    });
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(conversations(&client, &work), vec!["Plan the work release"]);
+    assert_eq!(conversations(&client, &personal), vec!["Plan a holiday"]);
+    // Capture off for a project, or excluded by its rules: stored nowhere at all.
+    for space in [&work, &personal] {
+        assert!(client.search(space, "secret", 10).unwrap().is_empty());
+        assert!(client.search(space, "scratch", 10).unwrap().is_empty());
+    }
+    let state = fs::read_to_string(fixture.home().join("capture/state.json")).unwrap();
+    assert!(!state.contains("Secret plans"));
+
+    // Turning capture on for the secret folder takes effect without a restart.
+    let on = knode_service::FolderInput {
+        id: Some(secret.folder.id.clone()),
+        ..project("/Users/example/work/secret", true)
+    };
+    client.set_folder(&work, &on, &me()).unwrap();
+    wait_until("the secret conversation in Work", || {
+        conversations(&client, &work).len() == 2
+    });
+    assert_eq!(conversations(&client, &personal).len(), 1);
+
+    // An agent folder of Work: its conversations of no project go to Work.
+    let team = fixture.dir.path().join("agents/team");
+    let elsewhere = "/Users/example/elsewhere";
+    let dir = team.join(elsewhere.replace('/', "-"));
+    fs::create_dir_all(&dir).unwrap();
+    append(
+        &dir.join("a-1.jsonl"),
+        &record(elsewhere, "a-1", "user", 0, "Team notes"),
+    );
+    let agent_folder = knode_service::FolderInput {
+        id: None,
+        kind: "agent".into(),
+        path: team.to_string_lossy().into_owned(),
+        capture: true,
+        rules: json!({ "agent": "claude-code" }),
+    };
+    client.set_folder(&work, &agent_folder, &me()).unwrap();
+    wait_until("the agent folder conversation in Work", || {
+        conversations(&client, &work).len() == 3
+    });
+    assert_eq!(conversations(&client, &personal).len(), 1);
+
+    // Capture off for the whole of Work: its conversations are no longer written anywhere.
+    client
+        .set_setting(&work, "capture.enabled", Some("off"), &me())
+        .unwrap();
+    thread::sleep(Duration::from_millis(300));
+    append(
+        &hidden_session,
+        &record(hidden, "s-1", "user", 1, "More secret plans"),
+    );
+    thread::sleep(Duration::from_millis(1000));
+    for space in [&work, &personal] {
+        assert!(client.search(space, "more", 10).unwrap().is_empty());
+    }
+    assert_eq!(conversations(&client, &personal).len(), 1);
+}

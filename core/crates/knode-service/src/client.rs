@@ -1,6 +1,6 @@
 //! [`Client`]: talk to Knode Service from any process.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -26,6 +26,7 @@ use crate::agents::{
 };
 use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
+use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
 use crate::{Error, Result, paths};
 
 /// How long [`connect_or_spawn`] waits for a new service to listen.
@@ -223,6 +224,88 @@ impl Client {
             space: space_path(path.as_ref())?,
         };
         self.request(methods::SPACE_OPEN, params)
+    }
+
+    /// Renames a space: its name in `manifest.json`. Subscribers hear a `space` event. Only a
+    /// person can rename a space.
+    pub fn rename_space(
+        &self,
+        space: impl AsRef<Path>,
+        name: &str,
+        by: &Provenance,
+    ) -> Result<SpaceInfo> {
+        let params = SpaceRenameParams {
+            space: space_path(space.as_ref())?,
+            name: name.to_string(),
+            by: by.clone(),
+        };
+        self.request(methods::SPACE_RENAME, params)
+    }
+
+    /// Every setting of a space, by key, such as `space.icon`. Absent keys have their default.
+    pub fn settings(&self, space: impl AsRef<Path>) -> Result<BTreeMap<String, String>> {
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::SETTINGS_GET, params)
+    }
+
+    /// Changes a setting of a space (`space.icon` or `capture.enabled`), or puts it back to its
+    /// default with `None`. Returns every setting as it is now. Only a person can change
+    /// settings.
+    pub fn set_setting(
+        &self,
+        space: impl AsRef<Path>,
+        key: &str,
+        value: Option<&str>,
+        by: &Provenance,
+    ) -> Result<BTreeMap<String, String>> {
+        let params = SettingsSetParams {
+            space: space_path(space.as_ref())?,
+            key: key.to_string(),
+            value: value.map(str::to_string),
+            by: by.clone(),
+        };
+        self.request(methods::SETTINGS_SET, params)
+    }
+
+    /// The folders that feed a space, oldest first.
+    pub fn folders(&self, space: impl AsRef<Path>) -> Result<Vec<FolderInfo>> {
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::FOLDERS_LIST, params)
+    }
+
+    /// Adds a folder to a space, or changes one. Only a person can change folders.
+    pub fn set_folder(
+        &self,
+        space: impl AsRef<Path>,
+        folder: &FolderInput,
+        by: &Provenance,
+    ) -> Result<FolderInfo> {
+        let params = FolderSetParams {
+            space: space_path(space.as_ref())?,
+            folder: folder.clone(),
+            by: by.clone(),
+        };
+        self.request(methods::FOLDERS_SET, params)
+    }
+
+    /// Removes a folder from a space, by its id. Returns whether there was one. Only a person
+    /// can change folders.
+    pub fn remove_folder(
+        &self,
+        space: impl AsRef<Path>,
+        id: &str,
+        by: &Provenance,
+    ) -> Result<bool> {
+        let params = FolderRemoveParams {
+            space: space_path(space.as_ref())?,
+            id: id.to_string(),
+            by: by.clone(),
+        };
+        self.request(methods::FOLDERS_REMOVE, params)
     }
 
     /// Creates a node.
@@ -670,6 +753,9 @@ fn read_messages(stream: UnixStream, shared: &Shared) {
                 methods::CHANGED => serde_json::from_value::<Change>(params)
                     .ok()
                     .map(Event::Changed),
+                methods::SPACE => serde_json::from_value::<SpaceEvent>(params)
+                    .ok()
+                    .map(Event::Space),
                 methods::LAGGED => serde_json::from_value::<LaggedParams>(params)
                     .ok()
                     .map(|p| Event::Lagged { missed: p.missed }),
@@ -705,6 +791,7 @@ fn deliver(shared: &Shared, event: Event) {
     lock(&shared.subscribers).retain(|subscriber| {
         let wanted = match (&event, &subscriber.space) {
             (Event::Changed(change), Some(space)) => change.space == *space,
+            (Event::Space(event), Some(space)) => event.space == *space,
             _ => true,
         };
         !wanted || subscriber.events.send(event.clone()).is_ok()
