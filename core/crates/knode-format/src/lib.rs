@@ -9,7 +9,7 @@
 //!   knode.db        SQLite in WAL mode: nodes, properties, links, provenance, history, search,
 //!                   link kinds, views and attachments
 //!   blobs/          attachments, named by the SHA-256 of their bytes
-//!   sync/           Loro documents of node bodies (reserved for now)
+//!   sync/           Loro documents of node bodies, read and written by knode-sync
 //! ```
 //!
 //! The format is specified in the
@@ -48,6 +48,7 @@ mod attachments;
 mod error;
 mod history;
 mod links;
+mod loro;
 mod manifest;
 mod schema;
 mod space;
@@ -57,6 +58,7 @@ mod views;
 pub use attachments::{Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, blob_url_hash};
 pub use error::{Error, Result};
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
+pub use loro::SYNC_NODES_DIR;
 pub use manifest::{FORMAT_VERSION, Manifest};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
@@ -77,7 +79,8 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const DATABASE_FILE: &str = "knode.db";
 /// The attachments folder inside a package: one file per blob, named by its hash.
 pub const BLOBS_DIR: &str = "blobs";
-/// The sync folder inside a package, reserved for now.
+/// The sync folder inside a package: Loro documents of node bodies in `sync/nodes/`, the rest
+/// reserved for sync between devices.
 pub const SYNC_DIR: &str = "sync";
 
 /// The node kinds the format defines. Any other kind that follows the naming rule
