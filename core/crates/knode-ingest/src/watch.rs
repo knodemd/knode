@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use knode_format::Space;
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
-use crate::capture::{Capture, CaptureError, CaptureReport};
+use crate::capture::{Capture, CaptureError, CaptureReport, Destinations};
 use crate::model::Agent;
 
 /// How a [`Watcher`] batches changes.
@@ -176,6 +176,36 @@ impl Watcher {
                 Changes::Rescan => capture.sync_all(&mut space),
             };
             drop(space);
+            drop(capture);
+            on_report(result);
+        })
+    }
+
+    /// [`Watcher::capture`], writing each conversation to the spaces `destinations` route it
+    /// to, with [`Capture::sync_all_to`] and [`Capture::sync_paths_to`].
+    pub fn capture_to<D, F>(
+        capture: Arc<Mutex<Capture>>,
+        destinations: Arc<D>,
+        options: WatchOptions,
+        mut on_report: F,
+    ) -> Result<Self, CaptureError>
+    where
+        D: Destinations + Send + Sync + 'static,
+        F: FnMut(Result<CaptureReport, CaptureError>) + Send + 'static,
+    {
+        let targets: Vec<(PathBuf, RecursiveMode)> = capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .roots()
+            .iter()
+            .filter_map(|(agent, root)| Some((root.clone(), watch_mode(*agent)?)))
+            .collect();
+        Self::start_targets(&targets, options, move |changes| {
+            let mut capture = capture.lock().unwrap_or_else(PoisonError::into_inner);
+            let result = match changes {
+                Changes::Paths(paths) => capture.sync_paths_to(destinations.as_ref(), &paths),
+                Changes::Rescan => capture.sync_all_to(destinations.as_ref()),
+            };
             drop(capture);
             on_report(result);
         })

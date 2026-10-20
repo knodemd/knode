@@ -1,5 +1,6 @@
 //! Writing conversations into a space and keeping them current.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -17,8 +18,9 @@ use crate::model::{Agent, Conversation};
 use crate::reader::{self, SessionReader};
 use crate::render::to_markdown;
 
-/// The version of the state file this library writes.
-const STATE_VERSION: u32 = 1;
+/// The version of the state file this library writes. Version 1, with one node per file, is
+/// still read.
+const STATE_VERSION: u32 = 2;
 
 /// Why capture failed.
 #[derive(Debug)]
@@ -74,6 +76,9 @@ impl From<notify::Error> for CaptureError {
 /// One conversation node that a sync created or changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Captured {
+    /// The space it was written to: its key in [`Destinations`], the space's id for
+    /// [`Capture::sync_all`] and [`Capture::sync_paths`].
+    pub space: String,
     /// The node.
     pub node_id: NodeId,
     /// [`ChangeOp::Create`] for a new conversation, [`ChangeOp::Update`] for one that grew.
@@ -97,8 +102,8 @@ pub struct CaptureReport {
     pub unchanged: usize,
     /// Files whose conversation has no messages yet; no node is written for them.
     pub empty: usize,
-    /// Files left out by the project filter. They are not read again until they change or the
-    /// filter does.
+    /// Files left out by the project filter, or whose conversation goes to no space. They are
+    /// not read again until they change, or the filter or the routing does.
     pub filtered: usize,
     /// Files that were cut or replaced, and were read again from the start.
     pub restarted: usize,
@@ -126,28 +131,34 @@ struct FileState {
     agent: Agent,
     /// The byte offset read so far: the end of the last complete line.
     offset: u64,
-    /// The conversation read up to `offset`. `None` for a file left out by the filter, whose
-    /// text is never kept.
+    /// The conversation read up to `offset`. `None` for a file left out by the filter, or whose
+    /// conversation goes to no space: its text is never kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     conversation: Option<Conversation>,
-    /// The node written for the conversation, once there is one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The node of the conversation in each space it was written to, by space key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    nodes: BTreeMap<String, NodeId>,
+    /// The node of version 1 of the state file, in its one space.
+    #[serde(default, skip_serializing)]
     node: Option<NodeId>,
-    /// Whether the project filter left the file out.
+    /// Whether the project filter, or the routing, left the file out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     excluded: bool,
 }
 
-/// The state file: every session file read so far, for one space.
+/// The state file: every session file read so far.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct State {
     version: u32,
-    /// The id of the space the conversations were written to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The id of the one space of version 1 of the state file.
+    #[serde(default, skip_serializing)]
     space: Option<String>,
     /// The projects the filter left out when the files were read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     excluded: Vec<PathBuf>,
+    /// The routing of the destinations when the files were read ([`Destinations::routing`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    routing: Option<String>,
     #[serde(default)]
     files: BTreeMap<PathBuf, FileState>,
 }
@@ -189,6 +200,83 @@ pub struct Capture {
     roots: Vec<(Agent, PathBuf)>,
 }
 
+impl State {
+    /// Reads a state file, moving the nodes of version 1 to the space it was written for.
+    fn parse(bytes: &[u8]) -> Option<State> {
+        let mut state = serde_json::from_slice::<State>(bytes).ok()?;
+        match state.version {
+            STATE_VERSION => {}
+            1 => {
+                let space = state.space.take();
+                for file in state.files.values_mut() {
+                    if let (Some(space), Some(node)) = (&space, file.node.take()) {
+                        file.nodes.insert(space.clone(), node);
+                    }
+                }
+                state.version = STATE_VERSION;
+            }
+            _ => return None,
+        }
+        Some(state)
+    }
+}
+
+/// Where captured conversations go: the spaces each conversation is written to.
+///
+/// [`Capture::sync_all`] and [`Capture::sync_paths`] write every conversation to one space.
+/// [`Capture::sync_all_to`] and [`Capture::sync_paths_to`] ask a `Destinations` instead, for
+/// each conversation, as Knode Service does from the folders of every space it knows.
+pub trait Destinations {
+    /// Text that changes whenever [`Destinations::route`] may answer differently. Files whose
+    /// conversation went to no space are read again when it changes.
+    fn routing(&self) -> String;
+
+    /// The spaces a conversation read from the session file `file` goes to, by key (such as
+    /// the space id). Empty when it is not stored anywhere: then nothing of it is written, and
+    /// its text is not kept in the state file either.
+    fn route(&self, conversation: &Conversation, file: &Path) -> Vec<String>;
+
+    /// Runs `write` with the space of this key, one of those [`Destinations::route`] gave.
+    fn with_space(
+        &self,
+        key: &str,
+        write: &mut dyn FnMut(&mut Space) -> Result<(), CaptureError>,
+    ) -> Result<(), CaptureError>;
+}
+
+/// One space that every conversation goes to, keyed by its id.
+struct OneSpace<'a> {
+    id: String,
+    space: RefCell<&'a mut Space>,
+}
+
+impl<'a> OneSpace<'a> {
+    fn new(space: &'a mut Space) -> Self {
+        OneSpace {
+            id: space.manifest().id.clone(),
+            space: RefCell::new(space),
+        }
+    }
+}
+
+impl Destinations for OneSpace<'_> {
+    fn routing(&self) -> String {
+        self.id.clone()
+    }
+
+    fn route(&self, _: &Conversation, _: &Path) -> Vec<String> {
+        vec![self.id.clone()]
+    }
+
+    fn with_space(
+        &self,
+        _: &str,
+        write: &mut dyn FnMut(&mut Space) -> Result<(), CaptureError>,
+    ) -> Result<(), CaptureError> {
+        write(&mut self.space.borrow_mut())
+    }
+}
+
 impl Capture {
     /// Capture with its state in `state_path`, read now if it exists, and the default session
     /// folders of every agent (see [`default_roots`](crate::default_roots)).
@@ -198,10 +286,7 @@ impl Capture {
     pub fn open(state_path: impl Into<PathBuf>) -> Result<Self, CaptureError> {
         let state_path = state_path.into();
         let state = match fs::read(&state_path) {
-            Ok(bytes) => serde_json::from_slice::<State>(&bytes)
-                .ok()
-                .filter(|state| state.version == STATE_VERSION)
-                .unwrap_or_default(),
+            Ok(bytes) => State::parse(&bytes).unwrap_or_default(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => State::default(),
             Err(error) => return Err(CaptureError::State(error)),
         };
@@ -267,6 +352,15 @@ impl Capture {
     /// that cannot be listed (or a database that cannot be read) is reported in
     /// [`CaptureReport::failed`] and the others are still read.
     pub fn sync_all(&mut self, space: &mut Space) -> Result<CaptureReport, CaptureError> {
+        self.sync_all_to(&OneSpace::new(space))
+    }
+
+    /// [`Capture::sync_all`], writing each conversation to the spaces `destinations` route it
+    /// to.
+    pub fn sync_all_to(
+        &mut self,
+        destinations: &dyn Destinations,
+    ) -> Result<CaptureReport, CaptureError> {
         let mut files = Vec::new();
         let mut unlisted = Vec::new();
         for (agent, root) in &self.roots {
@@ -283,7 +377,7 @@ impl Capture {
                 || unlisted.iter().any(|(root, _)| path.starts_with(root))
                 || !roots.iter().any(|(_, root)| path.starts_with(root))
         });
-        let mut report = self.sync_files(space, &files)?;
+        let mut report = self.sync_files(destinations, &files)?;
         report.failed.extend(unlisted);
         Ok(report)
     }
@@ -296,6 +390,16 @@ impl Capture {
     pub fn sync_paths<P: AsRef<Path>>(
         &mut self,
         space: &mut Space,
+        paths: &[P],
+    ) -> Result<CaptureReport, CaptureError> {
+        self.sync_paths_to(&OneSpace::new(space), paths)
+    }
+
+    /// [`Capture::sync_paths`], writing each conversation to the spaces `destinations` route it
+    /// to.
+    pub fn sync_paths_to<P: AsRef<Path>>(
+        &mut self,
+        destinations: &dyn Destinations,
         paths: &[P],
     ) -> Result<CaptureReport, CaptureError> {
         let mut files = Vec::new();
@@ -316,7 +420,7 @@ impl Capture {
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files.dedup_by(|a, b| a.path == b.path);
-        let mut report = self.sync_files(space, &files)?;
+        let mut report = self.sync_files(destinations, &files)?;
         report.failed.extend(unlisted);
         Ok(report)
     }
@@ -358,29 +462,24 @@ impl Capture {
 
     fn sync_files(
         &mut self,
-        space: &mut Space,
+        destinations: &dyn Destinations,
         files: &[SessionFile],
     ) -> Result<CaptureReport, CaptureError> {
-        let space_id = space.manifest().id.clone();
-        if self.state.space.as_deref() != Some(space_id.as_str()) {
-            // The state belongs to another space: read everything again for this one.
-            self.state = State {
-                version: STATE_VERSION,
-                space: Some(space_id),
-                excluded: Vec::new(),
-                files: BTreeMap::new(),
-            };
-        }
-        if self.state.excluded != self.filter.excluded() {
-            // The filter changed: what it left out before is read again.
+        self.state.version = STATE_VERSION;
+        let routing = destinations.routing();
+        if self.state.excluded != self.filter.excluded()
+            || self.state.routing.as_deref() != Some(routing.as_str())
+        {
+            // The filter or the routing changed: what was left out before is read again.
             self.state.files.retain(|_, file| !file.excluded);
             self.state.excluded = self.filter.excluded().to_vec();
+            self.state.routing = Some(routing);
         }
         let mut report = CaptureReport::default();
         let mut outcome = Ok(());
         for file in files {
             report.files += 1;
-            if let Err(error) = self.sync_file(space, file, &mut report) {
+            if let Err(error) = self.sync_file(destinations, file, &mut report) {
                 outcome = Err(error);
                 break;
             }
@@ -390,24 +489,30 @@ impl Capture {
         outcome.map(|()| report)
     }
 
+    /// Remembers that a file was left out, without its text.
+    fn leave_out(&mut self, file: &SessionFile, offset: u64, report: &mut CaptureReport) {
+        self.state.files.insert(
+            file.path.clone(),
+            FileState {
+                agent: file.agent,
+                offset,
+                conversation: None,
+                nodes: BTreeMap::new(),
+                node: None,
+                excluded: true,
+            },
+        );
+        report.filtered += 1;
+    }
+
     fn sync_file(
         &mut self,
-        space: &mut Space,
+        destinations: &dyn Destinations,
         file: &SessionFile,
         report: &mut CaptureReport,
     ) -> Result<(), CaptureError> {
         if !self.filter.may_allow_file(file) {
-            self.state.files.insert(
-                file.path.clone(),
-                FileState {
-                    agent: file.agent,
-                    offset: file.len,
-                    conversation: None,
-                    node: None,
-                    excluded: true,
-                },
-            );
-            report.filtered += 1;
+            self.leave_out(file, file.len, report);
             return Ok(());
         }
         let previous = self
@@ -419,26 +524,32 @@ impl Capture {
         if let Some(state) = &previous {
             if state.excluded {
                 // Its project does not change as the file grows: skip it without reading.
-                self.state.files.insert(
-                    file.path.clone(),
-                    FileState {
-                        offset: file.len,
-                        ..state.clone()
-                    },
-                );
-                report.filtered += 1;
+                self.leave_out(file, file.len, report);
                 return Ok(());
             }
-            if state.offset == file.len && state.node.is_some() {
-                report.unchanged += 1;
-                return Ok(());
+            if state.offset == file.len {
+                if let Some(conversation) = &state.conversation {
+                    let targets = destinations.route(conversation, &file.path);
+                    if targets.is_empty() {
+                        // The routing changed: it goes nowhere now, and its text is dropped.
+                        self.leave_out(file, file.len, report);
+                        return Ok(());
+                    }
+                    if targets.iter().all(|key| state.nodes.contains_key(key)) {
+                        report.unchanged += 1;
+                        return Ok(());
+                    }
+                }
             }
         }
         let previous_session = previous
             .as_ref()
             .and_then(|state| state.conversation.as_ref())
             .map(|conversation| conversation.session_id.clone());
-        let mut node = previous.as_ref().and_then(|state| state.node);
+        let mut nodes = previous
+            .as_ref()
+            .map(|state| state.nodes.clone())
+            .unwrap_or_default();
         let mut reader = match previous {
             Some(FileState {
                 offset,
@@ -465,63 +576,62 @@ impl Capture {
             if finished.is_empty() || !self.filter.allows(&finished) {
                 continue;
             }
-            if previous_session.as_deref() == Some(finished.session_id.as_str()) {
+            let same = previous_session.as_deref() == Some(finished.session_id.as_str());
+            for key in destinations.route(&finished, &file.path) {
+                let known = if same { nodes.get(&key).copied() } else { None };
                 if let Written::Changed(captured) =
-                    write_conversation(space, &finished, &file.path, node)?
+                    write_to(destinations, &key, &finished, &file.path, known)?
                 {
                     report.changes.push(captured);
                 }
-            } else if let Written::Changed(captured) =
-                write_conversation(space, &finished, &file.path, None)?
-            {
-                report.changes.push(captured);
             }
         }
         let conversation = reader.conversation();
         let offset = reader.offset();
         if previous_session.is_some_and(|id| id != conversation.session_id) {
-            // The file moved on to another session: its node is not this one.
-            node = None;
+            // The file moved on to another session: its nodes are not this one's.
+            nodes.clear();
         }
 
-        if !self.filter.allows(conversation) {
-            self.state.files.insert(
-                file.path.clone(),
-                FileState {
-                    agent: file.agent,
-                    offset,
-                    conversation: None,
-                    node: None,
-                    excluded: true,
-                },
-            );
-            report.filtered += 1;
+        let targets = if self.filter.allows(conversation) {
+            destinations.route(conversation, &file.path)
+        } else {
+            Vec::new()
+        };
+        if targets.is_empty() {
+            self.leave_out(file, offset, report);
             return Ok(());
         }
-        let mut state = FileState {
+        if conversation.is_empty() {
+            report.empty += 1;
+        } else {
+            for key in targets {
+                let known = nodes.get(&key).copied();
+                if progress.records == 0 && known.is_some() {
+                    report.unchanged += 1;
+                    continue;
+                }
+                match write_to(destinations, &key, conversation, &file.path, known)? {
+                    Written::Changed(captured) => {
+                        nodes.insert(key, captured.node_id);
+                        report.changes.push(captured);
+                    }
+                    Written::Unchanged(id) => {
+                        nodes.insert(key, id);
+                        report.unchanged += 1;
+                    }
+                    Written::Deleted => report.deleted += 1,
+                }
+            }
+        }
+        let state = FileState {
             agent: file.agent,
             offset,
             conversation: Some(conversation.clone()),
-            node,
+            nodes,
+            node: None,
             excluded: false,
         };
-        if conversation.is_empty() {
-            report.empty += 1;
-        } else if progress.records == 0 && node.is_some() {
-            report.unchanged += 1;
-        } else {
-            match write_conversation(space, conversation, &file.path, node)? {
-                Written::Changed(captured) => {
-                    state.node = Some(captured.node_id);
-                    report.changes.push(captured);
-                }
-                Written::Unchanged(id) => {
-                    state.node = Some(id);
-                    report.unchanged += 1;
-                }
-                Written::Deleted => report.deleted += 1,
-            }
-        }
         self.state.files.insert(file.path.clone(), state);
         Ok(())
     }
@@ -546,6 +656,26 @@ enum Written {
     Changed(Captured),
     Unchanged(NodeId),
     Deleted,
+}
+
+/// Writes a conversation into the space of `key`.
+fn write_to(
+    destinations: &dyn Destinations,
+    key: &str,
+    conversation: &Conversation,
+    path: &Path,
+    known: Option<NodeId>,
+) -> Result<Written, CaptureError> {
+    let mut written = None;
+    destinations.with_space(key, &mut |space| {
+        written = Some(write_conversation(space, key, conversation, path, known)?);
+        Ok(())
+    })?;
+    written.ok_or_else(|| {
+        CaptureError::Space(knode_format::Error::Invalid(format!(
+            "no space to write the conversation to: {key}"
+        )))
+    })
 }
 
 /// The properties of a conversation node.
@@ -629,6 +759,7 @@ fn find_conversation(
 
 fn write_conversation(
     space: &mut Space,
+    key: &str,
     conversation: &Conversation,
     path: &Path,
     known: Option<NodeId>,
@@ -642,6 +773,7 @@ fn write_conversation(
     let body = to_markdown(conversation);
     let properties = conversation_properties(conversation);
     let captured = |node_id, op| Captured {
+        space: key.to_string(),
         node_id,
         op,
         agent,
