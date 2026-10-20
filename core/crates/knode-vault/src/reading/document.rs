@@ -9,6 +9,9 @@ use crate::Result;
 pub(crate) struct Document {
     /// What the node is found by again: see [`keys::KEY`].
     pub key: String,
+    /// Whether the key is the hash of the content: then a node with this key already has it, as
+    /// it was first imported (under the name of the first file), and is left as it is.
+    pub by_content: bool,
     /// See [`keys::SOURCE`].
     pub source: &'static str,
     pub title: String,
@@ -63,6 +66,15 @@ pub(crate) fn write(space: &mut Space, doc: Document, by: &Provenance) -> Result
     let node = space
         .get_node(&id)?
         .ok_or(knode_format::Error::NotFound(id))?;
+    if doc.by_content {
+        return Ok(Imported {
+            id,
+            title: node.title,
+            outcome: Outcome::Unchanged,
+            highlights: 0,
+            note: doc.note,
+        });
+    }
     let untouched = space.property(&id, keys::WRITTEN)?.as_deref()
         == Some(node.updated_at.to_string().as_str());
     let same = node.body == doc.body && node.title == title;

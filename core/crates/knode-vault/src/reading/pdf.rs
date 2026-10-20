@@ -117,6 +117,7 @@ fn read(bytes: &[u8], name: &str) -> std::result::Result<Document, String> {
     }
     Ok(Document {
         key: format!("pdf:{}", super::sha256(bytes)),
+        by_content: true,
         source: sources::PDF,
         title,
         body: body.join("\n\n"),

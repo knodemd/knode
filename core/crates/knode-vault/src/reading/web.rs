@@ -170,6 +170,7 @@ fn import(
         body.push(page.body);
     }
     let doc = Document {
+        by_content: page.url.is_none(),
         key,
         source: sources::WEB,
         title: page.title,
