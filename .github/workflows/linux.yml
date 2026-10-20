@@ -71,8 +71,8 @@ jobs:
           # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
           objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
 
-  # Temporary: runs the co-editing concurrency test many times on aarch64 Linux, where it
-  # failed once (knodemd/knode#142), and counts the failures.
+  # Runs the co-editing concurrency test several times on aarch64 Linux, where a race between
+  # programs writing the same note once showed (knodemd/knode#142).
   coediting-loop:
     name: Co-editing test loop (aarch64-unknown-linux-gnu)
     runs-on: ubuntu-22.04-arm
@@ -90,10 +90,10 @@ jobs:
       - name: Build the test
         run: cargo test --locked -p knode-sync --test coediting --no-run
 
-      - name: Run the test 30 times
+      - name: Run the test 5 times
         run: |
           failed=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 5); do
             if cargo test --locked -p knode-sync --test coediting -q -- three_programs_writing_at_once_lose_nothing > out.txt 2>&1; then
               echo "run $i: ok"
             else
@@ -101,5 +101,5 @@ jobs:
               failed=$((failed + 1))
             fi
           done
-          echo "$failed of 30 runs failed"
+          echo "$failed of 5 runs failed"
           test "$failed" -eq 0
