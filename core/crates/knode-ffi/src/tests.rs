@@ -206,3 +206,214 @@ fn excerpts_skip_markers_and_fences() {
     );
     assert_eq!(excerpt("|---|---|\nText"), "Text");
 }
+
+#[test]
+fn renames_and_keeps_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let info = space.rename("  Work  ".into()).unwrap();
+    assert_eq!(info.name, "Work");
+    assert!(matches!(
+        space.rename(" ".into()),
+        Err(KnodeError::Invalid { .. })
+    ));
+
+    assert_eq!(space.setting("space.icon".into()).unwrap(), None);
+    assert!(
+        space
+            .set_setting("space.icon".into(), Some("🌱".into()), me())
+            .unwrap()
+    );
+    assert!(
+        !space
+            .set_setting("space.icon".into(), Some("🌱".into()), me())
+            .unwrap()
+    );
+    let agent = Provenance {
+        kind: ActorKind::Agent,
+        actor: "claude-code".into(),
+        session: None,
+        source: None,
+    };
+    assert!(matches!(
+        space.set_setting("space.icon".into(), None, agent),
+        Err(KnodeError::PersonOnly { .. })
+    ));
+    let path = space.info().unwrap().path;
+    drop(space);
+
+    let space = KnodeSpace::open(path).unwrap();
+    assert_eq!(space.info().unwrap().name, "Work");
+    assert_eq!(
+        space.setting("space.icon".into()).unwrap().as_deref(),
+        Some("🌱")
+    );
+    assert!(space.set_setting("space.icon".into(), None, me()).unwrap());
+    assert_eq!(space.setting("space.icon".into()).unwrap(), None);
+}
+
+fn agent(session: &str) -> Provenance {
+    Provenance {
+        kind: ActorKind::Agent,
+        actor: "claude-code".into(),
+        session: Some(session.into()),
+        source: None,
+    }
+}
+
+#[test]
+fn history_says_who_changed_what() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let note = space
+        .create_node("Garden".into(), "Beds: tomato.".into(), me())
+        .unwrap();
+    space
+        .update_node(
+            note.id.clone(),
+            None,
+            Some("Beds: tomato, mint.".into()),
+            agent("5f1c"),
+        )
+        .unwrap();
+
+    let history = space.history(note.id.clone()).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].op, ChangeOp::Create);
+    assert_eq!(history[0].changed_by, me());
+    assert_eq!(history[1].op, ChangeOp::Update);
+    assert_eq!(history[1].body, "Beds: tomato, mint.");
+    assert_eq!(history[1].changed_by, agent("5f1c"));
+    assert!(history[1].seq > history[0].seq);
+    assert!(history[1].change_id.unwrap() > history[0].change_id.unwrap());
+    assert_eq!(history[1].restored_from, None);
+
+    let changes = space.changes_of(note.id.clone(), 10).unwrap();
+    assert_eq!(
+        changes
+            .iter()
+            .map(|c| c.action.as_str())
+            .collect::<Vec<_>>(),
+        ["node.update", "node.create"]
+    );
+    assert_eq!(changes[0].id, history[1].change_id.unwrap());
+    assert!(matches!(
+        space.history("nope".into()),
+        Err(KnodeError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn restores_a_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let note = space
+        .create_node("Garden".into(), "One.".into(), me())
+        .unwrap();
+    space
+        .update_node(note.id.clone(), None, Some("Two.".into()), agent("a"))
+        .unwrap();
+    let first = space.history(note.id.clone()).unwrap()[0].clone();
+
+    let restored = space.restore(note.id.clone(), first.seq, me()).unwrap();
+    assert_eq!(restored.body, "One.");
+    let history = space.history(note.id.clone()).unwrap();
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[2].restored_from, Some(first.seq));
+    assert_eq!(
+        space.changes_of(note.id.clone(), 1).unwrap()[0].action,
+        "node.restore"
+    );
+
+    // Restoring the version the node has writes nothing.
+    space.restore(note.id.clone(), first.seq, me()).unwrap();
+    assert_eq!(space.history(note.id.clone()).unwrap().len(), 3);
+    assert!(matches!(
+        space.restore(note.id, 9999, me()),
+        Err(KnodeError::Invalid { .. })
+    ));
+}
+
+#[test]
+fn undoes_a_change_and_reports_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let note = space
+        .create_node("Garden".into(), "One.".into(), me())
+        .unwrap();
+    space
+        .update_node(note.id.clone(), None, Some("Two.".into()), agent("a"))
+        .unwrap();
+    space
+        .update_node(note.id.clone(), None, Some("Three.".into()), me())
+        .unwrap();
+    let history = space.history(note.id.clone()).unwrap();
+    let (second, third) = (history[1].change_id.unwrap(), history[2].change_id.unwrap());
+
+    // Undoing the agent's change would overwrite the later one.
+    match space.undo(second, me(), false) {
+        Err(KnodeError::UndoConflict {
+            change,
+            later,
+            message,
+        }) => {
+            assert_eq!(change, second);
+            assert_eq!(later, [third]);
+            assert!(message.contains(&third.to_string()), "{message}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    assert_eq!(
+        space.get_node(note.id.clone()).unwrap().unwrap().body,
+        "Three."
+    );
+
+    // The last change undoes cleanly, once.
+    let undo = space.undo(third, me(), false).unwrap();
+    assert_eq!(undo.action, "undo");
+    assert_eq!(undo.undoes, Some(third));
+    assert_eq!(
+        space.get_node(note.id.clone()).unwrap().unwrap().body,
+        "Two."
+    );
+    assert!(matches!(
+        space.undo(third, me(), false),
+        Err(KnodeError::CannotUndo { .. })
+    ));
+
+    // Forced, the earlier change goes back past the later ones.
+    space.undo(second, me(), true).unwrap();
+    assert_eq!(
+        space.get_node(note.id.clone()).unwrap().unwrap().body,
+        "One."
+    );
+    assert!(matches!(
+        space.undo(123_456, me(), false),
+        Err(KnodeError::ChangeNotFound { id: 123_456 })
+    ));
+}
+
+#[test]
+fn reads_and_writes_the_default_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = knode_config::Paths {
+        home: dir.path().join("home"),
+        spaces_dir: dir.path().join("Knode"),
+    };
+    assert_eq!(default_space_in(&paths).unwrap(), None);
+    std::fs::create_dir_all(&paths.home).unwrap();
+    std::fs::write(paths.config_file(), "capture = false\n").unwrap();
+
+    let work = paths.space_path("Work").display().to_string();
+    set_default_space_in(&paths, Some(work.clone())).unwrap();
+    assert_eq!(default_space_in(&paths).unwrap(), Some(work.clone()));
+    let text = std::fs::read_to_string(paths.config_file()).unwrap();
+    assert!(text.contains("capture = false"), "{text}");
+
+    set_default_space_in(&paths, None).unwrap();
+    assert_eq!(default_space_in(&paths).unwrap(), None);
+
+    assert!(spaces_in_folder_of(&paths).unwrap().is_empty());
+    KnodeSpace::create(work.clone(), "Work".into()).unwrap();
+    assert_eq!(spaces_in_folder_of(&paths).unwrap(), [work]);
+}

@@ -10,11 +10,98 @@ public struct Space: Identifiable, Hashable, Sendable {
     public var name: String
     /// Where the `.knode` package lives, if it lives on disk.
     public var url: URL?
+    /// The `space.icon` setting: one emoji, or `nil` for the default icon.
+    public var icon: String?
 
-    public init(id: ID, name: String, url: URL? = nil) {
+    public init(id: ID, name: String, url: URL? = nil, icon: String? = nil) {
         self.id = id
         self.name = name
         self.url = url
+        self.icon = icon
+    }
+}
+
+/// The icon of a space: one emoji, kept in the `space.icon` setting of the space.
+public enum SpaceIcon {
+    /// The setting the icon is kept in.
+    static let settingKey = "space.icon"
+
+    /// Icons offered when choosing one.
+    static let suggestions = ["🌱", "💼", "🏠", "📚", "🧠", "🔬", "🎨", "🎵", "✈️", "🧪", "📝", "⭐️"]
+
+    /// The text as an icon: trimmed, and `nil` when it is empty.
+    /// - Throws: `SpaceStoreError.invalid` when it is not exactly one emoji.
+    static func normalized(_ text: String?) throws -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        guard isEmoji(text) else { throw SpaceStoreError.invalid("an icon is one emoji, such as 🌱") }
+        return text
+    }
+
+    /// True when the text is exactly one emoji.
+    static func isEmoji(_ text: String) -> Bool {
+        guard text.count == 1, let character = text.first else { return false }
+        let scalars = character.unicodeScalars
+        guard let first = scalars.first else { return false }
+        // Digits and `#` are emoji only with the emoji presentation selector or a keycap.
+        return first.properties.isEmojiPresentation
+            || (first.properties.isEmoji && scalars.count > 1)
+    }
+}
+
+/// Who made a change: a person, an agent or Knode itself.
+public struct Author: Hashable, Sendable {
+    public enum Kind: String, Sendable {
+        case person, agent, system
+    }
+
+    public var kind: Kind
+    /// The name of the person or the agent, such as `claude-code`.
+    public var name: String
+    /// The conversation or session the change came from.
+    public var session: String?
+    /// Where the content came from: a file, a URL, a project folder.
+    public var source: String?
+
+    public init(kind: Kind, name: String, session: String? = nil, source: String? = nil) {
+        self.kind = kind
+        self.name = name
+        self.session = session
+        self.source = source
+    }
+}
+
+/// One version of a note: the note right after a change (for a delete, right before it), and who
+/// made the change and when.
+public struct NoteVersion: Identifiable, Hashable, Sendable {
+    public enum Operation: String, Sendable {
+        case create, update, delete
+    }
+
+    /// The order of the version in the space; it only grows.
+    public var seq: Int64
+    public var id: Int64 { seq }
+    public var nodeID: Node.ID
+    public var operation: Operation
+    /// The change the version belongs to, which `SpaceStore.undo` takes; `nil` only in spaces
+    /// written before change history, which cannot be undone.
+    public var changeID: Int64?
+    /// When the version puts back an earlier one (an undo or a restore), the `seq` of that one.
+    public var restoredFrom: Int64?
+    public var changedAt: Date
+    public var author: Author
+    public var title: String
+    public var body: String
+
+    public init(seq: Int64, nodeID: Node.ID, operation: Operation, changeID: Int64?, restoredFrom: Int64? = nil, changedAt: Date, author: Author, title: String, body: String) {
+        self.seq = seq
+        self.nodeID = nodeID
+        self.operation = operation
+        self.changeID = changeID
+        self.restoredFrom = restoredFrom
+        self.changedAt = changedAt
+        self.author = author
+        self.title = title
+        self.body = body
     }
 }
 
@@ -84,6 +171,14 @@ public enum SpaceStoreError: Error, Equatable, LocalizedError {
     case invalid(String)
     /// A file or the database could not be read or written.
     case storage(String)
+    /// Undoing the change would overwrite later changes, listed oldest first; it can be forced.
+    case undoConflict(change: Int64, later: [Int64], message: String)
+    /// The change cannot be undone, or was already undone.
+    case cannotUndo(String)
+    /// Only a person may do this.
+    case personOnly(String)
+    /// The Knode settings (`config.toml`) could not be read or written.
+    case config(String)
 
     public var errorDescription: String? {
         switch self {
@@ -94,6 +189,12 @@ public enum SpaceStoreError: Error, Equatable, LocalizedError {
         case .unsupported(let message): "This space can't be opened: \(message)."
         case .invalid(let message): message.prefix(1).uppercased() + message.dropFirst() + "."
         case .storage(let message): "The space could not be read or saved: \(message)."
+        case .undoConflict(_, let later, _):
+            later.count == 1
+                ? "Someone changed this note after that change. Undoing it would also undo their later change."
+                : "This note changed \(later.count) times after that change. Undoing it would also undo those later changes."
+        case .cannotUndo(let message), .personOnly(let message), .config(let message):
+            message.prefix(1).uppercased() + message.dropFirst() + "."
         }
     }
 }

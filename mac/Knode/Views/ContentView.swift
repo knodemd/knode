@@ -1,3 +1,4 @@
+import AppKit
 import KnodeBrand
 import SwiftUI
 
@@ -23,6 +24,13 @@ struct ContentView: View {
             }
         }
         .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search")
+        .sheet(item: $model.sheet) { sheet in
+            switch sheet {
+            case .newSpace: NewSpaceSheet()
+            case .rename(let url): RenameSpaceSheet(url: url)
+            case .icon(let url): SpaceIconSheet(url: url)
+            }
+        }
         .tint(KnodeColor.indigo)
         .alert(
             "Something went wrong",
@@ -37,20 +45,16 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let selection = Binding<Space.ID?>(
-            get: { model.selectedSpaceID },
-            set: { id in Task { await model.selectSpace(id) } }
+        let selection = Binding<URL?>(
+            get: { model.selectedSpaceURL },
+            set: { url in Task { await model.selectSpace(at: url) } }
         )
         List(selection: selection) {
             Section {
-                ForEach(model.spaces) { space in
-                    Label {
-                        Text(space.name)
-                    } icon: {
-                        KnodeIconView(.knode).frame(width: 13, height: 13)
-                    }
-                    .tag(space.id)
-                    .help(space.url?.path(percentEncoded: false) ?? space.name)
+                ForEach(Array(model.sidebarSpaces.enumerated()), id: \.element.id) { index, item in
+                    SpaceRow(item: item, number: index + 1)
+                        .tag(item.url)
+                        .contextMenu { SpaceMenuItems(item: item) }
                 }
             } header: {
                 Text("SPACES").font(.knodeLine(11)).foregroundStyle(.secondary)
@@ -59,6 +63,10 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
+                Button("New Space…", systemImage: "plus") {
+                    model.sheet = .newSpace
+                }
+                .buttonStyle(.borderless)
                 Button("Open Space…", systemImage: "folder") {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
                 }
@@ -69,6 +77,89 @@ struct SidebarView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
+        }
+        .onAppear { model.reloadDefaultSpace() }
+    }
+}
+
+/// One space in the sidebar: its icon, its name, and a mark on the default space.
+struct SpaceRow: View {
+    let item: SpaceItem
+    let number: Int
+
+    var body: some View {
+        Label {
+            HStack(spacing: 6) {
+                Text(item.name)
+                    .lineLimit(1)
+                    .foregroundStyle(item.isMissing ? .secondary : .primary)
+                Spacer(minLength: 4)
+                if item.isDefault {
+                    Image(systemName: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Default space: agents and capture write here")
+                        .accessibilityLabel("Default space for agents")
+                }
+                if item.isMissing {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Not found where it was")
+                }
+            }
+        } icon: {
+            SpaceIconView(icon: item.icon)
+        }
+        .help(help)
+    }
+
+    private var help: String {
+        var lines = [item.isExample ? "Example space, kept in memory" : item.url.path(percentEncoded: false)]
+        if number <= 9 { lines.append("Command-\(number) switches to it") }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// The emoji of a space, or the Knode icon when it has none.
+struct SpaceIconView: View {
+    let icon: String?
+
+    var body: some View {
+        if let icon {
+            Text(icon).font(.system(size: 13))
+        } else {
+            KnodeIconView(.knode).frame(width: 13, height: 13)
+        }
+    }
+}
+
+/// What can be done to a space, in its context menu and in the Space menu.
+struct SpaceMenuItems: View {
+    @Environment(AppModel.self) private var model
+    let item: SpaceItem
+
+    var body: some View {
+        Button("Rename…", systemImage: "pencil") { model.sheet = .rename(item.url) }
+            .disabled(item.isMissing)
+        Button("Choose Icon…", systemImage: "face.smiling") { model.sheet = .icon(item.url) }
+            .disabled(item.isMissing)
+        if !item.isExample {
+            Divider()
+            if item.isDefault {
+                Button("Stop Using for Agents and Capture", systemImage: "sparkles") { model.setDefaultSpace(nil) }
+            } else {
+                Button("Use for Agents and Capture", systemImage: "sparkles") { model.setDefaultSpace(item.url) }
+                    .disabled(item.isMissing)
+            }
+            Button("Show in Finder", systemImage: "folder") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+            .disabled(item.isMissing)
+        }
+        Divider()
+        Button("Remove from List", systemImage: "minus.circle") {
+            Task { await model.removeFromList(item.url) }
         }
     }
 }
@@ -163,7 +254,7 @@ struct WelcomeView: View {
                 .buttonStyle(.borderedProminent)
                 .foregroundStyle(KnodeColor.ink)
                 Button("New Space…", systemImage: "plus.square.on.square") {
-                    if let url = SpacePanels.chooseNewSpace() { Task { await model.createSpace(at: url) } }
+                    model.sheet = .newSpace
                 }
                 Button("Try the Example Space", systemImage: "sparkles") {
                     Task { await model.openExampleSpace() }
