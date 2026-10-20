@@ -550,6 +550,92 @@ fn unresolved_links_resolve_when_the_title_appears() {
     assert!(space.unresolved_links(&source.id).unwrap().is_empty());
 }
 
+fn imported(space: &mut Space, title: &str, body: &str, path: &str) -> knode_format::Node {
+    let props = Properties::from([(property_keys::MARKDOWN_PATH.to_string(), path.to_string())]);
+    space
+        .create_node_with_properties(NewNode::note(title, body), &props, &me())
+        .unwrap()
+}
+
+fn mentions(space: &Space, node: &knode_format::Node) -> Vec<knode_format::NodeId> {
+    space
+        .links_from(&node.id)
+        .unwrap()
+        .into_iter()
+        .map(|l| l.to)
+        .collect()
+}
+
+#[test]
+fn path_links_resolve_by_the_file_a_node_came_from() {
+    let (_dir, mut space) = new_space();
+    let first = imported(&mut space, "README", "", "Work/README.md");
+    let second = imported(&mut space, "README", "", "Home/Taskbot/README.md");
+    let source = space
+        .create_node(
+            NewNode::note(
+                "Index",
+                "[[Home/Taskbot/README|taskbot]], [[taskbot/readme.md#Stack]] and [[README]]",
+            ),
+            &me(),
+        )
+        .unwrap();
+    // The full path, a shorter ending with `.md` and a heading, and the title as before.
+    let to = mentions(&space, &source);
+    assert_eq!(to.len(), 2);
+    assert!(to.contains(&second.id));
+    assert!(to.contains(&first.id));
+    assert!(space.unresolved_links(&source.id).unwrap().is_empty());
+}
+
+#[test]
+fn a_title_with_a_slash_still_wins_over_a_path() {
+    let (_dir, mut space) = new_space();
+    let by_path = imported(&mut space, "Plan", "", "Q4/Plan.md");
+    let by_title = space
+        .create_node(NewNode::note("Q4/Plan", ""), &me())
+        .unwrap();
+    let source = space
+        .create_node(NewNode::note("Source", "[[Q4/Plan]]"), &me())
+        .unwrap();
+    assert_eq!(mentions(&space, &source), [by_title.id]);
+    assert_ne!(by_path.id, by_title.id);
+}
+
+#[test]
+fn path_links_wait_for_the_file_to_be_imported() {
+    let (_dir, mut space) = new_space();
+    let source = space
+        .create_node(
+            NewNode::note(
+                "Index",
+                "[[Work/Plan]] and [[Notes/Ideas.md]] and [[Nope/Gone]]",
+            ),
+            &me(),
+        )
+        .unwrap();
+    assert_eq!(space.unresolved_links(&source.id).unwrap().len(), 3);
+
+    let plan = imported(&mut space, "Plan", "", "Vault/Work/Plan.md");
+    let ideas = space
+        .create_node(NewNode::note("Ideas", ""), &me())
+        .unwrap();
+    space
+        .set_property(
+            &ideas.id,
+            property_keys::MARKDOWN_PATH,
+            "Notes/Ideas.md",
+            &me(),
+        )
+        .unwrap();
+
+    let to = mentions(&space, &source);
+    assert_eq!(to.len(), 2);
+    assert!(to.contains(&plan.id));
+    assert!(to.contains(&ideas.id));
+    assert_eq!(space.unresolved_links(&source.id).unwrap(), ["Nope/Gone"]);
+}
+
 #[test]
 fn renaming_rewrites_the_links_that_point_here() {
     let (_dir, mut space) = new_space();

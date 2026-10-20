@@ -61,6 +61,10 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Obsidian links written as paths**: `[[Work/Projects/Plan]]`, `[[Projects/Plan.md]]` and other
+  endings of a file's path now link to the note imported from that file, as in Obsidian, so
+  vaults with several notes of the same name, such as a `README` in each folder, keep their
+  links. Titles are tried first, as before.
 - **Search by meaning on large spaces**: a search by meaning or hybrid search took minutes in a
   space of a few thousand notes (170 s on 2,700 notes and 20,000 chunks); it takes about 40 ms.
 - **A deep `KNODE_HOME`**: when the Knode Service socket would be longer than a Unix socket path

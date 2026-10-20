@@ -140,6 +140,9 @@ pub mod property_keys {
     pub const CONVERSATION_STARTED_AT: &str = "conversation.started_at";
     /// When the conversation last had a message, as RFC 3339 in UTC with milliseconds.
     pub const CONVERSATION_ENDED_AT: &str = "conversation.ended_at";
+    /// The file a node was last imported from, relative to the folder, with `/` between
+    /// folders, such as `Projects/Plan.md`. `[[Projects/Plan]]` links resolve by it.
+    pub const MARKDOWN_PATH: &str = "markdown.path";
 }
 
 /// The link kinds the format defines, built in. From schema version 4 a space defines kinds of

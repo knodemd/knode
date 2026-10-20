@@ -11,7 +11,8 @@ use crate::types::{ActorKind, ChangeOp};
 use crate::{
     BLOBS_DIR, ChangeId, DATABASE_FILE, EXTENSION, Error, FORMAT_VERSION, HistoryEntry,
     ImportedNode, Link, Manifest, NewNode, Node, NodeId, NodeSummary, NodeUpdate, Properties,
-    Provenance, Result, SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, schema,
+    Provenance, Result, SYNC_DIR, SearchHit, Timestamp, actions, kinds, link_kinds, property_keys,
+    schema,
 };
 use crate::{LinkDirection, attachments, links};
 
@@ -791,6 +792,9 @@ fn write_properties(
     )?;
     for (key, value) in properties {
         stmt.execute(params![id.to_string(), key, value, now.0, prov])?;
+        if key == property_keys::MARKDOWN_PATH {
+            resolve_waiting_paths(tx, id, value, prov, now)?;
+        }
     }
     Ok(())
 }
@@ -918,6 +922,68 @@ pub(crate) fn resolve(tx: &Connection, target: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// The key a file path is compared by when a `[[folder/note]]` link is resolved: its title key,
+/// without a leading `/` or `./` and without a trailing `.md`. `"./Projects/Plan.md"` and
+/// `"projects/plan"` have the same key.
+fn path_key(path: &str) -> String {
+    let key = knode_md::title_key(path);
+    let key = key.trim_start_matches("./").trim_start_matches('/');
+    key.strip_suffix(".md").unwrap_or(key).to_string()
+}
+
+/// The node a `[[folder/note]]` link names by the file it was imported from, as Obsidian does:
+/// the oldest node whose `markdown.path` is that path, or ends with it after a `/`. Only targets
+/// with a `/` are paths; tried after ids and titles, so a node titled `folder/note` still wins.
+pub(crate) fn resolve_path(tx: &Connection, target: &str) -> Result<Option<String>> {
+    let wanted = path_key(target);
+    if !wanted.contains('/') {
+        return Ok(None);
+    }
+    let suffix = format!("/{wanted}");
+    let mut stmt = tx.prepare_cached(
+        "SELECT p.node_id, p.value FROM properties p JOIN nodes n ON n.id = p.node_id
+         WHERE p.key = ?1 ORDER BY n.seq",
+    )?;
+    let mut rows = stmt.query([property_keys::MARKDOWN_PATH])?;
+    while let Some(row) = rows.next()? {
+        let value: String = row.get(1)?;
+        let key = path_key(&value);
+        if key == wanted || key.ends_with(&suffix) {
+            return Ok(Some(row.get(0)?));
+        }
+    }
+    Ok(None)
+}
+
+/// Turns the unresolved links waiting for the file `path` into `mentions` links to `id`:
+/// those written as the path or as any of its endings that still has a `/`, with or without
+/// `.md`. `Work/Projects/Plan.md` takes `[[Work/Projects/Plan]]` and `[[Projects/Plan.md]]`.
+fn resolve_waiting_paths(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    path: &str,
+    prov: i64,
+    now: Timestamp,
+) -> Result<()> {
+    let key = path_key(path);
+    let mut keys = Vec::new();
+    let mut rest = key.as_str();
+    while rest.contains('/') {
+        keys.push(rest.to_string());
+        keys.push(format!("{rest}.md"));
+        rest = rest.split_once('/').map_or("", |(_, r)| r);
+    }
+    for key in keys {
+        tx.execute(
+            "INSERT OR IGNORE INTO links (source_id, kind, target_id, created_at, created_by)
+             SELECT source_id, ?2, ?3, ?4, ?5 FROM unresolved_links WHERE target_key = ?1",
+            params![key, link_kinds::MENTIONS, id.to_string(), now.0, prov],
+        )?;
+        tx.execute("DELETE FROM unresolved_links WHERE target_key = ?1", [key])?;
+    }
+    Ok(())
+}
+
 /// Makes the `mentions` links and unresolved links of a node match the `[[links]]` in its body.
 /// Links that stay keep their creation time and provenance.
 fn apply_body_links(
@@ -940,6 +1006,9 @@ fn apply_body_links(
         let mut found = resolve(tx, &link.destination)?;
         if found.is_none() && link.heading.is_some() {
             found = resolve(tx, &link.target)?;
+        }
+        if found.is_none() {
+            found = resolve_path(tx, &link.target)?;
         }
         match found {
             Some(target) => {
