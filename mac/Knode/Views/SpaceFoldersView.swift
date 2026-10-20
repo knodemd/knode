@@ -5,36 +5,42 @@ import SwiftUI
 /// space's context menu.
 struct SpaceFoldersSheet: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     let url: URL
     @State private var folders: SpaceFoldersModel?
+    @State private var overlays = KOverlays()
 
     var body: some View {
-        Group {
+        KSheetSurface(width: 580) {
+            KSheetTitle(kicker: "Folders and capture", title: folders?.spaceName ?? url.deletingPathExtension().lastPathComponent, close: close)
             if let folders {
                 SpaceFoldersForm(folders: folders)
             } else {
-                ProgressView().frame(maxWidth: .infinity, minHeight: 200)
+                HStack { Spacer(); KSpinner(); Spacer() }.frame(minHeight: 200)
+            }
+            HStack {
+                Spacer()
+                Button(action: close) { HStack(spacing: 8) { KIcon(.done, size: .sm); Text("Done") } }
+                    .buttonStyle(KButtonStyle(kind: .primary))
+                    .keyboardShortcut(.defaultAction)
             }
         }
-        .frame(width: 540)
-        .frame(minHeight: 420)
-        .navigationTitle("Folders and Capture")
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done", systemImage: "checkmark") { dismiss() }
-            }
-        }
+        .frame(minHeight: 460, alignment: .top)
+        .kOverlayHost(overlays)
+        .knodeTheme()
         .task {
             folders = await model.foldersModel(at: url)
-            if folders == nil { dismiss() }
+            if folders == nil { close() }
             await folders?.load()
         }
         .onDisappear { folders?.stop() }
     }
+
+    private func close() {
+        if model.sheet != nil { model.sheet = nil }
+    }
 }
 
-/// The Spaces tab of Settings: the folders and capture of each space in the sidebar.
+/// Settings > Spaces: the folders and capture of each space in the sidebar.
 struct SpacesSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: URL?
@@ -45,20 +51,23 @@ struct SpacesSettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if spaces.isEmpty {
-                ContentUnavailableView("No Spaces", systemImage: "square.stack", description: Text("Create or open a space to choose the folders that feed it."))
+                KEmptyState(icon: .folder, title: "No spaces", message: "Create or open a space to choose the folders that feed it.")
             } else {
-                Picker("Space", selection: $selection) {
-                    ForEach(spaces) { item in
-                        Text(item.icon.map { "\($0) \(item.name)" } ?? item.name).tag(Optional(item.url))
+                KSettingsPane {
+                    KSettingRow("Space", detail: "The folders that feed it, and whether it captures agent conversations.") {
+                        KDropdown(selection: $selection, options: spaces.map { item in
+                            KOption(Optional(item.url), item.icon.map { "\($0) \(item.name)" } ?? item.name)
+                        })
+                        .frame(width: 220)
                     }
-                }
-                .padding([.horizontal, .top], 20)
-                if let folders, folders.spaceID == model.space(at: selection ?? URL(filePath: "/"))?.id {
-                    SpaceFoldersForm(folders: folders)
-                } else {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, KSpace.x1)
+                    if let folders, folders.spaceID == model.space(at: selection ?? URL(filePath: "/"))?.id {
+                        SpaceFoldersForm(folders: folders)
+                    } else {
+                        HStack { Spacer(); KSpinner(); Spacer() }.frame(minHeight: 200)
+                    }
                 }
             }
         }
@@ -77,68 +86,56 @@ struct SpacesSettingsView: View {
 /// routing works.
 struct SpaceFoldersForm: View {
     @Bindable var folders: SpaceFoldersModel
-    @State private var removing: SpaceFolder?
+    @Environment(\.kOverlays) private var overlays
 
     var body: some View {
-        Form {
-            Section {
-                Toggle(isOn: Binding(get: { folders.captureEnabled }, set: { on in Task { await folders.setCaptureEnabled(on) } })) {
-                    Text("Capture agent conversations into this space")
-                    Text("Off, nothing captured is written to \(folders.spaceName), whatever its folders say.")
-                }
-                .disabled(!folders.isLoaded || folders.isBusy)
-            } footer: {
+        VStack(alignment: .leading, spacing: KSpace.x6) {
+            KSettingsSection("Capture") {
+                KSettingToggle("Capture agent conversations into this space",
+                               detail: "Off, nothing captured is written to \(folders.spaceName), whatever its folders say.",
+                               isOn: Binding(get: { folders.captureEnabled }, set: { on in Task { await folders.setCaptureEnabled(on) } }))
+                    .disabled(!folders.isLoaded || folders.isBusy)
+                KHairline()
                 RoutingExplanation()
             }
 
-            Section {
-                if folders.isLoaded, folders.folders.isEmpty {
-                    Text("No folders yet. Add a project to capture the conversations agents hold in it.")
-                        .foregroundStyle(.secondary)
+            KSettingsSection("Folders") {
+                AddFolderMenu { kind, url, agent in
+                    Task { await folders.addFolder(kind, at: url, agent: agent) }
                 }
-                ForEach(folders.folders) { folder in
+                .disabled(!folders.isLoaded || folders.isBusy)
+            } content: {
+                if folders.isLoaded, folders.folders.isEmpty {
+                    KExplanation("No folders yet. Add a project to capture the conversations agents hold in it.", size: 13)
+                }
+                ForEach(Array(folders.folders.enumerated()), id: \.element.id) { offset, folder in
+                    if offset > 0 { KHairline() }
                     FolderRow(folder: folder, isBusy: folders.isBusy, setCapture: { on in
                         Task { await folders.setCapture(on, for: folder) }
-                    }, remove: { removing = folder })
-                }
-            } header: {
-                HStack {
-                    Text("Folders")
-                    Spacer()
-                    AddFolderMenu { kind, url, agent in
-                        Task { await folders.addFolder(kind, at: url, agent: agent) }
-                    }
-                    .disabled(!folders.isLoaded || folders.isBusy)
+                    }, remove: { confirmRemove(folder) })
                 }
             }
 
             if let error = folders.errorMessage {
-                Section {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
-                }
+                KErrorText(error)
             }
         }
-        .formStyle(.grouped)
-        .confirmationDialog(
-            "Remove \(removing.map { FolderRow.displayPath($0) } ?? "this folder")?",
-            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
-            presenting: removing
-        ) { folder in
-            Button("Remove Folder", role: .destructive) { Task { await folders.remove(folder) } }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("The space stops being fed by it. Nothing already captured or imported from it is removed.")
-        }
+    }
+
+    private func confirmRemove(_ folder: SpaceFolder) {
+        overlays?.confirmation = KConfirmation(
+            title: "Remove \(FolderRow.displayPath(folder))?",
+            message: "The space stops being fed by it. Nothing already captured or imported from it is removed.",
+            confirmTitle: "Remove folder",
+            isDestructive: true
+        ) { [folders] in Task { await folders.remove(folder) } }
     }
 }
 
 /// How captured conversations find their space, in two sentences (specification, section 15.5).
 struct RoutingExplanation: View {
     var body: some View {
-        Text("A conversation an agent holds in a project folder is captured into every space that lists the folder with capture on; one held anywhere else goes to the space used for agents and capture. Turn capture off for a project and nothing of it is kept, in any space.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        KExplanation("A conversation an agent holds in a project folder is captured into every space that lists the folder with capture on; one held anywhere else goes to the space used for agents and capture. Turn capture off for a project and nothing of it is kept, in any space.")
     }
 }
 
@@ -148,39 +145,36 @@ struct FolderRow: View {
     let isBusy: Bool
     let setCapture: (Bool) -> Void
     let remove: () -> Void
+    @Environment(\.kTheme) private var theme
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: Self.symbol(folder.knownKind))
-                .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: KSpace.x3) {
+            KIcon(Self.glyph(folder.knownKind), size: .sm, color: theme.muted)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(Self.displayPath(folder))
+                    .font(KFont.mono(12))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(folder.localURL?.path(percentEncoded: false) ?? folder.path)
+                    .kTooltip(folder.localURL?.path(percentEncoded: false) ?? folder.path)
                 HStack(spacing: 6) {
-                    Text(kindLabel)
+                    Text(kindLabel).font(KFont.ui(12)).foregroundStyle(theme.muted)
                     if folder.isMissing {
-                        Label("Not on this Mac", systemImage: "exclamationmark.triangle")
-                            .help("The folder is kept and skipped until it exists here.")
+                        KChip("Not on this Mac", icon: .warning)
+                            .kTooltip("The folder is kept and skipped until it exists here.")
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: KSpace.x2)
             if folder.knownKind != nil {
-                Toggle(captureLabel, isOn: Binding(get: { folder.capture }, set: setCapture))
-                    .toggleStyle(.switch)
+                Toggle(captureLabel, isOn: Binding(get: { folder.capture }, set: { setCapture($0) }))
+                    .toggleStyle(KToggleStyle())
                     .labelsHidden()
-                    .help(captureLabel)
+                    .fixedSize()
+                    .kTooltip(captureLabel)
                     .disabled(isBusy)
             }
-            Button("Remove", systemImage: "trash", action: remove)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help("Remove this folder from the space")
+            KIconButton(.delete, title: "Remove this folder from the space", size: .small, action: remove)
                 .disabled(isBusy)
         }
         .accessibilityElement(children: .contain)
@@ -199,12 +193,12 @@ struct FolderRow: View {
         folder.knownKind == .project ? "Capture conversations held in this project" : "Read this folder"
     }
 
-    static func symbol(_ kind: SpaceFolder.Kind?) -> String {
+    static func glyph(_ kind: SpaceFolder.Kind?) -> KGlyph {
         switch kind {
-        case .project: "hammer"
-        case .notes: "doc.text"
-        case .agent: "sparkles"
-        case nil: "folder"
+        case .project: .code
+        case .notes: .note
+        case .agent: .chat
+        case nil: .folder
         }
     }
 
@@ -219,20 +213,25 @@ struct AddFolderMenu: View {
     let add: (SpaceFolder.Kind, URL, String?) -> Void
 
     var body: some View {
-        Menu("Add Folder", systemImage: "plus") {
-            Button("Project Folder…", systemImage: FolderRow.symbol(.project)) {
-                choose(.project, message: "Agent conversations held in this folder, or in any folder inside it, are captured into this space.")
+        KMenuButton(style: .secondary) {
+            var entries: [KMenuEntry] = [
+                .action("Project folder", icon: FolderRow.glyph(.project)) {
+                    choose(.project, message: "Agent conversations held in this folder, or in any folder inside it, are captured into this space.")
+                },
+                .action("Notes folder", icon: FolderRow.glyph(.notes)) {
+                    choose(.notes, message: "A folder of Markdown notes for this space.")
+                },
+                .divider,
+                .section("Agent folder"),
+            ]
+            for agent in CaptureAgent.all {
+                entries.append(.action(agent.name, icon: FolderRow.glyph(.agent)) {
+                    choose(.agent, agent: agent.id, message: "A folder where \(agent.name) keeps its sessions, read by capture besides its usual folder.")
+                })
             }
-            Button("Notes Folder…", systemImage: FolderRow.symbol(.notes)) {
-                choose(.notes, message: "A folder of Markdown notes for this space.")
-            }
-            Menu("Agent Folder", systemImage: FolderRow.symbol(.agent)) {
-                ForEach(CaptureAgent.all) { agent in
-                    Button("\(agent.name)…") {
-                        choose(.agent, agent: agent.id, message: "A folder where \(agent.name) keeps its sessions, read by capture besides its usual folder.")
-                    }
-                }
-            }
+            return entries
+        } label: {
+            HStack(spacing: 6) { KIcon(.add, size: .sm); Text("Add folder") }
         }
         .fixedSize()
     }
