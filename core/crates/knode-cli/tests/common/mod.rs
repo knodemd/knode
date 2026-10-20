@@ -50,6 +50,8 @@ impl Sandbox {
             .env("PATH", self.path("bin"))
             // Agent keys go to files in the sandbox, never to the Keychain of the machine.
             .env("KNODE_KEY_STORE", "file")
+            // Search by meaning would download a model: tests that want it turn it on.
+            .env("KNODE_EMBEDDINGS", "off")
             .current_dir(self.dir.path());
         cmd
     }

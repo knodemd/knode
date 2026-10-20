@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use knode_format::{
     Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
-    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchHit,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchMode,
     View,
 };
 use knode_service::{Client, Error};
 
 use crate::backend::{
-    Backend, BackendError, BackendResult, BodyDoc, LocalFolder, ReadVersions, Written,
-    append_splice,
+    Backend, BackendError, BackendResult, BodyDoc, LocalFolder, ReadVersions, SearchResults,
+    Written, append_splice,
 };
 
 type Connect = dyn Fn() -> knode_service::Result<Client> + Send + Sync;
@@ -142,8 +142,13 @@ impl ServiceBackend {
 }
 
 impl Backend for ServiceBackend {
-    fn search(&self, query: &str, limit: usize) -> BackendResult<Vec<SearchHit>> {
-        self.with(|c, s| c.search(s, query, limit))
+    fn search(&self, query: &str, mode: SearchMode, limit: usize) -> BackendResult<SearchResults> {
+        let found = self.with(|c, s| c.search_with_mode(s, query, mode, limit))?;
+        Ok(SearchResults {
+            mode: found.mode,
+            hits: found.hits,
+            note: found.note,
+        })
     }
 
     fn get_node(&self, id: &NodeId) -> BackendResult<Option<Node>> {

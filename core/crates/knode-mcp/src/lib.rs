@@ -35,7 +35,8 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
 pub use backend::{
-    Backend, BackendError, BackendResult, BodyDoc, DirectBackend, LocalFolder, Written,
+    Backend, BackendError, BackendResult, BodyDoc, DirectBackend, LocalFolder, SearchResults,
+    Written,
 };
 #[cfg(unix)]
 pub use service::ServiceBackend;

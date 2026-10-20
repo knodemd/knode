@@ -22,8 +22,8 @@ mod error;
 mod indexer;
 mod model;
 mod rrf;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use chunk::{
     CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS, CHUNKING, Chunk, chunk, embedding_text, estimate_tokens,
