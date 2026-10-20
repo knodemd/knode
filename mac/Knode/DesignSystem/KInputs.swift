@@ -65,12 +65,13 @@ struct KSegmented<Value: Hashable>: View {
 struct KTabs<Value: Hashable>: View {
     @Binding var selection: Value
     var options: [KOption<Value>]
+    var spacing: CGFloat = KSpace.x5
     @Environment(\.kTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var underline
 
     var body: some View {
-        HStack(spacing: KSpace.x5) {
+        HStack(spacing: spacing) {
             ForEach(options) { option in
                 let selected = option.value == selection
                 Button {

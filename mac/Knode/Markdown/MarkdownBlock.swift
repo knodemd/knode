@@ -146,9 +146,13 @@ enum InlineMarkdown {
         var rest = Substring(text)
         while let open = rest.range(of: "[["), let close = rest[open.upperBound...].range(of: "]]") {
             output += rest[..<open.lowerBound]
-            let title = String(rest[open.upperBound..<close.lowerBound])
+            // `[[Title|shown text]]` links to Title and reads as the text after the bar.
+            let inner = rest[open.upperBound..<close.lowerBound]
+            let parts = inner.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            let title = String(parts[0])
+            let shown = parts.count > 1 && !parts[1].isEmpty ? String(parts[1]) : title
             let escaped = title.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
-            output += "[\(title)](knode://node/\(escaped))"
+            output += "[\(shown)](knode://node/\(escaped))"
             rest = rest[close.upperBound...]
         }
         return output + rest

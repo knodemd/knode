@@ -38,6 +38,7 @@ struct KnodeApp: App {
     var body: some Scene {
         Window("Knode", id: "main") {
             ContentView()
+                .knodeTheme(background: true)
                 .environment(model)
                 .environment(agents)
 
@@ -57,6 +58,7 @@ struct KnodeApp: App {
                     }
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 760)
         .commands {
             SpaceCommands(model: model)
@@ -64,8 +66,8 @@ struct KnodeApp: App {
             DesignGalleryCommands()
             #endif
             CommandGroup(after: .appInfo) {
-                Button("Install Command Line Tool…", systemImage: "terminal") { appDelegate.installer.install() }
-                Button("Uninstall Command Line Tool…", systemImage: "trash") { appDelegate.installer.uninstall() }
+                Button("Install Command Line Tool…") { appDelegate.installer.install() }
+                Button("Uninstall Command Line Tool…") { appDelegate.installer.uninstall() }
             }
         }
 
@@ -80,6 +82,7 @@ struct KnodeApp: App {
         Window("Design Gallery", id: DesignGallery.windowID) {
             DesignGallery()
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1040, height: 820)
         #endif
 
@@ -114,24 +117,24 @@ struct SpaceCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Note", systemImage: "square.and.pencil") {
+            Button("New Note") {
                 Task { await model.createNode() }
             }
             .keyboardShortcut("n")
             .disabled(model.selectedSpaceID == nil)
 
-            Button("New Canvas", systemImage: "rectangle.on.rectangle.angled") {
+            Button("New Canvas") {
                 Task { await model.createCanvas() }
             }
             .keyboardShortcut("n", modifiers: [.command, .option])
             .disabled(!model.hasMap)
 
-            Button("New Space…", systemImage: "plus.square.on.square") {
+            Button("New Space…") {
                 model.sheet = .newSpace
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
 
-            Button("Open Space…", systemImage: "folder") {
+            Button("Open Space…") {
                 if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
             }
             .keyboardShortcut("o")
@@ -143,7 +146,7 @@ struct SpaceCommands: Commands {
                     }
                 }
                 Divider()
-                Button("Clear Menu", systemImage: "trash") { model.clearRecentSpaces() }
+                Button("Clear Menu") { model.clearRecentSpaces() }
                     .disabled(model.recentSpaceURLs.isEmpty)
             }
         }
@@ -171,13 +174,13 @@ struct SpaceCommands: Commands {
         // whole saved changes of the note, through its history, so they also reach changes made
         // before the note was opened, from this app or the knode command.
         CommandGroup(after: .undoRedo) {
-            Button("Undo Last Change to Note", systemImage: "arrow.uturn.backward.circle") {
+            Button("Undo Last Change to Note") {
                 Task { if await !model.undoLastChange() { NSSound.beep() } }
             }
             .keyboardShortcut("z", modifiers: [.command, .option])
             .disabled(model.editor == nil)
 
-            Button("Redo Last Change to Note", systemImage: "arrow.uturn.forward.circle") {
+            Button("Redo Last Change to Note") {
                 Task { if await !model.redoLastChange() { NSSound.beep() } }
             }
             .keyboardShortcut("z", modifiers: [.command, .option, .shift])
@@ -185,25 +188,25 @@ struct SpaceCommands: Commands {
         }
 
         CommandGroup(after: .sidebar) {
-            Button(model.mode == .graph ? "Show Notes" : "Show Graph", systemImage: "point.3.connected.trianglepath.dotted") {
+            Button(model.mode == .graph ? "Show Notes" : "Show Graph") {
                 model.toggleGraph()
             }
             .keyboardShortcut("m", modifiers: [.command, .shift])
             .disabled(!model.hasMap)
 
-            Button(model.isShowingLinks ? "Hide Links" : "Show Links", systemImage: "link") {
+            Button(model.isShowingLinks ? "Hide Links" : "Show Links") {
                 model.toggleLinks()
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
             .disabled(model.editor == nil || model.links == nil)
 
-            Button(model.isShowingAttachments ? "Hide Attachments" : "Show Attachments", systemImage: "paperclip") {
+            Button(model.isShowingAttachments ? "Hide Attachments" : "Show Attachments") {
                 model.isShowingAttachments.toggle()
             }
             .keyboardShortcut("a", modifiers: [.command, .shift])
             .disabled(model.editor == nil || !model.canAttach)
 
-            Button(model.isShowingHistory ? "Hide History" : "Show History", systemImage: "clock.arrow.circlepath") {
+            Button(model.isShowingHistory ? "Hide History" : "Show History") {
                 model.toggleHistory()
             }
             .keyboardShortcut("y")
