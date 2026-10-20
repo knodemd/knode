@@ -4,7 +4,9 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/src/agents.rs
-$(SRCROOT)/../core/crates/knode-cli/src/connect.rs
+$(SRCROOT)/../core/crates/knode-cli/src/connect/json.rs
+$(SRCROOT)/../core/crates/knode-cli/src/connect/mod.rs
+$(SRCROOT)/../core/crates/knode-cli/src/connect/places.rs
 $(SRCROOT)/../core/crates/knode-cli/src/history.rs
 $(SRCROOT)/../core/crates/knode-cli/src/import.rs
 $(SRCROOT)/../core/crates/knode-cli/src/main.rs
@@ -39,6 +41,12 @@ $(SRCROOT)/../core/crates/knode-ingest/src/codex.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/copilot.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/cursor.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/discover.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/chatgpt.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/claude_ai.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/gemini.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/html.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/mod.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/exports/source.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/filter.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/gemini.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/lib.rs
