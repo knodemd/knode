@@ -139,6 +139,77 @@ import Testing
         #expect(makeModel(settings: MemoryKnodeSettings(defaultSpace: work)).sidebarSpaces.isEmpty)
     }
 
+    @Test func theFirstLaunchListsTheSpacesKnodeKnows() throws {
+        let home = folder.appending(path: "Home.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let model = makeModel(settings: MemoryKnodeSettings(spaces: [home]))
+        #expect(model.sidebarSpaces.map(\.url) == [home.standardizedFileURL])
+    }
+
+    // MARK: The spaces Knode knows
+
+    @Test func spacesTheAppCreatesOrOpensAreKnownToCapture() async throws {
+        let settings = MemoryKnodeSettings()
+        let model = makeModel(settings: settings)
+        await model.createSpace(named: "Work", in: folder, makeDefault: true)
+        await model.createSpace(named: "Personal", in: folder)
+        let (work, personal) = (model.sidebarSpaces[0].url, model.sidebarSpaces[1].url)
+        #expect(settings.knownSpaces() == [work, personal])
+
+        // A new default keeps the previous one known.
+        model.setDefaultSpace(personal)
+        #expect(settings.knownSpaces() == [personal, work])
+        await model.openExampleSpace()
+        #expect(settings.knownSpaces().count == 2)
+    }
+
+    @Test func removingFromTheListKeepsTheSpaceKnownUnlessAsked() async throws {
+        let settings = MemoryKnodeSettings()
+        let model = makeModel(settings: settings)
+        await model.createSpace(named: "Work", in: folder, makeDefault: true)
+        await model.createSpace(named: "Personal", in: folder)
+        let (work, personal) = (model.sidebarSpaces[0].url, model.sidebarSpaces[1].url)
+
+        await model.removeFromList(personal)
+        #expect(model.sidebarSpaces.map(\.url) == [work])
+        #expect(settings.knownSpaces() == [work, personal])
+
+        await model.removeFromList(work, forget: true)
+        #expect(model.sidebarSpaces.isEmpty)
+        #expect(settings.knownSpaces() == [personal])
+        #expect(model.defaultSpaceURL == nil)
+    }
+
+    // MARK: Folders and capture
+
+    @Test func theFoldersScreenAddsChangesAndRemovesFolders() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Work", in: folder)
+        let url = try #require(model.sidebarSpaces.first?.url)
+        let folders = try #require(await model.foldersModel(at: url))
+        defer { folders.stop() }
+        await folders.load()
+        #expect(folders.spaceName == "Work")
+        #expect(folders.captureEnabled && folders.folders.isEmpty)
+
+        let project = folder.appending(path: "site", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        await folders.addFolder(.project, at: project)
+        await folders.addFolder(.agent, at: folder.appending(path: "gone"), agent: "codex")
+        #expect(folders.folders.map(\.knownKind) == [.project, .agent])
+        #expect(folders.folders.map(\.isMissing) == [false, true])
+        #expect(folders.folders.last?.agent == "codex")
+
+        await folders.setCapture(false, for: folders.folders[0])
+        #expect(folders.folders[0].capture == false)
+        await folders.setCaptureEnabled(false)
+        #expect(!folders.captureEnabled)
+
+        await folders.remove(folders.folders[0])
+        #expect(folders.folders.map(\.knownKind) == [.agent])
+        #expect(folders.errorMessage == nil)
+    }
+
     @Test func theExampleSpaceIsListedButNotKept() async {
         let model = makeModel()
         await model.openExampleSpace()
