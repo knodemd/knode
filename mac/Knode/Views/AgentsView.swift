@@ -8,6 +8,9 @@ struct SettingsView: View {
             Tab("Agents", systemImage: "sparkles") {
                 AgentsSettingsView()
             }
+            Tab("Spaces", systemImage: "folder.badge.gearshape") {
+                SpacesSettingsView()
+            }
         }
         .frame(width: 600, height: 560)
     }

@@ -19,6 +19,8 @@ public actor PreviewSpaceStore: SpaceStore {
         var views: [MapView] = []
         var positions: [MapView.ID: [Node.ID: ViewPosition]] = [:]
         var groups: [MapView.ID: [ViewGroupInfo]] = [:]
+        var captureEnabled = true
+        var folders: [SpaceFolder] = []
     }
 
     private var spaces: [Space.ID: Entry] = [:]
@@ -111,6 +113,48 @@ public actor PreviewSpaceStore: SpaceStore {
         let icon = try SpaceIcon.normalized(icon)
         _ = try entry(space)
         spaces[space]?.space.icon = icon
+    }
+
+    public func spaceDetails(_ space: Space.ID) async throws -> Space {
+        try entry(space).space
+    }
+
+    public func captureEnabled(in space: Space.ID) async throws -> Bool {
+        try entry(space).captureEnabled
+    }
+
+    public func setCaptureEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        _ = try entry(space)
+        spaces[space]?.captureEnabled = enabled
+    }
+
+    public func folders(of space: Space.ID) async throws -> [SpaceFolder] {
+        try entry(space).folders
+    }
+
+    /// Keeps the folder as given, with no check of its rules: the example space never captures.
+    public func setFolder(_ folder: FolderDraft, in space: Space.ID) async throws -> SpaceFolder {
+        let folders = try entry(space).folders
+        guard SpaceFolder.Kind(rawValue: folder.kind) != nil else { throw SpaceStoreError.invalid("a folder is a project, notes or agent folder") }
+        let path = folder.path.hasPrefix(NSHomeDirectory() + "/") ? "~" + folder.path.dropFirst(NSHomeDirectory().count) : folder.path
+        let index = folders.firstIndex { $0.id == folder.id || ($0.kind == folder.kind && $0.path == path) }
+        let local = URL(filePath: folder.path.hasPrefix("~/") ? NSHomeDirectory() + folder.path.dropFirst() : folder.path, directoryHint: .isDirectory)
+        let saved = SpaceFolder(
+            id: index.map { folders[$0].id } ?? ULID.make(at: now()),
+            kind: folder.kind,
+            path: path,
+            capture: folder.capture,
+            rules: folder.rules,
+            localURL: local,
+            isMissing: !FileManager.default.fileExists(atPath: local.path(percentEncoded: false))
+        )
+        if let index { spaces[space]?.folders[index] = saved } else { spaces[space]?.folders.append(saved) }
+        return saved
+    }
+
+    public func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws {
+        _ = try entry(space)
+        spaces[space]?.folders.removeAll { $0.id == folder }
     }
 
     public func closeSpace(_ space: Space.ID) async {
