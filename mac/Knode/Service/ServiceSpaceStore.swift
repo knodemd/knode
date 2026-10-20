@@ -6,7 +6,7 @@ import Foundation
 /// It connects on first use and again after the service restarts. While Knode Service is not
 /// running every call fails with `ServiceError.unavailable`; `RoutingSpaceStore` then uses the
 /// core in the app instead.
-public actor ServiceSpaceStore: SpaceStore {
+public actor ServiceSpaceStore: CoeditingStore {
     /// The most nodes a list shows: the most `recent` answers with.
     static let listLimit: Int64 = 1000
     /// The most results a search shows.
@@ -168,6 +168,22 @@ public actor ServiceSpaceStore: SpaceStore {
 
     static let notYet = SpaceStoreError.unsupported("Knode Service cannot do this yet")
 
+    // MARK: Editing together
+
+    public func openBody(_ node: Node.ID, in space: Space.ID) async throws -> BodyDocument {
+        let path = try path(space)
+        let open = try await call("doc.open", ["space": .string(path), "id": .string(node)], as: WireDocument.self, node: node)
+        return BodyDocument(text: open.text, version: open.version)
+    }
+
+    public func editBody(_ node: Node.ID, in space: Space.ID, version: String, splices: [TextSplice]) async throws -> BodyEditResult {
+        let path = try path(space)
+        let wire: [JSONValue] = splices.map { ["at": .int(Int64($0.at)), "delete": .int(Int64($0.delete)), "insert": .string($0.insert)] }
+        let params: [String: JSONValue] = ["space": .string(path), "id": .string(node), "version": .string(version), "splices": .array(wire), "by": author]
+        let edit = try await call("doc.edit", params, as: WireDocEdit.self, node: node)
+        return BodyEditResult(version: edit.version, seen: edit.seen, text: edit.text)
+    }
+
     // MARK: Connection
 
     /// The open connection, or a new one subscribed to every change.
@@ -202,7 +218,13 @@ public actor ServiceSpaceStore: SpaceStore {
                   let space = spaces.first(where: { $0.value.path == change.space })?.key
             else { return }
             if change.op == "delete" { excerpts[change.nodeId] = nil }
-            broadcast.yield(SpaceChange(space: space, nodeID: change.nodeId, kind: SpaceChange.Kind(rawValue: change.op) ?? .reload))
+            broadcast.yield(SpaceChange(
+                space: space,
+                nodeID: change.nodeId,
+                kind: SpaceChange.Kind(rawValue: change.op) ?? .reload,
+                version: change.version,
+                author: change.by.map(Author.init)
+            ))
         case "lagged":
             for id in spaces.keys { broadcast.yield(SpaceChange(space: id, nodeID: nil, kind: .reload)) }
         default:
@@ -226,7 +248,7 @@ public actor ServiceSpaceStore: SpaceStore {
         case "not_found": return node.map(SpaceStoreError.nodeNotFound) ?? SpaceStoreError.invalid(message)
         case "not_a_space": return url.map(SpaceStoreError.notASpace) ?? SpaceStoreError.invalid(message)
         case "already_exists": return url.map(SpaceStoreError.alreadyExists) ?? SpaceStoreError.invalid(message)
-        case "invalid", "invalid_params": return SpaceStoreError.invalid(message)
+        case "invalid", "invalid_params", "unknown_version": return SpaceStoreError.invalid(message)
         case "unsupported": return SpaceStoreError.unsupported(message)
         case "storage": return SpaceStoreError.storage(message)
         default: return SpaceStoreError.storage(message)
@@ -325,6 +347,21 @@ struct Changed: Decodable, Sendable {
     var space: String
     var nodeId: String
     var op: String
+    /// The version of the body's document, for a body written through it.
+    var version: String?
+    /// Who wrote it, for a body written through its document.
+    var by: WireProvenance?
+}
+
+struct WireDocument: Decodable, Sendable {
+    var text: String
+    var version: String
+}
+
+struct WireDocEdit: Decodable, Sendable {
+    var version: String
+    var seen: String
+    var text: String?
 }
 
 extension Node {

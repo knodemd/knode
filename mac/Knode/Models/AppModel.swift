@@ -433,7 +433,9 @@ final class AppModel {
             await canvas?.flush()
             canvas?.forgetUndo()
             canvas = makeCanvas(for: node, in: space)
-            editor = makeEditor(node, in: space)
+            let opened = await makeEditor(node, in: space)
+            guard space == selectedSpaceID else { return }
+            editor = opened
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -466,8 +468,8 @@ final class AppModel {
         }
     }
 
-    private func makeEditor(_ node: Node, in space: Space.ID) -> NoteEditorModel {
-        let editor = NoteEditorModel(node: node, spaceID: space, store: store(for: space), saveDelay: saveDelay)
+    private func makeEditor(_ node: Node, in space: Space.ID) async -> NoteEditorModel {
+        let editor = await NoteEditorModel.open(node, spaceID: space, store: store(for: space), saveDelay: saveDelay)
         editor.onSave = { [weak self] node in
             self?.didSave(node)
             Task { await self?.history?.load() }
@@ -517,7 +519,9 @@ final class AppModel {
             let node = try await store(for: editor.spaceID).node(editor.nodeID, in: editor.spaceID)
             guard self.editor === editor else { return }
             // A new editor comes with a new history, loaded when the panel shows.
-            self.editor = makeEditor(node, in: editor.spaceID)
+            let reopened = await makeEditor(node, in: editor.spaceID)
+            guard self.editor === editor else { return }
+            self.editor = reopened
             await reload()
         } catch SpaceStoreError.nodeNotFound {
             if self.editor === editor { self.editor = nil }
@@ -617,11 +621,22 @@ final class AppModel {
             Task { await canvas.load() }
         }
         guard let editor, change.nodeID == editor.nodeID || change.kind == .reload else { return }
+        if editor.isShared, change.kind == .update || change.kind == .reload {
+            // Edited together: the open text follows, without losing what the person types.
+            editor.remoteChanged(version: change.version, author: change.author)
+            if change.version == nil, let node = try? await store(for: change.space).node(editor.nodeID, in: change.space) {
+                editor.remoteTitle(node.title)
+            }
+            return
+        }
+        if let author = change.author { editor.remoteChanged(version: nil, author: author) }
         do {
             let node = try await store(for: change.space).node(editor.nodeID, in: change.space)
             // The app's own saves come back as changes too: those are already shown.
             guard self.editor === editor, !editor.hasUnsavedChanges, node.updatedAt > editor.updatedAt else { return }
-            self.editor = makeEditor(node, in: change.space)
+            let reopened = await makeEditor(node, in: change.space)
+            guard self.editor === editor else { return }
+            self.editor = reopened
         } catch SpaceStoreError.nodeNotFound {
             if self.editor === editor { self.editor = nil }
         } catch {
