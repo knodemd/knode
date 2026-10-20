@@ -8,6 +8,16 @@ use sha2::{Digest, Sha256};
 use crate::model::{MANIFEST_FILE, ModelFile, ModelSpec, models_dir};
 use crate::{Error, Result};
 
+/// The slowest average speed a model file may arrive at: 256 KiB/s.
+const MIN_BYTES_PER_SECOND: u64 = 256 * 1024;
+
+/// How long a file of `size` bytes may take to arrive once its download starts: at least a
+/// minute, and long enough at [`MIN_BYTES_PER_SECOND`]. ureq's body timeout covers the whole
+/// body, not each read, so one fixed value would fail every large file on a slow connection.
+fn body_timeout(size: u64) -> Duration {
+    Duration::from_secs(60.max(size.div_ceil(MIN_BYTES_PER_SECOND)))
+}
+
 /// Where a model download is, reported to the callback of [`ensure_model`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
@@ -69,7 +79,6 @@ impl Downloader {
     pub fn new() -> Downloader {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(30)))
-            .timeout_recv_body(Some(Duration::from_secs(60)))
             .build()
             .new_agent();
         Downloader {
@@ -139,6 +148,9 @@ impl Downloader {
         let mut response = self
             .agent
             .get(&url)
+            .config()
+            .timeout_recv_body(Some(body_timeout(file.size)))
+            .build()
             .call()
             .map_err(|err| failed(err.to_string()))?;
         // One byte over the expected size is enough to tell a wrong file apart.
@@ -289,6 +301,19 @@ mod tests {
             passage_prefix: String::new(),
             pooling: Pooling::Mean,
         }
+    }
+
+    #[test]
+    fn a_large_file_has_time_to_arrive_on_a_slow_connection() {
+        assert_eq!(body_timeout(0), Duration::from_secs(60));
+        assert_eq!(body_timeout(1 << 20), Duration::from_secs(60));
+        // The model's weights, about 470 MB, get half an hour.
+        let weights = body_timeout(470_641_600);
+        assert!(weights >= Duration::from_secs(29 * 60), "{weights:?}");
+        assert_eq!(
+            weights.as_secs(),
+            470_641_600_u64.div_ceil(MIN_BYTES_PER_SECOND)
+        );
     }
 
     #[test]
