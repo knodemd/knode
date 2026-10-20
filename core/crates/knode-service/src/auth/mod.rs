@@ -201,14 +201,22 @@ fn access(method: &str) -> Access {
         | methods::LINKS_UNRESOLVED
         | methods::SEARCH
         | methods::RECENT
-        | methods::HISTORY => Access::Read,
+        | methods::HISTORY
+        | methods::CHANGES
+        | methods::CHANGE
+        | methods::VAULT_EXPORT
+        | methods::MARKDOWN_FOLDER_GET => Access::Read,
         methods::NODE_CREATE
         | methods::NODE_UPDATE
         | methods::NODE_DELETE
         | methods::LINK_CREATE
-        | methods::LINK_DELETE => Access::Write,
+        | methods::LINK_DELETE
+        | methods::UNDO
+        | methods::RESTORE
+        | methods::VAULT_IMPORT => Access::Write,
         methods::SERVICE_STATUS => Access::Status,
-        // Creating spaces, managing agents and anything not listed here are for people only.
+        // Creating spaces, managing agents, purge, the live Markdown folder and anything not
+        // listed here are for people only.
         _ => Access::PersonOnly,
     }
 }
@@ -230,6 +238,35 @@ pub(crate) fn dispatch(
             _ => call(state, method, raw),
         },
         Session::Agent(agent) => agent_call(state, agent, method, raw),
+    }
+}
+
+/// An agent may only undo a change it made itself, and never with `force`: overwriting later
+/// changes, or anyone else's, is for the person to decide.
+fn own_undo(state: &State, agent: &AgentSession, path: &Path, raw: &Value) -> Result<(), RpcError> {
+    if raw.get("force").and_then(Value::as_bool) == Some(true) {
+        return Err(forbidden(
+            "agents cannot force an undo; ask the person to run `knode undo <change> --force`",
+        ));
+    }
+    let Some(change) = raw.get("change").and_then(Value::as_i64) else {
+        return Ok(()); // The params are checked, and refused, by the call itself.
+    };
+    let space = state.space(path)?;
+    let space = lock_ignoring_poison(&space);
+    let Some(found) = space.change(change)? else {
+        return Ok(()); // Answered as not found by the call.
+    };
+    let by = &found.change.changed_by;
+    if by.kind == ActorKind::Agent && by.actor == agent.name {
+        Ok(())
+    } else {
+        Err(forbidden(format!(
+            "change {change} was made by {} ({}), not by {}; agents only undo their own              changes. Ask the person, who can run `knode undo {change}`",
+            by.actor,
+            by.kind.as_str(),
+            agent.name
+        )))
     }
 }
 
@@ -341,7 +378,21 @@ fn agent_call(
             agent.name
         )));
     }
+    if method == methods::UNDO {
+        if let Err(error) = own_undo(state, agent, &path, &raw) {
+            log.record(Some(&agent.id), id, method, Outcome::Denied);
+            return Err(error);
+        }
+    }
     // An agent's changes carry the name its key belongs to, never one it gives itself.
+    if method == methods::LINK_DELETE && raw.get("by").is_none_or(Value::is_null) {
+        if let Some(raw) = raw.as_object_mut() {
+            raw.insert(
+                "by".into(),
+                serde_json::json!({ "kind": "agent", "actor": "" }),
+            );
+        }
+    }
     if let Some(by) = raw.get_mut("by").and_then(Value::as_object_mut) {
         by.insert("kind".into(), Value::String("agent".into()));
         by.insert("actor".into(), Value::String(agent.name.clone()));

@@ -1,7 +1,8 @@
 //! The MCP server agents use to search, read and write a Knode space.
 //!
 //! [`KnodeServer`] answers the [Model Context Protocol](https://modelcontextprotocol.io) with
-//! five tools, `search`, `read_node`, `write_node`, `link_nodes` and `recent` (see [`tools`]),
+//! seven tools, `search`, `read_node`, `write_node`, `link_nodes`, `recent`, `history` and
+//! `undo` (see [`tools`]),
 //! on top of a [`Backend`]: [`ServiceBackend`] through Knode Service, or [`DirectBackend`],
 //! which opens the space itself when the service cannot run. Through the service, the agent
 //! connects with its own key: Knode Service checks its grants on every call and records its
@@ -49,7 +50,8 @@ agents and their Knode app. Every node is Markdown with a title. Search it befor
 questions about earlier work, decisions, preferences or project context. Save what is worth \
 remembering beyond this conversation (decisions and their reasons, findings, plans, summaries) \
 with write_node, one topic per node, and link related nodes with [[Title]] in the text or with \
-link_nodes. Search first and update an existing node instead of creating a duplicate.";
+link_nodes. Search first and update an existing node instead of creating a duplicate. history \
+shows who changed what; undo takes back a change of your own.";
 
 /// The version of this crate.
 pub fn version() -> &'static str {
@@ -99,7 +101,7 @@ pub fn mcp_tools() -> Vec<Tool> {
                 .with_annotations(
                     ToolAnnotations::with_title(def.title)
                         .read_only(def.read_only)
-                        .destructive(false)
+                        .destructive(def.destructive)
                         .idempotent(def.idempotent)
                         .open_world(false),
                 )

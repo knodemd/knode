@@ -1,4 +1,5 @@
-//! The tools agents call: `search`, `read_node`, `write_node`, `link_nodes` and `recent`.
+//! The tools agents call: `search`, `read_node`, `write_node`, `link_nodes`, `recent`,
+//! `history` and `undo`.
 //!
 //! Each tool answers with Markdown for the model to read and the same data as structured
 //! content that follows the tool's output schema. This module does not depend on the MCP SDK,
@@ -7,7 +8,8 @@
 use std::fmt::Write as _;
 
 use knode_format::{
-    Link, Node, NodeId, NodeSummary, NodeUpdate, Provenance, SearchHit, link_kinds,
+    ActorKind, Change, ChangeId, Link, Node, NodeId, NodeSummary, NodeUpdate, Provenance,
+    SearchHit, actions, link_kinds,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -36,6 +38,8 @@ pub struct ToolDefinition {
     pub read_only: bool,
     /// Whether calling it twice with the same arguments does nothing more.
     pub idempotent: bool,
+    /// Whether it may take back what was written before, rather than only add.
+    pub destructive: bool,
 }
 
 /// What a tool call returns.
@@ -74,7 +78,15 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 5] = ["search", "read_node", "write_node", "link_nodes", "recent"];
+pub const TOOL_NAMES: [&str; 7] = [
+    "search",
+    "read_node",
+    "write_node",
+    "link_nodes",
+    "recent",
+    "history",
+    "undo",
+];
 
 /// Every tool, in the order they are listed.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -135,6 +147,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
         "description": "How many nodes to return at most."
     });
     let node_ref = "A node id, or the exact title of a node (case and extra spaces are ignored).";
+    let change = json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "integer", "description": "The change id, to pass to undo." },
+            "action": { "type": "string", "description": "What was done, such as node.create, node.update, node.delete, link.create or undo." },
+            "subject": { "type": "string", "description": "What it was done to: a node id, or another subject such as a setting." },
+            "subject_title": { "type": ["string", "null"], "description": "The current title of the node, or null when it is not a node that exists now." },
+            "changed_at": { "type": "string", "description": "RFC 3339, UTC." },
+            "changed_by": provenance,
+            "undoes": { "type": ["integer", "null"], "description": "For an undo, the change it undid." }
+        },
+        "required": ["id", "action", "subject", "subject_title", "changed_at", "changed_by", "undoes"]
+    });
 
     vec![
         ToolDefinition {
@@ -176,6 +201,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: true,
             idempotent: true,
+            destructive: false,
         },
         ToolDefinition {
             name: "read_node",
@@ -203,6 +229,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: true,
             idempotent: true,
+            destructive: false,
         },
         ToolDefinition {
             name: "write_node",
@@ -236,6 +263,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: false,
             idempotent: false,
+            destructive: false,
         },
         ToolDefinition {
             name: "link_nodes",
@@ -265,6 +293,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: false,
             idempotent: true,
+            destructive: false,
         },
         ToolDefinition {
             name: "recent",
@@ -283,6 +312,59 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             read_only: true,
             idempotent: true,
+            destructive: false,
+        },
+        ToolDefinition {
+            name: "history",
+            title: "Change history",
+            description: "List the latest changes to the user's Knode memory, newest first:                 who changed what and when, as a person or as an agent. Pass a node (its id or                 exact title) for the changes to that node only, including links made or removed                 from it; a deleted node's history is still there by id. Leave it out for the                 whole space. Use it to see what you or another agent wrote, or to find the id                 of a change of your own to pass to undo.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node": { "type": "string", "description": node_ref },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_LIMIT,
+                        "default": DEFAULT_LIMIT,
+                        "description": "How many changes to return at most."
+                    }
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node": { "type": ["string", "null"], "description": "The node id, or null for the whole space." },
+                    "changes": { "type": "array", "items": change }
+                },
+                "required": ["node", "changes"]
+            }),
+            read_only: true,
+            idempotent: true,
+            destructive: false,
+        },
+        ToolDefinition {
+            name: "undo",
+            title: "Undo a change",
+            description: "Undo one change that you, this agent, made to the user's Knode memory:                 a node you created is deleted, a node you changed or deleted goes back to how it                 was just before, a link you made or removed is put back. Get the change id from                 history. Only your own changes can be undone here, and never when someone made                 a later change to the same nodes or links: then tell the user, who can undo it                 with `knode undo <change> --force` after checking. Nothing is lost: the undo is                 one more change, and undoing it redoes yours.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "change": { "type": "integer", "description": "The id of the change to undo, from history." }
+                },
+                "required": ["change"]
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "undone": { "type": "integer", "description": "The change that was undone." },
+                    "change": change
+                },
+                "required": ["undone", "change"]
+            }),
+            read_only: false,
+            idempotent: false,
+            destructive: true,
         },
     ]
 }
@@ -302,6 +384,8 @@ pub fn call<B: Backend + ?Sized>(
         "write_node" => parse(arguments).and_then(|args| write_node(backend, args, &by)),
         "link_nodes" => parse(arguments).and_then(|args| link_nodes(backend, args, &by)),
         "recent" => parse(arguments).and_then(|args| recent(backend, args)),
+        "history" => parse(arguments).and_then(|args| history(backend, args)),
+        "undo" => parse(arguments).and_then(|args| undo(backend, args, &by)),
         _ => return None,
     };
     Some(output.unwrap_or_else(|e| e))
@@ -570,6 +654,146 @@ fn recent<B: Backend + ?Sized>(backend: &B, args: RecentArgs) -> Outcome {
     }
     let structured = json!({ "nodes": nodes.iter().map(summary_json).collect::<Vec<_>>() });
     Ok(ToolOutput::ok(text, structured))
+}
+
+#[derive(Deserialize)]
+struct HistoryArgs {
+    node: Option<String>,
+    limit: Option<usize>,
+}
+
+fn history<B: Backend + ?Sized>(backend: &B, args: HistoryArgs) -> Outcome {
+    let limit = clamp_limit(args.limit);
+    let node = match non_empty(args.node) {
+        // A deleted node has no title any more, but its id still has a history.
+        Some(node) => Some(match NodeId::parse(&node) {
+            Ok(id) => id,
+            Err(_) => resolve_ref(backend, &node)?,
+        }),
+        None => None,
+    };
+    let changes = match &node {
+        Some(id) => backend.changes_of(&id.to_string(), limit)?,
+        None => backend.changes(limit, None)?,
+    };
+    let mut titles = std::collections::HashMap::new();
+    for change in &changes {
+        if let Ok(id) = NodeId::parse(&change.subject)
+            && let std::collections::hash_map::Entry::Vacant(entry) = titles.entry(id)
+        {
+            entry.insert(backend.get_node(&id)?.map(|n| n.title));
+        }
+    }
+    let title_of = |change: &Change| -> Option<String> {
+        NodeId::parse(&change.subject)
+            .ok()
+            .and_then(|id| titles.get(&id).cloned().flatten())
+    };
+    let mut text = String::new();
+    if changes.is_empty() {
+        text.push_str("No changes yet.\n");
+    } else {
+        let what = match &node {
+            Some(id) => match titles.get(id).cloned().flatten() {
+                Some(title) => format!("to [[{title}]]"),
+                None => format!("to node `{id}`"),
+            },
+            None => "to the space".to_string(),
+        };
+        let _ = writeln!(
+            text,
+            "The latest {} {what}, newest first:\n",
+            count(changes.len(), "change")
+        );
+        for change in &changes {
+            let subject = match title_of(change) {
+                Some(title) => format!(" [[{title}]]"),
+                None if change.subject.is_empty() => String::new(),
+                None => format!(" `{}`", change.subject),
+            };
+            let undoes = change
+                .undoes
+                .map(|u| format!(" (undoes change {u})"))
+                .unwrap_or_default();
+            let _ = writeln!(
+                text,
+                "- change {}: {}{subject}{undoes}, {} by {}",
+                change.id,
+                change.action,
+                change.changed_at,
+                who(&change.changed_by)
+            );
+        }
+    }
+    let structured = json!({
+        "node": node.map(|id| id.to_string()),
+        "changes": changes.iter().map(|c| change_json(c, title_of(c))).collect::<Vec<_>>(),
+    });
+    Ok(ToolOutput::ok(text, structured))
+}
+
+#[derive(Deserialize)]
+struct UndoArgs {
+    change: ChangeId,
+}
+
+fn undo<B: Backend + ?Sized>(backend: &B, args: UndoArgs, by: &Provenance) -> Outcome {
+    let Some(detail) = backend.change(args.change)? else {
+        return Err(ToolOutput::error(format!(
+            "There is no change {}. Use history to find the id of your change.",
+            args.change
+        )));
+    };
+    let original = &detail.change;
+    // Knode Service checks the name of the agent's key itself; the name the client gives is
+    // only trusted for a space opened directly.
+    let mine = original.changed_by.kind == ActorKind::Agent
+        && (backend.knows_the_agent() || original.changed_by.actor == by.actor);
+    if !mine {
+        return Err(ToolOutput::error(format!(
+            "Change {} was made by {}, not by you ({}). You can only undo your own changes; \
+             ask the user, who can run `knode undo {}` if they want it undone.",
+            original.id,
+            who(&original.changed_by),
+            by.actor,
+            original.id
+        )));
+    }
+    let undo = backend.undo(original.id, false, by).map_err(|e| match e {
+        BackendError::Invalid(message) => ToolOutput::error(format!(
+            "{message}. Nothing was changed. If it is still worth undoing, tell the user: they \
+             can check the history and run `knode undo {} --force`.",
+            original.id
+        )),
+        other => other.into(),
+    })?;
+    let title = match NodeId::parse(&undo.subject) {
+        Ok(id) => backend.get_node(&id)?.map(|n| n.title),
+        Err(_) => None,
+    };
+    let what = match (&title, original.action.as_str()) {
+        (_, actions::NODE_CREATE) => "the node it created was deleted".to_string(),
+        (Some(title), _) => format!("[[{title}]] is back to how it was before"),
+        (None, _) => "what it changed is back to how it was before".to_string(),
+    };
+    let text = format!(
+        "Undid change {} ({}): {what}. The undo is change {}; undo it to redo yours.\n",
+        original.id, original.action, undo.id
+    );
+    let structured = json!({ "undone": original.id, "change": change_json(&undo, title) });
+    Ok(ToolOutput::ok(text, structured))
+}
+
+fn change_json(change: &Change, subject_title: Option<String>) -> Value {
+    json!({
+        "id": change.id,
+        "action": change.action,
+        "subject": change.subject,
+        "subject_title": subject_title,
+        "changed_at": change.changed_at.to_string(),
+        "changed_by": provenance_json(&change.changed_by),
+        "undoes": change.undoes,
+    })
 }
 
 fn resolve_ref<B: Backend + ?Sized>(backend: &B, reference: &str) -> Result<NodeId, ToolOutput> {
@@ -928,6 +1152,121 @@ mod tests {
         let nodes = out.structured.unwrap()["nodes"].as_array().unwrap().len();
         assert_eq!(nodes, 1);
         assert!(out.text.starts_with("1 node changed most recently"));
+    }
+
+    #[test]
+    fn history_lists_changes_and_undo_takes_back_only_your_own() {
+        let (_dir, backend) = backend();
+        let out = run(&backend, "history", json!({}));
+        check_schema("history", &out);
+        assert_eq!(out.text, "No changes yet.\n");
+
+        let created = run(
+            &backend,
+            "write_node",
+            json!({ "title": "Plan", "body": "One." }),
+        );
+        let id = created.structured.unwrap()["node"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        run(&backend, "write_node", json!({ "id": id, "body": "Two." }));
+        let person = Provenance::person("Ada");
+        let other = backend
+            .create_node(knode_format::NewNode::note("Hers", "Mine."), &person)
+            .unwrap();
+
+        let out = run(&backend, "history", json!({ "node": "plan" }));
+        check_schema("history", &out);
+        assert!(
+            out.text
+                .starts_with("The latest 2 changes to [[Plan]], newest first:"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("node.update [[Plan]], "), "{}", out.text);
+        assert!(out.text.contains("by test-agent (agent)"), "{}", out.text);
+        let changes = out.structured.unwrap()["changes"].clone();
+        let update = changes[0]["id"].as_i64().unwrap();
+        assert_eq!(changes[0]["subject_title"], "Plan");
+
+        let out = run(&backend, "history", json!({ "limit": 1 }));
+        assert!(out.text.contains("[[Hers]]"), "{}", out.text);
+        let hers = out.structured.unwrap()["changes"][0]["id"]
+            .as_i64()
+            .unwrap();
+
+        // Someone else's change: refused, and nothing changes.
+        let out = run(&backend, "undo", json!({ "change": hers }));
+        assert!(out.is_error);
+        assert!(
+            out.text.contains("by Ada (person), not by you"),
+            "{}",
+            out.text
+        );
+        assert!(backend.get_node(&other.id).unwrap().is_some());
+        assert!(run(&backend, "undo", json!({ "change": 999 })).is_error);
+
+        // Its own change: undone.
+        let out = run(&backend, "undo", json!({ "change": update }));
+        assert!(!out.is_error, "{}", out.text);
+        check_schema("undo", &out);
+        assert!(
+            out.text.starts_with(&format!(
+                "Undid change {update} (node.update): [[Plan]] is back"
+            )),
+            "{}",
+            out.text
+        );
+        let node = backend
+            .get_node(&NodeId::parse(&id).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.body, "One.");
+        let again = run(&backend, "undo", json!({ "change": update }));
+        assert!(again.is_error);
+        assert!(again.text.contains("already undone"), "{}", again.text);
+
+        // A change of its own with later changes by someone else is not forced.
+        let create = changes[1]["id"].as_i64().unwrap();
+        backend
+            .update_node(
+                &node.id,
+                NodeUpdate {
+                    body: Some("Ada's edit.".into()),
+                    ..Default::default()
+                },
+                &person,
+            )
+            .unwrap();
+        let out = run(&backend, "undo", json!({ "change": create }));
+        assert!(out.is_error);
+        assert!(out.text.contains("knode undo"), "{}", out.text);
+        assert_eq!(
+            backend.get_node(&node.id).unwrap().unwrap().body,
+            "Ada's edit."
+        );
+
+        // A deleted node's history is still there by id.
+        let deleted = run(
+            &backend,
+            "write_node",
+            json!({ "title": "Gone", "body": "x" }),
+        );
+        let gone = deleted.structured.unwrap()["node"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let gone_id = NodeId::parse(&gone).unwrap();
+        let undo_create = backend.changes_of(&gone, 1).unwrap()[0].id;
+        run(&backend, "undo", json!({ "change": undo_create }));
+        assert!(backend.get_node(&gone_id).unwrap().is_none());
+        let out = run(&backend, "history", json!({ "node": gone }));
+        assert!(
+            out.text.contains(&format!("to node `{gone}`")),
+            "{}",
+            out.text
+        );
     }
 
     #[test]
