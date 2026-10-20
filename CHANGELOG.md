@@ -124,5 +124,12 @@ Service and a first Mac app.
   newest first, a Markdown editor with live preview where `[[links]]` open the note they name,
   search, and recent spaces. A menu bar item shows Knode Service and starts or stops it, and the app
   offers to install the `knode` command.
+- **`knode import` for everything you bring in**: besides Claude, ChatGPT and Gemini exports,
+  Markdown and agent sessions, it now reads PDFs, saved web pages and `http(s)` URLs (fetched only
+  when you give one), Kindle clippings and notebooks, Readwise CSV and Markdown exports, and the
+  notes of Apple Notes (its database, with Full Disk Access, or an export), Bear (backups,
+  TextBundles or its database), Notion (the zipped export) and Evernote (`.enex`). Knode tells
+  which from the path, `--from <kind>` says it, and `--json` prints the report. Importing again
+  updates the same nodes instead of copying them. Knode Service does the same with `import.run`.
 - **Builds for macOS and Linux**: Apple silicon, Intel and a universal binary, and Linux x86_64
   and arm64, with checksums. On Linux, `curl -fsSL https://knode.md/install.sh | sh` installs it.

@@ -7,6 +7,7 @@ import SwiftUI
 struct ServiceMenu: View {
     let monitor: ServiceMonitor
     let model: AppModel
+    let searchIndex: SearchIndexModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -80,6 +81,9 @@ struct ServiceMenu: View {
                         Text(Self.name(ofSpaceAt: path))
                     }
                 }
+            }
+            if let index = status.index {
+                SearchIndexMenu(status: index, index: searchIndex)
             }
         }
     }

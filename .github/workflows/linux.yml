@@ -33,15 +33,9 @@ jobs:
             runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
-            # knode-embed's matrix maths (gemm) needs the FP16 extension to build on aarch64
-            # Linux. knode-service and knode-cli leave it out on this target (their `semantic`
-            # feature does nothing here, so search is by words), and it is left out here instead
-            # of building everything for FP16, which older ARM boards lack (knodemd/knode#108).
-            exclude: knode-embed
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
-      EXCLUDE: ${{ matrix.exclude }}
     defaults:
       run:
         working-directory: core
@@ -55,10 +49,24 @@ jobs:
           rustc --version
 
       - name: Build the workspace
-        run: cargo build --locked --workspace --all-targets ${EXCLUDE:+--exclude "$EXCLUDE"}
+        run: cargo build --locked --workspace --all-targets
 
       - name: Test the workspace
-        run: cargo test --locked --workspace ${EXCLUDE:+--exclude "$EXCLUDE"}
+        run: cargo test --locked --workspace
+
+      # gemm (candle's matrix maths) has FP16 kernels that it picks at run time, and the rest of
+      # the build must not need FP16, which older ARM boards such as the Raspberry Pi 4 lack
+      # (knodemd/knode#108). Run the embedding tests, which run a tiny model, on an emulated
+      # Cortex-A72 (the Raspberry Pi 4 CPU, no FP16): any FP16 instruction outside those
+      # kernels would stop them with an illegal instruction.
+      - name: Test search by meaning on a CPU without FP16
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -cpu cortex-a72
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qemu-user
+          cargo test --locked -p knode-embed --lib
 
       - name: Build the release binary
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
@@ -68,5 +76,41 @@ jobs:
           bin="target/$TARGET/release/knode"
           file "$bin"
           "$bin" --version
+          if [ "$TARGET" = aarch64-unknown-linux-gnu ]; then
+            qemu-aarch64 -cpu cortex-a72 "$bin" --version
+          fi
           # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
           objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1
+
+  # Runs the co-editing concurrency test several times on aarch64 Linux, where a race between
+  # programs writing the same note once showed (knodemd/knode#142).
+  coediting-loop:
+    name: Co-editing test loop (aarch64-unknown-linux-gnu)
+    runs-on: ubuntu-22.04-arm
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build the test
+        run: cargo test --locked -p knode-sync --test coediting --no-run
+
+      - name: Run the test 5 times
+        run: |
+          failed=0
+          for i in $(seq 1 5); do
+            if cargo test --locked -p knode-sync --test coediting -q -- three_programs_writing_at_once_lose_nothing > out.txt 2>&1; then
+              echo "run $i: ok"
+            else
+              echo "run $i: FAILED"; grep -E "panicked|Err" out.txt | head -4
+              failed=$((failed + 1))
+            fi
+          done
+          echo "$failed of 5 runs failed"
+          test "$failed" -eq 0

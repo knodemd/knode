@@ -31,6 +31,10 @@ public protocol SpaceStore: Sendable {
     /// Full-text search over titles and bodies, best match first.
     func search(_ query: String, in space: Space.ID) async throws -> [NodeSummary]
 
+    /// Searches by words, by meaning or both (`mode`), best match first. When meaning cannot be
+    /// used, the search runs by words and the results say why.
+    func search(_ query: String, mode: SearchMode, in space: Space.ID) async throws -> SearchResults
+
     /// Renames the space: its name in `manifest.json`. The package keeps its file name.
     func renameSpace(_ space: Space.ID, to name: String) async throws -> Space
 

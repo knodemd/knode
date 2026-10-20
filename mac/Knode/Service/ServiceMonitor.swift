@@ -16,6 +16,8 @@ final class ServiceMonitor {
         var spaces: [String]
         /// The connections open to the service, this app's included.
         var clients: Int
+        /// Search by meaning, as the index last saw it; `nil` from a service before it.
+        var index: IndexStatus?
     }
 
     enum State: Equatable {

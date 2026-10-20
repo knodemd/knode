@@ -1,4 +1,4 @@
-//! `knode export`, `knode import <folder>` and `knode markdown folder`: Markdown in and out of a
+//! `knode export` and `knode markdown folder`: Markdown in and out of a
 //! space, through Knode Service or the space opened directly.
 
 use std::path::Path;
@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use knode_format::{Provenance, Space};
 use knode_service::MarkdownFolder;
-use knode_vault::{ExportReport, ImportReport};
+use knode_vault::ExportReport;
 
 use crate::service;
 
@@ -31,52 +31,6 @@ pub fn export(space: &Path, dir: &Path) -> Result<()> {
         report.unchanged,
         report.removed.len()
     );
-    Ok(())
-}
-
-/// Reads every `.md` file under `dir` into the space: a folder written by `knode export`, or an
-/// Obsidian vault with `vault`, which only changes the wording.
-pub fn import(space: &Path, dir: &Path, vault: bool, by: &Provenance) -> Result<()> {
-    let report: ImportReport = match service::client() {
-        Some(client) => client.import_markdown(space, dir, by)?,
-        None => knode_vault::import(&mut Space::open(space)?, dir, by)?,
-    };
-    for skipped in &report.skipped {
-        eprintln!("skipped {}: {}", skipped.path, skipped.reason);
-    }
-    let what = if vault {
-        format!("the vault {}", dir.display())
-    } else {
-        dir.display().to_string()
-    };
-    let mut summary = format!(
-        "Imported {what}: {} new, {} updated, {} unchanged",
-        report.created.len(),
-        report.updated.len(),
-        report.unchanged
-    );
-    if !report.skipped.is_empty() {
-        summary.push_str(&format!(", {} skipped", report.skipped.len()));
-    }
-    println!("{summary}.");
-    if !report.attachments.is_empty() {
-        println!(
-            "Left out {} that {} not Markdown, such as images.",
-            plural(report.attachments.len(), "file"),
-            if report.attachments.len() == 1 {
-                "is"
-            } else {
-                "are"
-            }
-        );
-    }
-    let read = report.created.len() + report.updated.len() + report.unchanged;
-    if read == 0 && !report.skipped.is_empty() {
-        bail!("nothing could be imported");
-    }
-    if read == 0 {
-        bail!("{} has no Markdown (.md) files", dir.display());
-    }
     Ok(())
 }
 

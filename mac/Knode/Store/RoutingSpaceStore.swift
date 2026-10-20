@@ -77,6 +77,10 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space) { store in try await store.search(query, in: space) }
     }
 
+    public func search(_ query: String, mode: SearchMode, in space: Space.ID) async throws -> SearchResults {
+        try await route(space) { store in try await store.search(query, mode: mode, in: space) }
+    }
+
     public func history(of node: Node.ID, in space: Space.ID) async throws -> [NoteVersion] {
         try await route(space) { store in try await store.history(of: node, in: space) }
     }

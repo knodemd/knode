@@ -158,7 +158,6 @@ fn history_and_undo_go_through_the_service() {
 }
 
 /// Agents search by words and meaning through the service, which indexes in the background.
-#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 #[test]
 fn search_modes_through_the_service() {
     use std::time::{Duration, Instant};

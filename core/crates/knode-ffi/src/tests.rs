@@ -417,3 +417,26 @@ fn reads_and_writes_the_default_space() {
     KnodeSpace::create(work.clone(), "Work".into()).unwrap();
     assert_eq!(spaces_in_folder_of(&paths).unwrap(), [work]);
 }
+
+#[test]
+fn turns_search_by_meaning_on_and_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = knode_config::Paths {
+        home: dir.path().join("home"),
+        spaces_dir: dir.path().join("Knode"),
+    };
+    assert!(embeddings_enabled_in(&paths).unwrap());
+    std::fs::create_dir_all(&paths.home).unwrap();
+    std::fs::write(paths.config_file(), "capture = false\n").unwrap();
+
+    set_embeddings_enabled_in(&paths, false).unwrap();
+    assert!(!embeddings_enabled_in(&paths).unwrap());
+    let text = std::fs::read_to_string(paths.config_file()).unwrap();
+    assert!(text.contains("capture = false"), "{text}");
+    assert!(text.contains(r#"embeddings = "off""#), "{text}");
+
+    set_embeddings_enabled_in(&paths, true).unwrap();
+    assert!(embeddings_enabled_in(&paths).unwrap());
+    let text = std::fs::read_to_string(paths.config_file()).unwrap();
+    assert!(!text.contains("embeddings"), "{text}");
+}

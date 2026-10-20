@@ -32,7 +32,8 @@ pub(crate) fn stamp(path: &Path) -> io::Result<Option<Stamp>> {
 }
 
 /// The names of the update files, `<ULID>.loro`: names starting with `.` (files being written)
-/// and any other name are ignored.
+/// and any other name are ignored. A file removed while the folder is read, by a compaction in
+/// another program, is left out: the snapshot holds it.
 pub(crate) fn update_names(dir: &Path) -> io::Result<Vec<(String, u64)>> {
     let entries = match fs::read_dir(updates_dir(dir)) {
         Ok(entries) => entries,
@@ -51,7 +52,11 @@ pub(crate) fn update_names(dir: &Path) -> io::Result<Vec<(String, u64)>> {
         if ulid::Ulid::from_string(stem).is_err() {
             continue;
         }
-        let meta = entry.metadata()?;
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
         if meta.is_file() {
             names.push((name, meta.len()));
         }
@@ -87,4 +92,39 @@ pub(crate) fn write_atomically(dir: &Path, name: &str, bytes: &[u8]) -> io::Resu
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn listing_updates_while_another_program_removes_them_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let stop = Arc::new(AtomicBool::new(false));
+        // A compaction elsewhere: update files written and removed over and over.
+        let compaction = {
+            let path = path.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let names: Vec<String> = (0..20)
+                        .map(|_| write_update(&path, b"x").unwrap())
+                        .collect();
+                    for name in names {
+                        fs::remove_file(updates_dir(&path).join(name)).unwrap();
+                    }
+                }
+            })
+        };
+        let listed = (0..5000).map(|_| update_names(&path)).collect::<Vec<_>>();
+        stop.store(true, Ordering::Relaxed);
+        compaction.join().unwrap();
+        for result in listed {
+            result.unwrap();
+        }
+    }
 }

@@ -17,7 +17,6 @@ path = "src/main.rs"
 [features]
 default = ["semantic"]
 # Search by meaning, through Knode Service: a local model indexes the spaces in the background.
-# On aarch64 Linux it is not built yet (knodemd/knode#108), so there `knode search` is by words.
 semantic = ["knode-service/semantic"]
 
 [dependencies]
@@ -34,8 +33,12 @@ serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 toml_edit = "=0.25.17"
 
 [dev-dependencies]
+base64 = "=0.23.1"
+flate2 = "=1.1.10"
+knode-embed = { path = "../knode-embed", version = "=0.0.0", features = ["test-support"] }
+lopdf = { version = "=0.42.0", default-features = false }
+md5 = "=0.7.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde_json = "=1.0.154"
 tempfile = "=3.27.0"
-
-[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
-knode-embed = { path = "../knode-embed", version = "=0.0.0", features = ["test-support"] }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
