@@ -390,7 +390,7 @@ fn import_conversations(state: &State, raw: Value) -> Result<Value, RpcError> {
     let report = knode_ingest::import_export(&mut space, &p.path, &p.by);
     // What was written before a failure is announced too.
     state.notify_since(&space, mark)?;
-    to_value(ConversationImport::of(&report.map_err(import_error)?))
+    to_value(ConversationImport::from(&report.map_err(import_error)?))
 }
 
 fn import_error(error: knode_ingest::ImportError) -> RpcError {

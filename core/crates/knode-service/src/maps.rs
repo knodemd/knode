@@ -158,8 +158,8 @@ pub struct ConversationImport {
     pub skipped: Vec<SkippedItem>,
 }
 
-impl ConversationImport {
-    pub(crate) fn of(report: &knode_ingest::ImportReport) -> Self {
+impl From<&knode_ingest::ImportReport> for ConversationImport {
+    fn from(report: &knode_ingest::ImportReport) -> Self {
         ConversationImport {
             format: report.format.to_string(),
             agent: report.format.agent().id().to_string(),

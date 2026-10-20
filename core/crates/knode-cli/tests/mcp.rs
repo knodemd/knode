@@ -297,7 +297,10 @@ fn negotiates_a_newer_protocol_version() {
     let init = client.initialize("2025-11-25");
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
     let tools = client.request("tools/list", json!({}));
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        tools["result"]["tools"].as_array().unwrap().len(),
+        knode_mcp::tools::TOOL_NAMES.len()
+    );
     client.finish();
 }
 
