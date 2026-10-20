@@ -28,6 +28,8 @@
 		0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95BDD689D2D618AB825F4B13 /* NoteView.swift */; };
 		0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0D1DCA1FC5A97423356EB8 /* KnodeCommand.swift */; };
 		0C47D34BC488A8D0D242E212 /* CoreMapStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8926EABF62A6AC5BE0BB8B1 /* CoreMapStoreTests.swift */; };
+		0F63CE321465070BF6291AAE /* GeistMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 35E25ECA95918FB4D2577300 /* GeistMono.ttf */; };
+		138B4E9F7F71A2FE1C284E2B /* KTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16F0498F04B0BEBD7864E40B /* KTheme.swift */; };
 		14C56F7C8D688FF1F9B6C69A /* SearchIndexModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91FB22CDB5F3F7954955E115 /* SearchIndexModel.swift */; };
 		179AF48FFAEFFC495ED46A42 /* SpaceManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71324783108AA2231CD7C03E /* SpaceManifest.swift */; };
 		17F17199E352C0F5CCE1B6DB /* AgentsModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761FAA02E01D6B1D80506E59 /* AgentsModelTests.swift */; };
@@ -38,6 +40,8 @@
 		2828A910729438B595879406 /* CanvasModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C55F8766EB17ECEAB8C72A3 /* CanvasModel.swift */; };
 		2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D00F921E755F4E322D2982 /* ContentView.swift */; };
 		2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */; };
+		3008E96DA4F7E745ECEB73C6 /* KFloating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70D1C4573D175A9D3C5111 /* KFloating.swift */; };
+		3149E4F8D6C681FDBF76C971 /* KIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 562BB2A308ED6147D0E1008D /* KIcon.swift */; };
 		34137E60F6E6A49B2D571510 /* AttachmentViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4907771A6F2739DB3E479FFB /* AttachmentViews.swift */; };
 		3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 283AB3D9FF148B9FDF93C491 /* RoutingSpaceStore.swift */; };
 		371385BCE330F9968C99B72F /* DeletedNotesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 513B33B61ED25A3F9BBD5920 /* DeletedNotesModel.swift */; };
@@ -47,6 +51,7 @@
 		3D5C44AA169C751B90369AEE /* NoteLinksPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */; };
 		3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766E24DBE457EA561E6B3355 /* PreviewSpaceStore.swift */; };
 		441BF4E6029D68C0E790A2B4 /* AttachmentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00857B36583EDB57F420DB83 /* AttachmentStore.swift */; };
+		44C6DBC3BFDD1988937BC26D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1338447A1FAAE3661E991B63 /* DesignSystemTests.swift */; };
 		47803C09C4607251243FC182 /* MarkdownBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F73AC1170815F22E83004BB /* MarkdownBlock.swift */; };
 		48C3E71EDC41554C0E4F5F41 /* FakeKnodeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9789760F309094F157FE9CFB /* FakeKnodeService.swift */; };
 		4F2DE482BCFD6C69FE6D41CA /* AgentDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F1C8DEC816C516EA7B8D52 /* AgentDirectory.swift */; };
@@ -62,6 +67,7 @@
 		7C68451349E0DE4142AD3108 /* FileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59B41F891EB0BD14B62D79D3 /* FileSystem.swift */; };
 		7D33FFFE9DEEF7D2C8EA58D0 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BD7995016E9A8B78A2D927 /* AppModel.swift */; };
 		88CB6AE111A83A55FD933011 /* DeletedNotesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */; };
+		8D89F16D1F3829EDB9827050 /* OFL-Geist.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1966AA66BC5024F50E4D5600 /* OFL-Geist.txt */; };
 		8EABE02455F2CD1D22826A87 /* LastChangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F7C49729378B495C127E4D /* LastChangeTests.swift */; };
 		8FCE5FCBB6F567A1AF95BEEA /* GraphLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FD1E5F4F0D8E3D99B907C47 /* GraphLayoutTests.swift */; };
 		939F05CFA6C43BEB0D8797CD /* ServiceConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */; };
@@ -78,13 +84,16 @@
 		A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */; };
 		A6236060CC56682E49585C6A /* ServiceDeletedNotes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E41F60680F16D19D09F0F75 /* ServiceDeletedNotes.swift */; };
 		AA81A15045E87224DCD52550 /* Search.swift in Sources */ = {isa = PBXBuildFile; fileRef = 825F495909BF4D04A0580AB2 /* Search.swift */; };
+		ABA9C976B59B29A36FAC3FFF /* KContainers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3597F19A7C6B7FE6035B1B5D /* KContainers.swift */; };
 		AD54F3BC930DA6854C362FA0 /* NoteLinksModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AD79168EE477A9DFE4F4786 /* NoteLinksModel.swift */; };
 		AEDA645803665F25A8706141 /* AgentsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CBAFE00EEA3007B2C7D1E6E /* AgentsModel.swift */; };
 		B277993BE8EB4624C2E71DF6 /* ServiceMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */; };
 		B3818CFEA923224F7F4E56C5 /* KnodeCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BAC4197CE15CF9B7F4529DB /* KnodeCore.swift */; };
 		BE2E20E9DF19B9ECB84EFA65 /* GraphLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E42F5167CB3D3CA4D109EF3 /* GraphLayout.swift */; };
 		C081E73F6C3E84D5A5078D7A /* DeletedNotesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF9598777E03568A6C04D291 /* DeletedNotesStore.swift */; };
+		C2387240FBDF9F95D1D5A6BA /* KInputs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F0FA351E61B9C4D7FAEBDB4 /* KInputs.swift */; };
 		C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */; };
+		C4BD00300F4AD398D9C0A87D /* KFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28D94F7C875354C8F9F80AA /* KFont.swift */; };
 		C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */; };
 		CA94681234A819BD84980698 /* KnodeHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211628B1070B636AB469C990 /* KnodeHome.swift */; };
 		CA953378C19A1D1063C4BAFA /* MarkdownSourceEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F3A8F99C8B903DAB9D50F49 /* MarkdownSourceEditor.swift */; };
@@ -98,13 +107,18 @@
 		DB16242C01E6D130B62D3344 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D250CA89BC07524A87D4A6 /* Models.swift */; };
 		DFCC81DD5422634CEAAB163B /* SpaceFoldersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */; };
 		E10F5DAE4E34382A4423441D /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A3BE9A848C53ECFCDC24A8 /* AppModelTests.swift */; };
+		E685C940FE825EED50FB5BCF /* DesignGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EED0867AD3E0867D6169FEF /* DesignGallery.swift */; };
+		E6F9AF7518F4D15BB1850BC0 /* KMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 430C04EC06D588A51DC31C79 /* KMenus.swift */; };
 		E8614B23865DF10714A3454F /* libKnodeCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 629294654D2A167C069EEF94 /* libKnodeCore.a */; };
 		E867292251CEC546911F1387 /* GraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C2EDFE9174FF7941EBB27D9 /* GraphView.swift */; };
 		EB452D1354DFB49F4C074616 /* CommandLineTool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 682C3F82D9CD8ECCAD1EA35F /* CommandLineTool.swift */; };
 		EF4DC9A4F3FC1014CABD7419 /* MarkdownBlockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */; };
 		F348ECE1482AE3F782460575 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2E23B71E09926219E50DCB /* HistoryView.swift */; };
 		F353FDE35EEAD5E56A13857C /* SpaceFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */; };
+		F45A3303A990B87F63455E42 /* KnodeAppIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */; };
 		F4AF196F7D42E171734EEA44 /* AttachingTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */; };
+		F764D3827D9C1E91A25FC033 /* KButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89968EB17D184B8B7CE80952 /* KButtons.swift */; };
+		F8FB0B644C040CD44C4D7C53 /* Geist.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4A8AF2D2FF90CBA41E3A35B4 /* Geist.ttf */; };
 		FBD3A639C5337FFAABD6F099 /* NoteHistoryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A860B482EA0900CE4C3451 /* NoteHistoryModel.swift */; };
 /* End PBXBuildFile section */
 
@@ -142,8 +156,11 @@
 		0FAB5829AF7223F860C6050E /* SearchViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViews.swift; sourceTree = "<group>"; };
 		1225C214D55D9FEA8921B609 /* GraphModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphModel.swift; sourceTree = "<group>"; };
 		12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteLinksPanel.swift; sourceTree = "<group>"; };
+		1338447A1FAAE3661E991B63 /* DesignSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystemTests.swift; sourceTree = "<group>"; };
 		16065546A150F910F6A236AD /* SpacePanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacePanels.swift; sourceTree = "<group>"; };
+		16F0498F04B0BEBD7864E40B /* KTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KTheme.swift; sourceTree = "<group>"; };
 		17772215D1051C90CE7039B0 /* RecentSpaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentSpaces.swift; sourceTree = "<group>"; };
+		1966AA66BC5024F50E4D5600 /* OFL-Geist.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-Geist.txt"; sourceTree = "<group>"; };
 		1B6C2CE64623C331289D2412 /* SearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchTests.swift; sourceTree = "<group>"; };
 		1C55F8766EB17ECEAB8C72A3 /* CanvasModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasModel.swift; sourceTree = "<group>"; };
 		211628B1070B636AB469C990 /* KnodeHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeHome.swift; sourceTree = "<group>"; };
@@ -155,16 +172,22 @@
 		2F73AC1170815F22E83004BB /* MarkdownBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlock.swift; sourceTree = "<group>"; };
 		346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeApp.swift; sourceTree = "<group>"; };
 		357B2C118E178D75931791A7 /* SpaceLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceLibrary.swift; sourceTree = "<group>"; };
+		3597F19A7C6B7FE6035B1B5D /* KContainers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KContainers.swift; sourceTree = "<group>"; };
+		35E25ECA95918FB4D2577300 /* GeistMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = GeistMono.ttf; sourceTree = "<group>"; };
 		3672A9A0A9B1C372A21D72E9 /* ServiceConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConnection.swift; sourceTree = "<group>"; };
 		3B65FED5CAA2B40891950D07 /* Broadcast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Broadcast.swift; sourceTree = "<group>"; };
 		3BEE894F0D78AB2E5BD1A0D3 /* AttachingTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachingTextView.swift; sourceTree = "<group>"; };
+		430C04EC06D588A51DC31C79 /* KMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KMenus.swift; sourceTree = "<group>"; };
+		43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeAppIcons.swift; sourceTree = "<group>"; };
 		482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesTests.swift; sourceTree = "<group>"; };
 		4907771A6F2739DB3E479FFB /* AttachmentViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentViews.swift; sourceTree = "<group>"; };
+		4A8AF2D2FF90CBA41E3A35B4 /* Geist.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Geist.ttf; sourceTree = "<group>"; };
 		4E41F60680F16D19D09F0F75 /* ServiceDeletedNotes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceDeletedNotes.swift; sourceTree = "<group>"; };
 		4E9CD836D628011CD6A0F9CD /* MapStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapStyle.swift; sourceTree = "<group>"; };
 		4FD1E5F4F0D8E3D99B907C47 /* GraphLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphLayoutTests.swift; sourceTree = "<group>"; };
 		513B33B61ED25A3F9BBD5920 /* DeletedNotesModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesModel.swift; sourceTree = "<group>"; };
 		54C303C6EA8E93DB848D543D /* NoteEditorModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorModel.swift; sourceTree = "<group>"; };
+		562BB2A308ED6147D0E1008D /* KIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KIcon.swift; sourceTree = "<group>"; };
 		589D1B5A99FDE143376F1AB3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		596B76856E60B0436F3D6EB3 /* DeletedNotesViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeletedNotesViews.swift; sourceTree = "<group>"; };
 		59B41F891EB0BD14B62D79D3 /* FileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystem.swift; sourceTree = "<group>"; };
@@ -182,10 +205,13 @@
 		7A9954AE2E9B6CE90754F6F4 /* SpaceFolders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFolders.swift; sourceTree = "<group>"; };
 		7B5B29A5AC974E36CDDAB720 /* NoteAttachmentsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteAttachmentsModel.swift; sourceTree = "<group>"; };
 		7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStoreTests.swift; sourceTree = "<group>"; };
+		7EED0867AD3E0867D6169FEF /* DesignGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignGallery.swift; sourceTree = "<group>"; };
 		825F495909BF4D04A0580AB2 /* Search.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search.swift; sourceTree = "<group>"; };
 		84B7EDA91000979E88901A77 /* SpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceStore.swift; sourceTree = "<group>"; };
+		89968EB17D184B8B7CE80952 /* KButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KButtons.swift; sourceTree = "<group>"; };
 		8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpacesTests.swift; sourceTree = "<group>"; };
 		8C2EDFE9174FF7941EBB27D9 /* GraphView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GraphView.swift; sourceTree = "<group>"; };
+		8F0FA351E61B9C4D7FAEBDB4 /* KInputs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KInputs.swift; sourceTree = "<group>"; };
 		919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFoldersView.swift; sourceTree = "<group>"; };
 		91FB22CDB5F3F7954955E115 /* SearchIndexModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchIndexModel.swift; sourceTree = "<group>"; };
 		935B774CE0AE47776C75FEF1 /* KnodeSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnodeSettings.swift; sourceTree = "<group>"; };
@@ -194,11 +220,13 @@
 		96D250CA89BC07524A87D4A6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		9789760F309094F157FE9CFB /* FakeKnodeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeKnodeService.swift; sourceTree = "<group>"; };
 		9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStore.swift; sourceTree = "<group>"; };
+		A28D94F7C875354C8F9F80AA /* KFont.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KFont.swift; sourceTree = "<group>"; };
 		A2BD7995016E9A8B78A2D927 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		A4192875931DFC4D972A9798 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		A56FE06561DF7D2918331BC1 /* MarkdownBlockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockTests.swift; sourceTree = "<group>"; };
 		AE6E4A2F4819EE2F22C0756B /* KnodeBrand */ = {isa = PBXFileReference; lastKnownFileType = folder; name = KnodeBrand; path = "../brand/12 Code/swift/KnodeBrand"; sourceTree = SOURCE_ROOT; };
 		B9D00F921E755F4E322D2982 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		BD70D1C4573D175A9D3C5111 /* KFloating.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KFloating.swift; sourceTree = "<group>"; };
 		BEE610E1D3B3FAC0ED8BEA05 /* MapStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapStore.swift; sourceTree = "<group>"; };
 		BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceMenu.swift; sourceTree = "<group>"; };
 		C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSpaceStoreTests.swift; sourceTree = "<group>"; };
@@ -251,6 +279,24 @@
 				05A0241CEC604FF1C653E5E2 /* Resources */,
 				6869DCD595CA0ABEB945C1CA /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		419AB21A18CE3126868ED2F5 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				7EED0867AD3E0867D6169FEF /* DesignGallery.swift */,
+				89968EB17D184B8B7CE80952 /* KButtons.swift */,
+				3597F19A7C6B7FE6035B1B5D /* KContainers.swift */,
+				BD70D1C4573D175A9D3C5111 /* KFloating.swift */,
+				A28D94F7C875354C8F9F80AA /* KFont.swift */,
+				562BB2A308ED6147D0E1008D /* KIcon.swift */,
+				8F0FA351E61B9C4D7FAEBDB4 /* KInputs.swift */,
+				430C04EC06D588A51DC31C79 /* KMenus.swift */,
+				43F68FDC773D89246D596B52 /* KnodeAppIcons.swift */,
+				16F0498F04B0BEBD7864E40B /* KTheme.swift */,
+				97923B5EC7B62839C6115503 /* Fonts */,
+			);
+			path = DesignSystem;
 			sourceTree = "<group>";
 		};
 		529B43B6A0B8A4634D220332 /* Packages */ = {
@@ -310,6 +356,7 @@
 				589D1B5A99FDE143376F1AB3 /* Assets.xcassets */,
 				346FF8D60ACB9731EE3E84C8 /* KnodeApp.swift */,
 				63605920B57DFBDB3D500497 /* CommandLineTool */,
+				419AB21A18CE3126868ED2F5 /* DesignSystem */,
 				9BC6D90434B243ACD5237460 /* Editor */,
 				BF6415D44EC381BCE4A0E5B3 /* Markdown */,
 				C66AD3A997986DE0D5BCD859 /* Models */,
@@ -318,6 +365,16 @@
 				5A9EC62E57A231B237475B00 /* Views */,
 			);
 			path = Knode;
+			sourceTree = "<group>";
+		};
+		97923B5EC7B62839C6115503 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				4A8AF2D2FF90CBA41E3A35B4 /* Geist.ttf */,
+				35E25ECA95918FB4D2577300 /* GeistMono.ttf */,
+				1966AA66BC5024F50E4D5600 /* OFL-Geist.txt */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 		9BC6D90434B243ACD5237460 /* Editor */ = {
@@ -340,6 +397,7 @@
 				F8926EABF62A6AC5BE0BB8B1 /* CoreMapStoreTests.swift */,
 				7D116C823CFA4D9ACFB4E0CD /* CoreSpaceStoreTests.swift */,
 				482245DEAED6EDFFDE40A8F2 /* DeletedNotesTests.swift */,
+				1338447A1FAAE3661E991B63 /* DesignSystemTests.swift */,
 				9789760F309094F157FE9CFB /* FakeKnodeService.swift */,
 				4FD1E5F4F0D8E3D99B907C47 /* GraphLayoutTests.swift */,
 				27F7C49729378B495C127E4D /* LastChangeTests.swift */,
@@ -551,6 +609,9 @@
 			files = (
 				2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */,
 				6F9C14E6DD8BF4CC863DEAAB /* Assets.xcassets in Resources */,
+				F8FB0B644C040CD44C4D7C53 /* Geist.ttf in Resources */,
+				0F63CE321465070BF6291AAE /* GeistMono.ttf in Resources */,
+				8D89F16D1F3829EDB9827050 /* OFL-Geist.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -682,6 +743,7 @@
 				0C47D34BC488A8D0D242E212 /* CoreMapStoreTests.swift in Sources */,
 				956BCF38E4C1789D6B2108FB /* CoreSpaceStoreTests.swift in Sources */,
 				88CB6AE111A83A55FD933011 /* DeletedNotesTests.swift in Sources */,
+				44C6DBC3BFDD1988937BC26D /* DesignSystemTests.swift in Sources */,
 				48C3E71EDC41554C0E4F5F41 /* FakeKnodeService.swift in Sources */,
 				8FCE5FCBB6F567A1AF95BEEA /* GraphLayoutTests.swift in Sources */,
 				8EABE02455F2CD1D22826A87 /* LastChangeTests.swift in Sources */,
@@ -717,13 +779,23 @@
 				371385BCE330F9968C99B72F /* DeletedNotesModel.swift in Sources */,
 				C081E73F6C3E84D5A5078D7A /* DeletedNotesStore.swift in Sources */,
 				9C8317B69B9D886633A8D029 /* DeletedNotesViews.swift in Sources */,
+				E685C940FE825EED50FB5BCF /* DesignGallery.swift in Sources */,
 				7C68451349E0DE4142AD3108 /* FileSystem.swift in Sources */,
 				BE2E20E9DF19B9ECB84EFA65 /* GraphLayout.swift in Sources */,
 				9C47AFD1C86B4824AEC210DA /* GraphModel.swift in Sources */,
 				E867292251CEC546911F1387 /* GraphView.swift in Sources */,
 				F348ECE1482AE3F782460575 /* HistoryView.swift in Sources */,
 				C5E652D2D53471D1AFF7A68D /* JSONValue.swift in Sources */,
+				F764D3827D9C1E91A25FC033 /* KButtons.swift in Sources */,
+				ABA9C976B59B29A36FAC3FFF /* KContainers.swift in Sources */,
+				3008E96DA4F7E745ECEB73C6 /* KFloating.swift in Sources */,
+				C4BD00300F4AD398D9C0A87D /* KFont.swift in Sources */,
+				3149E4F8D6C681FDBF76C971 /* KIcon.swift in Sources */,
+				C2387240FBDF9F95D1D5A6BA /* KInputs.swift in Sources */,
+				E6F9AF7518F4D15BB1850BC0 /* KMenus.swift in Sources */,
+				138B4E9F7F71A2FE1C284E2B /* KTheme.swift in Sources */,
 				612028CFC1CD81B9037FFE6C /* KnodeApp.swift in Sources */,
+				F45A3303A990B87F63455E42 /* KnodeAppIcons.swift in Sources */,
 				0C44DD72B14D990DF7D0DFBA /* KnodeCommand.swift in Sources */,
 				CA94681234A819BD84980698 /* KnodeHome.swift in Sources */,
 				A601FD5C00AF45FC57483002 /* KnodeSettings.swift in Sources */,
