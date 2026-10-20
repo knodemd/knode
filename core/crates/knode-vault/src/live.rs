@@ -602,12 +602,18 @@ impl LiveFolder {
         report.skipped.extend(import.skipped);
         report.skipped.extend(import.unlinked);
 
-        // Files gone from the folder, whose node is not in another file.
+        // Files gone from the folder, whose node is not in another file. Only a file Knode last
+        // saw there counts: once marked, it is forgotten, so a note a person keeps is not marked
+        // again before its file is written back.
         let gone: Vec<(String, String)> = self
             .mirror
             .files()
             .iter()
-            .filter(|(eid, path)| !on_disk.contains(*eid) && !dir.join(path).exists())
+            .filter(|(eid, path)| {
+                !on_disk.contains(*eid)
+                    && self.seen.contains_key(*path)
+                    && !dir.join(path).exists()
+            })
             .map(|(eid, path)| (eid.clone(), path.clone()))
             .collect();
         for (eid, path) in gone {

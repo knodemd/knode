@@ -359,11 +359,16 @@ fn a_deleted_file_marks_its_node_and_never_deletes_it() {
     assert!(!s.dir.join("Plan.md").exists());
     assert!(s.live.pull(&mut s.space, &me()).unwrap().is_empty());
 
-    // Keeping it writes its file again.
+    // Keeping it writes its file again. A pull before the flush does not mark it again.
     s.space
         .remove_property(&plan.id, property_keys::DELETED)
         .unwrap();
     s.live.record(plan.id, ChangeOp::Update);
+    assert!(s.live.pull(&mut s.space, &me()).unwrap().is_empty());
+    assert_eq!(
+        s.space.property(&plan.id, property_keys::DELETED).unwrap(),
+        None
+    );
     s.live.flush(&s.space).unwrap();
     assert!(read(&s.dir, "Plan.md").ends_with("Changed meanwhile."));
     assert!(s.live.pull(&mut s.space, &me()).unwrap().is_empty());
