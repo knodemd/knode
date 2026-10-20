@@ -988,6 +988,7 @@ pub fn connect_or_spawn_as(exe: impl AsRef<Path>, credential: &Credential) -> Re
         Err(e @ Error::Rpc(_)) => return Err(e),
         Err(_) => {}
     }
+    paths::check_socket_path(&socket)?;
     let mut command = Command::new(exe.as_ref());
     command.args(["service", "run"]);
     let log = open_log(&paths.home.join(crate::LOG_FILE))

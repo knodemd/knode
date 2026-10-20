@@ -59,6 +59,12 @@ belongs to, newest first.
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
 
+#### Fixed
+
+- **A deep `KNODE_HOME`**: when the Knode Service socket would be longer than a Unix socket path
+  may be, commands and `knode service run` say so, with the length and the limit, and ask for a
+  shorter folder, instead of only "could not start".
+
 ### v0.2 - Spaces and permissions
 
 #### Added
