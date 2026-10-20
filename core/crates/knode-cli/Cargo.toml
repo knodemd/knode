@@ -14,6 +14,12 @@ authors.workspace = true
 name = "knode"
 path = "src/main.rs"
 
+[features]
+default = ["semantic"]
+# Search by meaning, through Knode Service: a local model indexes the spaces in the background.
+# On aarch64 Linux it is not built yet (knodemd/knode#108), so there `knode search` is by words.
+semantic = ["knode-service/semantic"]
+
 [dependencies]
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive"] }
@@ -22,7 +28,7 @@ knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }
 knode-mcp = { path = "../knode-mcp", version = "=0.0.0" }
-knode-service = { path = "../knode-service", version = "=0.0.0" }
+knode-service = { path = "../knode-service", version = "=0.0.0", default-features = false }
 knode-vault = { path = "../knode-vault", version = "=0.0.0" }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 toml_edit = "=0.25.17"
@@ -30,3 +36,6 @@ toml_edit = "=0.25.17"
 [dev-dependencies]
 serde_json = "=1.0.154"
 tempfile = "=3.27.0"
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
+knode-embed = { path = "../knode-embed", version = "=0.0.0", features = ["test-support"] }

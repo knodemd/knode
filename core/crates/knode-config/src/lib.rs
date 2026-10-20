@@ -7,7 +7,8 @@
 //!   also turns capture of agent conversations off (`capture = false`) or leaves projects out
 //!   of it (`capture_exclude = ["/path/to/project"]`), and lists the other spaces Knode knows
 //!   (`spaces = ["/path/to/Personal.knode"]`), so Knode Service routes captured conversations
-//!   by the folders of every one of them.
+//!   by the folders of every one of them. `embeddings = "off"` turns search by meaning off
+//!   (see [`Config::embeddings_enabled`]).
 //! - **Spaces** are created by default in `~/Knode`, as `~/Knode/<name>.knode`.
 //!
 //! The space a command uses is, in order: the `--space <path>` flag, the `KNODE_SPACE`
@@ -46,6 +47,9 @@ use serde::{Deserialize, Serialize};
 pub const KNODE_HOME_VAR: &str = "KNODE_HOME";
 /// The environment variable that picks the space to use.
 pub const KNODE_SPACE_VAR: &str = "KNODE_SPACE";
+/// The environment variable that turns search by meaning on or off (`on` or `off`), over
+/// `embeddings` in `config.toml`.
+pub const KNODE_EMBEDDINGS_VAR: &str = "KNODE_EMBEDDINGS";
 /// The settings file inside the Knode home folder.
 pub const CONFIG_FILE: &str = "config.toml";
 /// The Knode Service socket inside the Knode home folder.
@@ -184,6 +188,10 @@ pub struct Config {
     /// conversation goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spaces: Vec<PathBuf>,
+    /// Whether Knode Service indexes the spaces to search them by meaning: `"on"` or `"off"`.
+    /// On when left out. See [`Config::embeddings_enabled`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<String>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -193,6 +201,32 @@ impl Config {
     /// Whether conversations are captured: `capture` in `config.toml`, on by default.
     pub fn capture_enabled(&self) -> bool {
         self.capture.unwrap_or(true)
+    }
+
+    /// Whether search by meaning is on: `embeddings` in `config.toml`, on unless it is `"off"`.
+    /// When it is on, Knode Service downloads the search model once, in the background, and
+    /// indexes the open spaces on this machine.
+    pub fn embeddings_enabled(&self) -> bool {
+        !is_off(self.embeddings.as_deref())
+    }
+
+    /// [`Config::embeddings_enabled`], unless the environment variable `KNODE_EMBEDDINGS` says
+    /// `on` or `off`.
+    pub fn embeddings_enabled_with_env(&self) -> bool {
+        match std::env::var(KNODE_EMBEDDINGS_VAR)
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("on") => true,
+            Some("off") => false,
+            _ => self.embeddings_enabled(),
+        }
+    }
+
+    /// Turns search by meaning on or off. On is the default, so it is stored as no value.
+    pub fn set_embeddings(&mut self, on: bool) {
+        self.embeddings = if on { None } else { Some("off".to_string()) };
     }
 
     /// Every space Knode knows: the default space first, then [`Config::spaces`], each once.
@@ -274,6 +308,10 @@ impl Config {
         fs::write(&tmp, text).map_err(io_error)?;
         fs::rename(&tmp, path).map_err(io_error)
     }
+}
+
+fn is_off(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim().eq_ignore_ascii_case("off"))
 }
 
 /// Where the space to use came from.
@@ -374,6 +412,23 @@ mod tests {
             let paths = Paths::from_vars(vars(&[("HOME", "/u")])).unwrap();
             assert_eq!(paths.home, PathBuf::from("/u/.local/share/knode"));
         }
+    }
+
+    #[test]
+    fn embeddings_are_on_unless_off() {
+        let mut config = Config::default();
+        assert!(config.embeddings_enabled());
+        config.set_embeddings(false);
+        assert!(!config.embeddings_enabled());
+        let text = toml::to_string(&config).unwrap();
+        assert_eq!(text.trim(), r#"embeddings = "off""#);
+        config.set_embeddings(true);
+        assert!(config.embeddings_enabled());
+        assert!(toml::to_string(&config).unwrap().trim().is_empty());
+        let config: Config = toml::from_str("embeddings = \"on\"").unwrap();
+        assert!(config.embeddings_enabled());
+        let config: Config = toml::from_str("embeddings = \" Off \"").unwrap();
+        assert!(!config.embeddings_enabled());
     }
 
     #[test]
