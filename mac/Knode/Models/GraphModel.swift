@@ -119,6 +119,12 @@ final class GraphModel {
         }
     }
 
+    /// Reads the saved views again, after one was made, renamed or removed elsewhere.
+    func reloadViews() async {
+        guard let found = try? await store.mapViews(in: spaceID) else { return }
+        views = found.filter { $0.kind == .graph }
+    }
+
     /// Reloads once for a burst of changes made elsewhere.
     func reloadSoon() {
         guard pendingReload == nil else { return }

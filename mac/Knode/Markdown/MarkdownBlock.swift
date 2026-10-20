@@ -12,6 +12,9 @@ enum MarkdownBlock: Equatable {
     case numbered(Int, String)
     case code(language: String?, text: String)
     case rule
+    /// `![[name]]` on a line of its own: an attachment of the note shown where it is written,
+    /// such as an image or a PDF.
+    case embed(String)
 
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
@@ -49,6 +52,9 @@ enum MarkdownBlock: Equatable {
             } else if let heading = heading(line) {
                 flush()
                 blocks.append(heading)
+            } else if let names = embeds(line) {
+                flush()
+                blocks += names.map(MarkdownBlock.embed)
             } else if line == "---" || line == "***" || line == "___" {
                 flush()
                 blocks.append(.rule)
@@ -79,6 +85,25 @@ enum MarkdownBlock: Equatable {
         let rest = line.dropFirst(hashes)
         guard rest.first == " " else { return nil }
         return .heading(level: hashes, text: rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// The names of a line made only of `![[name]]` embeds, or nil. What follows `|` in an embed,
+    /// such as a size, is left out.
+    static func embeds(_ line: String) -> [String]? {
+        var names: [String] = []
+        var rest = Substring(line)
+        while true {
+            rest = rest.drop(while: \.isWhitespace)
+            if rest.isEmpty { break }
+            guard rest.hasPrefix("![["), let close = rest.range(of: "]]") else { return nil }
+            let inner = rest[rest.index(rest.startIndex, offsetBy: 3)..<close.lowerBound]
+            let name = (inner.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).first ?? inner)
+                .trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !name.contains("[") else { return nil }
+            names.append(name)
+            rest = rest[close.upperBound...]
+        }
+        return names.isEmpty ? nil : names
     }
 
     private static func bullet(_ line: String) -> MarkdownBlock? {

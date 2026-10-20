@@ -167,19 +167,6 @@ public actor RoutingSpaceStore: SpaceStore {
         return space
     }
 
-    /// Runs a call with the core in the app, opening the space there for the call when the
-    /// service holds it.
-    private func direct<T: Sendable>(_ space: Space.ID, _ work: (CoreSpaceStore) async throws -> T) async throws -> T {
-        guard let entry = open[space] else { throw SpaceStoreError.spaceNotFound(space) }
-        if entry.backend == .core { return try await work(core) }
-        let wasOpen = core.isOpen(space)
-        _ = try await core.openSpace(at: entry.url)
-        defer {
-            if !wasOpen, self.open[space]?.backend != .core { core.close(space) }
-        }
-        return try await work(core)
-    }
-
     /// Runs a call on the store that holds the space. If the service stopped meanwhile, the space
     /// moves to the core and the call runs again there; with `retry` false, a call the service
     /// may have run before it stopped fails instead.
@@ -229,94 +216,107 @@ extension RoutingSpaceStore: CoeditingStore {
     }
 }
 
-// MARK: - Map
+// MARK: - Map and attachments
 
-// Knode Service has no methods yet for link kinds, labelled links, views, positions or canvases:
-// these go straight to the space through the core in the app, which SQLite allows next to the
-// service. Making and removing a link goes through the service while it holds the space, so its
-// other clients see the change.
-extension RoutingSpaceStore: MapStore {
+// Link kinds, labelled links, views, canvases, positions, groups and attachments go through
+// Knode Service while it holds the space, so its other clients see each change as it happens;
+// through the core in the app when it does not. A call that creates something, which the service
+// may have made before it stopped, is not run again on the core.
+extension RoutingSpaceStore: MapStore, AttachmentStore {
     public func linkKinds(in space: Space.ID) async throws -> [LinkKindInfo] {
-        try await direct(space) { core in try await core.linkKinds(in: space) }
+        try await map(space) { store in try await store.linkKinds(in: space) }
     }
 
     public func setLinkKind(_ kind: LinkKindInfo, in space: Space.ID) async throws -> LinkKindInfo {
-        try await direct(space) { core in try await core.setLinkKind(kind, in: space) }
+        try await map(space) { store in try await store.setLinkKind(kind, in: space) }
     }
 
     public func links(of node: Node.ID, in space: Space.ID) async throws -> [NodeLinkInfo] {
-        try await direct(space) { core in try await core.links(of: node, in: space) }
+        try await map(space) { store in try await store.links(of: node, in: space) }
     }
 
     public func link(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
-        if open[space]?.backend == .service {
-            try await route(space, retry: false) { store in
-                if let service = store as? ServiceSpaceStore {
-                    try await service.link(from: from, to: to, kind: kind, in: space)
-                } else if let core = store as? CoreSpaceStore {
-                    try await core.link(from: from, to: to, kind: kind, in: space)
-                }
-            }
-        } else {
-            try await direct(space) { core in try await core.link(from: from, to: to, kind: kind, in: space) }
-        }
+        try await map(space, retry: false) { store in try await store.link(from: from, to: to, kind: kind, in: space) }
     }
 
     public func unlink(from: Node.ID, to: Node.ID, kind: String, in space: Space.ID) async throws {
-        if open[space]?.backend == .service {
-            try await route(space, retry: false) { store in
-                if let service = store as? ServiceSpaceStore {
-                    try await service.unlink(from: from, to: to, kind: kind, in: space)
-                } else if let core = store as? CoreSpaceStore {
-                    try await core.unlink(from: from, to: to, kind: kind, in: space)
-                }
-            }
-        } else {
-            try await direct(space) { core in try await core.unlink(from: from, to: to, kind: kind, in: space) }
-        }
+        try await map(space, retry: false) { store in try await store.unlink(from: from, to: to, kind: kind, in: space) }
     }
 
     public func mapViews(in space: Space.ID) async throws -> [MapView] {
-        try await direct(space) { core in try await core.mapViews(in: space) }
+        try await map(space) { store in try await store.mapViews(in: space) }
     }
 
     public func saveGraphView(id: MapView.ID?, name: String, filter: GraphFilter, in space: Space.ID) async throws -> MapView {
-        try await direct(space) { core in try await core.saveGraphView(id: id, name: name, filter: filter, in: space) }
+        try await map(space, retry: id != nil) { store in try await store.saveGraphView(id: id, name: name, filter: filter, in: space) }
     }
 
     public func removeGraphView(_ id: MapView.ID, in space: Space.ID) async throws {
-        try await direct(space) { core in try await core.removeGraphView(id, in: space) }
+        try await map(space, retry: false) { store in try await store.removeGraphView(id, in: space) }
     }
 
     public func setViewport(_ viewport: Viewport, of view: MapView.ID, in space: Space.ID) async throws {
-        try await direct(space) { core in try await core.setViewport(viewport, of: view, in: space) }
+        try await map(space) { store in try await store.setViewport(viewport, of: view, in: space) }
     }
 
     public func graph(in space: Space.ID, view: MapView.ID?, filter: GraphFilter) async throws -> GraphData {
-        try await direct(space) { core in try await core.graph(in: space, view: view, filter: filter) }
+        try await map(space) { store in try await store.graph(in: space, view: view, filter: filter) }
     }
 
     public func setPositions(_ positions: [ViewPosition], in view: MapView.ID, space: Space.ID) async throws {
-        try await direct(space) { core in try await core.setPositions(positions, in: view, space: space) }
+        try await map(space) { store in try await store.setPositions(positions, in: view, space: space) }
     }
 
     public func removePositions(_ nodes: [Node.ID], from view: MapView.ID, space: Space.ID) async throws {
-        try await direct(space) { core in try await core.removePositions(nodes, from: view, space: space) }
+        try await map(space) { store in try await store.removePositions(nodes, from: view, space: space) }
     }
 
     public func createCanvas(title: String, in space: Space.ID) async throws -> MapView {
-        try await direct(space) { core in try await core.createCanvas(title: title, in: space) }
+        try await map(space, retry: false) { store in try await store.createCanvas(title: title, in: space) }
     }
 
     public func canvasBoard(of node: Node.ID, in space: Space.ID) async throws -> CanvasBoard? {
-        try await direct(space) { core in try await core.canvasBoard(of: node, in: space) }
+        try await map(space) { store in try await store.canvasBoard(of: node, in: space) }
     }
 
     public func setGroup(_ group: GroupDraft, in view: MapView.ID, space: Space.ID) async throws -> ViewGroupInfo {
-        try await direct(space) { core in try await core.setGroup(group, in: view, space: space) }
+        try await map(space, retry: group.id != nil) { store in try await store.setGroup(group, in: view, space: space) }
     }
 
-    public func removeGroup(_ id: ViewGroupInfo.ID, in space: Space.ID) async throws {
-        try await direct(space) { core in try await core.removeGroup(id, in: space) }
+    public func removeGroup(_ id: ViewGroupInfo.ID, in view: MapView.ID, space: Space.ID) async throws {
+        try await map(space) { store in try await store.removeGroup(id, in: view, space: space) }
+    }
+
+    // Attaching the same content under the same name again changes nothing, so an attach the
+    // service may have made is safe to run again on the core.
+
+    public func attachments(of node: Node.ID, in space: Space.ID) async throws -> [AttachmentInfo] {
+        try await map(space) { store in try await store.attachments(of: node, in: space) }
+    }
+
+    public func attachFile(at url: URL, to node: Node.ID, in space: Space.ID) async throws -> AttachmentInfo {
+        try await map(space) { store in try await store.attachFile(at: url, to: node, in: space) }
+    }
+
+    public func attach(_ data: Data, named name: String, to node: Node.ID, in space: Space.ID) async throws -> AttachmentInfo {
+        try await map(space) { store in try await store.attach(data, named: name, to: node, in: space) }
+    }
+
+    public func removeAttachment(named name: String, from node: Node.ID, in space: Space.ID) async throws {
+        try await map(space, retry: false) { store in try await store.removeAttachment(named: name, from: node, in: space) }
+    }
+
+    public func attachmentURL(named name: String, of node: Node.ID, in space: Space.ID) async throws -> URL? {
+        try await map(space) { store in try await store.attachmentURL(named: name, of: node, in: space) }
+    }
+
+    /// Runs a map or attachment call on the store that holds the space; see `route`.
+    private func map<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any MapStore & AttachmentStore) async throws -> T) async throws -> T {
+        try await route(space, retry: retry) { store in
+            guard let store = store as? any MapStore & AttachmentStore else {
+                throw SpaceStoreError.unsupported("this space has no map")
+            }
+            return try await work(store)
+        }
     }
 }

@@ -140,6 +140,7 @@ struct CanvasBoardView: View {
     @State private var panStart: Viewport?
     @State private var magnifyStart: Viewport?
     @State private var lastHover: CGPoint?
+    @State private var isDropTargeted = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -181,11 +182,24 @@ struct CanvasBoardView: View {
                 }
                 .onEnded { _ in magnifyStart = nil }
         )
-        .dropDestination(for: String.self) { ids, location in
-            let notes = ids.compactMap { id in model.nodes.first { $0.id == id } }.filter { $0.id != canvas.nodeID }
-            guard !notes.isEmpty else { return false }
-            Task { await canvas.add(notes, at: canvas.viewport.toPlane(location, in: canvas.size)) }
+        // Notes dragged from the list go on the board; files from the Finder become notes with
+        // the file attached.
+        .onDrop(of: [.fileURL, .utf8PlainText, .plainText], isTargeted: $isDropTargeted) { providers, location in
+            let point = canvas.viewport.toPlane(location, in: canvas.size)
+            if DroppedItems.hasFiles(providers) {
+                guard model.canAttachFiles(to: canvas) else { return false }
+                Task { await model.addFiles(await DroppedItems.fileURLs(providers), to: canvas, at: point) }
+                return true
+            }
+            Task {
+                let ids = await DroppedItems.strings(providers)
+                let notes = ids.compactMap { id in model.nodes.first { $0.id == id } }.filter { $0.id != canvas.nodeID }
+                await canvas.add(notes, at: point)
+            }
             return true
+        }
+        .overlay {
+            if isDropTargeted { DropHighlight() }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Canvas with \(canvas.items.count) notes")
