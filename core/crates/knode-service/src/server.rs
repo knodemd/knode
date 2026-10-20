@@ -33,6 +33,7 @@ use crate::protocol::*;
 use crate::search::{Index, IndexOptions};
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
+mod import;
 mod maps;
 
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
@@ -1054,6 +1055,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         | methods::DOC_PEER
         | methods::DOC_MERGE
         | methods::DOC_UPDATES => crate::coedit::call(state, method, raw),
+        methods::IMPORT_RUN => import::run(state, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(
                 codes::METHOD_NOT_FOUND,
