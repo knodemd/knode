@@ -19,7 +19,14 @@ thiserror = "=2.0.21"
 tokio = { version = "=1.53.3", features = ["rt"] }
 
 [target.'cfg(unix)'.dependencies]
-knode-service = { path = "../knode-service", version = "=0.0.0" }
+# Search by meaning is the service's `semantic` feature, which the knode command line turns on.
+knode-service = { path = "../knode-service", version = "=0.0.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+
+[target.'cfg(unix)'.dev-dependencies]
+knode-service = { path = "../knode-service", version = "=0.0.0", features = ["semantic"] }
+
+[target.'cfg(not(all(target_arch = "aarch64", target_os = "linux")))'.dev-dependencies]
+knode-embed = { path = "../knode-embed", version = "=0.0.0", features = ["test-support"] }

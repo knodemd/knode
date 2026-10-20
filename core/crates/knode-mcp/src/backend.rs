@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use knode_format::{
-    Change, ChangeDetail, ChangeId, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit, Space,
+    Change, ChangeDetail, ChangeId, HistoryEntry, HybridHit, Link, NewNode, Node, NodeId,
+    NodeSummary, NodeUpdate, Provenance, SearchMode, Space, rrf_score,
 };
+use serde::Serialize;
 
 /// What can go wrong in a backend. Every error is shown to the agent as a tool error, so the
 /// message must say what to do about it.
@@ -45,11 +46,49 @@ impl From<knode_format::Error> for BackendError {
 /// A `Result` whose error is [`BackendError`].
 pub type BackendResult<T> = Result<T, BackendError>;
 
+/// What a search found, and how.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchResults {
+    /// The mode the search ran in: `words` when meaning was asked for but cannot be used.
+    pub mode: SearchMode,
+    /// The results, best first.
+    pub hits: Vec<HybridHit>,
+    /// Why the search ran by words, or that some notes were found by words only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl SearchResults {
+    /// Results of a search by words, as hybrid hits ranked by words alone.
+    pub fn by_words(hits: Vec<knode_format::SearchHit>, note: Option<String>) -> Self {
+        let hits = hits
+            .into_iter()
+            .enumerate()
+            .map(|(index, hit)| {
+                let rank = Some(index as u32 + 1);
+                HybridHit {
+                    node: hit.node,
+                    snippet: hit.snippet,
+                    score: rrf_score(rank, None),
+                    word_rank: rank,
+                    meaning_rank: None,
+                }
+            })
+            .collect();
+        SearchResults {
+            mode: SearchMode::Words,
+            hits,
+            note,
+        }
+    }
+}
+
 /// The operations the MCP tools need from a space. The methods mirror [`Space`] and the
 /// Knode Service methods of the same name.
 pub trait Backend: Send + Sync + 'static {
-    /// `search`: nodes matching the words, best first.
-    fn search(&self, query: &str, limit: usize) -> BackendResult<Vec<SearchHit>>;
+    /// `search`: nodes matching the words, the meaning or both, best first. A backend that
+    /// cannot search by meaning searches by words and says so in the note.
+    fn search(&self, query: &str, mode: SearchMode, limit: usize) -> BackendResult<SearchResults>;
     /// `node.get`: one node, or `None`.
     fn get_node(&self, id: &NodeId) -> BackendResult<Option<Node>>;
     /// The nodes with this title, oldest first.
@@ -160,8 +199,11 @@ impl DirectBackend {
 }
 
 impl Backend for DirectBackend {
-    fn search(&self, query: &str, limit: usize) -> BackendResult<Vec<SearchHit>> {
-        self.with(|s| s.search(query, limit))
+    fn search(&self, query: &str, mode: SearchMode, limit: usize) -> BackendResult<SearchResults> {
+        let hits = self.with(|s| s.search(query, limit))?;
+        let note = (mode != SearchMode::Words)
+            .then(|| "Knode Service is not running, so this search was by words only.".to_string());
+        Ok(SearchResults::by_words(hits, note))
     }
 
     fn get_node(&self, id: &NodeId) -> BackendResult<Option<Node>> {
@@ -223,8 +265,8 @@ impl Backend for DirectBackend {
 
 /// A boxed backend is a backend, so the backend can be picked at run time.
 impl<B: Backend + ?Sized> Backend for Box<B> {
-    fn search(&self, query: &str, limit: usize) -> BackendResult<Vec<SearchHit>> {
-        (**self).search(query, limit)
+    fn search(&self, query: &str, mode: SearchMode, limit: usize) -> BackendResult<SearchResults> {
+        (**self).search(query, mode, limit)
     }
 
     fn get_node(&self, id: &NodeId) -> BackendResult<Option<Node>> {

@@ -1747,6 +1747,7 @@ dependencies = [
  "clap",
  "jsonc-parser",
  "knode-config",
+ "knode-embed",
  "knode-format",
  "knode-ingest",
  "knode-mcp",
@@ -1830,6 +1831,7 @@ dependencies = [
 name = "knode-mcp"
 version = "0.0.0"
 dependencies = [
+ "knode-embed",
  "knode-format",
  "knode-service",
  "rmcp",

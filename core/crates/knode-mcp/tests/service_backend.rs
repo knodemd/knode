@@ -156,3 +156,77 @@ fn history_and_undo_go_through_the_service() {
     assert_eq!(backend.history(&plan).unwrap().len(), 3);
     service.stop().unwrap();
 }
+
+/// Agents search by words and meaning through the service, which indexes in the background.
+#[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+#[test]
+fn search_modes_through_the_service() {
+    use std::time::{Duration, Instant};
+
+    use knode_service::IndexOptions;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let model = home.join("models/multilingual-e5-small");
+    std::fs::create_dir_all(&model).unwrap();
+    knode_embed::test_support::write_tiny_model(&model);
+    let options = IndexOptions {
+        pause_on_battery: false,
+        debounce: Duration::from_millis(20),
+        download: false,
+    };
+    let service = start(Config::new(&home).with_index(options)).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = dir.path().join("Work.knode");
+    let client = Client::connect(&socket).unwrap();
+    client.create_space(&space, "Work").unwrap();
+    let backend = backend_for(socket.clone(), space.clone());
+    for (title, body) in [("Cat", "the cat sat"), ("Dog", "a dog ran far away")] {
+        let out = run(
+            &backend,
+            "write_node",
+            json!({"title": title, "body": body}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+    }
+
+    let space = std::fs::canonicalize(&space).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = client.index_status().unwrap();
+        if status
+            .spaces
+            .iter()
+            .any(|s| s.space == space && s.nodes == 2 && s.waiting == 0 && !s.indexing)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not indexed: {status:#?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let out = run(&backend, "search", json!({"query": "cat"}));
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("(by words and meaning)"), "{}", out.text);
+    let found = out.structured.unwrap();
+    assert_eq!(found["mode"], "hybrid");
+    assert!(found.get("note").is_none(), "{found}");
+    assert_eq!(found["hits"].as_array().unwrap().len(), 2);
+    assert_eq!(found["hits"][0]["node"]["title"], "Cat");
+
+    let out = run(
+        &backend,
+        "search",
+        json!({"query": "far", "mode": "meaning"}),
+    );
+    let found = out.structured.unwrap();
+    assert_eq!(found["mode"], "meaning");
+    assert!(found["hits"][0]["word_rank"].is_null());
+
+    let out = run(&backend, "search", json!({"query": "cat", "mode": "words"}));
+    let found = out.structured.unwrap();
+    assert_eq!(found["mode"], "words");
+    assert_eq!(found["hits"].as_array().unwrap().len(), 1);
+    drop(backend);
+    service.stop().unwrap();
+}

@@ -8,8 +8,8 @@
 use std::fmt::Write as _;
 
 use knode_format::{
-    ActorKind, Change, ChangeId, Link, Node, NodeId, NodeSummary, NodeUpdate, Provenance,
-    SearchHit, actions, link_kinds,
+    ActorKind, Change, ChangeId, HybridHit, Link, Node, NodeId, NodeSummary, NodeUpdate,
+    Provenance, SearchMode, actions, link_kinds,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -169,13 +169,24 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 conversations they and their agents have saved. Use it before answering \
                 questions about earlier work, past decisions, preferences or project context, \
                 and before writing a note, to update an existing one instead of making a \
-                duplicate. Matches every word in titles and text, ignoring case and accents; \
-                the last word also matches as a prefix. Use a few distinctive words, not a \
-                sentence. Returns the best matches with a snippet; call read_node for the full text.",
+                duplicate. By default (mode hybrid) it ranks matches by words and by meaning \
+                together, so it also finds notes that say the same thing in other words or \
+                another language. Mode words matches every word in titles and text, ignoring \
+                case and accents, the last word also as a prefix: best for names, ids and exact \
+                terms. Mode meaning finds notes by what they are about. When meaning is not \
+                available yet (the search model is still downloading or the space is still \
+                being indexed), the search runs by words; the result's mode says which ran and \
+                its note says why. Returns the best matches with a snippet; call read_node for \
+                the full text.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "A few words to look for, such as \"pricing decision\"." },
+                    "query": { "type": "string", "description": "What to look for: a few distinctive words, or a short question in hybrid or meaning mode." },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "words", "meaning"],
+                        "description": "hybrid (default): words and meaning ranked together. words: exact words only. meaning: by meaning only."
+                    },
                     "limit": limit
                 },
                 "required": ["query"]
@@ -184,20 +195,28 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "words", "meaning"],
+                        "description": "The mode that ran: words when meaning was asked for but is not available yet."
+                    },
+                    "note": { "type": "string", "description": "Why the search ran by words, or that some notes were found by words only." },
                     "hits": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "node": summary,
-                                "snippet": { "type": "string", "description": "Text around the words found, matches in **bold**." },
-                                "score": { "type": "number", "description": "Higher is better, only comparable within one search." }
+                                "snippet": { "type": "string", "description": "Text around the words found, matches in **bold**, or the start of the passage found by meaning." },
+                                "score": { "type": "number", "description": "Higher is better." },
+                                "word_rank": { "type": ["integer", "null"], "description": "Its place among the matches by words, from 1." },
+                                "meaning_rank": { "type": ["integer", "null"], "description": "Its place among the matches by meaning, from 1." }
                             },
                             "required": ["node", "snippet", "score"]
                         }
                     }
                 },
-                "required": ["query", "hits"]
+                "required": ["query", "mode", "hits"]
             }),
             read_only: true,
             idempotent: true,
@@ -405,6 +424,8 @@ fn clamp_limit(limit: Option<usize>) -> usize {
 #[derive(Deserialize)]
 struct SearchArgs {
     query: String,
+    #[serde(default)]
+    mode: Option<SearchMode>,
     limit: Option<usize>,
 }
 
@@ -415,15 +436,32 @@ fn search<B: Backend + ?Sized>(backend: &B, args: SearchArgs) -> Outcome {
             "The query is empty. Pass a few words to look for.",
         ));
     }
-    let hits = backend.search(query, clamp_limit(args.limit))?;
+    let found = backend.search(
+        query,
+        args.mode.unwrap_or_default(),
+        clamp_limit(args.limit),
+    )?;
+    let hits = &found.hits;
+    let how = match found.mode {
+        SearchMode::Words => "by words",
+        SearchMode::Meaning => "by meaning",
+        SearchMode::Hybrid => "by words and meaning",
+    };
     let mut text = String::new();
+    if let Some(note) = &found.note {
+        let _ = writeln!(text, "Note: {note}\n");
+    }
     if hits.is_empty() {
         let _ = write!(
             text,
-            "No nodes match \"{query}\". Try fewer or other words, or `recent` to see what changed lately."
+            "No nodes match \"{query}\" ({how}). Try fewer or other words, or `recent` to see what changed lately."
         );
     } else {
-        let _ = writeln!(text, "{} for \"{query}\":", count(hits.len(), "node"));
+        let _ = writeln!(
+            text,
+            "{} for \"{query}\" ({how}):",
+            count(hits.len(), "node")
+        );
         for (i, hit) in hits.iter().enumerate() {
             let _ = write!(text, "\n{}. ", i + 1);
             summary_line(&mut text, &hit.node);
@@ -434,10 +472,14 @@ fn search<B: Backend + ?Sized>(backend: &B, args: SearchArgs) -> Outcome {
             text.push('\n');
         }
     }
-    let structured = json!({
+    let mut structured = json!({
         "query": query,
+        "mode": found.mode,
         "hits": hits.iter().map(hit_json).collect::<Vec<_>>(),
     });
+    if let Some(note) = &found.note {
+        structured["note"] = json!(note);
+    }
     Ok(ToolOutput::ok(text, structured))
 }
 
@@ -900,11 +942,13 @@ fn summary_json(node: &NodeSummary) -> Value {
     })
 }
 
-fn hit_json(hit: &SearchHit) -> Value {
+fn hit_json(hit: &HybridHit) -> Value {
     json!({
         "node": summary_json(&hit.node),
         "snippet": hit.snippet,
         "score": hit.score,
+        "word_rank": hit.word_rank,
+        "meaning_rank": hit.meaning_rank,
     })
 }
 
@@ -1098,11 +1142,42 @@ mod tests {
         assert!(out.text.contains("**Roadmap**"), "{}", out.text);
         assert!(out.text.contains("**Ship**"), "{}", out.text);
         assert_eq!(
-            out.structured.unwrap()["hits"][0]["node"]["title"],
+            out.structured.as_ref().unwrap()["hits"][0]["node"]["title"],
             "Roadmap"
         );
 
-        let out = run(&backend, "search", json!({ "query": "zebra" }));
+        // Opened directly, the space is searched by words, and the agent is told why.
+        let structured = out.structured.unwrap();
+        assert_eq!(structured["mode"], "words");
+        assert!(
+            structured["note"]
+                .as_str()
+                .unwrap()
+                .contains("Knode Service is not running"),
+            "{structured}"
+        );
+        assert_eq!(structured["hits"][0]["word_rank"], 1);
+        assert!(out.text.starts_with("Note: "), "{}", out.text);
+        let out = run(
+            &backend,
+            "search",
+            json!({ "query": "ship", "mode": "words" }),
+        );
+        check_schema("search", &out);
+        assert!(out.text.contains("(by words)"), "{}", out.text);
+        assert!(out.structured.unwrap().get("note").is_none());
+        let out = run(
+            &backend,
+            "search",
+            json!({ "query": "ship", "mode": "colour" }),
+        );
+        assert!(out.is_error);
+
+        let out = run(
+            &backend,
+            "search",
+            json!({ "query": "zebra", "mode": "words" }),
+        );
         assert!(out.text.starts_with("No nodes match"));
         assert!(run(&backend, "search", json!({ "query": " " })).is_error);
 
