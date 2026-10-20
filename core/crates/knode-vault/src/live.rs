@@ -135,6 +135,9 @@ pub struct PullReport {
     /// The files deleted from the folder whose node was marked
     /// [`markdown.deleted`](crate::property_keys::DELETED), waiting for a person.
     pub deleted: Vec<String>,
+    /// The nodes of those files, in the same order. Properties are not part of the history of
+    /// a space, so these are the changes its log of changes does not have.
+    pub marked: Vec<NodeId>,
     /// The files that could not be read in, and the typed links that could not be made.
     pub skipped: Vec<Skipped>,
     /// Every node changed, with how, for the owner of the space to announce.
@@ -550,6 +553,7 @@ impl LiveFolder {
                 .with_source(format!("{}/{path}", self.source_root));
             space.set_property(&id, keys::DELETED, &path, &by)?;
             report.deleted.push(path);
+            report.marked.push(id);
             report.changes.push((id, ChangeOp::Update));
         }
         self.save_seen()?;

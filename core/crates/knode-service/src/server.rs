@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use knode_format::{ChangeId, ChangeOp, NewNode, NodeId, Provenance, Space, actions, link_kinds};
-use knode_vault::LiveFolder;
+use knode_vault::{LiveFolder, PullReport};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -359,17 +359,18 @@ impl State {
         }
         let space = Arc::new(Mutex::new(Space::open(&key)?));
         // Hold the space while its live folder catches up, so no change is made before.
-        let guard = lock_ignoring_poison(&space);
+        let mut guard = lock_ignoring_poison(&space);
         spaces.insert(key, space.clone());
         drop(spaces);
-        self.start_live(&guard);
+        self.start_live(&mut guard);
         drop(guard);
         Ok(space)
     }
 
-    /// Starts the live Markdown folder of an open space, if it has one, writing the whole space
-    /// to it, or stops the one it had. Called with the space locked.
-    fn start_live(&self, space: &Space) {
+    /// Starts the live Markdown folder of an open space, if it has one, reading in the files
+    /// edited in it and writing the whole space to it, or stops the one it had. Called with the
+    /// space locked.
+    fn start_live(&self, space: &mut Space) {
         let folder = match crate::markdown::live_folder(space) {
             Ok(folder) => folder,
             Err(e) => {
@@ -400,13 +401,12 @@ impl State {
         if let Some(warning) = &folder.warning {
             eprintln!("Knode Service: {warning}");
         }
-        let started = LiveFolder::open(&dir).and_then(|mut live| {
-            live.resync(space)?;
-            Ok(live)
-        });
-        match started {
-            Ok(folder) => {
+        let mark = last_change(space).unwrap_or_default();
+        match crate::markdown::start_live_folder(space, &dir) {
+            Ok((folder, report)) => {
                 live.insert(key, folder);
+                drop(live);
+                self.notify_pull(space, mark, &dir, &report);
             }
             Err(e) => eprintln!(
                 "Knode Service: cannot write the Markdown folder {}: {e}",
@@ -415,29 +415,48 @@ impl State {
         }
     }
 
-    /// Writes the live Markdown folders: those whose changes are due, or all of them with
-    /// `all`. A failed write keeps its changes for the next time.
+    /// Announces the changes a live Markdown folder read in since `mark`.
+    fn notify_pull(&self, space: &Space, mark: ChangeId, dir: &Path, report: &PullReport) {
+        crate::markdown::log_pull(dir, report);
+        if report.changes.is_empty() {
+            return;
+        }
+        if let Err(e) = self.notify_since(space, mark) {
+            eprintln!("Knode Service: {e:?}");
+        }
+        for id in &report.marked {
+            self.notify(space, *id, ChangeKind::Update);
+        }
+    }
+
+    /// Reads the edits made in the live Markdown folders and writes the changes made in Knode to
+    /// them: those that are due, or all of them with `all`. A failed write keeps its changes for
+    /// the next time.
     fn flush_live(&self, all: bool) {
         let keys: Vec<PathBuf> = lock_ignoring_poison(&self.live).keys().cloned().collect();
         for key in keys {
             let Some(space) = lock_ignoring_poison(&self.spaces).get(&key).cloned() else {
                 continue;
             };
-            let space = lock_ignoring_poison(&space);
+            let mut space = lock_ignoring_poison(&space);
             let mut live = lock_ignoring_poison(&self.live);
             let Some(folder) = live.get_mut(&key) else {
                 continue;
             };
-            let result = if all {
-                folder.flush(&space).map(Some)
-            } else {
-                folder.flush_if_due(&space)
-            };
-            if let Err(e) = result {
-                eprintln!(
-                    "Knode Service: cannot write the Markdown folder {}: {e}",
-                    folder.dir().display()
-                );
+            let mark = last_change(&space).unwrap_or_default();
+            let dir = folder.dir().to_path_buf();
+            let result = folder.tick(&mut space, &crate::markdown::folder_owner(), all);
+            drop(live);
+            match result {
+                Ok(report) => self.notify_pull(&space, mark, &dir, &report),
+                Err(e) => {
+                    eprintln!(
+                        "Knode Service: cannot sync the Markdown folder {}: {e}",
+                        dir.display()
+                    );
+                    // What was read before the failure is announced too.
+                    let _ = self.notify_since(&space, mark);
+                }
             }
         }
     }
@@ -940,7 +959,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let mut space = lock_ignoring_poison(&space);
             let mark = last_change(&space)?;
             let folder = crate::markdown::set_live_folder(&mut space, p.folder.as_deref(), &p.by)?;
-            state.start_live(&space);
+            state.start_live(&mut space);
             if last_change(&space)? != mark {
                 state.notify_space(&space, SpaceEventKind::Settings, |e| {
                     e.key = Some(knode_format::setting_keys::MARKDOWN_FOLDER.to_string());
