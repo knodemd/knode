@@ -55,6 +55,8 @@ use loro::{ExportMode, LoroDoc, LoroText, UpdateOptions};
 
 pub use error::{Error, Result};
 pub use files::{EXTENSION, SNAPSHOT_FILE, UPDATES_DIR};
+/// The Loro crate this one uses, for editors that keep their own copy of a document.
+pub use loro;
 pub use version::Version;
 
 /// The root container of a node's document: a `LoroText` holding its Markdown body.
@@ -330,8 +332,12 @@ impl Docs {
                 apply_change(&loaded.text(), &edit.change)?;
                 loaded.doc.commit();
             } else {
-                // The writer saw an older version: edit a fork at it, as a new peer, and merge.
-                let peer = docs.new_peer(space, by)?;
+                // The writer saw an older version: edit a fork at it and merge. The fork may go
+                // on with this program's peer only if it has every operation made as it.
+                let peer = match docs.peer_for(space, by)? {
+                    peer if current.count(peer) == base.count(peer) => peer,
+                    _ => docs.rotate_peer(space, by)?,
+                };
                 let loaded = docs.loaded(space, node);
                 let base_vv = base.to_loro();
                 let fork = loaded.doc.fork_at(&loaded.doc.vv_to_frontiers(&base_vv))?;
@@ -350,7 +356,7 @@ impl Docs {
     /// own copy of the document, and writes the result as one change.
     ///
     /// Every peer that made the updates must be recorded in `loro_peers` (see
-    /// [`peer_for`](Self::peer_for)); the change's provenance is theirs when they are all one,
+    /// [`new_peer`](Self::new_peer)); the change's provenance is theirs when they are all one,
     /// otherwise `system`/`knode`. Updates already merged change nothing.
     pub fn merge_updates(
         &mut self,
@@ -387,16 +393,15 @@ impl Docs {
         })
     }
 
-    /// The Loro peer id that edits made as `by` in this program use, recorded in `loro_peers`
-    /// the first time. An editor with its own copy of the document makes its edits as this
-    /// peer before sending them to [`merge_updates`](Self::merge_updates); it must be the only
-    /// one editing as it.
-    pub fn peer_for(&mut self, space: &mut Space, by: &Provenance) -> Result<u64> {
-        let key = (space.manifest().id.clone(), by.clone());
-        if let Some(peer) = self.peers.get(&key) {
-            return Ok(*peer);
-        }
-        self.new_peer(space, by)
+    /// Records a new Loro peer for an editor that keeps its own copy of a document, such as an
+    /// open editor in an app, and returns it. The editor makes its edits as this peer, and only
+    /// it does, then sends them to [`merge_updates`](Self::merge_updates), which attributes them
+    /// to `by`.
+    pub fn new_peer(&self, space: &mut Space, by: &Provenance) -> Result<u64> {
+        // A new document draws a random peer id.
+        let peer = LoroDoc::new().peer_id();
+        space.add_loro_peer(peer, by)?;
+        Ok(peer)
     }
 
     /// Brings a node's document in step with a body written without Loro (21.5): makes the
@@ -428,9 +433,13 @@ impl Docs {
     }
 
     /// Folds a node's update files into a full snapshot (21.6): writes `snapshot.loro` from the
-    /// document, then removes the update files it read, and only those.
+    /// document, then removes the update files it read, and only those. Holds the space's write
+    /// lock meanwhile (see [`Space::loro_lock`]).
     pub fn compact(&mut self, space: &Space, node: &NodeId) -> Result<Compaction> {
         let dir = space.loro_dir(node);
+        // Under the write lock, after reading the files again: a snapshot written by another
+        // program meanwhile would otherwise be replaced by one that lacks its edits.
+        let _lock = space.loro_lock()?;
         self.load(space, node)?;
         let loaded = self.loaded(space, node);
         let snapshot = loaded.doc.export(ExportMode::Snapshot)?;
@@ -518,10 +527,18 @@ impl Docs {
         Ok(())
     }
 
-    fn new_peer(&mut self, space: &mut Space, by: &Provenance) -> Result<u64> {
-        // A new document draws a random peer id.
-        let peer = LoroDoc::new().peer_id();
-        space.add_loro_peer(peer, by)?;
+    /// The peer this program edits as for `by`, recorded the first time.
+    fn peer_for(&mut self, space: &mut Space, by: &Provenance) -> Result<u64> {
+        let key = (space.manifest().id.clone(), by.clone());
+        if let Some(peer) = self.peers.get(&key) {
+            return Ok(*peer);
+        }
+        self.rotate_peer(space, by)
+    }
+
+    /// A new peer this program edits as for `by` from now on.
+    fn rotate_peer(&mut self, space: &mut Space, by: &Provenance) -> Result<u64> {
+        let peer = self.new_peer(space, by)?;
         self.peers
             .insert((space.manifest().id.clone(), by.clone()), peer);
         Ok(peer)
@@ -557,28 +574,51 @@ impl Docs {
                 self.pull(space, &current)?;
             }
         }
+        // Another program may have written meanwhile; a document ahead of the body is written.
+        self.push(space, node)?;
         Ok(())
     }
 
     /// Makes the document's text equal to the node's body, as the peer of its last writer.
+    ///
+    /// Done under the space's write lock, after reading the files again: two programs pulling
+    /// the same body at once would each insert it.
     fn pull(&mut self, space: &mut Space, node: &Node) -> Result<bool> {
         let id = node.id;
-        let before = self.loaded(space, &id).doc.oplog_vv();
-        if self.loaded(space, &id).text().to_string() != node.body {
-            let peer = self.peer_for(space, &node.updated_by)?;
+        let peer = self.peer_for(space, &node.updated_by)?;
+        let changed = {
+            let _lock = space.loro_lock()?;
+            self.load(space, &id)?;
+            let body = space.get_node(&id)?.ok_or(Error::NotFound(id))?.body;
+            let row = match space.loro_version(&id)? {
+                Some(row) => Some(Version::from_json(&row)?),
+                None => None,
+            };
             let loaded = self.loaded(space, &id);
-            loaded.doc.set_peer_id(peer)?;
-            set_text(&loaded.text(), &node.body)?;
-            loaded.doc.commit();
-        }
-        let loaded = self.loaded(space, &id);
-        let changed = loaded.doc.oplog_vv() != before;
-        if changed {
-            let update = loaded.doc.export(ExportMode::updates(&before))?;
-            let name = files::write_update(&space.loro_dir(&id), &update)?;
-            loaded.read.insert(name);
-        }
-        let version = loaded.version();
+            let version = loaded.version();
+            if let Some(row) = row.filter(|row| version.includes(row)) {
+                // Read again, the document has every edit the body holds: it was behind only
+                // because another program wrote meanwhile. Pulling a body that is behind it
+                // would undo edits.
+                if version != row || loaded.text().to_string() == body {
+                    return Ok(false);
+                }
+            }
+            let before = loaded.doc.oplog_vv();
+            if loaded.text().to_string() != body {
+                loaded.doc.set_peer_id(peer)?;
+                set_text(&loaded.text(), &body)?;
+                loaded.doc.commit();
+            }
+            let changed = loaded.doc.oplog_vv() != before;
+            if changed {
+                let update = loaded.doc.export(ExportMode::updates(&before))?;
+                let name = files::write_update(&space.loro_dir(&id), &update)?;
+                loaded.read.insert(name);
+            }
+            changed
+        };
+        let version = self.loaded(space, &id).version();
         space.set_loro_version(&id, &version.to_json())?;
         Ok(changed)
     }
