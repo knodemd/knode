@@ -59,6 +59,11 @@ belongs to, newest first.
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
 
+#### Fixed
+
+- **Search by meaning on large spaces**: a search by meaning or hybrid search took minutes in a
+  space of a few thousand notes (170 s on 2,700 notes and 20,000 chunks); it takes about 40 ms.
+
 ### v0.2 - Spaces and permissions
 
 #### Added
