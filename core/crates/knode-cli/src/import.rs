@@ -18,8 +18,9 @@ pub fn run(space: &dyn Backend, path: &Path, by: &Provenance) -> Result<()> {
             Some("md" | "markdown") => import_markdown(space, &[path], by),
             Some("jsonl") => import_session(space, &path),
             _ => bail!(
-                "{} is not a Markdown file or a session: knode import takes a folder of .md \
-                 files, a .md file, or a Claude Code or Codex session (.jsonl)",
+                "{} is not a data export, a Markdown file or a session: knode import takes a \
+                 Claude, ChatGPT or Gemini (Google Takeout) export, a folder of .md files, a .md \
+                 file, or a Claude Code or Codex session (.jsonl)",
                 path.display()
             ),
         }
