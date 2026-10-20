@@ -1,15 +1,20 @@
-//! Change history: changes, undo, restore and purge (schema version 3).
+//! Change history: changes, undo, restore and purge (schema version 3, with attachments from
+//! schema version 4).
 
 use std::collections::BTreeSet;
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
+use crate::attachments::{
+    add_attachment, blob_file_exists, purge_node_attachments, remove_attachment, remove_blob_files,
+};
 use crate::space::{
-    Content, Fields, Write, add_change, apply_fields, delete_in, finish_rename, insert_link,
-    insert_node, limit_param, link_exists, node_id, provenance, provenance_id, query_history,
-    read_node, record, remove_link,
+    Content, Fields, Write, add_change, add_change_with_detail, apply_fields, delete_in,
+    finish_rename, insert_link, insert_node, limit_param, link_exists, node_id, provenance,
+    provenance_id, query_history, read_node, record, remove_link,
 };
 use crate::types::{ActorKind, ChangeOp};
+use crate::views::purge_node_views;
 use crate::{
     Change, ChangeDetail, ChangeId, Error, HistoryEntry, LinkHistoryEntry, Node, NodeId,
     Provenance, Result, Space, Timestamp, actions, link_kinds,
@@ -25,6 +30,8 @@ const UNDOABLE: &[&str] = &[
     actions::LINK_DELETE,
     actions::UNDO,
     actions::IMPORT,
+    actions::ATTACHMENT_ADD,
+    actions::ATTACHMENT_REMOVE,
 ];
 
 /// Columns of a [`Change`], with `c` as `changes` and `p` as its provenance.
@@ -87,9 +94,16 @@ impl Space {
     /// unless `force` is set: undoing would overwrite them. Confirm with the person before
     /// forcing; [`restore`](Self::restore) goes back past later changes on purpose. Fails with
     /// [`Error::AlreadyUndone`] for a change already undone, and with [`Error::CannotUndo`] for
-    /// changes of settings, folders, agents and grants, or when the versions it needs were
-    /// purged. Nothing is ever removed from the history.
+    /// changes of settings, folders, agents, grants, link kinds and views, or when the versions
+    /// it needs were purged. Nothing is ever removed from the history.
+    ///
+    /// Undoing an `attachment.add` removes the attachment if it is still there with the same
+    /// content; undoing an `attachment.remove` adds it back if the name is free and the file is
+    /// in `blobs/`. Otherwise it fails with [`Error::CannotUndo`].
     pub fn undo(&mut self, id: ChangeId, by: &Provenance, force: bool) -> Result<Change> {
+        if let Some(effect) = attachment_effect(&self.conn, id)? {
+            return self.undo_attachment(id, effect, by);
+        }
         let plan = plan_undo(&self.conn, id, force)?;
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
@@ -193,8 +207,9 @@ impl Space {
     /// Erases a node and every version of it for good, such as after pasting a secret into it,
     /// and returns the change that records it, which holds no content.
     ///
-    /// Deletes the node if it exists, its history and the history of its links. The changes
-    /// made to it stay, without content. A purged node cannot be restored, and undoing a change
+    /// Deletes the node if it exists, its history and the history of its links, its canvas and
+    /// its positions in views, and its attachments with the files no other node uses (their
+    /// hashes in the change's `detail`). The changes made to it stay, without content. A purged node cannot be restored, and undoing a change
     /// that needs its versions fails. Only a person can purge: any other provenance fails with
     /// [`Error::PersonOnly`].
     pub fn purge(&mut self, id: &NodeId, by: &Provenance) -> Result<Change> {
@@ -233,8 +248,132 @@ impl Space {
             "DELETE FROM link_history WHERE source_id = ?1 OR target_id = ?1",
             [id.to_string()],
         )?;
+        // Whatever was purged must not stay in the package: its canvas, its positions, its
+        // attachments and the files no other node uses.
+        purge_node_views(&tx, id)?;
+        let blobs = purge_node_attachments(&tx, id)?;
+        if !blobs.is_empty() {
+            tx.execute(
+                "UPDATE changes SET detail = ?2 WHERE id = ?1",
+                params![change, serde_json::json!({ "hashes": blobs }).to_string()],
+            )?;
+        }
+        tx.commit()?;
+        remove_blob_files(self.path(), &blobs);
+        read_change(&self.conn, change)?.ok_or(Error::ChangeNotFound(change))
+    }
+
+    /// Undoes a change that attached a file or removed an attachment, or an undo of one.
+    fn undo_attachment(
+        &mut self,
+        id: ChangeId,
+        effect: AttachmentEffect,
+        by: &Provenance,
+    ) -> Result<Change> {
+        if let Some(undone_by) = active_undo(&self.conn, id)? {
+            return Err(Error::AlreadyUndone {
+                change: id,
+                undone_by,
+            });
+        }
+        let cannot = |reason: &str| Error::CannotUndo {
+            change: id,
+            reason: reason.into(),
+        };
+        let current: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT hash FROM attachments WHERE node_id = ?1 AND name = ?2",
+                params![effect.node.to_string(), effect.name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // Undoing an add removes the attachment; undoing a remove adds it back.
+        if effect.added {
+            if current.as_deref() != Some(effect.hash.as_str()) {
+                return Err(cannot(
+                    "the attachment is no longer there as it was attached",
+                ));
+            }
+        } else {
+            if current.is_some() {
+                return Err(cannot("the node has another attachment with that name"));
+            }
+            if !blob_file_exists(self.path(), &effect.hash) {
+                return Err(cannot("the file of the attachment is missing"));
+            }
+        }
+        let now = Timestamp::now();
+        let tx = self.conn.transaction()?;
+        let prov = provenance_id(&tx, by)?;
+        if effect.added {
+            remove_attachment(&tx, &effect.node, &effect.name, prov, now)?;
+        } else {
+            add_attachment(&tx, &effect.node, &effect.name, &effect.hash, prov, now)?;
+        }
+        let detail = serde_json::json!({ "name": effect.name, "hash": effect.hash }).to_string();
+        let change = add_change_with_detail(
+            &tx,
+            now,
+            prov,
+            actions::UNDO,
+            &effect.node.to_string(),
+            Some(id),
+            &detail,
+        )?;
         tx.commit()?;
         read_change(&self.conn, change)?.ok_or(Error::ChangeNotFound(change))
+    }
+}
+
+/// What a change did to an attachment: added (`added`) or removed it.
+struct AttachmentEffect {
+    added: bool,
+    node: NodeId,
+    name: String,
+    hash: String,
+}
+
+/// What a change did to an attachment, following undos back to the `attachment.add` or
+/// `attachment.remove` they undo, or `None` for any other change.
+fn attachment_effect(conn: &Connection, id: ChangeId) -> Result<Option<AttachmentEffect>> {
+    let mut flips = false;
+    let mut next = id;
+    loop {
+        let Some(change) = read_change(conn, next)? else {
+            return Ok(None);
+        };
+        let added = match change.action.as_str() {
+            actions::ATTACHMENT_ADD => true,
+            actions::ATTACHMENT_REMOVE => false,
+            actions::UNDO => match change.undoes {
+                Some(undone) if undone < next => {
+                    flips = !flips;
+                    next = undone;
+                    continue;
+                }
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let field = |key: &str| {
+            change
+                .detail
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        let (Some(name), Some(hash), Ok(node)) =
+            (field("name"), field("hash"), NodeId::parse(&change.subject))
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(AttachmentEffect {
+            added: added != flips,
+            node,
+            name,
+            hash,
+        }));
     }
 }
 

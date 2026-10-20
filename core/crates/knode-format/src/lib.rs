@@ -1,13 +1,15 @@
-//! Read and write `.knode` spaces: nodes, links, provenance, history and search.
+//! Read and write `.knode` spaces: nodes, links, provenance, history, search, views and
+//! attachments.
 //!
 //! A space is a `.knode` package, a folder the Finder shows as one file:
 //!
 //! ```text
 //! Example.knode/
 //!   manifest.json   format version, id and name
-//!   knode.db        SQLite in WAL mode: nodes, properties, links, provenance, history, search
-//!   blobs/          attachments by hash (reserved)
-//!   sync/           Loro updates (reserved)
+//!   knode.db        SQLite in WAL mode: nodes, properties, links, provenance, history, search,
+//!                   link kinds, views and attachments
+//!   blobs/          attachments, named by the SHA-256 of their bytes
+//!   sync/           Loro documents of node bodies (reserved for now)
 //! ```
 //!
 //! The format is specified in the
@@ -42,14 +44,19 @@
 #![warn(missing_docs)]
 
 mod access;
+mod attachments;
 mod error;
 mod history;
+mod links;
 mod manifest;
 mod schema;
 mod space;
 mod types;
+mod views;
 
+pub use attachments::{Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, blob_url_hash};
 pub use error::{Error, Result};
+pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use manifest::{FORMAT_VERSION, Manifest};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
@@ -58,6 +65,9 @@ pub use types::{
     GrantLevel, HistoryEntry, Link, LinkHistoryEntry, NewNode, Node, NodeId, NodeSummary,
     NodeUpdate, Properties, Provenance, SearchHit, Timestamp,
 };
+pub use views::{
+    GraphViewSpec, GroupSpec, Position, PositionSpec, View, ViewDisplay, ViewGroup, Viewport,
+};
 
 /// The extension of a space package.
 pub const EXTENSION: &str = "knode";
@@ -65,7 +75,7 @@ pub const EXTENSION: &str = "knode";
 pub const MANIFEST_FILE: &str = "manifest.json";
 /// The database inside a package.
 pub const DATABASE_FILE: &str = "knode.db";
-/// The attachments folder inside a package, reserved for now.
+/// The attachments folder inside a package: one file per blob, named by its hash.
 pub const BLOBS_DIR: &str = "blobs";
 /// The sync folder inside a package, reserved for now.
 pub const SYNC_DIR: &str = "sync";
@@ -83,6 +93,9 @@ pub mod kinds {
     pub const IDEA: &str = "idea";
     /// Something read: a web page, a document, a book.
     pub const SOURCE: &str = "source";
+    /// A canvas: its title names it and its body says what it is for (schema version 4). Made
+    /// with [`Space::create_canvas`](crate::Space::create_canvas).
+    pub const CANVAS: &str = "canvas";
 }
 
 /// The property keys the format defines. Any other key that follows the naming rule
@@ -107,8 +120,9 @@ pub mod property_keys {
     pub const CONVERSATION_ENDED_AT: &str = "conversation.ended_at";
 }
 
-/// The link kinds the format defines. Any other kind that follows the naming rule
-/// (`[a-z][a-z0-9-]*`, at most 32 characters) is kept as it is.
+/// The link kinds the format defines, built in. From schema version 4 a space defines kinds of
+/// its own with [`Space::set_link_kind`](crate::Space::set_link_kind), and a link is made only
+/// with a built-in or defined kind. Links of kinds a reader does not know are kept as they are.
 pub mod link_kinds {
     /// A `[[link]]` in the body of the source node. Only written by Knode, from the body.
     pub const MENTIONS: &str = "mentions";
@@ -118,6 +132,29 @@ pub mod link_kinds {
     pub const PART_OF: &str = "part-of";
     /// The source node was made from the target, such as a summary of a conversation.
     pub const DERIVED_FROM: &str = "derived-from";
+    /// The source node answers a question the target asks (schema version 4).
+    pub const ANSWERS: &str = "answers";
+    /// The source node says the opposite of the target (schema version 4).
+    pub const CONTRADICTS: &str = "contradicts";
+
+    /// Every built-in kind, in the order the specification lists them.
+    pub const BUILT_IN: &[&str] = &[
+        MENTIONS,
+        RELATED,
+        PART_OF,
+        DERIVED_FROM,
+        ANSWERS,
+        CONTRADICTS,
+    ];
+}
+
+/// The view kinds the format defines (schema version 4). Views of other kinds are kept and not
+/// shown.
+pub mod view_kinds {
+    /// The space, or the part of it a filter keeps, as nodes and the links between them.
+    pub const GRAPH: &str = "graph";
+    /// A board arranged by hand, which is also a node of kind [`canvas`](crate::kinds::CANVAS).
+    pub const CANVAS: &str = "canvas";
 }
 
 /// The actions of changes the format defines (schema version 3). A reader keeps and shows actions
@@ -157,6 +194,20 @@ pub mod actions {
     pub const GRANT_SET: &str = "grant.set";
     /// A migration rewrote data.
     pub const MIGRATE: &str = "migrate";
+    /// A link kind was defined or changed (schema version 4).
+    pub const LINK_KIND_SET: &str = "link_kind.set";
+    /// A link kind was removed (schema version 4).
+    pub const LINK_KIND_REMOVE: &str = "link_kind.remove";
+    /// A graph view was created, renamed or filtered (schema version 4).
+    pub const VIEW_SET: &str = "view.set";
+    /// A graph view was removed (schema version 4).
+    pub const VIEW_REMOVE: &str = "view.remove";
+    /// A file was attached to a node (schema version 4).
+    pub const ATTACHMENT_ADD: &str = "attachment.add";
+    /// An attachment was removed from a node; its blob stays (schema version 4).
+    pub const ATTACHMENT_REMOVE: &str = "attachment.remove";
+    /// Unused blobs were removed, files and rows (schema version 4).
+    pub const BLOBS_PURGE: &str = "blobs.purge";
 }
 
 /// The folder kinds the format defines (schema version 3). Folders of other kinds are kept and
@@ -178,4 +229,6 @@ pub mod setting_keys {
     pub const SPACE_ICON: &str = "space.icon";
     /// `on` or `off`: whether captured conversations are written to the space (schema version 3).
     pub const CAPTURE_ENABLED: &str = "capture.enabled";
+    /// The id of the embedding model searches by meaning use, in decimal (schema version 4).
+    pub const EMBEDDING_MODEL: &str = "embedding.model";
 }
