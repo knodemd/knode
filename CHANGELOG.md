@@ -23,9 +23,11 @@ belongs to, newest first.
   machine; Knode Service indexes every space in the background and pauses on battery.
   `knode search` ranks by words and meaning together, with `--words` or `--meaning` for one of
   them, and `knode index` shows how far a space is indexed. The MCP `search` tool takes the same
-  modes and says when it fell back to words and why. `embeddings = "off"` in `config.toml` turns
-  it off. The Mac app's search uses the combined ranking when Knode Service is running, but has
-  no way yet to choose words or meaning.
+  modes and says when it fell back to words and why. In the Mac app, the search field chooses
+  words and meaning, words or meaning, and each result shows how it was found; Settings > Search
+  and the menu bar show the model, how many notes are indexed and Index Now. It works on Linux
+  too, arm64 included. `embeddings = "off"` in `config.toml`, or the switch in the app, turns it
+  off.
 - **Editing together**: you and your agents can edit the same note at once. Edits are merged
   instead of one overwriting the other, an agent's edit appears live in the open editor, and the
   history keeps who wrote what.
@@ -34,14 +36,21 @@ belongs to, newest first.
   preview. `knode attach` and `knode attachments` from the command line, and `attach_file` and
   `read_attachment` for agents. Markdown export writes them next to each note and import brings
   them back.
-- **Import data exports**: `knode import` reads a Claude or ChatGPT data export (the `.zip` or its
-  folder), with one node per conversation and Claude projects as notes; importing again updates
-  instead of duplicating. Gemini exports from Google Takeout are read too, but have not been
-  checked against a real export yet. Perplexity has no export of all threads, so it is not
-  supported.
-- **Import notes and reading, library only for now**: Knode can read Apple Notes, Bear, Notion and
-  Evernote, and PDFs, web pages, Kindle highlights and Readwise exports, but neither `knode import`
-  nor the Mac app offers them yet.
+- **`knode import` for everything you bring in**: besides Markdown and agent sessions, it reads
+  Claude and ChatGPT data exports (the `.zip` or its folder, one node per conversation, Claude
+  projects as notes), PDFs, saved web pages and `http(s)` URLs (fetched only when you give one),
+  Kindle clippings and notebooks, Readwise CSV and Markdown exports, and the notes of Apple Notes
+  (its database, with Full Disk Access, or an export), Bear (backups, TextBundles or its
+  database), Notion (the zipped export) and Evernote (`.enex`). Knode tells which from the path,
+  `--from <kind>` says it, and `--json` prints the report. Importing again updates the same nodes
+  instead of copying them. Gemini exports from Google Takeout are read too, but have not been
+  checked against a real export yet; Perplexity has no export of all threads, so it is not
+  supported; Readwise is read from its exports, not its API. The Mac app has no import screen
+  yet.
+- **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
+  space as edits of the folder's owner, new files become notes, renamed or moved files rename or
+  move their note, and edits made while Knode was not running come in at start. A deleted file
+  never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
 
 #### Changed
 
@@ -73,8 +82,7 @@ belongs to, newest first.
   reads Obsidian vaults with their links, embeds and tags. Notes from a vault come back unchanged
   except for an added `id:` line.
 - **Live Markdown folder**: `knode markdown folder <dir>` keeps a folder of `.md` files current
-  with every note, for Obsidian, git or anything else. It goes one way for now: edits made in the
-  folder do not come back into the space yet.
+  with every note, for Obsidian, git or anything else (in v0.3 it also reads edits back).
 - **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
   OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
   it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
@@ -124,12 +132,5 @@ Service and a first Mac app.
   newest first, a Markdown editor with live preview where `[[links]]` open the note they name,
   search, and recent spaces. A menu bar item shows Knode Service and starts or stops it, and the app
   offers to install the `knode` command.
-- **`knode import` for everything you bring in**: besides Claude, ChatGPT and Gemini exports,
-  Markdown and agent sessions, it now reads PDFs, saved web pages and `http(s)` URLs (fetched only
-  when you give one), Kindle clippings and notebooks, Readwise CSV and Markdown exports, and the
-  notes of Apple Notes (its database, with Full Disk Access, or an export), Bear (backups,
-  TextBundles or its database), Notion (the zipped export) and Evernote (`.enex`). Knode tells
-  which from the path, `--from <kind>` says it, and `--json` prints the report. Importing again
-  updates the same nodes instead of copying them. Knode Service does the same with `import.run`.
 - **Builds for macOS and Linux**: Apple silicon, Intel and a universal binary, and Linux x86_64
   and arm64, with checksums. On Linux, `curl -fsSL https://knode.md/install.sh | sh` installs it.
