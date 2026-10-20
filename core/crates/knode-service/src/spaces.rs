@@ -89,6 +89,12 @@ pub struct SpaceEvent {
     /// The id of the folder that was added, changed or removed, for `folders`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// The kind of link that was defined, changed or removed, for `link_kinds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_kind: Option<String>,
+    /// The id of the view that was created, changed or removed, for `views`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
 }
 
 /// What changed in a [`SpaceEvent`].
@@ -101,6 +107,12 @@ pub enum SpaceEventKind {
     Settings,
     /// A folder was added, changed or removed.
     Folders,
+    /// A kind of link was defined, changed or removed.
+    #[serde(rename = "link_kinds")]
+    LinkKinds,
+    /// A graph view or a canvas was created, changed or removed, or nodes or groups were
+    /// placed on it.
+    Views,
 }
 
 fn person(by: &Provenance, what: &str) -> knode_format::Result<()> {

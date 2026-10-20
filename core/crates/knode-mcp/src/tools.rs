@@ -1,5 +1,5 @@
 //! The tools agents call: `search`, `read_node`, `write_node`, `link_nodes`, `recent`,
-//! `history` and `undo`.
+//! `history`, `undo`, `link_kinds`, `read_canvas`, `attach_file` and `read_attachment`.
 //!
 //! Each tool answers with Markdown for the model to read and the same data as structured
 //! content that follows the tool's output schema. This module does not depend on the MCP SDK,
@@ -8,13 +8,17 @@
 use std::fmt::Write as _;
 
 use knode_format::{
-    ActorKind, Change, ChangeId, Link, Node, NodeId, NodeSummary, NodeUpdate, Provenance,
+    ActorKind, Change, ChangeId, Link, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance,
     SearchHit, actions, link_kinds,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::backend::{Backend, BackendError};
+
+mod maps;
+
+pub use maps::{MAX_ATTACH_BYTES, MAX_TEXT_BYTES};
 
 /// The most results `search` and `recent` return.
 pub const MAX_LIMIT: usize = 50;
@@ -78,7 +82,7 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 7] = [
+pub const TOOL_NAMES: [&str; 11] = [
     "search",
     "read_node",
     "write_node",
@@ -86,6 +90,10 @@ pub const TOOL_NAMES: [&str; 7] = [
     "recent",
     "history",
     "undo",
+    "link_kinds",
+    "read_canvas",
+    "attach_file",
+    "read_attachment",
 ];
 
 /// Every tool, in the order they are listed.
@@ -161,7 +169,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
         "required": ["id", "action", "subject", "subject_title", "changed_at", "changed_by", "undoes"]
     });
 
-    vec![
+    let attachment = maps::attachment_schema(&provenance);
+    let labeled = json!({
+        "type": "object",
+        "properties": {
+            "node": { "type": "string", "description": "The node at the other end." },
+            "title": { "type": "string" },
+            "kind": { "type": "string" },
+            "label": { "type": "string", "description": "How the link reads from this node, such as part of or has part." },
+            "outgoing": { "type": "boolean", "description": "true for a link from this node, false for a backlink." }
+        },
+        "required": ["node", "title", "kind", "label", "outgoing"]
+    });
+    let mut tools = vec![
         ToolDefinition {
             name: "search",
             title: "Search memory",
@@ -207,9 +227,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "read_node",
             title: "Read a node",
             description: "Read one node of the user's Knode memory in full: its Markdown text, \
-                kind, tags, who wrote it and when, and its links and backlinks. Pass the id from \
-                search or recent, or the node's exact title. [[Title]] in the text is a link to \
-                another node you can read the same way.",
+                kind, tags, who wrote it and when, its links and backlinks with how each reads \
+                (such as part of, has part), and its attached files. Pass the id from search or \
+                recent, or the node's exact title. [[Title]] in the text is a link to another \
+                node you can read the same way; read_attachment reads an attached file. The version it returns lets write_node \
+                merge your rewrite with what others change meanwhile.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -223,9 +245,12 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "node": node,
                     "links": { "type": "array", "items": link, "description": "Links from this node." },
                     "backlinks": { "type": "array", "items": link, "description": "Links to this node." },
-                    "same_title": { "type": "array", "items": summary, "description": "Other nodes with the same title." }
+                    "labeled_links": { "type": "array", "items": labeled, "description": "Links going out, then backlinks, each with how it reads from this node. A link of a symmetric kind between two nodes is listed once." },
+                    "attachments": { "type": "array", "items": attachment, "description": "Files attached to this node." },
+                    "same_title": { "type": "array", "items": summary, "description": "Other nodes with the same title." },
+                    "version": { "type": ["string", "null"], "description": "The version of the text read. Pass it to write_node with a new body." }
                 },
-                "required": ["node", "links", "backlinks", "same_title"]
+                "required": ["node", "links", "backlinks", "labeled_links", "attachments", "same_title"]
             }),
             read_only: true,
             idempotent: true,
@@ -240,8 +265,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 (GitHub Flavored), and link other nodes by writing [[Their title]]. With an id, \
                 edits that node. Without one, edits the node with this exact title if there is \
                 one, or creates it. Fields left out stay as they are; set append to add to the \
-                end of the body instead of replacing it. Search first to avoid duplicates. Keep \
-                one topic per node, with a short, specific title.",
+                end of the body instead of replacing it. When you rewrite a body you read, pass \
+                the version read_node gave: if the user or another agent changed the node since, \
+                your edit is merged with theirs instead of overwriting it. Search first to avoid \
+                duplicates. Keep one topic per node, with a short, specific title.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -249,6 +276,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "title": { "type": "string", "description": "The title. Required to create a node; with an id, renames it, and [[links]] to it follow." },
                     "body": { "type": "string", "description": "The text, in Markdown. Replaces the body unless append is true." },
                     "append": { "type": "boolean", "default": false, "description": "Add body to the end of the existing text, after a blank line." },
+                    "version": { "type": "string", "description": "The version read_node gave for the text you rewrote. Changes made since are kept. Left out, the version you last read is used." },
                     "kind": { "type": "string", "description": "What the node is: note (the default), decision, idea, source, or another lower-case word." },
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Tags, replacing the current ones." }
                 }
@@ -257,7 +285,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "result": { "type": "string", "enum": ["created", "updated", "unchanged"] },
-                    "node": summary
+                    "node": summary,
+                    "merged": { "type": "boolean", "description": "True when others changed the body since the version you read, and your edit was merged with theirs." }
                 },
                 "required": ["result", "node"]
             }),
@@ -268,11 +297,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "link_nodes",
             title: "Link two nodes",
-            description: "Link two nodes of the user's Knode memory, so either can be found from \
-                the other. Use it to connect related notes, a note to the project it belongs to \
-                (part-of), or a summary to the conversation it came from (derived-from). Links \
-                written as [[Title]] in a body are made automatically; this tool is for links \
-                that are not in the text. Linking twice does nothing more.",
+            description: "Link two nodes of the user's Knode memory with a kind that says how \
+                they relate, so either can be found from the other: related (the default), \
+                part-of (a note of a project), derived-from (a summary of a conversation), \
+                answers (an answer to a question), contradicts, or a kind this space defines; \
+                link_kinds lists them all with their meaning. Links written as [[Title]] in a \
+                body are made automatically; this tool is for links that are not in the text. \
+                Linking twice does nothing more.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -281,7 +312,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "kind": {
                         "type": "string",
                         "default": link_kinds::RELATED,
-                        "description": "related (the default), part-of, derived-from, or another lower-case word. Not mentions, which comes only from [[links]] in a body."
+                        "description": "A kind from link_kinds: related (the default), part-of, derived-from, answers, contradicts, or one this space defines. Not mentions, which comes only from [[links]] in a body."
                     }
                 },
                 "required": ["from", "to"]
@@ -366,7 +397,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             idempotent: false,
             destructive: true,
         },
-    ]
+    ];
+    tools.extend(maps::definitions(node_ref, &provenance));
+    tools
 }
 
 /// Runs a tool for the agent `agent` (the client name from MCP), or returns `None` if there is
@@ -386,6 +419,10 @@ pub fn call<B: Backend + ?Sized>(
         "recent" => parse(arguments).and_then(|args| recent(backend, args)),
         "history" => parse(arguments).and_then(|args| history(backend, args)),
         "undo" => parse(arguments).and_then(|args| undo(backend, args, &by)),
+        "link_kinds" => maps::link_kinds(backend),
+        "read_canvas" => parse(arguments).and_then(|args| maps::read_canvas(backend, args)),
+        "attach_file" => parse(arguments).and_then(|args| maps::attach_file(backend, args, &by)),
+        "read_attachment" => parse(arguments).and_then(|args| maps::read_attachment(backend, args)),
         _ => return None,
     };
     Some(output.unwrap_or_else(|e| e))
@@ -473,8 +510,19 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
             return Err(ToolOutput::error("Pass the id of the node, or its title."));
         }
     };
+    let mut node = node;
+    // The body and its version together, so a rewrite of it merges from exactly this text.
+    let version = match backend.open_body(&node.id)? {
+        Some(doc) => {
+            node.body = doc.text;
+            Some(doc.version)
+        }
+        None => None,
+    };
     let links = backend.links_from(&node.id)?;
     let backlinks = backend.backlinks(&node.id)?;
+    let labeled = backend.node_links(&node.id)?;
+    let attachments = backend.attachments(&node.id)?;
 
     let mut text = String::new();
     let _ = writeln!(text, "# {}\n", node.title);
@@ -502,20 +550,49 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
         node.updated_at,
         who(&node.updated_by)
     );
-    link_lines(&mut text, "links", &links, |l| (&l.to_title, &l.to));
-    link_lines(&mut text, "backlinks", &backlinks, |l| {
-        (&l.from_title, &l.from)
-    });
+    labeled_lines(&mut text, "links", labeled.iter().filter(|l| l.outgoing));
+    labeled_lines(
+        &mut text,
+        "backlinks",
+        labeled.iter().filter(|l| !l.outgoing),
+    );
+    if !attachments.is_empty() {
+        let _ = writeln!(text, "- attachments (read_attachment reads one):");
+        for a in &attachments {
+            let _ = writeln!(
+                text,
+                "  - {} ({}, {})",
+                a.name,
+                a.media_type,
+                maps::size(a.size)
+            );
+        }
+    }
     if !same_title.is_empty() {
         let ids: Vec<String> = same_title.iter().map(|n| format!("`{}`", n.id)).collect();
         let _ = writeln!(text, "- other nodes with this title: {}", ids.join(", "));
+    }
+    if let Some(version) = &version {
+        let _ = writeln!(
+            text,
+            "- version: `{version}` (pass it to write_node with a new body)"
+        );
     }
 
     let structured = json!({
         "node": node_json(&node),
         "links": links.iter().map(link_json).collect::<Vec<_>>(),
         "backlinks": backlinks.iter().map(link_json).collect::<Vec<_>>(),
+        "labeled_links": labeled.iter().map(|l| json!({
+            "node": l.node.to_string(),
+            "title": l.title,
+            "kind": l.link.kind,
+            "label": l.label,
+            "outgoing": l.outgoing,
+        })).collect::<Vec<_>>(),
+        "attachments": attachments.iter().map(maps::attachment_json).collect::<Vec<_>>(),
         "same_title": same_title.iter().map(summary_json).collect::<Vec<_>>(),
+        "version": version,
     });
     Ok(ToolOutput::ok(text, structured))
 }
@@ -529,6 +606,7 @@ struct WriteArgs {
     append: bool,
     kind: Option<String>,
     tags: Option<Vec<String>>,
+    version: Option<String>,
 }
 
 fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance) -> Outcome {
@@ -557,12 +635,12 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
         }
     };
 
+    let mut merged = false;
     let (result, node) = match existing {
         Some((current, new_title)) => {
-            let body = match (args.body, args.append) {
-                (Some(extra), true) if current.body.trim().is_empty() => Some(extra),
-                (Some(extra), true) => Some(format!("{}\n\n{}", current.body.trim_end(), extra)),
-                (body, _) => body,
+            let (body, appended) = match (args.body, args.append) {
+                (Some(extra), true) => (None, Some(extra)),
+                (body, _) => (body, None),
             };
             let update = NodeUpdate {
                 kind,
@@ -571,7 +649,13 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
                 tags: args.tags,
             };
             let before = current.updated_at;
-            let node = backend.update_node(&current.id, update, by)?;
+            let written = backend.write_body(&current.id, update, args.version.as_deref(), by)?;
+            merged = written.merged;
+            let mut node = written.node;
+            if let Some(extra) = appended {
+                // Added at the end of the text as it is now, merged with edits made meanwhile.
+                node = backend.append_body(&current.id, &extra, by)?.node;
+            }
             let result = if node.updated_at == before && node == current {
                 "unchanged"
             } else {
@@ -595,13 +679,21 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
         "updated" => "Updated",
         _ => "No change to",
     };
-    let text = format!(
+    let mut text = format!(
         "{verb} {} [[{}]] (id `{}`).\n",
         node.kind, node.title, node.id
     );
+    if merged {
+        text.push_str(
+            "Someone else changed this node since you read it. Your edit was merged with \
+             theirs, so nothing they wrote was overwritten. Read it again with read_node to see \
+             the result before changing it further.\n",
+        );
+    }
     let structured = json!({
         "result": result,
         "node": summary_json(&summary_of(&node)),
+        "merged": merged,
     });
     Ok(ToolOutput::ok(text, structured))
 }
@@ -622,10 +714,23 @@ fn link_nodes<B: Backend + ?Sized>(backend: &B, args: LinkArgs, by: &Provenance)
             "mentions links come only from [[links]] in a body. Use related, or edit the body with write_node.",
         ));
     }
+    let kinds = backend.link_kinds()?;
+    let Some(known) = kinds.iter().find(|k| k.kind == kind) else {
+        let names: Vec<&str> = kinds
+            .iter()
+            .filter(|k| k.kind != link_kinds::MENTIONS)
+            .map(|k| k.kind.as_str())
+            .collect();
+        return Err(ToolOutput::error(format!(
+            "This space has no link kind \"{kind}\". Use one of {}; link_kinds says what each \
+             means. Ask the user to define a new kind with `knode kinds add`.",
+            names.join(", ")
+        )));
+    };
     let link = backend.link(&from, &to, &kind, by)?;
     let text = format!(
-        "Linked [[{}]] to [[{}]] ({}).\n",
-        link.from_title, link.to_title, link.kind
+        "Linked [[{}]] {} [[{}]] ({}).\n",
+        link.from_title, known.label, link.to_title, link.kind
     );
     Ok(ToolOutput::ok(text, json!({ "link": link_json(&link) })))
 }
@@ -858,19 +963,19 @@ fn summary_line(text: &mut String, node: &NodeSummary) {
     );
 }
 
-fn link_lines(
-    text: &mut String,
-    label: &str,
-    links: &[Link],
-    other: impl Fn(&Link) -> (&String, &NodeId),
-) {
-    if links.is_empty() {
+/// Links as a node shows them, such as `- links:` then `  - part of [[Plan]] (part-of, id ..)`.
+fn labeled_lines<'a>(text: &mut String, heading: &str, links: impl Iterator<Item = &'a NodeLink>) {
+    let mut links = links.peekable();
+    if links.peek().is_none() {
         return;
     }
-    let _ = writeln!(text, "- {label}:");
+    let _ = writeln!(text, "- {heading}:");
     for link in links {
-        let (title, id) = other(link);
-        let _ = writeln!(text, "  - [[{title}]] ({}, id `{id}`)", link.kind);
+        let _ = writeln!(
+            text,
+            "  - {} [[{}]] ({}, id `{}`)",
+            link.label, link.title, link.link.kind, link.node
+        );
     }
 }
 
@@ -1015,6 +1120,58 @@ mod tests {
     }
 
     #[test]
+    fn a_rewrite_based_on_the_version_read_keeps_later_edits() {
+        let (_dir, backend) = backend();
+        let out = run(
+            &backend,
+            "write_node",
+            json!({ "title": "Plan", "body": "Ship the format." }),
+        );
+        let id = out.structured.unwrap()["node"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let read = run(&backend, "read_node", json!({ "id": id }));
+        check_schema("read_node", &read);
+        let version = read.structured.unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Another agent adds a line meanwhile.
+        let other = call(
+            &backend,
+            "other-agent",
+            "write_node",
+            args(json!({ "id": id, "body": "Their line.", "append": true })),
+        )
+        .unwrap();
+        assert!(!other.is_error, "{}", other.text);
+
+        let out = run(
+            &backend,
+            "write_node",
+            json!({ "id": id, "body": "Ship the format first.", "version": version }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        check_schema("write_node", &out);
+        assert!(out.text.contains("merged"), "{}", out.text);
+        let node = backend
+            .get_node(&NodeId::parse(&id).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.body, "Ship the format first.\n\nTheir line.");
+
+        let bad = run(
+            &backend,
+            "write_node",
+            json!({ "id": id, "body": "x", "version": "v1" }),
+        );
+        assert!(bad.is_error);
+        assert!(bad.text.contains("read_node"), "{}", bad.text);
+    }
+
+    #[test]
     fn write_creates_then_updates_by_title() {
         let (_dir, backend) = backend();
         let out = run(
@@ -1109,7 +1266,12 @@ mod tests {
         let out = run(&backend, "read_node", json!({ "title": "roadmap" }));
         check_schema("read_node", &out);
         assert!(out.text.starts_with("# Roadmap\n\nShip v0.1 this week.\n"));
-        assert!(out.text.contains("- backlinks:\n  - [[Plan]] (mentions"));
+        assert!(
+            out.text
+                .contains("- backlinks:\n  - mentioned in [[Plan]] (mentions"),
+            "{}",
+            out.text
+        );
         let roadmap = out.structured.unwrap()["node"]["id"]
             .as_str()
             .unwrap()
@@ -1129,7 +1291,7 @@ mod tests {
         );
         assert!(!out.is_error, "{}", out.text);
         check_schema("link_nodes", &out);
-        assert_eq!(out.text, "Linked [[Roadmap]] to [[Plan]] (part-of).\n");
+        assert_eq!(out.text, "Linked [[Roadmap]] part of [[Plan]] (part-of).\n");
         assert!(
             run(
                 &backend,

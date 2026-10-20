@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Synchronization
+@testable import Knode
 
 /// A stand-in for Knode Service in tests: it listens on a Unix socket, speaks the JSON-RPC protocol
 /// of `PROTOCOL.md` and keeps spaces and nodes in memory.
@@ -44,6 +45,11 @@ final class FakeKnodeService: @unchecked Sendable {
     private var conflicts: [Int64: [Int64]] = [:]
     /// The agents `agents.list` answers with.
     private var agents: [[String: Any]] = []
+    /// The documents of the bodies edited together (`doc.open`, `doc.edit`), by node id.
+    private var documents: [String: FakeDocument] = [:]
+    private var versionCounter = 0
+    /// A body written through its document, announced after the answer.
+    private var bodyNotice: [String: Any]?
     /// `space` notifications to send once the answer is sent.
     private var spaceEvents: [[String: Any]] = []
 
@@ -204,6 +210,7 @@ final class FakeKnodeService: @unchecked Sendable {
         }
         send(answer, to: client)
         if let notification { notify(space: notification.space, node: notification.node, op: notification.op) }
+        if let notice = lock.withLock({ () -> [String: Any]? in defer { bodyNotice = nil }; return bodyNotice }) { notifyChanged(notice) }
         let events = lock.withLock {
             defer { spaceEvents = [] }
             return spaceEvents
@@ -380,6 +387,8 @@ final class FakeKnodeService: @unchecked Sendable {
             let query = (params["query"] as? String ?? "").lowercased()
             let hits = try space().nodes.values.filter { $0.title.lowercased().contains(query) || $0.body.lowercased().contains(query) }
             return (hits.map { ["node": ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by], "snippet": "**\($0.title)**", "score": 1.0] }, nil)
+        case "doc.open", "doc.edit":
+            return (try respondDocument(method, params, path: path), nil)
         default:
             throw RPCError(code: -32601, kind: "", message: "no method \(method)")
         }
@@ -428,3 +437,102 @@ final class FakeKnodeService: @unchecked Sendable {
         _ = data.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
     }
 }
+
+// MARK: - Editing together
+
+/// A body's document in the fake: each version is a text, and the newest is the body.
+struct FakeDocument {
+    var texts: [String: String] = [:]
+    var current = ""
+}
+
+extension FakeKnodeService {
+    /// Rewrites a body as an agent would through Knode Service: the change is announced with the
+    /// new version and the agent.
+    func agentEditsBody(_ id: String, in path: String, body: String) {
+        let notice: [String: Any] = lock.withLock {
+            clock += 1
+            spaces[path]?.nodes[id]?.body = body
+            spaces[path]?.nodes[id]?.updatedAt = clock
+            let version = mint(body, for: id)
+            return ["space": path, "node_id": id, "op": "update", "version": version, "by": ["kind": "agent", "actor": "claude-code"]]
+        }
+        notifyChanged(notice)
+    }
+
+    /// Adds a node the service finds, as one read from a space on disk.
+    func storeNode(_ id: String, title: String, body: String, in path: String) {
+        lock.withLock {
+            spaces[path]?.nodes[id] = StoredNode(id: id, title: title, body: body, createdAt: clock, updatedAt: clock, by: ["kind": "person", "actor": "Ada"])
+        }
+    }
+
+    /// The text of a version of a body's document.
+    func text(of version: String, node id: String) -> String? {
+        lock.withLock { documents[id]?.texts[version] }
+    }
+
+    /// Answers `doc.open` and `doc.edit`; the caller holds the lock. Merges like the service: an
+    /// edit made on an older text keeps what was written since.
+    fileprivate func respondDocument(_ method: String, _ params: [String: Any], path: String) throws -> [String: Any] {
+        let id = params["id"] as? String ?? ""
+        guard let node = spaces[path]?.nodes[id] else { throw RPCError(code: -32001, kind: "not_found", message: "node \(id) not found") }
+        if documents[id].map({ $0.texts[$0.current] != node.body }) ?? true {
+            // A body written without the document: the document follows it.
+            mint(node.body, for: id)
+        }
+        let document = documents[id]!
+        if method == "doc.open" {
+            return ["text": node.body, "version": document.current]
+        }
+        let version = params["version"] as? String ?? document.current
+        guard let baseText = document.texts[version] else {
+            throw RPCError(code: -32030, kind: "unknown_version", message: "the document has no version \(version)")
+        }
+        let splices = (params["splices"] as? [[String: Any]] ?? []).map {
+            TextSplice(at: ($0["at"] as? NSNumber)?.intValue ?? 0, delete: ($0["delete"] as? NSNumber)?.intValue ?? 0, insert: $0["insert"] as? String ?? "")
+        }
+        let edited = TextDiff.apply(splices, to: baseText)
+        let by = params["by"] as? [String: Any] ?? [:]
+        if version == document.current {
+            guard edited != node.body else { return ["version": version, "seen": version] }
+            let new = writeBody(edited, to: id, in: path, by: by)
+            return ["version": new, "seen": new]
+        }
+        let seen = mint(edited, for: id, current: false)
+        // The edit, moved through what others wrote since its base.
+        let theirs = TextDiff.patches(from: baseText, to: node.body)
+        let mine = TextDiff.patches(from: baseText, to: edited).map { patch in
+            TextPatch(range: TextDiff.transform(patch.range, through: theirs), replacement: patch.replacement)
+        }
+        let merged = TextDiff.apply(mine, to: node.body)
+        let new = merged == node.body ? document.current : writeBody(merged, to: id, in: path, by: by)
+        return ["version": new, "seen": seen, "text": merged]
+    }
+
+    private func writeBody(_ body: String, to id: String, in path: String, by: [String: Any]) -> String {
+        clock += 1
+        spaces[path]?.nodes[id]?.body = body
+        spaces[path]?.nodes[id]?.updatedAt = clock
+        let version = mint(body, for: id)
+        bodyNotice = ["space": path, "node_id": id, "op": "update", "version": version, "by": by]
+        return version
+    }
+
+    @discardableResult
+    private func mint(_ text: String, for id: String, current: Bool = true) -> String {
+        versionCounter += 1
+        let version = "{\"\(versionCounter)\":1}"
+        documents[id, default: FakeDocument()].texts[version] = text
+        if current { documents[id]?.current = version }
+        return version
+    }
+
+    private func notifyChanged(_ params: [String: Any]) {
+        let subscribers = lock.withLock { clients.filter(\.value).map(\.key) }
+        for client in subscribers {
+            send(["jsonrpc": "2.0", "method": "changed", "params": params], to: client)
+        }
+    }
+}
+

@@ -30,6 +30,8 @@ use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
+mod maps;
+
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
 const CHANGE_BUFFER: usize = 1024;
 /// How many outgoing messages wait for a slow connection.
@@ -330,6 +332,9 @@ pub(crate) struct State {
     /// The live Markdown folder of each open space that has one, by canonical path of the
     /// space. Always locked after the space, never before.
     live: Mutex<HashMap<PathBuf, LiveFolder>>,
+    /// The Loro documents of the bodies edited together, in every space. Always locked after
+    /// the space, never before.
+    docs: Mutex<knode_sync::Docs>,
 }
 
 impl State {
@@ -345,7 +350,13 @@ impl State {
             routes: Mutex::new(Routes::default()),
             routes_generation: AtomicU64::new(0),
             live: Mutex::new(HashMap::new()),
+            docs: Mutex::new(knode_sync::Docs::new()),
         }
+    }
+
+    /// The Loro documents, locked. Lock the space first.
+    pub(crate) fn docs(&self) -> MutexGuard<'_, knode_sync::Docs> {
+        lock_ignoring_poison(&self.docs)
     }
 
     /// The open space at `path`, opening it the first time.
@@ -485,20 +496,21 @@ impl State {
 
     /// Announces a change to the space opened at `space`.
     pub(crate) fn notify_path(&self, space: &Path, node_id: NodeId, op: ChangeKind) {
-        if let Some(folder) = lock_ignoring_poison(&self.live).get_mut(space) {
-            let op = match op {
+        self.send_change(Change::new(space.to_path_buf(), node_id, op));
+    }
+
+    /// Announces a change, which may carry the version of a body's document.
+    pub(crate) fn send_change(&self, change: Change) {
+        if let Some(folder) = lock_ignoring_poison(&self.live).get_mut(&change.space) {
+            let op = match change.op {
                 ChangeKind::Create => ChangeOp::Create,
                 ChangeKind::Delete => ChangeOp::Delete,
                 ChangeKind::Update | ChangeKind::Link | ChangeKind::Unlink => ChangeOp::Update,
             };
-            folder.record(node_id, op);
+            folder.record(change.node_id, op);
         }
         // No receivers is not an error: nobody is subscribed.
-        let _ = self.changes.send(Notice::Node(Change {
-            space: space.to_path_buf(),
-            node_id,
-            op,
-        }));
+        let _ = self.changes.send(Notice::Node(change));
     }
 
     /// Announces that a space was renamed, or that its settings or folders changed. Capture
@@ -515,9 +527,11 @@ impl State {
             name: None,
             key: None,
             folder: None,
+            link_kind: None,
+            view: None,
         };
         detail(&mut event);
-        if what != SpaceEventKind::Renamed {
+        if matches!(what, SpaceEventKind::Settings | SpaceEventKind::Folders) {
             self.reroute(space);
             self.wake_capture();
         }
@@ -802,14 +816,37 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
                 }
             }
             let before = space.get_node(&p.id)?;
-            let node = space.update_node(&p.id, p.update, &p.by)?;
-            if before.as_ref() != Some(&node) {
+            // A body goes through the node's document when it has one or the caller sent the
+            // version it read; that write is announced with the document's version.
+            let (node, body) = crate::coedit::update_node(
+                state,
+                &mut space,
+                &p.id,
+                p.update,
+                p.version.as_deref(),
+                &p.by,
+            )?;
+            let short_fields_changed = before.as_ref().is_none_or(|b| {
+                (&b.title, &b.kind, &b.tags) != (&node.title, &node.kind, &node.tags)
+            });
+            let changed = match body {
+                Some(_) => short_fields_changed,
+                None => before.as_ref() != Some(&node),
+            };
+            if changed {
                 state.notify(&space, node.id, ChangeKind::Update);
+            }
+            if before.as_ref() != Some(&node) {
                 for id in rewritten {
                     state.notify(&space, id, ChangeKind::Update);
                 }
             }
-            to_value(node)
+            let mut value = to_value(node)?;
+            if let (Some(body), Value::Object(object)) = (body, &mut value) {
+                object.insert("version".into(), Value::String(body.version));
+                object.insert("seen".into(), Value::String(body.seen));
+            }
+            Ok(value)
         }
         methods::NODE_DELETE => {
             let p: NodeDeleteParams = params(method, raw)?;
@@ -907,6 +944,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let mut space = lock_ignoring_poison(&space);
             let mark = last_change(&space)?;
             let change = space.purge(&p.id, &p.by)?;
+            crate::coedit::purged(state, &space, &p.id);
             state.notify_since(&space, mark)?;
             to_value(change)
         }
@@ -948,10 +986,17 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             }
             to_value(folder)
         }
-        _ => Err(RpcError::new(
-            codes::METHOD_NOT_FOUND,
-            format!("no method named {method:?}"),
-        )),
+        methods::DOC_OPEN
+        | methods::DOC_EDIT
+        | methods::DOC_PEER
+        | methods::DOC_MERGE
+        | methods::DOC_UPDATES => crate::coedit::call(state, method, raw),
+        _ => maps::call(state, method, raw).unwrap_or_else(|| {
+            Err(RpcError::new(
+                codes::METHOD_NOT_FOUND,
+                format!("no method named {method:?}"),
+            ))
+        }),
     }
 }
 
@@ -989,6 +1034,7 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
         }
     });
     let filter = Arc::new(Mutex::new(Filter::Nothing));
+    let updates = Arc::new(AtomicBool::new(false));
     let mut session = Session::default();
     let mut forwarder: Option<tokio::task::JoinHandle<()>> = None;
     let mut reader = BufReader::new(read);
@@ -1028,6 +1074,7 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
                     &state,
                     &session,
                     &filter,
+                    &updates,
                     &mut forwarder,
                     &outbox,
                     request.params,
@@ -1075,11 +1122,15 @@ async fn subscribe(
     state: &Arc<State>,
     session: &Session,
     filter: &Arc<Mutex<Filter>>,
+    updates: &Arc<AtomicBool>,
     forwarder: &mut Option<tokio::task::JoinHandle<()>>,
     outbox: &mpsc::Sender<String>,
     raw: Value,
 ) -> Result<Value, RpcError> {
     let p: SubscribeParams = params(methods::SUBSCRIBE, raw)?;
+    if p.updates {
+        updates.store(true, Ordering::SeqCst);
+    }
     let agent = session.agent().cloned();
     if let (Some(agent), Some(space)) = (&agent, &p.space) {
         let (state, agent, space) = (state.clone(), agent.clone(), space.clone());
@@ -1109,6 +1160,7 @@ async fn subscribe(
         // Subscribe to the feed before answering, so no change made after the answer is missed.
         let mut changes = state.changes.subscribe();
         let filter = filter.clone();
+        let updates = updates.clone();
         let outbox = outbox.clone();
         let state = state.clone();
         *forwarder = Some(tokio::spawn(async move {
@@ -1133,6 +1185,15 @@ async fn subscribe(
                             }
                         }
                         match &notice {
+                            Notice::Node(change)
+                                if change.update.is_some() && !updates.load(Ordering::SeqCst) =>
+                            {
+                                let change = Change {
+                                    update: None,
+                                    ..change.clone()
+                                };
+                                notification(methods::CHANGED, &change)
+                            }
                             Notice::Node(change) => notification(methods::CHANGED, change),
                             Notice::Space(event) => notification(methods::SPACE, event),
                         }

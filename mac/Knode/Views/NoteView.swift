@@ -110,24 +110,28 @@ struct NoteView: View {
                 if editor.hasUnsavedChanges {
                     Text("Saving").foregroundStyle(.tertiary)
                 }
+                if let writer = editor.otherWriter {
+                    Label("\(writer.editorName) is editing", systemImage: "pencil.line")
+                        .foregroundStyle(KnodeColor.indigo)
+                        .symbolEffect(.pulse)
+                        .transition(.opacity)
+                        .accessibilityLabel("\(writer.editorName) is editing this note")
+                }
                 if let error = editor.errorMessage ?? model.history?.errorMessage {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            .animation(.easeInOut(duration: 0.2), value: editor.otherWriter)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
     }
 
     private var source: some View {
-        TextEditor(text: $editor.body)
-            .font(.system(size: 14, design: .monospaced))
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .accessibilityLabel("Markdown")
+        MarkdownSourceEditor(editor: editor)
+            .id(editor.nodeID)
     }
 
     private var preview: some View {
@@ -219,5 +223,12 @@ struct MarkdownPreview: View {
         case 3: .title3.weight(.semibold)
         default: .headline
         }
+    }
+}
+
+extension Author {
+    /// The name shown for whoever is editing: the agent's product name when Knode knows it.
+    var editorName: String {
+        kind == .agent ? ConnectableAgent(agent: name)?.title ?? name : name
     }
 }

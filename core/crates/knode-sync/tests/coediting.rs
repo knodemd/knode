@@ -555,3 +555,48 @@ fn three_programs_writing_at_once_lose_nothing() {
         }
     }
 }
+
+#[test]
+fn seen_is_the_text_the_writer_has_and_the_next_edit_applies_to_it() {
+    let (_dir, mut space, id) = setup("one two");
+    let mut docs = Docs::new();
+    let start = docs.open_doc(&mut space, &id).unwrap();
+
+    // Alone, the writer's text is the body: seen is the version.
+    let alone = docs
+        .apply_local_edit(
+            &mut space,
+            &id,
+            BodyEdit::insert(7, " three").based_on(start.version.clone()),
+            &ada(),
+        )
+        .unwrap();
+    assert_eq!(alone.seen, alone.version);
+
+    // Someone else writes; the editor still has "one two three" and types at its end.
+    docs.apply_local_edit(&mut space, &id, BodyEdit::insert(0, "zero "), &claude())
+        .unwrap();
+    let merged = docs
+        .apply_local_edit(
+            &mut space,
+            &id,
+            BodyEdit::insert(13, " four").based_on(alone.seen.clone()),
+            &ada(),
+        )
+        .unwrap();
+    assert_ne!(merged.seen, merged.version);
+    assert!(merged.version.includes(&merged.seen));
+    assert_eq!(body(&space, &id), "zero one two three four");
+
+    // Based on seen, the editor's next edit lands where it typed, in its own text.
+    let next = docs
+        .apply_local_edit(
+            &mut space,
+            &id,
+            BodyEdit::insert(18, "!").based_on(merged.seen),
+            &ada(),
+        )
+        .unwrap();
+    assert_eq!(body(&space, &id), "zero one two three four!");
+    assert_ne!(next.seen, next.version);
+}
