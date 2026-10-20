@@ -20,6 +20,10 @@ protocol KnodeSettings: Sendable {
     func rememberSpace(_ url: URL) throws
     /// Takes a space out of `config.toml`, and out of the default if it was. Its files stay.
     func forgetSpace(_ url: URL) throws
+    /// Whether search by meaning is on (`embeddings` in `config.toml`). On when left out.
+    func embeddingsEnabled() throws -> Bool
+    /// Turns search by meaning on or off. Knode Service reads it again on its next status.
+    func setEmbeddingsEnabled(_ on: Bool) throws
 }
 
 /// The settings in `$KNODE_HOME/config.toml`, read and written by the Rust core
@@ -69,6 +73,22 @@ struct CoreKnodeSettings: KnodeSettings {
             throw CoreSpaceStore.storeError(error)
         }
     }
+
+    func embeddingsEnabled() throws -> Bool {
+        do {
+            return try KnodeCore.embeddingsEnabled()
+        } catch {
+            throw CoreSpaceStore.storeError(error)
+        }
+    }
+
+    func setEmbeddingsEnabled(_ on: Bool) throws {
+        do {
+            try KnodeCore.setEmbeddingsEnabled(on: on)
+        } catch {
+            throw CoreSpaceStore.storeError(error)
+        }
+    }
 }
 
 /// Settings kept in memory, for tests and previews. They follow `config.toml`: a new default
@@ -77,6 +97,7 @@ final class MemoryKnodeSettings: KnodeSettings {
     private struct State {
         var defaultSpace: URL?
         var spaces: [URL] = []
+        var embeddings = true
     }
 
     private let state: Mutex<State>
@@ -122,5 +143,13 @@ final class MemoryKnodeSettings: KnodeSettings {
             state.spaces.removeAll { $0 == url }
             if state.defaultSpace == url { state.defaultSpace = nil }
         }
+    }
+
+    func embeddingsEnabled() throws -> Bool {
+        state.withLock { $0.embeddings }
+    }
+
+    func setEmbeddingsEnabled(_ on: Bool) throws {
+        state.withLock { $0.embeddings = on }
     }
 }

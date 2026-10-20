@@ -106,13 +106,15 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     assert_eq!(
         out.trim(),
         format!(
-            "Imported {dir}: 2 new, 0 updated, 0 unchanged.\nLeft out 1 file that is not Markdown, such as images."
+            "Imported {dir} (folder of Markdown files): 2 new, 0 updated, 0 unchanged.\n  \
+             new: pricing.md\n  new: sub/ideas.md\n\
+             Left out 1 file that is not Markdown, such as images."
         )
     );
     let out = sb.ok(&["import", notes.to_str().unwrap(), "--vault"]);
     assert!(
         out.starts_with(&format!(
-            "Imported the vault {dir}: 0 new, 0 updated, 2 unchanged."
+            "Imported {dir} (Obsidian vault): 0 new, 0 updated, 2 unchanged."
         )),
         "{out}"
     );
@@ -139,10 +141,13 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     // One file keeps its first heading as its title.
     let single = sb.path("single.md");
     fs::write(&single, "# Single note\n\nAlone.\n").unwrap();
-    assert_eq!(
-        sb.ok(&["import", single.to_str().unwrap()]).trim(),
-        "Imported 1 note."
+    let out = sb.ok(&["import", single.to_str().unwrap()]);
+    assert!(
+        out.contains("(Markdown file): 1 new, 0 updated, 0 unchanged.\n  new: Single note"),
+        "{out}"
     );
+    let out = sb.ok(&["import", single.to_str().unwrap()]);
+    assert!(out.contains(": 0 new, 0 updated, 1 unchanged."), "{out}");
     let err = sb.fails(&["import", single.to_str().unwrap(), "--vault"]);
     assert!(err.contains("not a folder"), "{err}");
 
@@ -150,10 +155,7 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     assert!(err.contains("does not exist"), "{err}");
     fs::write(sb.path("data.csv"), "a,b").unwrap();
     let err = sb.fails(&["import", sb.path("data.csv").to_str().unwrap()]);
-    assert!(
-        err.contains("not a data export, a Markdown file or a session"),
-        "{err}"
-    );
+    assert!(err.contains("is not something Knode imports"), "{err}");
 }
 
 #[test]
@@ -164,18 +166,15 @@ fn imports_agent_sessions_as_conversations() {
         "claude/projects/-Users-example-project/0f8e2c1a-1111-4222-8333-444455556666.jsonl",
     );
     let out = sb.ok(&["import", claude.to_str().unwrap()]);
-    assert!(
-        out.starts_with("Imported the Claude Code conversation"),
-        "{out}"
-    );
+    assert!(out.contains("(Claude Code session): 1 new"), "{out}");
     let out = sb.ok(&["import", claude.to_str().unwrap()]);
-    assert!(out.contains("already imported and unchanged"), "{out}");
+    assert!(out.contains(": 0 new, 0 updated, 1 unchanged."), "{out}");
 
     let codex = ingest_fixture(
         "codex/sessions/2026/01/02/rollout-2026-01-02T11-00-00-0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee.jsonl",
     );
     let out = sb.ok(&["import", codex.to_str().unwrap()]);
-    assert!(out.starts_with("Imported the Codex conversation"), "{out}");
+    assert!(out.contains("(Codex session): 1 new"), "{out}");
 
     // Both are conversations written as their agent.
     let space = knode_format::Space::open(sb.space("work")).unwrap();

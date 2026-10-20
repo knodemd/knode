@@ -97,6 +97,7 @@ fn follows_creates_edits_renames_and_deletes() {
     export(&space, &exported).unwrap();
     let mut live_files = tree(&dir);
     live_files.remove("Mine.md");
+    live_files.remove(".knode/live.json");
     assert_same(&tree(&exported), &live_files);
 }
 
@@ -111,18 +112,19 @@ fn never_removes_a_file_someone_else_changed() {
         .unwrap();
     live.resync(&space).unwrap();
 
-    // Someone replaces the file with their own, without an id.
+    // Someone replaces the file with their own, without an id: it becomes a node of its own.
     put(&dir, "Plan.md", "Theirs now.\n");
+    let pulled = live.pull(&mut space, &me()).unwrap();
+    assert_eq!(pulled.created, ["Plan.md"]);
+    let theirs = fs::read_to_string(dir.join("Plan.md")).unwrap();
+    assert!(theirs.starts_with("---\nid: ") && theirs.ends_with("---\nTheirs now.\n"));
     space
         .update_node(&plan.id, rename("Roadmap"), &me())
         .unwrap();
     live.record(plan.id, ChangeOp::Update);
     let report = live.flush(&space).unwrap();
     assert!(report.removed.is_empty());
-    assert_eq!(
-        fs::read_to_string(dir.join("Plan.md")).unwrap(),
-        "Theirs now.\n"
-    );
+    assert_eq!(fs::read_to_string(dir.join("Plan.md")).unwrap(), theirs);
     assert!(dir.join("Roadmap.md").exists());
 
     // And a new node named like it does not overwrite it.
@@ -132,10 +134,7 @@ fn never_removes_a_file_someone_else_changed() {
     live.record(other.id, ChangeOp::Create);
     let report = live.flush(&space).unwrap();
     assert_eq!(report.written, ["Plan 2.md"]);
-    assert_eq!(
-        fs::read_to_string(dir.join("Plan.md")).unwrap(),
-        "Theirs now.\n"
-    );
+    assert_eq!(fs::read_to_string(dir.join("Plan.md")).unwrap(), theirs);
 }
 
 #[test]

@@ -118,12 +118,10 @@ fn data_exports_are_imported_once() {
     sb.ok(&["init", "work"]);
     let export = ingest_fixture("exports/claude");
     let out = sb.ok(&["import", export.to_str().unwrap()]);
-    assert!(out.starts_with("Imported "), "{out}");
-    assert!(out.contains("from the Claude export at"), "{out}");
-    assert!(!out.starts_with("Imported 0 new"), "{out}");
+    assert!(out.contains(" (Claude export): "), "{out}");
+    assert!(!out.contains(": 0 new"), "{out}");
     let again = sb.ok(&["import", export.to_str().unwrap()]);
-    assert!(again.starts_with("Imported 0 new conversations"), "{again}");
-    assert!(again.contains(": 0 updated,"), "{again}");
+    assert!(again.contains(": 0 new, 0 updated, "), "{again}");
 
     let out = sb.ok(&["search", "--json", "the"]);
     let found: Value = serde_json::from_str(&out).unwrap();
@@ -140,8 +138,5 @@ fn data_exports_are_imported_once() {
     let zip = sb.path("photos.zip");
     fs::write(&zip, b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0").unwrap();
     let err = sb.fails(&["import", zip.to_str().unwrap()]);
-    assert!(
-        err.contains("is not a data export, a Markdown file or a session"),
-        "{err}"
-    );
+    assert!(err.contains("is not something Knode imports"), "{err}");
 }

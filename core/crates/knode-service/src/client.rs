@@ -30,6 +30,7 @@ use crate::search::{IndexRunParams, IndexStatus, SearchResults};
 use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
 use crate::{Error, Result, paths};
 
+mod import;
 mod maps;
 
 /// How long [`connect_or_spawn`] waits for a new service to listen.

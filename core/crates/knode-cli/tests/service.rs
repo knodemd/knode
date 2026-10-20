@@ -7,11 +7,10 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Sandbox, ingest_fixture};
+use common::{Sandbox, ingest_fixture, write_fake_script};
 
 /// Puts a fake service manager on the sandbox PATH that logs its arguments and runs or stops
 /// the service the way launchd or systemd would.
@@ -23,17 +22,15 @@ fn fake_service_manager(sb: &Sandbox) -> &'static str {
     };
     let knode = env!("CARGO_BIN_EXE_knode");
     let log = sb.path(&format!("{name}.log"));
-    let script = format!(
-        "#!/bin/sh\necho \"$@\" >> '{log}'\n\
+    let body = format!(
+        "echo \"$@\" >> '{log}'\n\
          for arg in \"$@\"; do\n\
            if [ \"$arg\" = '{start}' ]; then '{knode}' service run >/dev/null 2>&1 & exit 0; fi\n\
            if [ \"$arg\" = '{stop}' ]; then '{knode}' service stop >/dev/null 2>&1; exit 0; fi\n\
          done\nexit 0\n",
         log = log.display()
     );
-    let path = sb.path("bin").join(name);
-    fs::write(&path, script).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    write_fake_script(&sb.path("bin").join(name), &body);
     name
 }
 
