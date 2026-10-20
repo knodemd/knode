@@ -95,6 +95,62 @@ pub mod methods {
     pub const SPACE: &str = "space";
     /// Notification: this connection fell behind and missed changes.
     pub const LAGGED: &str = "lagged";
+
+    // Link kinds, labelled links, views, canvases and attachments (schema version 4), and
+    // data exports.
+
+    /// Every kind of link the space knows.
+    pub const LINK_KINDS_LIST: &str = "link_kinds.list";
+    /// Defines a kind of link, or changes its labels.
+    pub const LINK_KIND_SET: &str = "link_kind.set";
+    /// Removes a kind of link the space defined.
+    pub const LINK_KIND_REMOVE: &str = "link_kind.remove";
+    /// The links of a node, going out and coming in, with their labels.
+    pub const LINKS_OF: &str = "links.of";
+    /// The backlinks of a node with their labels.
+    pub const LINKS_BACK_LABELED: &str = "links.back_labeled";
+    /// The graph views and canvases of a space.
+    pub const VIEWS_LIST: &str = "views.list";
+    /// One view.
+    pub const VIEW_GET: &str = "view.get";
+    /// Creates, renames or filters a graph view.
+    pub const VIEW_SET: &str = "view.set";
+    /// Removes a graph view.
+    pub const VIEW_REMOVE: &str = "view.remove";
+    /// Saves the part of a view on screen.
+    pub const VIEW_VIEWPORT_SET: &str = "view.viewport.set";
+    /// The nodes and links a filter keeps, with the positions of a view.
+    pub const GRAPH: &str = "graph";
+    /// Creates a canvas.
+    pub const CANVAS_CREATE: &str = "canvas.create";
+    /// A canvas with its nodes, groups and links.
+    pub const CANVAS_BOARD: &str = "canvas.board";
+    /// The positions of the nodes of a view.
+    pub const POSITIONS_LIST: &str = "positions.list";
+    /// Places nodes in a view.
+    pub const POSITIONS_SET: &str = "positions.set";
+    /// Takes nodes out of a view.
+    pub const POSITIONS_REMOVE: &str = "positions.remove";
+    /// The groups of a canvas.
+    pub const GROUPS_LIST: &str = "groups.list";
+    /// Adds or changes a group of a canvas.
+    pub const GROUP_SET: &str = "group.set";
+    /// Removes a group of a canvas.
+    pub const GROUP_REMOVE: &str = "group.remove";
+    /// The attachments of a node.
+    pub const ATTACHMENTS_LIST: &str = "attachments.list";
+    /// The content of an attachment.
+    pub const ATTACHMENT_READ: &str = "attachment.read";
+    /// Attaches bytes to a node.
+    pub const ATTACHMENT_ADD: &str = "attachment.add";
+    /// Attaches a file on this machine to a node. People only.
+    pub const ATTACHMENT_ADD_FILE: &str = "attachment.add_file";
+    /// Removes an attachment from a node.
+    pub const ATTACHMENT_REMOVE: &str = "attachment.remove";
+    /// Where the file of an attachment is on this machine. People only.
+    pub const ATTACHMENT_PATH: &str = "attachment.path";
+    /// Imports a Claude, ChatGPT or Gemini data export. People only.
+    pub const CONVERSATIONS_IMPORT: &str = "conversations.import";
 }
 
 /// The JSON-RPC error codes the service answers with.
@@ -213,7 +269,7 @@ impl From<knode_format::Error> for RpcError {
             }
             E::NotASpace(_) => (codes::NOT_A_SPACE, "not_a_space"),
             E::AlreadyExists(_) => (codes::ALREADY_EXISTS, "already_exists"),
-            E::Invalid(_) => (codes::INVALID, "invalid"),
+            E::Invalid(_) | E::LinkKindInUse { .. } => (codes::INVALID, "invalid"),
             E::UnsupportedFormat { .. } | E::NewerSchema { .. } | E::MismatchedSpace { .. } => {
                 (codes::UNSUPPORTED, "unsupported")
             }
