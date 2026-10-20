@@ -134,6 +134,41 @@ pub(crate) struct Mirror {
     files: BTreeMap<String, String>,
     /// Export id to attachment files, as last written.
     attachments: AttachmentMap,
+    /// Whether this is a live folder: nodes whose file was deleted from the folder
+    /// ([`keys::DELETED`]) are then left out, and their files are neither written nor removed.
+    pub(crate) live: bool,
+    /// Paths, folded, that the next sync must neither write nor remove: files changed in the
+    /// folder that are not read back yet.
+    pub(crate) protected: HashSet<String>,
+    /// The files the last sync wrote or found as they should be, for a live folder to remember.
+    pub(crate) rendered: Vec<Rendered>,
+    /// The nodes the last sync did not write because their file is protected.
+    pub(crate) blocked: Vec<NodeId>,
+}
+
+/// A file a sync wrote, or found with the content it would have written.
+#[derive(Debug, Clone)]
+pub(crate) struct Rendered {
+    /// The file, relative to the folder.
+    pub(crate) path: String,
+    /// The node.
+    pub(crate) id: NodeId,
+    /// The hash of the node's title, kind, tags and body, see
+    /// [`fields_hash`](crate::live::fields_hash).
+    pub(crate) fields: String,
+    /// The hash of the content, see [`content_hash`].
+    pub(crate) hash: String,
+}
+
+/// A hash of a file's content, to tell a file Knode wrote from one changed since: 64-bit
+/// FNV-1a, in hexadecimal. Stable from one version of Knode to the next.
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// A node of the space, as the mirror sees it.
@@ -153,11 +188,20 @@ impl Mirror {
             dir: dir.to_path_buf(),
             files,
             attachments,
+            live: false,
+            protected: HashSet::new(),
+            rendered: Vec::new(),
+            blocked: Vec::new(),
         })
     }
 
     pub(crate) fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The path of each node's file as last written, by export id.
+    pub(crate) fn files(&self) -> &BTreeMap<String, String> {
+        &self.files
     }
 
     /// Brings the folder in step with the space. With `only`, writes just those nodes, the nodes
@@ -168,8 +212,22 @@ impl Mirror {
         space: &Space,
         only: Option<&BTreeSet<NodeId>>,
     ) -> Result<ExportReport> {
-        let items = index(space)?;
-        let assigned = self.assign(&items);
+        let mut items = index(space)?;
+        self.rendered.clear();
+        self.blocked.clear();
+        // Nodes whose file was deleted from a live folder wait for the person to decide.
+        let held: Vec<String> = if self.live {
+            let held = items
+                .iter()
+                .filter(|i| i.props.contains_key(keys::DELETED))
+                .map(|i| i.export_id.clone())
+                .collect();
+            items.retain(|i| !i.props.contains_key(keys::DELETED));
+            held
+        } else {
+            Vec::new()
+        };
+        let mut assigned = self.assign(&items);
         let export_ids: HashMap<NodeId, String> =
             items.iter().map(|i| (i.id, i.export_id.clone())).collect();
 
@@ -198,13 +256,41 @@ impl Mirror {
             }
         };
 
+        // A node whose file, old or new, changed in the folder and is not read back yet keeps
+        // the file it had, as it is.
+        if !self.protected.is_empty() {
+            for item in &items {
+                if !write.contains(item.export_id.as_str()) {
+                    continue;
+                }
+                let before = self.files.get(&item.export_id);
+                let after = assigned.get(&item.export_id);
+                let touched = [before, after]
+                    .into_iter()
+                    .flatten()
+                    .any(|p| self.protected.contains(&fold(p)));
+                if touched {
+                    self.blocked.push(item.id);
+                    match before {
+                        Some(path) => assigned.insert(item.export_id.clone(), path.clone()),
+                        None => assigned.remove(&item.export_id),
+                    };
+                }
+            }
+        }
+        let blocked: HashSet<NodeId> = self.blocked.iter().copied().collect();
+
         let mut report = ExportReport::default();
         let attached = self.assign_attachments(space, &items, &assigned, &mut report)?;
 
         // Remove first, so a path freed by one node can be taken by another.
         let kept: HashSet<String> = assigned.values().map(|p| fold(p)).collect();
         for (eid, path) in &self.files {
-            if assigned.get(eid) == Some(path) || kept.contains(&fold(path)) {
+            if assigned.get(eid) == Some(path)
+                || kept.contains(&fold(path))
+                || held.contains(eid)
+                || self.protected.contains(&fold(path))
+            {
                 continue;
             }
             let full = self.dir.join(path);
@@ -215,10 +301,12 @@ impl Mirror {
         }
 
         for item in &items {
-            if !write.contains(item.export_id.as_str()) {
+            if !write.contains(item.export_id.as_str()) || blocked.contains(&item.id) {
                 continue;
             }
-            let path = &assigned[&item.export_id];
+            let Some(path) = assigned.get(&item.export_id) else {
+                continue;
+            };
             let Some(node) = space.get_node(&item.id)? else {
                 continue;
             };
@@ -240,12 +328,27 @@ impl Mirror {
             } else {
                 report.unchanged += 1;
             }
+            self.rendered.push(Rendered {
+                path: path.clone(),
+                id: item.id,
+                fields: crate::live::fields_hash(&node),
+                hash: content_hash(text.as_bytes()),
+            });
         }
 
         self.write_attachments(space, &attached, &assigned, &mut report)?;
         self.save_link_kinds(space)?;
 
         report.files = assigned.len();
+        // A held node keeps its path, for when the person keeps it, unless another node has it.
+        let taken: HashSet<String> = assigned.values().map(|p| fold(p)).collect();
+        for eid in held {
+            if let Some(path) = self.files.get(&eid) {
+                if !taken.contains(&fold(path)) {
+                    assigned.insert(eid, path.clone());
+                }
+            }
+        }
         self.files = assigned;
         self.attachments = attached;
         self.save()?;

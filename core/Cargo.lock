@@ -1886,6 +1886,8 @@ version = "0.0.0"
 dependencies = [
  "knode-format",
  "knode-md",
+ "knode-sync",
+ "notify",
  "pulldown-cmark",
  "serde",
  "serde_json",

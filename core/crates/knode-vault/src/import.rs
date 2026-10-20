@@ -106,7 +106,14 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
                 continue;
             }
         };
-        batch.note(space, &rel, parse(&rel, &text), by, &mut report, &mut no_hook)?;
+        batch.note(
+            space,
+            &rel,
+            parse(&rel, &text),
+            by,
+            &mut report,
+            &mut no_hook,
+        )?;
     }
     batch.finish(space, by, &mut report)?;
     Ok(report)
@@ -177,6 +184,7 @@ impl Batch {
             files_to_blob_urls(&as_written, &map)
         };
         note.body = blob_urls(&|_, hash| hash.to_string());
+        let read = note.body.clone();
         let (id, outcome) = match write(space, rel, &mut note, by, hook) {
             Ok(written) => written,
             Err(e) => {
@@ -214,7 +222,8 @@ impl Batch {
         // A file changed since the export: its links name the blob now attached.
         let fixed = blob_urls(&|name, hash| hashes.get(name).cloned().unwrap_or(hash.into()));
         let mut outcome = outcome;
-        if fixed != note.body {
+        // Unless the hook chose another body.
+        if note.body == read && fixed != note.body {
             space.update_node(
                 &id,
                 NodeUpdate {
@@ -233,7 +242,8 @@ impl Batch {
             Outcome::Unchanged => report.unchanged += 1,
         }
         for (kind, targets) in std::mem::take(&mut note.links) {
-            self.pending_links.push((rel.to_string(), id, kind, targets));
+            self.pending_links
+                .push((rel.to_string(), id, kind, targets));
         }
         Ok(Some((id, outcome)))
     }
