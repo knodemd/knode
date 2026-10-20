@@ -740,11 +740,11 @@ pub(crate) fn node_title(conversation: &Conversation) -> String {
 }
 
 /// The node of a conversation: the oldest with its agent and session properties.
-fn find_conversation(
+pub(crate) fn find_conversation(
     space: &Space,
     agent: Agent,
     session_id: &str,
-) -> Result<Option<NodeId>, CaptureError> {
+) -> Result<Option<NodeId>, knode_format::Error> {
     for node in space.find_by_property(property_keys::CONVERSATION_SESSION, session_id)? {
         if space
             .property(&node.id, property_keys::CONVERSATION_AGENT)?
@@ -764,57 +764,83 @@ fn write_conversation(
     path: &Path,
     known: Option<NodeId>,
 ) -> Result<Written, CaptureError> {
-    let agent = conversation.agent;
-    let session_id = conversation.session_id.clone();
-    let by = Provenance::agent(agent.id())
-        .with_session(&session_id)
+    let by = Provenance::agent(conversation.agent.id())
+        .with_session(&conversation.session_id)
         .with_source(path.to_string_lossy());
-    let title = node_title(conversation);
-    let body = to_markdown(conversation);
-    let properties = conversation_properties(conversation);
     let captured = |node_id, op| Captured {
         space: key.to_string(),
         node_id,
         op,
-        agent,
-        session_id: session_id.clone(),
+        agent: conversation.agent,
+        session_id: conversation.session_id.clone(),
         path: path.to_path_buf(),
     };
+    let existing = find_conversation(space, conversation.agent, &conversation.session_id)?;
+    if existing.is_none() && known.is_some() {
+        // Written before and deleted since: the person removed it on purpose.
+        return Ok(Written::Deleted);
+    }
+    // One history row per run of updates from the session: the transcript only grows, so the
+    // newest version holds every earlier one.
+    Ok(
+        match upsert_conversation(space, conversation, existing, &by, true)? {
+            Upserted::Created(id) => Written::Changed(captured(id, ChangeOp::Create)),
+            Upserted::Updated(id) => Written::Changed(captured(id, ChangeOp::Update)),
+            Upserted::Unchanged(id) => Written::Unchanged(id),
+        },
+    )
+}
 
-    let Some(id) = find_conversation(space, agent, &session_id)? else {
-        if known.is_some() {
-            // Written before and deleted since: the person removed it on purpose.
-            return Ok(Written::Deleted);
-        }
+/// What [`upsert_conversation`] did.
+pub(crate) enum Upserted {
+    Created(NodeId),
+    Updated(NodeId),
+    Unchanged(NodeId),
+}
+
+/// Writes a conversation into its node `existing`, or into a new `conversation` node when there
+/// is none: the title of [`node_title`], the body of [`to_markdown`] and the properties of
+/// [`conversation_properties`]. Text updates are coalesced into the previous history row when
+/// `coalesce` is set.
+pub(crate) fn upsert_conversation(
+    space: &mut Space,
+    conversation: &Conversation,
+    existing: Option<NodeId>,
+    by: &Provenance,
+    coalesce: bool,
+) -> Result<Upserted, knode_format::Error> {
+    let title = node_title(conversation);
+    let body = to_markdown(conversation);
+    let properties = conversation_properties(conversation);
+    let Some(id) = existing else {
         let node = space.create_node_with_properties(
             NewNode::note(title, body).with_kind(kinds::CONVERSATION),
             &properties,
-            &by,
+            by,
         )?;
-        return Ok(Written::Changed(captured(node.id, ChangeOp::Create)));
+        return Ok(Upserted::Created(node.id));
     };
     let current = space
         .get_node(&id)?
         .ok_or(knode_format::Error::NotFound(id))?;
     let text_changed = current.title != title || current.body != body;
     if text_changed {
-        // One history row per run of updates from the session: the transcript only grows, so
-        // the newest version holds every earlier one.
-        space.update_node_coalescing(
-            &id,
-            NodeUpdate {
-                title: Some(title),
-                body: Some(body),
-                ..Default::default()
-            },
-            &by,
-        )?;
+        let update = NodeUpdate {
+            title: Some(title),
+            body: Some(body),
+            ..Default::default()
+        };
+        if coalesce {
+            space.update_node_coalescing(&id, update, by)?;
+        } else {
+            space.update_node(&id, update, by)?;
+        }
     }
-    let properties_changed = space.set_properties(&id, &properties, &by)?;
+    let properties_changed = space.set_properties(&id, &properties, by)?;
     Ok(if text_changed || properties_changed {
-        Written::Changed(captured(id, ChangeOp::Update))
+        Upserted::Updated(id)
     } else {
-        Written::Unchanged(id)
+        Upserted::Unchanged(id)
     })
 }
 

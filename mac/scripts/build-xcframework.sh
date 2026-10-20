@@ -8,10 +8,9 @@
 # writes is generated, so the output folder is never committed.
 set -eu
 
-mac_dir="$(cd "$(dirname "$0")/.." && pwd)"
-core_dir="$mac_dir/../core"
+mac_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
+core_dir="$(cd "$mac_dir/../core" && pwd -P)"
 out_dir="${1:-$mac_dir/build/KnodeCore}"
-inputs="$mac_dir/scripts/knode-core-inputs.xcfilelist"
 
 # Xcode runs scripts without the login shell's PATH.
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
@@ -21,16 +20,8 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # Xcode only reruns this script when a file in the input list changes, so the list must name
-# every source file of the crates the core is built from.
-missing=0
-for file in $(cd "$core_dir" && find crates/knode-ffi crates/knode-config crates/knode-format crates/knode-md \
-    -path '*/target' -prune -o -type f \( -path '*/src/*' -o -name Cargo.toml -o -name uniffi.toml \) -print | sort); do
-    if ! grep -qxF "\$(SRCROOT)/../core/$file" "$inputs"; then
-        echo "error: core/$file is missing from mac/scripts/knode-core-inputs.xcfilelist" >&2
-        missing=1
-    fi
-done
-[ "$missing" -eq 0 ] || exit 1
+# every source file of the crates of this workspace it is built from.
+"$mac_dir/scripts/update-inputs.sh" --check core
 
 # A build folder of its own, so the settings Xcode exports never invalidate core/target.
 export CARGO_TARGET_DIR="$mac_dir/build/cargo"

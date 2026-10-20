@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "=1.0.104"
 clap = { version = "=4.6.7", features = ["derive"] }
+jsonc-parser = { version = "=0.34.0", features = ["cst", "serde_json"] }
 knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }
