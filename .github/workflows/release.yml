@@ -212,7 +212,7 @@ jobs:
           "$bin" --version | grep -F "$VERSION"
           if [[ "$TARGET" == *-musl ]]; then
             # The musl builds must not load anything at run time.
-            file "$bin" | grep -E 'static(-pie)? linked'
+            file "$bin" | grep -E 'statically linked|static-pie linked'
           else
             # The newest glibc symbol the binary needs, which sets the oldest Linux it runs on.
             objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1

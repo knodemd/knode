@@ -122,7 +122,7 @@ jobs:
         run: |
           bin="target/$TARGET/release/knode"
           file "$bin"
-          file "$bin" | grep -E 'static(-pie)? linked'
+          file "$bin" | grep -E 'statically linked|static-pie linked'
           docker run --rm -v "$PWD/target/$TARGET/release:/knode:ro" alpine:3.22 \
             sh -c 'cat /etc/alpine-release && /knode/knode --version && /knode/knode --help > /dev/null'
 
