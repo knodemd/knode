@@ -36,7 +36,19 @@ struct ContentView: View {
             case .rename(let url): RenameSpaceSheet(url: url)
             case .icon(let url): SpaceIconSheet(url: url)
             case .access(let url): SpaceAccessSheet(url: url)
+            case .folders(let url): SpaceFoldersSheet(url: url)
             }
+        }
+        .confirmationDialog(
+            "Remove \(model.spaceToRemove?.name ?? "this space") from the list?",
+            isPresented: Binding(get: { model.spaceToRemove != nil }, set: { if !$0 { model.spaceToRemove = nil } }),
+            presenting: model.spaceToRemove
+        ) { item in
+            Button("Remove from List") { Task { await model.removeFromList(item.url) } }
+            Button("Remove and Stop Capturing Into It", role: .destructive) { Task { await model.removeFromList(item.url, forget: true) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Its files stay where they are. Unless you stop capturing into it, Knode still knows the space and captures the conversations of its folders into it.")
         }
         .tint(KnodeColor.indigo)
         .alert(
@@ -155,6 +167,8 @@ struct SpaceMenuItems: View {
             Divider()
             Button("Agent Access…", systemImage: "lock.shield") { model.sheet = .access(item.url) }
                 .disabled(item.isMissing)
+            Button("Folders and Capture…", systemImage: "folder.badge.gearshape") { model.sheet = .folders(item.url) }
+                .disabled(item.isMissing)
             if item.isDefault {
                 Button("Stop Using for Agents and Capture", systemImage: "sparkles") { model.setDefaultSpace(nil) }
             } else {
@@ -167,8 +181,12 @@ struct SpaceMenuItems: View {
             .disabled(item.isMissing)
         }
         Divider()
-        Button("Remove from List", systemImage: "minus.circle") {
-            Task { await model.removeFromList(item.url) }
+        Button("Remove from List…", systemImage: "minus.circle") {
+            if item.isExample {
+                Task { await model.removeFromList(item.url) }
+            } else {
+                model.spaceToRemove = item
+            }
         }
     }
 }

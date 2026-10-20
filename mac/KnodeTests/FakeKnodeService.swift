@@ -23,6 +23,8 @@ final class FakeKnodeService: @unchecked Sendable {
         var id: String
         var name: String
         var nodes: [String: StoredNode] = [:]
+        var settings: [String: String] = [:]
+        var folders: [[String: Any]] = []
     }
 
     let socketURL: URL
@@ -42,6 +44,8 @@ final class FakeKnodeService: @unchecked Sendable {
     private var conflicts: [Int64: [Int64]] = [:]
     /// The agents `agents.list` answers with.
     private var agents: [[String: Any]] = []
+    /// `space` notifications to send once the answer is sent.
+    private var spaceEvents: [[String: Any]] = []
 
     init() throws {
         // Unix socket paths are short: keep the folder name short.
@@ -86,6 +90,36 @@ final class FakeKnodeService: @unchecked Sendable {
             spaces[path]?.nodes[id]?.updatedAt = clock
         }
         notify(space: path, node: id, op: "update")
+    }
+
+    /// Renames a space as another client would, and tells the subscribers.
+    func otherClientRenames(_ path: String, to name: String) {
+        lock.withLock { spaces[path]?.name = name }
+        notifySpace(["space": path, "what": "renamed", "name": name])
+    }
+
+    /// Changes a setting as another client would, and tells the subscribers.
+    func otherClientSets(_ key: String, to value: String?, in path: String) {
+        lock.withLock { spaces[path]?.settings[key] = value }
+        notifySpace(["space": path, "what": "settings", "key": key])
+    }
+
+    /// Adds a project folder as another client would, such as `knode folders add`.
+    func otherClientAddsFolder(_ folderPath: String, in path: String) {
+        let id = lock.withLock {
+            let id = nextID()
+            spaces[path]?.folders.append(folder(id: id, kind: "project", path: folderPath, capture: true, rules: [:]))
+            return id
+        }
+        notifySpace(["space": path, "what": "folders", "folder": id])
+    }
+
+    func settings(of path: String) -> [String: String] {
+        lock.withLock { spaces[path]?.settings ?? [:] }
+    }
+
+    func folders(of path: String) -> [[String: Any]] {
+        lock.withLock { spaces[path]?.folders ?? [] }
     }
 
     func node(_ id: String, in path: String) -> StoredNode? {
@@ -170,6 +204,11 @@ final class FakeKnodeService: @unchecked Sendable {
         }
         send(answer, to: client)
         if let notification { notify(space: notification.space, node: notification.node, op: notification.op) }
+        let events = lock.withLock {
+            defer { spaceEvents = [] }
+            return spaceEvents
+        }
+        for event in events { notifySpace(event) }
     }
 
     struct RPCError: Error {
@@ -210,6 +249,56 @@ final class FakeKnodeService: @unchecked Sendable {
                 )
             }
             return (info(try space()), nil)
+        case "space.rename":
+            _ = try space()
+            let name = (params["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            spaces[path]?.name = name
+            spaceEvents.append(["space": path, "what": "renamed", "name": name])
+            return (info(try space()), nil)
+        case "settings.get":
+            return (try space().settings.merging(["space.id": try space().id]) { $1 }, nil)
+        case "settings.set":
+            _ = try space()
+            let key = params["key"] as? String ?? ""
+            var value = params["value"] as? String
+            switch key {
+            case "space.icon": break
+            case "capture.enabled":
+                guard value == nil || value == "on" || value == "off" else {
+                    throw RPCError(code: -32004, kind: "invalid", message: "capture.enabled is on or off")
+                }
+                if value == "on" { value = nil }
+            default: throw RPCError(code: -32004, kind: "invalid", message: "\(key) is not a setting Knode knows")
+            }
+            spaces[path]?.settings[key] = value
+            spaceEvents.append(["space": path, "what": "settings", "key": key])
+            return (try space().settings.merging(["space.id": try space().id]) { $1 }, nil)
+        case "folders.list":
+            return (try space().folders, nil)
+        case "folders.set":
+            let kind = params["kind"] as? String ?? ""
+            guard ["project", "notes", "agent"].contains(kind) else {
+                throw RPCError(code: -32004, kind: "invalid", message: "a folder is a project, notes or agent folder")
+            }
+            let rules = params["rules"] as? [String: Any] ?? [:]
+            if kind == "agent", rules["agent"] == nil {
+                throw RPCError(code: -32004, kind: "invalid", message: "an agent folder needs the rule agent")
+            }
+            let folderPath = params["path"] as? String ?? ""
+            let folders = try space().folders
+            let index = folders.firstIndex { $0["id"] as? String == params["id"] as? String || ($0["kind"] as? String == kind && $0["path"] as? String == folderPath) }
+            let id = index.flatMap { folders[$0]["id"] as? String } ?? nextID()
+            let saved = folder(id: id, kind: kind, path: folderPath, capture: params["capture"] as? Bool ?? true, rules: rules)
+            if let index { spaces[path]?.folders[index] = saved } else { spaces[path]?.folders.append(saved) }
+            spaceEvents.append(["space": path, "what": "folders", "folder": id])
+            return (saved, nil)
+        case "folders.remove":
+            let id = params["id"] as? String ?? ""
+            let before = try space().folders.count
+            spaces[path]?.folders.removeAll { $0["id"] as? String == id }
+            let removed = spaces[path]?.folders.count != before
+            if removed { spaceEvents.append(["space": path, "what": "folders", "folder": id]) }
+            return (removed, nil)
         case "node.create":
             let id = createNode(in: path, title: params["title"] as? String ?? "", body: params["body"] as? String ?? "", by: params["by"] as? [String: Any] ?? [:])
             return (spaces[path]!.nodes[id]!.json, (path, id, "create"))
@@ -296,6 +385,17 @@ final class FakeKnodeService: @unchecked Sendable {
         }
     }
 
+    /// A folder as `folders.list` answers. The fake records paths as given.
+    private func folder(id: String, kind: String, path: String, capture: Bool, rules: [String: Any]) -> [String: Any] {
+        clock += 1
+        let by: [String: Any] = ["kind": "person", "actor": "Ada"]
+        return [
+            "id": id, "kind": kind, "path": path, "capture": capture, "rules": rules,
+            "created_at": clock, "created_by": by, "updated_at": clock, "updated_by": by,
+            "local": path, "missing": !FileManager.default.fileExists(atPath: path),
+        ]
+    }
+
     private func createNode(in path: String, title: String, body: String, by: [String: Any]) -> String {
         clock += 1
         let id = nextID()
@@ -312,6 +412,13 @@ final class FakeKnodeService: @unchecked Sendable {
         let subscribers = lock.withLock { clients.filter(\.value).map(\.key) }
         for client in subscribers {
             send(["jsonrpc": "2.0", "method": "changed", "params": ["space": space, "node_id": node, "op": op]], to: client)
+        }
+    }
+
+    private func notifySpace(_ params: [String: Any]) {
+        let subscribers = lock.withLock { clients.filter(\.value).map(\.key) }
+        for client in subscribers {
+            send(["jsonrpc": "2.0", "method": "space", "params": params], to: client)
         }
     }
 

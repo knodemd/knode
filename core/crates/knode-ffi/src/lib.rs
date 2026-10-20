@@ -14,8 +14,10 @@ use knode_format as format;
 use knode_format::NodeId;
 
 mod maps;
+mod spaces;
 
 pub use maps::*;
+pub use spaces::*;
 
 uniffi::setup_scaffolding!();
 
@@ -614,13 +616,13 @@ impl KnodeSpace {
     }
 }
 
-fn config_error(error: knode_config::Error) -> KnodeError {
+pub(crate) fn config_error(error: knode_config::Error) -> KnodeError {
     KnodeError::Config {
         message: error.to_string(),
     }
 }
 
-fn config_paths() -> Result<knode_config::Paths> {
+pub(crate) fn config_paths() -> Result<knode_config::Paths> {
     knode_config::Paths::from_env().map_err(config_error)
 }
 
@@ -660,7 +662,15 @@ fn default_space_in(paths: &knode_config::Paths) -> Result<Option<String>> {
 
 fn set_default_space_in(paths: &knode_config::Paths, path: Option<String>) -> Result<()> {
     let mut config = knode_config::Config::load(paths).map_err(config_error)?;
-    config.default_space = path.filter(|p| !p.is_empty()).map(Into::into);
+    match path.filter(|p| !p.is_empty()) {
+        // The previous default stays in `spaces`, so capture still routes over its folders.
+        Some(path) => config.set_default_space(std::path::Path::new(&path)),
+        None => {
+            if let Some(previous) = config.default_space.take() {
+                config.remember_space(&previous);
+            }
+        }
+    }
     config.save(paths).map_err(config_error)
 }
 

@@ -53,14 +53,14 @@ public actor ServiceSpaceStore: SpaceStore {
     public func createSpace(at url: URL, name: String) async throws -> Space {
         let path = Self.path(of: url)
         let info = try await call("space.create", ["space": .string(path), "name": .string(name)], as: ServiceSpaceInfo.self, url: url)
-        return register(info)
+        return await withIcon(register(info))
     }
 
     public func openSpace(at url: URL) async throws -> Space {
         let url = url.standardizedFileURL
         if let open = spaces.values.first(where: { $0.space.url == url }) { return open.space }
         let info = try await call("space.open", ["space": .string(Self.path(of: url))], as: ServiceSpaceInfo.self, url: url)
-        return register(info)
+        return await withIcon(register(info))
     }
 
     public func listNodes(in space: Space.ID) async throws -> [NodeSummary] {
@@ -151,22 +151,93 @@ public actor ServiceSpaceStore: SpaceStore {
         return try await call("link.delete", params, as: Bool.self, node: from)
     }
 
-    // Knode Service has no methods yet to rename a space or change its settings: `RoutingSpaceStore`
-    // does those with the core in the app.
+    // MARK: Name, settings and folders
 
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
-        throw Self.notYet
+        let path = try path(space)
+        let info = try await call("space.rename", ["space": .string(path), "name": .string(name), "by": author], as: ServiceSpaceInfo.self)
+        spaces[space]?.space.name = info.name
+        return spaces[space]?.space ?? Space(id: info.id, name: info.name)
+    }
+
+    public func spaceDetails(_ space: Space.ID) async throws -> Space {
+        let path = try path(space)
+        // The name the service reads from the manifest, which a rename changes.
+        let info = try await call("space.open", ["space": .string(path)], as: ServiceSpaceInfo.self)
+        let icon = try await icon(of: space)
+        spaces[space]?.space.name = info.name
+        spaces[space]?.space.icon = icon
+        return try open(space)
     }
 
     public func icon(of space: Space.ID) async throws -> String? {
-        throw Self.notYet
+        // A value that is not one emoji is kept as it is, and shown as no icon.
+        try await settings(of: space)[SpaceIcon.settingKey].flatMap { SpaceIcon.isEmoji($0) ? $0 : nil }
     }
 
     public func setIcon(_ icon: String?, of space: Space.ID) async throws {
-        throw Self.notYet
+        let icon = try SpaceIcon.normalized(icon)
+        try await setSetting(SpaceIcon.settingKey, to: icon, of: space)
+        spaces[space]?.space.icon = icon
     }
 
-    static let notYet = SpaceStoreError.unsupported("Knode Service cannot do this yet")
+    public func captureEnabled(in space: Space.ID) async throws -> Bool {
+        // Anything but `on` means off: when in doubt, nothing is captured (specification, 15.1).
+        try await settings(of: space)[CaptureSetting.key].map { $0 == "on" } ?? true
+    }
+
+    public func setCaptureEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        try await setSetting(CaptureSetting.key, to: enabled ? "on" : "off", of: space)
+    }
+
+    public func folders(of space: Space.ID) async throws -> [SpaceFolder] {
+        let path = try path(space)
+        let data = try await callJSON("folders.list", ["space": .string(path)])
+        guard let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw ServiceError.badResponse("folders.list did not answer with a list")
+        }
+        return list.compactMap(SpaceFolder.init(service:))
+    }
+
+    public func setFolder(_ folder: FolderDraft, in space: Space.ID) async throws -> SpaceFolder {
+        let path = try path(space)
+        guard let rules = JSONValue(jsonText: folder.rules) else {
+            throw SpaceStoreError.invalid("the rules of a folder are a JSON object")
+        }
+        var params: [String: JSONValue] = [
+            "space": .string(path), "kind": .string(folder.kind), "path": .string(folder.path),
+            "capture": .bool(folder.capture), "rules": rules, "by": author,
+        ]
+        if let id = folder.id { params["id"] = .string(id) }
+        let data = try await callJSON("folders.set", params)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let set = SpaceFolder(service: object) else {
+            throw ServiceError.badResponse("folders.set did not answer with a folder")
+        }
+        return set
+    }
+
+    public func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws {
+        let path = try path(space)
+        _ = try await call("folders.remove", ["space": .string(path), "id": .string(folder), "by": author], as: Bool.self)
+    }
+
+    private func settings(of space: Space.ID) async throws -> [String: String] {
+        let path = try path(space)
+        return try await call("settings.get", ["space": .string(path)], as: [String: String].self)
+    }
+
+    private func setSetting(_ key: String, to value: String?, of space: Space.ID) async throws {
+        let path = try path(space)
+        let params: [String: JSONValue] = ["space": .string(path), "key": .string(key), "value": value.map(JSONValue.string) ?? .null, "by": author]
+        _ = try await call("settings.set", params, as: [String: String].self)
+    }
+
+    /// The space with its icon, read from the service; without it when the settings can't be read.
+    private func withIcon(_ space: Space) async -> Space {
+        guard let icon = try? await icon(of: space.id) else { return space }
+        spaces[space.id]?.space.icon = icon
+        return spaces[space.id]?.space ?? space
+    }
 
     // MARK: Connection
 
@@ -203,10 +274,32 @@ public actor ServiceSpaceStore: SpaceStore {
             else { return }
             if change.op == "delete" { excerpts[change.nodeId] = nil }
             broadcast.yield(SpaceChange(space: space, nodeID: change.nodeId, kind: SpaceChange.Kind(rawValue: change.op) ?? .reload))
+        case "space":
+            guard let event = try? notification.params(as: SpaceEvent.self),
+                  let space = spaces.first(where: { $0.value.path == event.space })?.key
+            else { return }
+            let kind: SpaceChange.Kind
+            switch event.what {
+            case "renamed":
+                if let name = event.name { spaces[space]?.space.name = name }
+                kind = .renamed
+            case "settings": kind = .settings
+            case "folders": kind = .folders
+            default: kind = .reload
+            }
+            broadcast.yield(SpaceChange(space: space, nodeID: nil, kind: kind))
         case "lagged":
             for id in spaces.keys { broadcast.yield(SpaceChange(space: id, nodeID: nil, kind: .reload)) }
         default:
             break
+        }
+    }
+
+    private func callJSON(_ method: String, _ params: [String: JSONValue]) async throws -> Data {
+        do {
+            return try await connected().callJSON(method, params)
+        } catch ServiceError.remote(_, let kind, let message, let later) {
+            throw Self.storeError(kind: kind, message: message, url: nil, node: nil, later: later)
         }
     }
 
@@ -247,6 +340,11 @@ public actor ServiceSpaceStore: SpaceStore {
         let space = Space(id: info.id, name: info.name, url: URL(filePath: info.path, directoryHint: .isDirectory).standardizedFileURL)
         spaces[space.id] = (space, info.path)
         return space
+    }
+
+    private func open(_ space: Space.ID) throws -> Space {
+        guard let open = spaces[space]?.space else { throw SpaceStoreError.spaceNotFound(space) }
+        return open
     }
 
     private func path(_ space: Space.ID) throws -> String {
@@ -319,6 +417,31 @@ struct WireChange: Decodable, Sendable {
     var action: String
     var subject: String
     var undoes: Int64?
+}
+
+/// A `space` notification: the space was renamed, or its settings or folders changed.
+struct SpaceEvent: Decodable, Sendable {
+    var space: String
+    var what: String
+    var name: String?
+}
+
+extension SpaceFolder {
+    /// A folder as `folders.list` and `folders.set` answer, read with `JSONSerialization` so its
+    /// rules keep their keys as written.
+    init?(service object: [String: Any]) {
+        guard let id = object["id"] as? String, let kind = object["kind"] as? String, let path = object["path"] as? String else { return nil }
+        let rules = (object["rules"]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys, .fragmentsAllowed]) }
+        self.init(
+            id: id,
+            kind: kind,
+            path: path,
+            capture: object["capture"] as? Bool ?? true,
+            rules: rules.map { String(decoding: $0, as: UTF8.self) } ?? "{}",
+            localURL: (object["local"] as? String).map { URL(filePath: $0, directoryHint: .isDirectory) },
+            isMissing: object["missing"] as? Bool ?? false
+        )
+    }
 }
 
 struct Changed: Decodable, Sendable {
