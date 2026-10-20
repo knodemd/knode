@@ -20,11 +20,8 @@ fn sandbox_with_notes() -> Sandbox {
     sb
 }
 
-/// Whether this build searches by meaning at all (not on aarch64 Linux yet).
-const SEMANTIC: bool = cfg!(all(
-    feature = "semantic",
-    not(all(target_arch = "aarch64", target_os = "linux"))
-));
+/// Whether this build searches by meaning at all.
+const SEMANTIC: bool = cfg!(feature = "semantic");
 
 /// The note a search by words prints when meaning was asked for.
 fn fallback_note() -> &'static str {
@@ -77,10 +74,7 @@ fn index_off_turns_it_off_in_the_config() {
     assert!(out.contains(expected), "{out}");
 }
 
-#[cfg(all(
-    feature = "semantic",
-    not(all(target_arch = "aarch64", target_os = "linux"))
-))]
+#[cfg(feature = "semantic")]
 #[test]
 fn index_run_indexes_and_search_ranks_by_meaning() {
     let sb = sandbox_with_notes();
