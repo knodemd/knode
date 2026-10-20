@@ -78,6 +78,17 @@ public final class CoreSpaceStore: SpaceStore {
         return hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) }
     }
 
+    /// The core in the app searches by words: search by meaning runs in Knode Service.
+    public func search(_ query: String, mode: SearchMode, in space: Space.ID) async throws -> SearchResults {
+        let core = try self.core(space)
+        let hits = try await run { try core.search(query: query, limit: Self.searchLimit) }
+        return .words(
+            hits.map { NodeSummary($0.node, excerpt: $0.snippet.replacing("**", with: "")) },
+            snippets: hits.map(\.snippet),
+            note: mode == .words ? nil : SearchResults.noServiceNote
+        )
+    }
+
     public func renameSpace(_ space: Space.ID, to name: String) async throws -> Space {
         let core = try self.core(space)
         let author = author

@@ -10,6 +10,7 @@ struct KnodeApp: App {
     @State private var model: AppModel
     @State private var service: ServiceMonitor
     @State private var agents: AgentsModel
+    @State private var searchIndex: SearchIndexModel
 
     init() {
         KnodeFonts.register()
@@ -22,9 +23,16 @@ struct KnodeApp: App {
         service.start()
         // While tests run in the app, the list of spaces stays in memory.
         let testing = ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
-        _model = State(initialValue: AppModel(store: store, recentSpaces: RecentSpaces(), library: testing ? nil : SpaceLibrary(), settings: CoreKnodeSettings()))
+        _model = State(initialValue: AppModel(
+            store: store,
+            recentSpaces: RecentSpaces(),
+            library: testing ? nil : SpaceLibrary(),
+            settings: CoreKnodeSettings(),
+            preferences: testing ? nil : .standard
+        ))
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
+        _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }
 
     var body: some Scene {
@@ -62,10 +70,11 @@ struct KnodeApp: App {
             SettingsView()
                 .environment(model)
                 .environment(agents)
+                .environment(searchIndex)
         }
 
         MenuBarExtra {
-            ServiceMenu(monitor: service, model: model)
+            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex)
         } label: {
             KnodeMenuBarIcon.image(paused: !service.isRunning)
                 .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")

@@ -50,6 +50,8 @@ final class AppModel {
     private(set) var selectedSpaceID: Space.ID?
     /// The nodes shown in the list: every node newest first, or the search results.
     private(set) var nodes: [NodeSummary] = []
+    /// The results of the current search, with how each note was found; `nil` while not searching.
+    private(set) var searchResults: SearchResults?
     private(set) var editor: NoteEditorModel? {
         didSet {
             if editor !== oldValue {
@@ -124,12 +126,24 @@ final class AppModel {
         didSet { if searchText != oldValue { scheduleSearch() } }
     }
 
+    /// How the toolbar search finds notes: by words, by meaning or both. Remembered between
+    /// launches.
+    var searchMode: SearchMode = .hybrid {
+        didSet {
+            guard searchMode != oldValue else { return }
+            preferences?.set(searchMode.rawValue, forKey: Self.searchModeKey)
+            if !searchText.isEmpty { scheduleSearch() }
+        }
+    }
+
     @ObservationIgnored private let store: any SpaceStore
     @ObservationIgnored private let exampleStore: any SpaceStore
     @ObservationIgnored private let recentSpaces: RecentSpaces?
     @ObservationIgnored private let spaceLibrary: SpaceLibrary?
     @ObservationIgnored let settings: any KnodeSettings
     @ObservationIgnored private var exampleSpaceIDs: Set<Space.ID> = []
+    @ObservationIgnored private let preferences: UserDefaults?
+    static let searchModeKey = "KnodeSearchMode"
     @ObservationIgnored private let searchDelay: Duration
     @ObservationIgnored private let saveDelay: Duration
     @ObservationIgnored private var pendingSearch: Task<Void, Never>?
@@ -142,12 +156,14 @@ final class AppModel {
     ///   - recentSpaces: where the recent spaces are remembered; `nil` remembers nothing.
     ///   - library: where the spaces of the sidebar are kept; `nil` keeps them in memory.
     ///   - settings: the default space and the spaces folder, shared with the `knode` command.
+    ///   - preferences: where the search mode is remembered; `nil` remembers nothing.
     init(
         store: any SpaceStore,
         exampleStore: any SpaceStore = PreviewSpaceStore(),
         recentSpaces: RecentSpaces? = nil,
         library: SpaceLibrary? = nil,
         settings: any KnodeSettings = MemoryKnodeSettings(),
+        preferences: UserDefaults? = nil,
         searchDelay: Duration = .milliseconds(200),
         saveDelay: Duration = .milliseconds(600)
     ) {
@@ -156,6 +172,8 @@ final class AppModel {
         self.recentSpaces = recentSpaces
         self.spaceLibrary = library
         self.settings = settings
+        self.preferences = preferences
+        searchMode = preferences?.string(forKey: Self.searchModeKey).flatMap(SearchMode.init(rawValue:)) ?? .hybrid
         self.searchDelay = searchDelay
         self.saveDelay = saveDelay
         recentSpaceURLs = recentSpaces?.urls ?? []
@@ -424,17 +442,27 @@ final class AppModel {
     func reload() async {
         guard let space = selectedSpaceID else {
             nodes = []
+            searchResults = nil
             return
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mode = searchMode
         do {
             let spaceStore = store(for: space)
-            let result = query.isEmpty
-                ? try await spaceStore.listNodes(in: space)
-                : try await spaceStore.search(query, in: space)
+            let results: SearchResults?
+            let list: [NodeSummary]
+            if query.isEmpty {
+                results = nil
+                list = try await spaceStore.listNodes(in: space)
+            } else {
+                let found = try await spaceStore.search(query, mode: mode, in: space)
+                results = found
+                list = found.hits.map(\.summary)
+            }
             // A newer search or another space may have started meanwhile.
-            guard space == selectedSpaceID, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-            nodes = result
+            guard space == selectedSpaceID, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines), mode == searchMode else { return }
+            nodes = list
+            searchResults = results
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -825,7 +853,15 @@ final class AppModel {
     private func didSave(_ node: Node) {
         // Keep the list in step without a reload: move the note to the top, as it is now the newest.
         guard searchText.isEmpty else {
-            if let index = nodes.firstIndex(where: { $0.id == node.id }) { nodes[index] = node.summary }
+            // A result keeps its snippet: only the title and the time change.
+            if let index = nodes.firstIndex(where: { $0.id == node.id }) {
+                nodes[index].title = node.title
+                nodes[index].updatedAt = node.updatedAt
+            }
+            if let index = searchResults?.hits.firstIndex(where: { $0.id == node.id }) {
+                searchResults?.hits[index].summary.title = node.title
+                searchResults?.hits[index].summary.updatedAt = node.updatedAt
+            }
             return
         }
         nodes.removeAll { $0.id == node.id }
