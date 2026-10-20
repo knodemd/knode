@@ -5,7 +5,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use tokenizers::{Tokenizer, TruncationParams};
 
-use crate::chunk::{Chunk, ChunkOptions, chunk_by};
+use crate::chunk::Chunk;
 use crate::model::{Manifest, Pooling};
 use crate::{Error, Result};
 
@@ -134,10 +134,29 @@ impl Embedder {
             .unwrap_or_else(|_| crate::estimate_tokens(text))
     }
 
-    /// Splits Markdown into chunks that fit this model, counting tokens with its tokenizer.
+    /// Cuts Markdown into chunks by the format's rule `knode-1`, the same for every model.
     pub fn chunk(&self, markdown: &str) -> Vec<Chunk> {
-        let options = ChunkOptions::for_max_tokens(self.max_tokens());
-        chunk_by(markdown, &options, |text| self.count_tokens(text))
+        crate::chunk(markdown)
+    }
+
+    /// What identifies this model in a space (spec section 19.2): its published name and
+    /// revision (from the manifest's `source`, `repo@revision`), its dimensions, the chunking
+    /// rule `knode-1` and its prefixes.
+    pub fn model_spec(&self) -> knode_format::EmbeddingModelSpec {
+        let source = self.manifest.source.trim();
+        let (name, revision) = match source.split_once('@') {
+            Some((name, revision)) if !name.is_empty() => (name, revision),
+            _ if !source.is_empty() => (source, ""),
+            _ => (self.manifest.id.as_str(), ""),
+        };
+        knode_format::EmbeddingModelSpec {
+            name: name.to_string(),
+            revision: revision.to_string(),
+            dimensions: self.manifest.dimension as u32,
+            chunking: crate::CHUNKING.to_string(),
+            query_prefix: self.manifest.query_prefix.clone(),
+            document_prefix: self.manifest.passage_prefix.clone(),
+        }
     }
 
     fn embed_with_prefix(&self, prefix: &str, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -219,6 +238,7 @@ fn default_device() -> Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModelSpec;
     use crate::test_support::write_tiny_model;
 
     fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -318,14 +338,31 @@ mod tests {
     }
 
     #[test]
-    fn chunks_with_the_model_tokenizer() {
+    fn chunks_by_knode_1() {
         let (_dir, embedder) = tiny();
-        let markdown = format!("# Cats\n\n{}\n", "cat sat ".repeat(40));
+        let markdown = format!("# Cats\n\n{}\n", "cat sat ".repeat(200));
         let chunks = embedder.chunk(&markdown);
         assert!(chunks.len() > 1);
+        assert_eq!(chunks, crate::chunk(&markdown));
         for chunk in &chunks {
-            assert!(embedder.count_tokens(&chunk.text) <= embedder.max_tokens());
-            assert_eq!(chunk.heading_path, vec!["Cats".to_string()]);
+            assert_eq!(chunk.heading, "Cats");
         }
+    }
+
+    #[test]
+    fn model_spec_comes_from_the_manifest() {
+        let (_dir, embedder) = tiny();
+        let spec = embedder.model_spec();
+        assert_eq!(spec.name, "test");
+        assert_eq!(spec.revision, "");
+        assert_eq!(spec.dimensions, 8);
+        assert_eq!(spec.chunking, "knode-1");
+        assert_eq!(spec.query_prefix, "query: ");
+        assert_eq!(spec.document_prefix, "passage: ");
+        let source = ModelSpec::default_model().manifest().source;
+        assert_eq!(
+            source.split_once('@').unwrap().0,
+            "intfloat/multilingual-e5-small"
+        );
     }
 }

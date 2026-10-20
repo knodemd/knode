@@ -1515,6 +1515,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "knode-config",
+ "knode-format",
  "serde",
  "serde_json",
  "sha2 0.11.0",

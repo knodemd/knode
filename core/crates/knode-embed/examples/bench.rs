@@ -94,13 +94,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|i| format!("## Section {i}\n\n{}\n", passage(120, i)))
         .collect::<String>();
     let started = Instant::now();
-    let estimated = chunk(&note);
-    let exact = embedder.chunk(&note);
+    let chunks = chunk(&note);
+    let tokens = chunks
+        .iter()
+        .map(|c| embedder.count_tokens(&c.text))
+        .max()
+        .unwrap_or(0);
     println!(
-        "chunking a {} KB note: {} chunks (estimate), {} chunks (tokenizer) in {:.2?}",
+        "chunking a {} KB note: {} chunks in {:.2?}, the longest {tokens} tokens",
         note.len() / 1024,
-        estimated.len(),
-        exact.len(),
+        chunks.len(),
         started.elapsed()
     );
     Ok(())
