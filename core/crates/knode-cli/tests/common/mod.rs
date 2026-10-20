@@ -85,15 +85,12 @@ impl Sandbox {
     /// exits with `code` for `mcp get` and 0 otherwise.
     #[cfg(unix)]
     pub fn fake_program(&self, name: &str, get_code: i32) {
-        use std::os::unix::fs::PermissionsExt;
         let log = self.path(&format!("{name}.log"));
-        let script = format!(
-            "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1 $2\" = \"mcp get\" ]; then exit {get_code}; fi\nexit 0\n",
+        let body = format!(
+            "echo \"$@\" >> '{}'\nif [ \"$1 $2\" = \"mcp get\" ]; then exit {get_code}; fi\nexit 0\n",
             log.display()
         );
-        let path = self.path("bin").join(name);
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_script(&self.path("bin").join(name), &body);
     }
 
     /// Connects Gemini CLI (its settings are a file in the sandbox) and returns the agent name
@@ -113,6 +110,37 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = self.cmd().args(["service", "stop"]).output();
     }
+}
+
+/// Writes an executable shell script with `body` to `path` and returns once it can be run.
+///
+/// A process another test thread forks while `fs::write` still holds the script open inherits
+/// that handle until it execs, and on Linux running the script meanwhile fails with ETXTBSY
+/// ("Text file busy"). So the script is run in a probe mode (`KNODE_FAKE_PROBE`, which makes it
+/// exit at once) until that works. Once one run succeeds no such handle is left, and none can
+/// appear later, because the script is never opened for writing again.
+#[cfg(unix)]
+pub fn write_fake_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(
+        path,
+        format!("#!/bin/sh\n[ -n \"$KNODE_FAKE_PROBE\" ] && exit 0\n{body}"),
+    )
+    .unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..500 {
+        match Command::new(path).env("KNODE_FAKE_PROBE", "1").status() {
+            Ok(status) => {
+                assert!(status.success(), "{} failed: {status}", path.display());
+                return;
+            }
+            Err(err) if err.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(err) => panic!("cannot run {}: {err}", path.display()),
+        }
+    }
+    panic!("{} stayed busy", path.display());
 }
 
 pub fn ingest_fixture(rel: &str) -> PathBuf {
