@@ -64,8 +64,9 @@ grant takes effect on the next call:
   `canvas.board`, `positions.list`, `groups.list`, `attachments.list` and `attachment.read`; with
   `write`, `link_kind.set`, `link_kind.remove`, `view.set`, `view.remove`, `view.viewport.set`,
   `canvas.create`, `positions.set`, `positions.remove`, `group.set`, `group.remove`,
-  `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path` and
-  `conversations.import` name files on this machine and are for people only.
+  `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path`,
+  `conversations.import` and `import.run` name files on this machine (or fetch a web page) and
+  are for people only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
   `purge`, `markdown.folder.set`, `doc.peer`, `doc.merge` and every other method are for people
   only and fail with `forbidden`. (The authorship of merged Loro updates comes from their peers,
@@ -252,6 +253,51 @@ provenance and add no change.
 | Method | Params | Result |
 | --- | --- | --- |
 | `conversations.import` | `space`, `path` (absolute: a `.zip` as downloaded, or the folder it was extracted to), `by` | `{ "format", "agent", "created", "updated", "projects", "unchanged", "empty", "skipped" }`. Imports a Claude, ChatGPT or Google Takeout (Gemini Apps) data export: one `conversation` node per conversation, found again by its agent and session, so importing the same export twice writes nothing new. `agent` is `claude-ai`, `chatgpt` or `gemini-web`; `skipped` lists `{ "item", "reason" }`. A path that is not such an export fails with `invalid`. People only. |
+
+### Importing
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+
+`from` names what it is; without it, the service tells it from the path and the start of the
+file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
+
+| `from` | What `path` is |
+| --- | --- |
+| `export` | A Claude, ChatGPT or Google Takeout (Gemini Apps) data export: the `.zip` or its folder, as in `conversations.import` |
+| `markdown` | A folder of `.md` files (an export or an Obsidian vault, as in `vault.import`), or one `.md` file: a note titled by its first heading |
+| `session` | A Claude Code or Codex session file (`.jsonl`): a `conversation` node written by that agent |
+| `pdf` | A PDF: one `source` node with its text, page by page, and the PDF attached |
+| `web` | A saved web page (`.html`), or the page at `url`: one `source` node with the readable article |
+| `kindle` | `My Clippings.txt`, or a notebook a Kindle app exported (`.html` with `bookTitle` and `noteText`): one `source` node per book |
+| `readwise` | A Readwise CSV export (`Highlight` and `Book Title` columns), or its Markdown export (a `.md` file or the unzipped folder) |
+| `apple-notes` | The Apple Notes group container or its `NoteStore.sqlite`, read only, or notes it exported as Markdown |
+| `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
+| `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
+| `evernote` | An `.enex` file, or a folder of them |
+
+```json
+{ "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
+  "created": 1, "updated": 1, "unchanged": 0, "edited": 0, "highlights": 3, "attached": 0,
+  "nodes": [ { "id": "01K83N6V4W5D2XQJ0Y7RZ9T1AB", "title": "Walden", "outcome": "created", "highlights": 2 },
+             { "id": "01K83N6V4W5D2XQJ0Y7RZ9T1AC", "title": "On Liberty", "outcome": "updated", "highlights": 1 } ],
+  "skipped": [], "notes": [] }
+```
+
+- `source` is the `from` it was read as, and `format` what it was, for people.
+- `nodes` lists the nodes created or changed, in order (for reading, every document read), each
+  with `outcome` `created`, `updated`, `unchanged` or `edited` (the source changed, but so did the
+  node, in Knode, since the last import, so it was left as it is), and `highlights` added. `id` is
+  missing for the files of a Markdown folder, which are named by their path.
+- `skipped` lists `{ "item", "reason" }` for what could not be imported; the rest was. `notes`
+  lists what else is worth knowing, such as files left out or parts of a note read only in part.
+- Importing the same thing again finds the same nodes: it writes only what changed.
+- Every node written is announced with `changed`, as for any write, even when the import fails
+  part way.
+- A path that is not something Knode imports, or not the kind `from` names, fails with
+  `invalid`; files that cannot be read fail with `folder`; another app's notes that macOS keeps
+  from Knode Service fail with `no_access`.
 
 ## Changes
 
@@ -458,7 +504,8 @@ match on.
 | -32020 | `cannot_undo` | The change is not one that is undone (settings, folders, agents and grants are changed again instead), or the versions it needs were purged. |
 | -32021 | `already_undone` | The change was already undone; `data.undone_by` is the undo. Undo that change to redo it. |
 | -32022 | `undo_conflict` | Later changes touched what the change touched; `data.later` lists their ids. Send `force` to overwrite them, only after the person confirms. |
-| -32024 | `folder` | A folder of Markdown files, or a data export, could not be read or written. |
+| -32024 | `folder` | A folder of Markdown files, a data export or a file to import could not be read or written, or a web page could not be fetched. |
+| -32025 | `no_access` | macOS keeps Knode Service from reading another app's notes (Apple Notes, Bear). The message says how to turn on Full Disk Access for the app that runs Knode, or to import an export instead. |
 | -32030 | `unknown_version` | An edit was based on a version of a document the service does not have. Open it again with `doc.open`. |
 | -32031 | `missing_history` | Loro updates depend on edits the document does not have yet. Send them from an earlier version. |
 
