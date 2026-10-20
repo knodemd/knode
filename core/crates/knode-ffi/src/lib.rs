@@ -654,6 +654,31 @@ pub fn spaces_in_folder() -> Result<Vec<String>> {
     spaces_in_folder_of(&config_paths()?)
 }
 
+/// Whether search by meaning is on: `embeddings` in `$KNODE_HOME/config.toml`, on unless it is
+/// `"off"`. Knode Service reads it again on its next `index.status` or indexing round.
+#[uniffi::export]
+pub fn embeddings_enabled() -> Result<bool> {
+    embeddings_enabled_in(&config_paths()?)
+}
+
+/// Turns search by meaning on or off in `$KNODE_HOME/config.toml`. Every other setting in the
+/// file is kept. Off, Knode Service downloads and indexes nothing, and search is by words.
+#[uniffi::export]
+pub fn set_embeddings_enabled(on: bool) -> Result<()> {
+    set_embeddings_enabled_in(&config_paths()?, on)
+}
+
+fn embeddings_enabled_in(paths: &knode_config::Paths) -> Result<bool> {
+    let config = knode_config::Config::load(paths).map_err(config_error)?;
+    Ok(config.embeddings_enabled())
+}
+
+fn set_embeddings_enabled_in(paths: &knode_config::Paths, on: bool) -> Result<()> {
+    let mut config = knode_config::Config::load(paths).map_err(config_error)?;
+    config.set_embeddings(on);
+    config.save(paths).map_err(config_error)
+}
+
 fn default_space_in(paths: &knode_config::Paths) -> Result<Option<String>> {
     let config = knode_config::Config::load(paths).map_err(config_error)?;
     Ok(config
