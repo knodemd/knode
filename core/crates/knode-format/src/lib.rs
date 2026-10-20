@@ -54,6 +54,7 @@ mod attachments;
 mod chunking;
 mod embeddings;
 mod error;
+mod graph;
 mod history;
 mod links;
 mod loro;
@@ -74,6 +75,7 @@ pub use embeddings::{
     HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, VectorHit, rrf_score,
 };
 pub use error::{Error, Result};
+pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNode};
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};

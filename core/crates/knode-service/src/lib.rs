@@ -42,6 +42,7 @@ mod index;
 mod install;
 pub mod keys;
 mod lock;
+pub mod maps;
 pub mod markdown;
 mod paths;
 pub mod protocol;
@@ -62,6 +63,9 @@ pub use install::{
     launch_agent_plist, systemd_unit, systemd_unit_path,
 };
 pub use knode_ingest::{Agent, WatchOptions};
+pub use maps::{
+    AttachmentContent, ConversationImport, MAX_INLINE_ATTACHMENT, PositionInput, SkippedItem,
+};
 pub use paths::{LOCK_FILE, LOG_FILE, SOCKET_FILE, knode_home, socket_path};
 pub use protocol::{Change, ChangeKind, Event, MarkdownFolder, RpcError, SpaceInfo, Status};
 pub use search::{IndexOptions, IndexStatus, ModelState, ModelStatus, SearchResults, SpaceIndex};

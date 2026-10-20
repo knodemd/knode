@@ -1832,6 +1832,7 @@ dependencies = [
 name = "knode-mcp"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "knode-embed",
  "knode-format",
  "knode-service",
@@ -1854,6 +1855,7 @@ dependencies = [
 name = "knode-service"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "knode-config",
  "knode-embed",
  "knode-format",

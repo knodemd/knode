@@ -2,9 +2,11 @@
 
 mod agents;
 mod connect;
+mod exports;
 mod history;
 mod import;
 mod index;
+mod maps;
 mod markdown;
 mod service;
 mod spaces;
@@ -67,14 +69,53 @@ enum Command {
         #[command(subcommand)]
         action: index::IndexAction,
     },
-    /// Import a folder of Markdown files (an export or an Obsidian vault), a Markdown file, or a
-    /// Claude Code or Codex session.
+    /// Import a Claude, ChatGPT or Gemini (Google Takeout) data export, a folder of Markdown
+    /// files (an export or an Obsidian vault), a Markdown file, or a Claude Code or Codex
+    /// session.
     Import {
-        /// A folder, a .md file, or a session .jsonl file.
+        /// A data export (.zip or its folder), a folder, a .md file, or a session .jsonl file.
         path: PathBuf,
         /// The folder is an Obsidian vault (only changes the wording of the summary).
         #[arg(long)]
         vault: bool,
+    },
+    /// Show the links of a node, going out and coming in, each as it reads from the node.
+    Links {
+        /// A node id or exact title.
+        node: String,
+        /// Print the links as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Link two nodes with a kind of link, related by default.
+    Link {
+        /// The node the link starts from: an id or exact title.
+        from: String,
+        /// The node it points at: an id or exact title.
+        to: String,
+        /// The kind of link, such as part-of or answers; `knode kinds` lists them.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// List the kinds of link, or define or remove one of the space's own.
+    Kinds {
+        #[command(subcommand)]
+        action: Option<maps::KindsAction>,
+    },
+    /// Attach a file to a node, up to 100 MB; ![[name]] in its text shows it.
+    Attach {
+        /// A node id or exact title.
+        node: String,
+        /// The file.
+        file: PathBuf,
+    },
+    /// List the files attached to a node.
+    Attachments {
+        /// A node id or exact title.
+        node: String,
+        /// Print the attachments as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Write the space to a folder of Markdown files, one per note, with YAML frontmatter.
     Export {
@@ -212,7 +253,9 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Import { path, vault } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
-            if path.is_dir() {
+            if !vault && exports::is_export(&path) {
+                exports::import(&space, &path, &person())
+            } else if path.is_dir() {
                 markdown::import(&space, &absolute(&path)?, vault, &person())
             } else if vault {
                 bail!(
@@ -223,6 +266,27 @@ fn run(cli: Cli) -> Result<()> {
                 let backend = service::backend(&space)?;
                 import::run(backend.as_ref(), &path, &person())
             }
+        }
+        Command::Links { node, json } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            maps::links(service::backend(&space)?.as_ref(), &node, json)
+        }
+        Command::Link { from, to, kind } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            maps::link(backend.as_ref(), &from, &to, kind.as_deref(), &person())
+        }
+        Command::Kinds { action } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            maps::kinds(service::backend(&space)?.as_ref(), action, &person())
+        }
+        Command::Attach { node, file } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            maps::attach(service::backend(&space)?.as_ref(), &node, &file, &person())
+        }
+        Command::Attachments { node, json } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            maps::attachments(service::backend(&space)?.as_ref(), &node, json)
         }
         Command::Export { dir } => {
             let space = existing_space(&paths, cli.space.as_deref())?;

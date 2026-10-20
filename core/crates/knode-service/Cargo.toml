@@ -18,6 +18,7 @@ default = ["semantic"]
 semantic = ["dep:knode-embed"]
 
 [dependencies]
+base64 = "=0.23.1"
 knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }

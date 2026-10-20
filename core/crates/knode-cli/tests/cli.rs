@@ -149,7 +149,10 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     assert!(err.contains("does not exist"), "{err}");
     fs::write(sb.path("data.csv"), "a,b").unwrap();
     let err = sb.fails(&["import", sb.path("data.csv").to_str().unwrap()]);
-    assert!(err.contains("not a Markdown file or a session"), "{err}");
+    assert!(
+        err.contains("not a data export, a Markdown file or a session"),
+        "{err}"
+    );
 }
 
 #[test]

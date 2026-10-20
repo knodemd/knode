@@ -30,6 +30,8 @@ use crate::search::{IndexRunParams, IndexStatus, SearchResults};
 use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
 use crate::{Error, Result, paths};
 
+mod maps;
+
 /// How long [`connect_or_spawn`] waits for a new service to listen.
 pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 
