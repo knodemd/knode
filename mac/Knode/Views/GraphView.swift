@@ -627,6 +627,7 @@ struct GraphLegend: View {
             .font(KFont.ui(12))
             .foregroundStyle(theme.muted)
             .padding(KSpace.x3)
+            .fixedSize()
             .mapChrome()
         }
     }
