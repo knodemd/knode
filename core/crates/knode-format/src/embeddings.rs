@@ -791,6 +791,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vector-search")]
     fn search_by_meaning_runs_the_vector_search_once() {
         let dir = tempfile::tempdir().unwrap();
         let mut space = Space::create(dir.path().join("Plan.knode"), "Plan").unwrap();
