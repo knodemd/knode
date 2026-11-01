@@ -143,6 +143,26 @@ xcodebuild -scheme Knode -destination 'platform=macOS' build test
 or open `Knode.xcodeproj` in Xcode and run the `Knode` scheme. Local builds are signed ad hoc, so no
 Apple developer team is needed.
 
+### Check release packaging locally
+
+Build a universal Release app with the workspace version (currently `0.0.0` before the first
+release), then package it without installing or launching it:
+
+```sh
+xcodebuild -project Knode.xcodeproj -scheme Knode -configuration Release \
+  -destination 'generic/platform=macOS' -derivedDataPath build/ReleaseData \
+  MARKETING_VERSION=0.0.0 ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY=- build
+scripts/package-app.sh build/ReleaseData/Build/Products/Release/Knode.app \
+  0.0.0 /tmp/knode-package-check --allow-adhoc
+```
+
+The script checks both executable architectures, the app and embedded CLI versions, and the app
+signature. It writes `Knode-<version>.dmg` and its checksum, with the app, an Applications link,
+LICENSE and NOTICE inside. It refuses to overwrite an existing image. `--allow-adhoc` is for local
+checks only: without it, packaging also requires Developer ID signing and a stapled notarisation
+ticket. The release workflow signs, notarises and staples the final DMG, then computes its final
+checksum. Never distribute the ad-hoc check as a signed release.
+
 To open a space at launch, pass `-KnodeOpenSpace <path to the .knode package>` as a launch argument;
 `-KnodeOpenExample YES` opens the example space instead.
 
