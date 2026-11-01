@@ -892,40 +892,22 @@ fn finds_nodes_by_property() {
     );
 }
 
-/// Takes a new, empty space back to schema version 2, as an older Knode wrote it.
-const DOWN_TO_VERSION_2: &str = "
-    DROP TRIGGER loro_docs_body;
-    DROP TRIGGER embedding_chunks_stale;
-    DROP TABLE loro_peers;
-    DROP TABLE loro_docs;
-    DROP TABLE attachments;
-    DROP TABLE blobs;
-    DROP TABLE embedding_chunks;
-    DROP TABLE embedding_models;
-    DROP TABLE positions;
-    DROP TABLE view_groups;
-    DROP TABLE views;
-    DROP TABLE link_kinds;
-    DROP TABLE link_history;
-    DROP INDEX history_change;
-    ALTER TABLE history DROP COLUMN restored_from;
-    ALTER TABLE history DROP COLUMN change_id;
-    DROP TABLE changes;
-    DROP TABLE grants;
-    DROP TABLE agent_keys;
-    DROP TABLE agents;
-    DROP TABLE folders;
-";
-
 #[test]
 fn opens_a_version_1_space_and_adds_properties() {
     let (dir, space) = new_space();
     let path = space.path().to_path_buf();
+    let space_id = space.manifest().id.clone();
     drop(space);
     {
+        fs::remove_file(path.join("knode.db")).unwrap();
         let conn = db(&path);
-        conn.execute_batch(DOWN_TO_VERSION_2).unwrap();
-        conn.execute_batch("DROP TABLE properties").unwrap();
+        conn.execute_batch(include_str!("../src/sql/0001-initial.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('space.id', ?1)",
+            [space_id],
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 1).unwrap();
     }
     let mut space = Space::open(&path).unwrap();
