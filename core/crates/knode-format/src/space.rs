@@ -599,7 +599,7 @@ impl Space {
         query_history(&self.conn, "h.node_id = ?1", [id.to_string()])
     }
 
-    /// Searches titles and text by words, best match first.
+    /// Searches titles, text and imported Markdown paths by words, best match first.
     ///
     /// Every word must appear; the last one also matches as a prefix, so results come while
     /// typing. Case and accents are ignored: `cafe` finds `Café`. A match in the title counts

@@ -981,7 +981,7 @@ fn opens_the_schema_3_example_space() {
 
     let mut space = Space::open(&path).unwrap();
     assert_eq!(version(&path), SCHEMA_VERSION);
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
     assert_eq!(space.node_count().unwrap(), 5);
     // Migration 4 changes no row.
     assert_eq!(
