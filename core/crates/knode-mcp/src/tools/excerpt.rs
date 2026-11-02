@@ -193,6 +193,31 @@ mod tests {
             2000
         );
         assert!(r.text.len() < 4000);
+        let excerpt_bytes = r.text.len()
+            + serde_json::to_vec(r.structured.as_ref().unwrap())
+                .unwrap()
+                .len();
+        let full = call(
+            &backend,
+            "excerpt-test",
+            "read_node",
+            json!({"id":long.id.to_string()})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        let full_bytes = full.text.len()
+            + serde_json::to_vec(full.structured.as_ref().unwrap())
+                .unwrap()
+                .len();
+        assert!(excerpt_bytes < 8_000);
+        assert!(full_bytes > 200_000);
+        // ASCII fixture: transport bytes only, not provider tokens or measured billing.
+        eprintln!(
+            "100k-character fixture: full response {full_bytes} bytes; excerpt {excerpt_bytes} bytes (text + structured content)"
+        );
+
         assert!(
             definitions()
                 .iter()
