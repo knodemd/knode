@@ -166,6 +166,26 @@ public struct Node: Identifiable, Hashable, Sendable {
 }
 
 /// What a list or a search result shows about a node, without its whole body.
+/// A project of a space: a node of kind `project` that other nodes are part of.
+public struct ProjectSummary: Identifiable, Hashable, Sendable {
+    public var id: Node.ID
+    public var title: String
+    /// The project it is part of, if any.
+    public var parent: Node.ID?
+    /// How many notes are part of it.
+    public var notes: Int
+    /// How many projects are part of it.
+    public var projects: Int
+
+    public init(id: Node.ID, title: String, parent: Node.ID? = nil, notes: Int = 0, projects: Int = 0) {
+        self.id = id
+        self.title = title
+        self.parent = parent
+        self.notes = notes
+        self.projects = projects
+    }
+}
+
 public struct NodeSummary: Identifiable, Hashable, Sendable {
     public var id: Node.ID
     public var title: String

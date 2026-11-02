@@ -103,6 +103,19 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let hits = try await store.search("plan", in: space.id)
         #expect(hits.first?.excerpt == "Plan")
 
+        // Projects and the notes of one, with their first line.
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "Org", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 0, "projects": 1],
+            ["node": ["id": "P2", "kind": "project", "title": "app", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "parent": "P1", "notes": 1, "projects": 0],
+        ], notes: ["P2": [node.id]], in: path)
+        let projects = try await store.projects(in: space.id)
+        #expect(projects.map(\.title) == ["Org", "app"])
+        #expect(projects.last?.parent == "P1")
+        #expect(projects.last?.notes == 1)
+        let notes = try await store.projectNotes("P2", in: space.id)
+        #expect(notes.map(\.title) == ["Plan"])
+        #expect(notes.first?.excerpt == "Ship it.")
+
         await #expect(throws: SpaceStoreError.nodeNotFound("01NOPE")) {
             _ = try await store.node("01NOPE", in: space.id)
         }

@@ -89,6 +89,12 @@ extension SpaceStore {
     public func changes() -> AsyncStream<SpaceChange> {
         AsyncStream { $0.finish() }
     }
+
+    /// The projects of a space, by title. A store without projects has none.
+    public func projects(in space: Space.ID) async throws -> [ProjectSummary] { [] }
+
+    /// The notes that are part of a project, most recently changed first.
+    public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] { [] }
 }
 
 /// A change to a space, made by the app or by anyone else.

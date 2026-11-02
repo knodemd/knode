@@ -187,7 +187,7 @@ private struct TopBar: View {
 
     private var current: String? {
         if model.mode == .graph { return "Graph" }
-        guard let editor = model.editor else { return nil }
+        guard let editor = model.editor else { return model.showsProjects ? model.selectedProject?.title : nil }
         return editor.title.isEmpty ? "Untitled" : editor.title
     }
 }
@@ -209,6 +209,9 @@ private struct MainArea: View {
                 .id(editor.nodeID)
         } else if model.selectedSpace == nil {
             WelcomeView()
+        } else if let project = model.selectedProject, model.showsProjects {
+            ProjectPage(project: project)
+                .id(project.id)
         } else {
             KEmptyState(icon: .note, title: "No note open", message: "Choose a note in the sidebar, or start a new one.") {
                 KButton("New note", icon: .add, kind: .primary) { Task { await model.createNode() } }
@@ -500,8 +503,18 @@ private struct SpaceSidebar: View {
             .padding(.horizontal, KSpace.x3)
             .padding(.top, KSpace.x2)
 
-            KSectionLabel(model.searchResults == nil ? "Notes" : "Results") {
-                Text("\(model.searchResults?.hits.count ?? model.nodes.count)")
+            if !model.projects.isEmpty, model.searchResults == nil {
+                KSegmented(selection: $model.listMode, options: [
+                    KOption(SidebarListMode.projects, "Projects", icon: .folder),
+                    KOption(SidebarListMode.recent, "Recent", icon: .history),
+                ])
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, KSpace.x3)
+                .padding(.top, KSpace.x3)
+            }
+
+            KSectionLabel(sectionTitle) {
+                Text(sectionCount)
                     .font(KFont.mono(11))
                     .foregroundStyle(theme.muted)
             }
@@ -528,6 +541,24 @@ private struct SpaceSidebar: View {
     }
 }
 
+extension SpaceSidebar {
+    private var sectionTitle: String {
+        if model.searchResults != nil { return "Results" }
+        if model.showsProjects { return model.selectedProject?.title ?? "Projects" }
+        return "Notes"
+    }
+
+    private var sectionCount: String {
+        if let results = model.searchResults { return "\(results.hits.count)" }
+        if model.showsProjects {
+            return "\(model.selectedProject?.notes ?? model.projects.count)"
+        }
+        // The list holds the most recent notes only: say so when it is full.
+        let shown = model.recentNotes.count
+        return model.nodes.count >= Int(ServiceSpaceStore.listLimit) ? "\(shown)+" : "\(shown)"
+    }
+}
+
 /// How search finds notes: by words and meaning, by words, or by meaning.
 private struct SearchModeButton: View {
     @Environment(AppModel.self) private var model
@@ -551,7 +582,9 @@ private struct NoteList: View {
     @Environment(\.kTheme) private var theme
 
     var body: some View {
-        if model.nodes.isEmpty {
+        if model.showsProjects {
+            ProjectList()
+        } else if (model.searchResults == nil ? model.recentNotes : model.nodes).isEmpty {
             VStack(spacing: KSpace.x2) {
                 KIcon(model.searchText.isEmpty ? .note : .search, size: .lg, color: theme.muted)
                 Text(model.searchText.isEmpty ? "No notes yet" : "Nothing found").font(KFont.ui(13, .semibold))
@@ -573,7 +606,7 @@ private struct NoteList: View {
                             .draggable(hit.id)
                         }
                     } else {
-                        ForEach(model.nodes) { node in
+                        ForEach(model.recentNotes) { node in
                             KRow(isSelected: model.selectedNodeID == node.id, action: { model.selectedNodeID = node.id }) {
                                 NodeRow(node: node)
                             }
@@ -703,5 +736,182 @@ struct PaperBackground: View {
 
     var body: some View {
         theme.bg.ignoresSafeArea()
+    }
+}
+
+// MARK: - Projects
+
+/// The projects of the space, one level at a time: the top-level projects, or the projects and
+/// notes inside the selected one, with a way back up.
+private struct ProjectList: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        KScrollView {
+            LazyVStack(spacing: 2) {
+                if let project = model.selectedProject {
+                    KRow(action: { Task { await model.selectProject(parent(of: project)?.id) } }) {
+                        KIcon(.back, size: .xs, color: theme.muted)
+                        Text(parent(of: project)?.title ?? "Projects")
+                            .font(KFont.ui(12, .medium))
+                            .foregroundStyle(theme.muted)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityLabel("Back to \(parent(of: project)?.title ?? "projects")")
+                    ForEach(children(of: project.id)) { child in
+                        ProjectRow(project: child)
+                    }
+                    ForEach(model.projectNotes) { node in
+                        KRow(isSelected: model.selectedNodeID == node.id, action: { model.selectedNodeID = node.id }) {
+                            NodeRow(node: node)
+                        }
+                        .draggable(node.id)
+                    }
+                } else {
+                    ForEach(children(of: nil)) { project in
+                        ProjectRow(project: project)
+                    }
+                }
+            }
+            .padding(.horizontal, KSpace.x2)
+            .padding(.bottom, KSpace.x2)
+        }
+    }
+
+    private func parent(of project: ProjectSummary) -> ProjectSummary? {
+        project.parent.flatMap { id in model.projects.first { $0.id == id } }
+    }
+
+    /// The projects directly inside `parent`, or the top-level ones for `nil`; a project whose
+    /// parent is not a project of the space is top-level.
+    private func children(of parent: Node.ID?) -> [ProjectSummary] {
+        let known = Set(model.projects.map(\.id))
+        return model.projects.filter { project in
+            let up = project.parent.flatMap { known.contains($0) ? $0 : nil }
+            return up == parent
+        }
+    }
+}
+
+/// A project in the sidebar: its name, and how many notes and projects are inside.
+private struct ProjectRow: View {
+    let project: ProjectSummary
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        KRow(isSelected: model.selectedProjectID == project.id, action: { Task { await model.selectProject(project.id) } }) {
+            KIcon(.folder, size: .xs, color: theme.isDark ? theme.indigo : theme.fg)
+            Text(project.title)
+                .font(KFont.ui(13, .semibold))
+                .foregroundStyle(theme.fg)
+                .lineLimit(1)
+            Spacer(minLength: KSpace.x1)
+            Text("\(project.notes)")
+                .font(KFont.mono(11))
+                .foregroundStyle(theme.muted)
+            if project.projects > 0 {
+                KIcon(.forward, size: .xs, color: theme.muted)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(project.title), \(project.notes) notes\(project.projects > 0 ? ", \(project.projects) projects inside" : "")")
+    }
+}
+
+/// A project's page: what it is, the projects inside it and its most recent notes.
+private struct ProjectPage: View {
+    let project: ProjectSummary
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
+    @State private var summary = ""
+
+    var body: some View {
+        KScrollView {
+            VStack(alignment: .leading, spacing: KSpace.x6) {
+                VStack(alignment: .leading, spacing: KSpace.x3) {
+                    if let parent {
+                        Button(parent.title) { Task { await model.selectProject(parent.id) } }
+                            .buttonStyle(KLinkButtonStyle())
+                    }
+                    Text(project.title).kBlockStyle(30).foregroundStyle(theme.fg)
+                    HStack(spacing: KSpace.x2) {
+                        KChip("\(project.notes) notes", icon: .note)
+                        if project.projects > 0 {
+                            KChip("\(project.projects) projects", icon: .folder)
+                        }
+                        Spacer(minLength: 0)
+                        KButton("Edit description", icon: .edit, kind: .secondary, size: .small) {
+                            model.selectedNodeID = project.id
+                        }
+                    }
+                    if !summary.isEmpty {
+                        Text(summary)
+                            .font(KFont.ui(14))
+                            .foregroundStyle(theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if !inside.isEmpty {
+                    VStack(alignment: .leading, spacing: KSpace.x2) {
+                        KSectionLabel("Projects inside")
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: KSpace.x2)], spacing: KSpace.x2) {
+                            ForEach(inside) { child in
+                                Button { Task { await model.selectProject(child.id) } } label: {
+                                    KCard(padding: KSpace.x3) {
+                                        HStack(spacing: KSpace.x2) {
+                                            KIcon(.folder, size: .xs, color: theme.isDark ? theme.indigo : theme.fg)
+                                            Text(child.title).font(KFont.ui(13, .semibold)).foregroundStyle(theme.fg).lineLimit(1)
+                                            Spacer(minLength: 0)
+                                            Text("\(child.notes)").font(KFont.mono(11)).foregroundStyle(theme.muted)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(KPlainButtonStyle())
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: KSpace.x2) {
+                    KSectionLabel("Recent notes")
+                    if model.projectNotes.isEmpty {
+                        Text("No notes are part of this project yet.")
+                            .font(KFont.ui(13))
+                            .foregroundStyle(theme.muted)
+                    } else {
+                        ForEach(model.projectNotes.prefix(12)) { node in
+                            KRow(action: { model.selectedNodeID = node.id }) {
+                                NodeRow(node: node)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(KSpace.x8)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .task(id: project.id) {
+            summary = Self.summary(of: await model.body(of: project.id))
+        }
+    }
+
+    private var parent: ProjectSummary? {
+        project.parent.flatMap { id in model.projects.first { $0.id == id } }
+    }
+
+    private var inside: [ProjectSummary] {
+        model.projects.filter { $0.parent == project.id }
+    }
+
+    /// The first paragraph of the project's own text, after its title heading.
+    static func summary(of body: String) -> String {
+        body.components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
     }
 }

@@ -67,12 +67,31 @@ public actor ServiceSpaceStore: CoeditingStore {
     public func listNodes(in space: Space.ID) async throws -> [NodeSummary] {
         let path = try path(space)
         let recent = try await call("recent", ["space": .string(path), "limit": .int(Self.listLimit)], as: [WireSummary].self)
-        var missing = recent.filter { excerpts[$0.id]?.updatedAt != $0.updatedAt }.prefix(Self.excerptBatch)
+        return try await withExcerpts(recent, path: path)
+    }
+
+    public func projects(in space: Space.ID) async throws -> [ProjectSummary] {
+        let path = try path(space)
+        let projects = try await call("projects", ["space": .string(path)], as: [WireProject].self)
+        return projects.map {
+            ProjectSummary(id: $0.node.id, title: $0.node.title, parent: $0.parent, notes: $0.notes, projects: $0.projects)
+        }
+    }
+
+    public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] {
+        let path = try path(space)
+        let notes = try await call("project.notes", ["space": .string(path), "id": .string(project), "limit": .int(Self.listLimit)], as: [WireSummary].self)
+        return try await withExcerpts(notes, path: path)
+    }
+
+    /// Summaries with the first line of each note, reading at most a batch of bodies not seen yet.
+    private func withExcerpts(_ summaries: [WireSummary], path: String) async throws -> [NodeSummary] {
+        var missing = summaries.filter { excerpts[$0.id]?.updatedAt != $0.updatedAt }.prefix(Self.excerptBatch)
         while let summary = missing.popFirst() {
             guard let node = try await call("node.get", ["space": .string(path), "id": .string(summary.id)], as: WireNode?.self) else { continue }
             excerpts[node.id] = (node.updatedAt, NodeSummary.excerpt(of: node.body))
         }
-        return recent.map { summary in
+        return summaries.map { summary in
             let excerpt = excerpts[summary.id].flatMap { $0.updatedAt == summary.updatedAt ? $0.excerpt : nil } ?? ""
             return NodeSummary(summary, excerpt: excerpt)
         }
@@ -404,6 +423,14 @@ struct WireSummary: Decodable, Sendable {
     var updatedAt: Int64
     var kind: String?
     var path: String?
+}
+
+/// A project, as `projects` returns it.
+struct WireProject: Decodable, Sendable {
+    var node: WireSummary
+    var parent: String?
+    var notes: Int
+    var projects: Int
 }
 
 /// A link, as `link.create` returns it; the app only needs to know it was made.
