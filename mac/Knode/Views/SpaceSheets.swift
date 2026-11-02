@@ -46,6 +46,7 @@ struct NewSpaceSheet: View {
     @State private var name = ""
     @State private var folder: URL?
     @State private var makeDefault = false
+    @State private var setupProjects = true
 
     var body: some View {
         let folder = folder ?? model.settings.spacesFolder
@@ -71,7 +72,13 @@ struct NewSpaceSheet: View {
             }
             VStack(alignment: .leading, spacing: KSpace.x1) {
                 KToggle("Use for agents and capture", isOn: $makeDefault)
-                Text("Agents connected to Knode and captured conversations write to this space.")
+                Text("Used when no space is specified. An agent configured for a particular space keeps using it.")
+                    .font(KFont.ui(12))
+                    .foregroundStyle(theme.muted)
+            }
+            VStack(alignment: .leading, spacing: KSpace.x1) {
+                KToggle("Add projects next", isOn: $setupProjects)
+                Text("Choose one or more project folders after creating the space. Several projects can share a space; use separate spaces when agent access must differ.")
                     .font(KFont.ui(12))
                     .foregroundStyle(theme.muted)
             }
@@ -85,9 +92,9 @@ struct NewSpaceSheet: View {
 
     private func create(in folder: URL) {
         guard isValid else { return }
-        let (name, makeDefault) = (name, makeDefault)
+        let (name, makeDefault, setupProjects) = (name, makeDefault, setupProjects)
         model.sheet = nil
-        Task { await model.createSpace(named: name, in: folder, makeDefault: makeDefault) }
+        Task { await model.createSpace(named: name, in: folder, makeDefault: makeDefault, setupProjects: setupProjects) }
     }
 }
 

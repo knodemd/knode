@@ -68,8 +68,12 @@ final class SpaceFoldersModel {
     }
 
     /// Adds a folder; an agent folder names the agent whose sessions it holds.
-    func addFolder(_ kind: SpaceFolder.Kind, at url: URL, agent: String? = nil) async {
-        await change { _ = try await self.store.setFolder(.adding(kind, at: url, agent: agent), in: self.spaceID) }
+    func addFolder(_ kind: SpaceFolder.Kind, at url: URL, agent: String? = nil, capture: Bool = true) async {
+        await change {
+            var draft = FolderDraft.adding(kind, at: url, agent: agent)
+            draft.capture = capture
+            _ = try await self.store.setFolder(draft, in: self.spaceID)
+        }
     }
 
     /// Removes a folder. Nothing captured from it is removed.
