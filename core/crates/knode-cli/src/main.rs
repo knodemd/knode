@@ -5,6 +5,7 @@ mod connect;
 mod history;
 mod import;
 mod index;
+mod instructions;
 mod maps;
 mod markdown;
 mod readwise;
@@ -35,6 +36,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Preview, install or remove Knode memory guidance in a project.
+    Instructions(instructions::Options),
     /// Create a space, a <name>.knode file, in ~/Knode or --dir.
     Init {
         /// The name of the space.
@@ -175,8 +178,12 @@ enum Command {
         #[arg(long)]
         print: bool,
         /// List every agent Knode can be added to, and whether it is on this machine.
-        #[arg(long, conflicts_with_all = ["agent", "print"])]
+        #[arg(long, conflicts_with_all = ["agent", "print", "instructions"])]
         list: bool,
+        /// Also install project-local memory instructions (Codex or Claude Code only).
+        /// --print previews the instructions without changing files or connecting the agent.
+        #[arg(long, value_name = "PROJECT")]
+        instructions: Option<PathBuf>,
     },
     /// Run the MCP server on standard input and output. Agents start it themselves.
     Mcp {
@@ -345,10 +352,35 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             markdown::deleted(&space, keep.as_deref(), delete.as_deref(), &person())
         }
-        Command::Connect { agent, print, list } => match agent {
-            Some(agent) if !list => connect::run(&paths, agent, print, cli.space.as_deref()),
-            _ => connect::list(),
-        },
+        Command::Connect {
+            agent,
+            print,
+            list,
+            instructions,
+        } => {
+            match agent {
+                Some(agent) if !list => {
+                    let options = instructions.map(|project| {
+                    let agent = match agent {
+                        connect::Agent::Codex => instructions::Agent::Codex,
+                        connect::Agent::ClaudeCode => instructions::Agent::ClaudeCode,
+                        _ => bail!("project instructions are supported for codex and claude-code only"),
+                    };
+                    Ok(instructions::Options { agent, project, apply: false, remove: false })
+                }).transpose()?;
+                    if let Some(options) = &options {
+                        instructions::run(options.clone())?;
+                    }
+                    connect::run(&paths, agent, print, cli.space.as_deref())?;
+                    if !print && let Some(mut options) = options {
+                        options.apply = true;
+                        instructions::run(options)?;
+                    }
+                    Ok(())
+                }
+                _ => connect::list(),
+            }
+        }
         Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
         Command::Readwise { action } => readwise::run(&paths, action),
         Command::Agents { action } => agents::run(&paths, action),
@@ -358,6 +390,7 @@ fn run(cli: Cli) -> Result<()> {
             spaces::folders(&space, action)
         }
         Command::Service { action } => service::run(&paths, action),
+        Command::Instructions(options) => instructions::run(options),
     }
 }
 

@@ -10,6 +10,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/connect/places.rs
 $(SRCROOT)/../core/crates/knode-cli/src/history.rs
 $(SRCROOT)/../core/crates/knode-cli/src/import.rs
 $(SRCROOT)/../core/crates/knode-cli/src/index.rs
+$(SRCROOT)/../core/crates/knode-cli/src/instructions.rs
 $(SRCROOT)/../core/crates/knode-cli/src/main.rs
 $(SRCROOT)/../core/crates/knode-cli/src/maps.rs
 $(SRCROOT)/../core/crates/knode-cli/src/markdown.rs
@@ -18,6 +19,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/service.rs
 $(SRCROOT)/../core/crates/knode-cli/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
+$(SRCROOT)/../core/crates/knode-config/src/workflow.rs
 $(SRCROOT)/../core/crates/knode-embed/Cargo.toml
 $(SRCROOT)/../core/crates/knode-embed/src/chunk.rs
 $(SRCROOT)/../core/crates/knode-embed/src/download.rs
