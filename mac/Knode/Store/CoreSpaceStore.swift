@@ -51,6 +51,20 @@ public final class CoreSpaceStore: SpaceStore {
         return recent.map { NodeSummary($0.node, excerpt: $0.excerpt) }
     }
 
+    public func projects(in space: Space.ID) async throws -> [ProjectSummary] {
+        let core = try self.core(space)
+        let projects = try await run { try core.projects() }
+        return projects.map {
+            ProjectSummary(id: $0.node.id, title: $0.node.title, parent: $0.parent, notes: Int($0.notes), projects: Int($0.projects))
+        }
+    }
+
+    public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] {
+        let core = try self.core(space)
+        let notes = try await run { try core.projectNotes(id: project, limit: Self.listLimit) }
+        return notes.map { NodeSummary($0.node, excerpt: $0.excerpt) }
+    }
+
     public func node(_ id: Node.ID, in space: Space.ID) async throws -> Node {
         let core = try self.core(space)
         guard let node = try await run({ try core.getNode(id: id) }) else { throw SpaceStoreError.nodeNotFound(id) }

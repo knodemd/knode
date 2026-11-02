@@ -472,3 +472,41 @@ fn lists_and_keeps_notes_deleted_from_the_markdown_folder() {
     assert!(!space.keep_markdown_deleted(note.id.clone()).unwrap());
     assert!(space.markdown_deleted().unwrap().is_empty());
 }
+
+#[test]
+fn lists_projects_and_their_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let space = new_space(&dir);
+    let by = format::Provenance::person("Ada");
+    let (project, note) = {
+        let mut inner = space.lock();
+        let project = inner
+            .create_node(
+                format::NewNode {
+                    kind: format::kinds::PROJECT.into(),
+                    title: "taskbot".into(),
+                    ..Default::default()
+                },
+                &by,
+            )
+            .unwrap()
+            .id;
+        let note = inner
+            .create_node(format::NewNode::note("Estado", "Deployed.\n"), &by)
+            .unwrap()
+            .id;
+        inner
+            .link(&note, &project, format::link_kinds::PART_OF, &by)
+            .unwrap();
+        (project, note)
+    };
+    let projects = space.projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        (projects[0].node.title.as_str(), projects[0].notes),
+        ("taskbot", 1)
+    );
+    let notes = space.project_notes(project.to_string(), 10).unwrap();
+    assert_eq!(notes[0].node.id, note.to_string());
+    assert_eq!(notes[0].excerpt, "Deployed.");
+}
