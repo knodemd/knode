@@ -1011,6 +1011,17 @@ fn attach_source_references(
     Ok(adapted)
 }
 
+/// The name of a space without the `-archive-<stamp>` its archive added, so a recovered space
+/// archived again is `Work-archive-<new stamp>`, not `Work-archive-<old>-archive-<new>`.
+fn unarchived_stem(stem: &str) -> &str {
+    match stem.rsplit_once("-archive-") {
+        Some((base, stamp)) if !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()) => {
+            unarchived_stem(base)
+        }
+        _ => stem,
+    }
+}
+
 /// Archive, never delete, an onboarding-created package. Close all service/editor handles first.
 /// Reopen the returned .knode path to recover it; sources are never touched.
 pub fn archive(path: &Path) -> Result<PathBuf> {
@@ -1028,7 +1039,7 @@ pub fn archive(path: &Path) -> Result<PathBuf> {
         .as_nanos();
     let target = path.with_file_name(format!(
         "{}-archive-{stamp}.knode",
-        path.file_stem().unwrap().to_string_lossy()
+        unarchived_stem(&path.file_stem().unwrap().to_string_lossy())
     ));
     if target.exists() {
         return Err(invalid("Archive destination already exists."));
@@ -1092,7 +1103,14 @@ mod tests {
         let archived = archive(&dest).unwrap();
         assert!(!dest.exists());
         assert!(archived.exists());
-        assert_eq!(Space::open(archived).unwrap().node_count().unwrap(), 3);
+        assert_eq!(Space::open(&archived).unwrap().node_count().unwrap(), 3);
+        // Archived again after recovery, the name keeps one archive stamp.
+        let again = archive(&archived).unwrap();
+        let name = again.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("Work-archive-") && name.matches("-archive-").count() == 1,
+            "{name}"
+        );
     }
     #[test]
     fn rejects_stale_plans_and_source_destinations_without_partial_spaces() {
