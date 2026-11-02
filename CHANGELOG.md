@@ -75,6 +75,9 @@ belongs to, newest first.
 
 #### Added
 
+- **Connected clients and spaces**: Knode Service tracks the last space successfully used by
+  each authenticated connection and removes it on disconnect. `knode service status` shows
+  those connections to the person; agents never receive the connection inventory.
 - **Several spaces**: the Mac app lists every space like Apple Music libraries, with an icon, and
   switches with Command-1 to 9 or from the menu bar without restarting Knode Service. Rename a
   space, give it an emoji icon or make it the default from the app or with `knode spaces rename`,

@@ -80,6 +80,81 @@ fn rpc(result: Result<impl std::fmt::Debug, Error>) -> knode_service::RpcError {
 }
 
 #[test]
+fn tracks_authenticated_clients_and_space_switches_for_the_person_only() {
+    let f = Fixture::new();
+    let owner = f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|client| client.identity == Identity::Person)
+        .unwrap();
+    assert_eq!(owner.space, Some(f.space("Personal")));
+    let key = f.agent("work-agent");
+    f.grant("work-agent", "Work", GrantLevel::Read);
+    let agent = f.connect(&key);
+    let identity = agent.identity().unwrap();
+    let connection = || {
+        f.person
+            .status()
+            .unwrap()
+            .connections
+            .into_iter()
+            .find(|connection| &connection.identity == identity)
+            .unwrap()
+    };
+    let first = connection();
+    assert_eq!(first.space, None);
+    agent.recent(f.space("Work"), 1).unwrap();
+    assert_eq!(connection().space, Some(f.space("Work")));
+    // Denied requests never change the recorded space.
+    assert!(agent.recent(f.space("Personal"), 1).is_err());
+    assert_eq!(connection().space, Some(f.space("Work")));
+    assert!(agent.status().unwrap().connections.is_empty());
+    f.grant("work-agent", "Personal", GrantLevel::Read);
+    agent.recent(f.space("Personal"), 1).unwrap();
+    assert_eq!(connection().space, Some(f.space("Personal")));
+    let id = first.id;
+    drop(agent);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .iter()
+        .any(|client| client.id == id)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "disconnected client remains"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let again = f.connect(&key);
+    let next = f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|client| Some(&client.identity) == again.identity())
+        .unwrap();
+    assert_ne!(next.id, id);
+    assert_eq!(next.space, None);
+}
+
+#[test]
+fn reads_status_from_a_server_before_connection_inventory() {
+    let legacy: knode_service::Status = serde_json::from_value(json!({
+        "version": "0.0.0", "pid": 123, "spaces": [], "clients": 1, "capture": null
+    }))
+    .unwrap();
+    assert!(legacy.connections.is_empty());
+}
+
+#[test]
 fn a_work_agent_cannot_see_a_personal_space() {
     let f = Fixture::new();
     let personal = f.space("Personal");

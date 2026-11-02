@@ -77,8 +77,8 @@ pub use paths::{
     LOCK_FILE, LOG_FILE, SOCKET_FILE, SOCKET_PATH_MAX, check_socket_path, knode_home, socket_path,
 };
 pub use protocol::{
-    Change, ChangeKind, DeletedNote, DocEdited, DocSplice, DocText, Event, MarkdownFolder,
-    RpcError, SpaceInfo, Status,
+    Change, ChangeKind, ConnectedClient, DeletedNote, DocEdited, DocSplice, DocText, Event,
+    MarkdownFolder, RpcError, SpaceInfo, Status,
 };
 pub use search::{IndexOptions, IndexStatus, ModelState, ModelStatus, SearchResults, SpaceIndex};
 pub use server::{Config, ServiceHandle, run, start};
