@@ -62,3 +62,24 @@ Report every task, failures, overhead and no-benefit cases. Inspect per-task raw
 means can conceal a regression. Do not claim savings until real comparable runs exist.
 
 Stored memory remains local, but retrieved text goes to the model provider when used by an agent.
+
+## Local workflow smoke test
+
+After building a CLI with the companion import-preview, agent-instruction and read_excerpt
+features, run:
+
+```sh
+python3 evaluation/memory/smoke.py --knode /absolute/path/to/core/target/debug/knode
+```
+
+This uses a disposable home, file-based test credentials and an empty agent executable PATH.
+It registers two projects with capture off, rehearses/imports the synthetic corpus, checks
+read-only instruction previews, configures the synthetic Codex entry, pages authenticated MCP
+reads and retrieves a typed checkpoint through a fresh MCP process. It never launches an actual
+Codex model session, touches your agent configuration or imports your own notes. Search models
+are disabled. The temporary service is stopped on exit.
+
+It also compares full and excerpt transport response bytes for a 100,000-character ASCII note,
+including text and structured content. Those bytes are neither model tokens nor billed usage.
+This smoke test checks integration, not model reasoning quality or token savings; it is separate
+from the Python-only validator CI job and needs the companion CLI changes merged locally.
