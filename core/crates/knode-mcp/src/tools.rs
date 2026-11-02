@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::backend::{Backend, BackendError};
 
+mod excerpt;
 mod maps;
 
 pub use maps::{MAX_ATTACH_BYTES, MAX_TEXT_BYTES};
@@ -82,7 +83,7 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 11] = [
+pub const TOOL_NAMES: [&str; 12] = [
     "search",
     "read_node",
     "write_node",
@@ -94,6 +95,7 @@ pub const TOOL_NAMES: [&str; 11] = [
     "read_canvas",
     "attach_file",
     "read_attachment",
+    "read_excerpt",
 ];
 
 /// Every tool, in the order they are listed.
@@ -418,6 +420,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
     ];
     tools.extend(maps::definitions(node_ref, &provenance));
+    tools.push(excerpt::definition());
     tools
 }
 
@@ -433,6 +436,7 @@ pub fn call<B: Backend + ?Sized>(
     let output = match name {
         "search" => parse(arguments).and_then(|args| search(backend, args)),
         "read_node" => parse(arguments).and_then(|args| read_node(backend, args)),
+        "read_excerpt" => parse(arguments).and_then(|args| excerpt::read(backend, args)),
         "write_node" => parse(arguments).and_then(|args| write_node(backend, args, &by)),
         "link_nodes" => parse(arguments).and_then(|args| link_nodes(backend, args, &by)),
         "recent" => parse(arguments).and_then(|args| recent(backend, args)),

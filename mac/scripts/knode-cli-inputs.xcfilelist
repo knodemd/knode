@@ -81,6 +81,7 @@ $(SRCROOT)/../core/crates/knode-mcp/src/backend.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/lib.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/service.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/tools.rs
+$(SRCROOT)/../core/crates/knode-mcp/src/tools/excerpt.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/tools/maps.rs
 $(SRCROOT)/../core/crates/knode-md/Cargo.toml
 $(SRCROOT)/../core/crates/knode-md/src/lib.rs
