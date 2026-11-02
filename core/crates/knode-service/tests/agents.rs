@@ -408,3 +408,52 @@ fn agents_read_history_and_undo_only_their_own_changes() {
     let last = &f.person.changes(&work, 1, None).unwrap()[0];
     assert_eq!(last.changed_by.actor, "claude-code");
 }
+
+/// The person can watch what an agent reads; other agents cannot.
+#[test]
+fn the_person_hears_what_an_agent_reads() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let plan = f
+        .person
+        .create_node(&work, NewNode::note("Plan", "Ship v1."), &me())
+        .unwrap();
+    let reader_key = f.agent("codex");
+    let other_key = f.agent("other");
+    f.grant("codex", "Work", GrantLevel::Read);
+    f.grant("other", "Work", GrantLevel::Read);
+    let reader = f.connect(&reader_key);
+    let other = f.connect(&other_key);
+    let watching = f.person.subscribe(Some(&work)).unwrap();
+    let eavesdropping = other.subscribe(None).unwrap();
+
+    reader.get_node(&work, &plan.id).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(activity.agent, "codex");
+            assert_eq!(activity.method, "node.get");
+            assert_eq!(activity.nodes, vec![plan.id]);
+            assert_eq!(activity.space, work);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A search names the nodes it found.
+    reader.search(&work, "ship", 10).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(
+                (activity.method.as_str(), activity.nodes),
+                ("search", vec![plan.id])
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        eavesdropping
+            .recv_timeout(Duration::from_millis(300))
+            .is_none()
+    );
+    // The person's own reads are not announced.
+    f.person.get_node(&work, &plan.id).unwrap();
+    assert!(watching.recv_timeout(Duration::from_millis(300)).is_none());
+}

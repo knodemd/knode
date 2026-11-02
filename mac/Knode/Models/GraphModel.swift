@@ -319,6 +319,49 @@ final class GraphModel {
         matches = Array(nodes.lazy.filter { $0.title.localizedCaseInsensitiveContains(query) }.prefix(8))
     }
 
+    // MARK: Agents reading
+
+    /// The agent that read last, what it read and when, while it is shown.
+    private(set) var reading: AgentReading?
+    /// When each node was last read by an agent; read by the view every frame.
+    @ObservationIgnored private(set) var readAt: [Node.ID: Date] = [:]
+    /// Whether the view follows what agents read, moving to each node they read.
+    var followsAgents = false
+    /// Whether nodes are lit now: the view animates only while they are.
+    private(set) var isGlowing = false
+    @ObservationIgnored private var glowEnd: Task<Void, Never>?
+    /// How long a node stays lit after an agent read it.
+    static let readGlow: TimeInterval = 4
+
+    /// An agent read these nodes: light them, and move to the first one when following.
+    func agentRead(_ ids: [Node.ID], by agent: String) {
+        let now = Date()
+        let lit = ids.compactMap { index[$0] }
+        for node in lit { readAt[nodes[node].id] = now }
+        readAt = readAt.filter { now.timeIntervalSince($0.value) < Self.readGlow }
+        let titles = lit.prefix(3).map { nodes[$0].title }
+        reading = AgentReading(agent: agent, titles: titles, count: lit.count, at: now)
+        isGlowing = !lit.isEmpty || isGlowing
+        glowEnd?.cancel()
+        glowEnd = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.readGlow))
+            guard !Task.isCancelled else { return }
+            self?.isGlowing = false
+            self?.revision += 1
+        }
+        if followsAgents, let first = lit.first {
+            let point = layout.position(first)
+            viewport = Viewport(x: point.x, y: point.y, zoom: max(viewport.zoom, 1.2))
+        }
+        revision += 1
+    }
+
+    /// How lit a node is, from 1 just read to 0 after `readGlow`.
+    func glow(of node: Int, at now: Date) -> Double {
+        guard node < nodes.count, let at = readAt[nodes[node].id] else { return 0 }
+        return max(0, 1 - now.timeIntervalSince(at) / Self.readGlow)
+    }
+
     /// Centres the view on a node and marks it.
     func focus(_ id: Node.ID) {
         guard let node = index[id] else { return }
@@ -495,4 +538,14 @@ final class GraphModel {
         }
         return chosen
     }
+}
+
+/// What an agent read last, for the line the graph shows while it reads.
+struct AgentReading: Equatable {
+    var agent: String
+    /// The titles of the first nodes it read.
+    var titles: [String]
+    /// How many nodes of the graph it read.
+    var count: Int
+    var at: Date
 }
