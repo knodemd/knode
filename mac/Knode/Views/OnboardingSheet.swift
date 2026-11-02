@@ -63,6 +63,8 @@ struct OnboardingSheet: View {
     @State private var archive: URL?
     @State private var confirmArchive = false
     @State private var recoveryNote: String?
+    @State private var documentFilter = ""
+    @State private var bulkProject = ""
 
     private var command: KnodeCommand {
         KnodeCommand(executable: Bundle.main.bundleURL.appending(path: "Contents/Helpers/knode"))
@@ -72,6 +74,9 @@ struct OnboardingSheet: View {
             .appending(path: name.replacing("/", with: "-").replacing(":", with: "-") + ".knode")
     }
     private var included: Int { plan.documents.filter(\.include).count }
+    private var matchingDocuments: [Int] {
+        plan.documents.indices.filter { documentFilter.isEmpty || plan.documents[$0].path.localizedCaseInsensitiveContains(documentFilter) }
+    }
 
     var body: some View {
         KSheetSurface(width: 760) {
@@ -164,7 +169,9 @@ struct OnboardingSheet: View {
                     KButton("Add project", icon: .add, size: .small) { plan.groups.append(ImportGroup(id: UUID().uuidString, name: "New project")) }
                     Divider()
                     Text("\(included) of \(plan.documents.count) Markdown documents selected").font(KFont.ui(12))
-                    ForEach(plan.documents.indices, id: \.self) { i in
+                    bulkAssignment
+                    Text("\(matchingDocuments.count) documents match this path filter").font(KFont.ui(11))
+                    ForEach(matchingDocuments, id: \.self) { i in
                         HStack {
                             Toggle(isOn: $plan.documents[i].include) { Text(plan.documents[i].path).font(KFont.mono(11)).lineLimit(2) }
                             Spacer()
@@ -189,6 +196,20 @@ struct OnboardingSheet: View {
                 KButton("Create imported copy", icon: .add, kind: .primary) { Task { await createCopy() } }
                     .disabled(!acknowledged || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || plan.groups.isEmpty || (mode == "vault" && included == 0))
             }
+        }
+    }
+
+    private var bulkAssignment: some View {
+        HStack {
+            KTextField("Filter paths, e.g. Projects/Knode/", text: $documentFilter)
+            Picker("Assign to", selection: $bulkProject) {
+                Text("Choose project").tag("")
+                ForEach(plan.groups) { group in Text(group.name).tag(group.id) }
+            }.frame(width: 180)
+            KButton("Assign matches", size: .small) {
+                for index in matchingDocuments { plan.documents[index].project = bulkProject }
+                acknowledged = false
+            }.disabled(documentFilter.isEmpty || bulkProject.isEmpty || matchingDocuments.isEmpty)
         }
     }
 
