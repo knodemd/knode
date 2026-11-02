@@ -40,5 +40,4 @@ thiserror = "=2.0.21"
 ulid = "=3.0.0"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-[dev-dependencies]
 tempfile = "=3.27.0"
