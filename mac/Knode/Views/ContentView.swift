@@ -604,6 +604,15 @@ struct NodeRow: View {
                     .font(KFont.ui(13, .semibold))
                     .foregroundStyle(theme.fg)
                     .lineLimit(1)
+                    .layoutPriority(1)
+                if let folder = node.folder {
+                    Text(folder)
+                        .font(KFont.ui(11))
+                        .foregroundStyle(theme.muted)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                        .help(node.path ?? folder)
+                }
                 Spacer(minLength: KSpace.x1)
                 Text(node.updatedAt, format: .relative(presentation: .numeric, unitsStyle: .narrow))
                     .kLineStyle(9.5)

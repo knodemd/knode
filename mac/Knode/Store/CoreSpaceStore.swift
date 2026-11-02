@@ -282,7 +282,7 @@ extension Node {
 
 extension NodeSummary {
     init(_ node: KnodeCore.NodeSummary, excerpt: String) {
-        self.init(id: node.id, title: node.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: node.updatedAt), kind: node.kind)
+        self.init(id: node.id, title: node.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: node.updatedAt), kind: node.kind, path: node.path)
     }
 }
 

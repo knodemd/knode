@@ -115,7 +115,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "kind": { "type": "string" },
             "created_at": { "type": "string", "description": "RFC 3339, UTC." },
             "updated_at": { "type": "string", "description": "RFC 3339, UTC." },
-            "updated_by": provenance
+            "updated_by": provenance,
+            "path": {
+                "type": "string",
+                "description": "The Markdown file the node was imported from, such as taskbot/README.md: it tells apart nodes of the same title."
+            }
         },
         "required": ["id", "title", "kind", "created_at", "updated_at", "updated_by"]
     });
@@ -994,12 +998,14 @@ fn who(by: &Provenance) -> String {
 }
 
 fn summary_line(text: &mut String, node: &NodeSummary) {
+    let _ = write!(text, "**{}** ({}, id `{}`", node.title, node.kind, node.id);
+    // The imported file tells apart notes of the same name, such as many `README`.
+    if let Some(path) = &node.path {
+        let _ = write!(text, ", from `{path}`");
+    }
     let _ = write!(
         text,
-        "**{}** ({}, id `{}`), updated {} by {}",
-        node.title,
-        node.kind,
-        node.id,
+        "), updated {} by {}",
         node.updated_at,
         who(&node.updated_by)
     );
@@ -1029,6 +1035,7 @@ fn summary_of(node: &Node) -> NodeSummary {
         created_at: node.created_at,
         updated_at: node.updated_at,
         updated_by: node.updated_by.clone(),
+        path: None,
     }
 }
 
@@ -1037,14 +1044,18 @@ fn provenance_json(by: &Provenance) -> Value {
 }
 
 fn summary_json(node: &NodeSummary) -> Value {
-    json!({
+    let mut json = json!({
         "id": node.id.to_string(),
         "title": node.title,
         "kind": node.kind,
         "created_at": node.created_at.to_string(),
         "updated_at": node.updated_at.to_string(),
         "updated_by": provenance_json(&node.updated_by),
-    })
+    });
+    if let Some(path) = &node.path {
+        json["path"] = json!(path);
+    }
+    json
 }
 
 fn hit_json(hit: &HybridHit) -> Value {
@@ -1278,6 +1289,46 @@ mod tests {
         let out = run(&backend, "write_node", json!({ "title": 3 }));
         assert!(out.is_error);
         assert!(out.text.starts_with("Invalid arguments"));
+    }
+
+    #[test]
+    fn results_say_which_file_a_note_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
+        let by = Provenance::person("Tester");
+        let node = space
+            .create_node(
+                knode_format::NewNode::note("README", "The taskbot readme."),
+                &by,
+            )
+            .unwrap();
+        space
+            .set_property(
+                &node.id,
+                knode_format::property_keys::MARKDOWN_PATH,
+                "taskbot/README.md",
+                &by,
+            )
+            .unwrap();
+        let backend = DirectBackend::from_space(space);
+        let out = run(&backend, "search", json!({ "query": "taskbot" }));
+        check_schema("search", &out);
+        assert!(
+            out.text.contains("from `taskbot/README.md`"),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            out.structured.as_ref().unwrap()["hits"][0]["node"]["path"],
+            "taskbot/README.md"
+        );
+        let out = run(&backend, "recent", json!({}));
+        check_schema("recent", &out);
+        assert!(
+            out.text.contains("from `taskbot/README.md`"),
+            "{}",
+            out.text
+        );
     }
 
     #[test]

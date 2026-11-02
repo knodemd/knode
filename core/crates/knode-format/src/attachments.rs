@@ -615,6 +615,10 @@ impl Space {
             return Ok(None);
         };
         let node = read_node(&self.conn, &NodeId::parse(&id)?)?;
+        let path = match &node {
+            Some(n) => self.property(&n.id, crate::property_keys::MARKDOWN_PATH)?,
+            None => None,
+        };
         Ok(node.map(|n| {
             LinkTarget::Node(NodeSummary {
                 id: n.id,
@@ -623,6 +627,7 @@ impl Space {
                 created_at: n.created_at,
                 updated_at: n.updated_at,
                 updated_by: n.updated_by,
+                path,
             })
         }))
     }

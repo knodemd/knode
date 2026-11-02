@@ -250,6 +250,11 @@ pub struct NodeSummary {
     pub updated_at: Timestamp,
     /// Who changed the node last.
     pub updated_by: Provenance,
+    /// The Markdown file the node was imported from, its
+    /// [`markdown.path`](crate::property_keys::MARKDOWN_PATH), where the list it comes from reads
+    /// it: it tells apart notes of the same name, such as many `README`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// A node to create with [`Space::create_node`](crate::Space::create_node).

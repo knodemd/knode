@@ -23,6 +23,11 @@ const SPACE_ID_KEY: &str = "space.id";
 pub(crate) const SUMMARY_COLUMNS: &str = "n.id, n.kind, n.title, n.created_at, n.updated_at, \
      u.actor_kind, u.actor, u.session, u.source";
 
+/// A column to add at the end of a query of [`SUMMARY_COLUMNS`] so its summaries carry
+/// [`NodeSummary::path`].
+pub(crate) const SUMMARY_PATH: &str = "(SELECT value FROM properties \
+     WHERE node_id = n.id AND key = 'markdown.path') AS markdown_path";
+
 /// An open `.knode` space.
 ///
 /// Reads take `&self`; writes take `&mut self` and run in one transaction each, so a failed
@@ -615,7 +620,7 @@ impl Space {
                  SELECT rowid, snippet(nodes_fts, -1, '**', '**', '…', 16) AS snippet, rank
                  FROM nodes_fts WHERE nodes_fts MATCH ?1 ORDER BY rank LIMIT ?2
              )
-             SELECT {SUMMARY_COLUMNS}, hits.snippet, hits.rank
+             SELECT {SUMMARY_COLUMNS}, hits.snippet, hits.rank, {SUMMARY_PATH}
              FROM hits
              JOIN nodes n ON n.seq = hits.rowid
              JOIN provenance u ON u.id = n.updated_by
@@ -654,7 +659,7 @@ impl Space {
         params: P,
     ) -> Result<Vec<NodeSummary>> {
         let sql = format!(
-            "SELECT {SUMMARY_COLUMNS} FROM nodes n JOIN provenance u ON u.id = n.updated_by {tail}"
+            "SELECT {SUMMARY_COLUMNS}, {SUMMARY_PATH} FROM nodes n JOIN provenance u ON u.id = n.updated_by {tail}"
         );
         let mut stmt = self.conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params, summary)?;
@@ -858,6 +863,10 @@ pub(crate) fn summary(row: &Row<'_>) -> rusqlite::Result<NodeSummary> {
         created_at: Timestamp(row.get(3)?),
         updated_at: Timestamp(row.get(4)?),
         updated_by: provenance(row, 5)?,
+        path: match row.as_ref().column_index("markdown_path") {
+            Ok(index) => row.get(index)?,
+            Err(_) => None,
+        },
     })
 }
 
