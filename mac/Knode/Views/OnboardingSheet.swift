@@ -61,6 +61,8 @@ struct OnboardingSheet: View {
     @State private var busy = false
     @State private var error: String?
     @State private var acknowledged = false
+    /// Whether to bring the agent conversations held in the source's project folders.
+    @State private var bringsSessions = true
     @State private var connected = false
     @State private var workingFolder: URL?
     @State private var instructionPreview: String?
@@ -195,6 +197,9 @@ struct OnboardingSheet: View {
                     }
                 }
             }.frame(height: 300)
+            if mode != "empty" {
+                Toggle("Also bring the conversations your agents (Claude Code, Codex…) held in these project folders, each in its project.", isOn: $bringsSessions)
+            }
             Toggle("I reviewed the assignments and compatibility notes. Create a separate copy with capture off.", isOn: $acknowledged)
                 .font(KFont.ui(12))
             HStack {
@@ -293,7 +298,9 @@ struct OnboardingSheet: View {
             let file = FileManager.default.temporaryDirectory.appending(path: "knode-plan-\(UUID().uuidString).json")
             defer { try? FileManager.default.removeItem(at: file) }
             try JSONEncoder().encode(plan).write(to: file, options: .atomic)
-            let text = try await command.run(["onboard", "apply", "--plan", file.path(percentEncoded: false), "--destination", destination.path(percentEncoded: false), "--name", name])
+            var args = ["onboard", "apply", "--plan", file.path(percentEncoded: false), "--destination", destination.path(percentEncoded: false), "--name", name]
+            if bringsSessions, mode != "empty" { args.append("--sessions") }
+            let text = try await command.run(args)
             result = try JSONDecoder().decode(ImportResult.self, from: Data(text.utf8))
             connected = false; confirmArchive = false; step = 2
         }
