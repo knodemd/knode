@@ -794,7 +794,7 @@ fn write_properties(
         stmt.execute(params![id.to_string(), key, value, now.0, prov])?;
         if key == property_keys::MARKDOWN_PATH {
             resolve_waiting_paths(tx, id, value, prov, now)?;
-            resolve_again_near(tx, id, prov, now)?;
+            resolve_again_near(tx, id, value, prov, now)?;
         }
     }
     Ok(())
@@ -958,19 +958,21 @@ fn nearest(
     let Some(here) = here else {
         return Ok(candidates.into_iter().next().map(|(id, _)| id));
     };
-    let here = folders_of(&here);
     let mut best: Option<(usize, String)> = None;
     for (id, path) in candidates {
-        let distance = path.map_or(usize::MAX, |path| {
-            let there = folders_of(&path);
-            let common = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
-            here.len() - common + there.len() - common
-        });
+        let distance = path.map_or(usize::MAX, |path| distance(&here, &path));
         if best.as_ref().is_none_or(|(d, _)| distance < *d) {
             best = Some((distance, id));
         }
     }
     Ok(best.map(|(_, id)| id))
+}
+
+/// How many folders to go up and down from the folder of one `markdown.path` to another's.
+fn distance(from: &str, to: &str) -> usize {
+    let (here, there) = (folders_of(from), folders_of(to));
+    let common = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
+    here.len() - common + there.len() - common
 }
 
 /// The folders of a `markdown.path`, compared by title key: `Work/Plan.md` is in `["work"]`.
@@ -1003,11 +1005,31 @@ pub(crate) fn resolve_path(
         return Ok(None);
     }
     let suffix = format!("/{wanted}");
+    // Only paths containing the longest word of the file name can match (keys join runs of
+    // spaces, so the name as a whole may be written with more). SQLite's LIKE ignores case for
+    // ASCII only, so a word with other letters is compared in full below without this filter.
+    let name = wanted
+        .rsplit('/')
+        .next()
+        .unwrap_or(&wanted)
+        .split_whitespace()
+        .max_by_key(|w| w.len())
+        .unwrap_or("");
+    let like = if name.is_ascii() {
+        format!(
+            "%{}%",
+            name.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        )
+    } else {
+        "%".to_owned()
+    };
     let mut stmt = tx.prepare_cached(
         "SELECT p.node_id, p.value FROM properties p JOIN nodes n ON n.id = p.node_id
-         WHERE p.key = ?1 ORDER BY n.seq",
+         WHERE p.key = ?1 AND p.value LIKE ?2 ESCAPE '\\' ORDER BY n.seq",
     )?;
-    let mut rows = stmt.query([property_keys::MARKDOWN_PATH])?;
+    let mut rows = stmt.query(params![property_keys::MARKDOWN_PATH, like])?;
     let mut candidates = Vec::new();
     while let Some(row) = rows.next()? {
         let value: String = row.get(1)?;
@@ -1139,20 +1161,50 @@ pub(crate) fn refresh_body_links(
 /// A node's `markdown.path` decides which of several notes of the same name its links and the
 /// links to that name mean (7.2): once it is set, read again the node's own links and those of
 /// every node linking to another node with its title.
-fn resolve_again_near(tx: &Transaction<'_>, id: &NodeId, prov: i64, now: Timestamp) -> Result<()> {
+fn resolve_again_near(
+    tx: &Transaction<'_>,
+    id: &NodeId,
+    path: &str,
+    prov: i64,
+    now: Timestamp,
+) -> Result<()> {
     refresh_body_links(tx, id, prov, now)?;
-    let sources: Vec<String> = {
+    // Another node's link to this name can only move here if this node is nearer to it than the
+    // node it points at now: ties keep the oldest, and this one is not older.
+    let sources: BTreeSet<String> = {
         let mut stmt = tx.prepare_cached(
-            "SELECT DISTINCT l.source_id FROM links l
+            "SELECT l.source_id, sp.value, tp.value FROM links l
              JOIN nodes t ON t.id = l.target_id
              JOIN nodes me ON me.id = ?1
+             LEFT JOIN properties sp ON sp.node_id = l.source_id AND sp.key = ?3
+             LEFT JOIN properties tp ON tp.node_id = l.target_id AND tp.key = ?3
              WHERE l.kind = ?2 AND t.title_key = me.title_key AND t.id != me.id
                AND l.source_id != me.id",
         )?;
-        let rows = stmt.query_map(params![id.to_string(), link_kinds::MENTIONS], |row| {
-            row.get(0)
-        })?;
-        rows.collect::<rusqlite::Result<_>>()?
+        let rows = stmt.query_map(
+            params![
+                id.to_string(),
+                link_kinds::MENTIONS,
+                property_keys::MARKDOWN_PATH
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?;
+        let mut sources = BTreeSet::new();
+        for row in rows {
+            let (source, from, to) = row?;
+            let Some(from) = from else { continue };
+            let current = to.map_or(usize::MAX, |to| distance(&from, &to));
+            if distance(&from, path) < current {
+                sources.insert(source);
+            }
+        }
+        sources
     };
     for source in sources {
         refresh_body_links(tx, &NodeId::parse(&source)?, prov, now)?;
