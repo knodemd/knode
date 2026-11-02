@@ -350,3 +350,46 @@ fn list_shows_every_agent_and_what_is_here() {
     let err = sb.fails(&["connect"]);
     assert!(err.contains("<AGENT>"), "{err}");
 }
+
+#[test]
+fn project_instructions_preview_is_read_only_and_connect_installs_the_block() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let project = sb.path("project");
+    fs::create_dir(&project).unwrap();
+    let file = project.join("AGENTS.md");
+    fs::write(&file, "# Rules\nRun the project tests.\n").unwrap();
+    let project = project.to_str().unwrap();
+    let out = sb.ok(&["connect", "codex", "--instructions", project, "--print"]);
+    assert!(out.contains("Preview only"));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "# Rules\nRun the project tests.\n"
+    );
+    assert!(!sb.path("codex/config.toml").exists());
+    sb.ok(&["connect", "codex", "--instructions", project]);
+    let installed = fs::read_to_string(&file).unwrap();
+    assert!(installed.starts_with("# Rules\nRun the project tests.\n"));
+    assert!(installed.contains("<!-- knode:workflow:start -->"));
+    assert!(sb.path("codex/config.toml").exists());
+    assert_eq!(
+        fs::read_to_string(file.with_file_name("AGENTS.md.knode-backup.0")).unwrap(),
+        "# Rules\nRun the project tests.\n"
+    );
+}
+
+#[test]
+fn unsupported_instruction_adapter_is_rejected_before_connection_changes() {
+    let sb = Sandbox::new();
+    let project = sb.path("project");
+    fs::create_dir(&project).unwrap();
+    let out = sb.fails(&[
+        "connect",
+        "cursor",
+        "--instructions",
+        project.to_str().unwrap(),
+        "--print",
+    ]);
+    assert!(out.contains("codex and claude-code only"));
+    assert!(!sb.home().join(".cursor/mcp.json").exists());
+}
