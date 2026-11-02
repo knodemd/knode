@@ -403,6 +403,7 @@ struct WireSummary: Decodable, Sendable {
     var title: String
     var updatedAt: Int64
     var kind: String?
+    var path: String?
 }
 
 /// A link, as `link.create` returns it; the app only needs to know it was made.
@@ -523,7 +524,7 @@ extension Node {
 
 extension NodeSummary {
     init(_ summary: WireSummary, excerpt: String) {
-        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note)
+        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note, path: summary.path)
     }
 }
 

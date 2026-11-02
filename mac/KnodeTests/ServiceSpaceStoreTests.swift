@@ -436,3 +436,15 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(try await eventually { model.editor?.body == "Second." })
     }
 }
+
+/// A note imported from a file shows the folder it came from, to tell apart notes of the same name.
+@Suite struct ImportedFolderTests {
+    @Test func summariesFromTheServiceCarryTheFolder() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = #"[{"id":"a","title":"README","updated_at":1,"path":"taskbot/macos-widget/README.md"},{"id":"b","title":"Top","updated_at":1,"path":"Top.md"},{"id":"c","title":"Here","updated_at":1}]"#
+        let notes = try decoder.decode([WireSummary].self, from: Data(json.utf8)).map { NodeSummary($0, excerpt: "") }
+        #expect(notes.map(\.folder) == ["taskbot/macos-widget", nil, nil])
+        #expect(notes[0].path == "taskbot/macos-widget/README.md")
+    }
+}
