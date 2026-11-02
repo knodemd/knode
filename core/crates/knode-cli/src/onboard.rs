@@ -25,7 +25,6 @@ pub enum Action {
         #[arg(long)]
         name: String,
     },
-    /// Inspect the original import report and proposal of an existing copy.
     /// Resolve a native note link through the core (ids, titles, imported paths and headings).
     ResolveLink {
         #[arg(long)]
@@ -35,6 +34,7 @@ pub enum Action {
         #[arg(long)]
         reference: String,
     },
+    /// Inspect the original import report and proposal of an existing copy.
     Inspect {
         #[arg(long)]
         target: PathBuf,

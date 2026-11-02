@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 
 /// The tutorial edits a core-generated proposal; all import/archive validation stays in Rust.
+private struct ReviewRow: Identifiable {
+    var section: String
+    var index: Int
+    var id: String { "\(section):\(index)" }
+}
 private struct ImportGroup: Codable, Identifiable {
     var id: String
     var name: String
@@ -163,7 +168,8 @@ struct OnboardingSheet: View {
             KExplanation("Rename projects below. Give groups the same name to merge them, or change each note's assignment. Original notes stay intact; Knode adds editable context indexes and part-of links. It does not infer decisions or invent a project status.")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 9) {
-                    ForEach(plan.groups.indices, id: \.self) { i in
+                    ForEach(plan.groups.indices.map { ReviewRow(section: "group", index: $0) }) { row in
+                        let i = row.index
                         KTextField("Project name", text: $plan.groups[i].name)
                     }
                     KButton("Add project", icon: .add, size: .small) { plan.groups.append(ImportGroup(id: UUID().uuidString, name: "New project")) }
@@ -171,7 +177,8 @@ struct OnboardingSheet: View {
                     Text("\(included) of \(plan.documents.count) Markdown documents selected").font(KFont.ui(12))
                     bulkAssignment
                     Text("\(matchingDocuments.count) documents match this path filter").font(KFont.ui(11))
-                    ForEach(matchingDocuments, id: \.self) { i in
+                    ForEach(matchingDocuments.map { ReviewRow(section: "document", index: $0) }) { row in
+                        let i = row.index
                         HStack {
                             Toggle(isOn: $plan.documents[i].include) { Text(plan.documents[i].path).font(KFont.mono(11)).lineLimit(2) }
                             Spacer()
@@ -183,8 +190,8 @@ struct OnboardingSheet: View {
                     }
                     Divider()
                     Text("Review before continuing").font(KFont.ui(13))
-                    ForEach(Array(plan.warnings.enumerated()), id: \.offset) { _, warning in
-                        Text("• " + warning).font(KFont.ui(11)).textSelection(.enabled)
+                    ForEach(plan.warnings.indices.map { ReviewRow(section: "warning", index: $0) }) { row in
+                        Text("• " + plan.warnings[row.index]).font(KFont.ui(11)).textSelection(.enabled)
                     }
                 }
             }.frame(height: 300)
