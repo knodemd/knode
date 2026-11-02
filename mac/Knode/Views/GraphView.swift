@@ -348,6 +348,10 @@ struct GraphBar: View {
         HStack(spacing: KSpace.x2) {
             viewsMenu
             filterButton
+            KButton("Projects", icon: .folder, kind: showsProjects ? .secondary : .ghost, size: .small) {
+                graph.filter = showsProjects ? GraphFilter() : Self.projectsOnly
+            }
+            .kTooltip(showsProjects ? "Show every note again" : "Show only projects and how they relate")
             if !graph.filter.isEmpty {
                 KButton("Clear", icon: .close, kind: .ghost, size: .small) { graph.filter = GraphFilter() }
                     .kTooltip("Show every note again")
@@ -363,6 +367,11 @@ struct GraphBar: View {
         .frame(height: 44)
         .background(theme.bg)
     }
+
+    /// Projects, the projects they are part of and the projects related to them.
+    static let projectsOnly = GraphFilter(nodeKinds: [NodeKind.project], linkKinds: ["part-of", "related"])
+
+    private var showsProjects: Bool { graph.filter == Self.projectsOnly }
 
     private var viewsMenu: some View {
         KMenuButton(style: .secondary, entries: viewEntries) {
