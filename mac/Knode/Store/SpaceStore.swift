@@ -19,6 +19,12 @@ public protocol SpaceStore: Sendable {
     /// Every node in the space, newest first (by last update).
     func listNodes(in space: Space.ID) async throws -> [NodeSummary]
 
+    /// The projects of a space, by title: nodes of kind `project`, with their parent and counts.
+    func projects(in space: Space.ID) async throws -> [ProjectSummary]
+
+    /// The notes that are part of a project, most recently changed first.
+    func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary]
+
     /// One node with its whole Markdown body.
     func node(_ id: Node.ID, in space: Space.ID) async throws -> Node
 

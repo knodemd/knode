@@ -434,6 +434,26 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
     }
 
     @MainActor
+    @Test func theSidebarListsProjectsAndOpensOne() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
+        await model.openSpace(at: url)
+        let id = service.agentCreatesNode(in: path, title: "Estado", body: "Deployed.")
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "taskbot", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 1, "projects": 0],
+        ], notes: ["P1": [id]], in: path)
+        await model.reload()
+        // Through the app's store, as the window uses it, not the service store directly.
+        #expect(model.projects.map(\.title) == ["taskbot"])
+        #expect(model.showsProjects)
+        await model.selectProject("P1")
+        #expect(model.selectedProject?.title == "taskbot")
+        #expect(model.projectNotes.map(\.title) == ["Estado"])
+        model.listMode = .recent
+        #expect(!model.showsProjects)
+    }
+
+    @MainActor
     @Test func theListFollowsAnAgentsWrites() async throws {
         let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
         let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
