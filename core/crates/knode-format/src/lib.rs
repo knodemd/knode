@@ -59,6 +59,7 @@ mod history;
 mod links;
 mod loro;
 mod manifest;
+mod projects;
 mod schema;
 mod space;
 mod types;
@@ -79,6 +80,7 @@ pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNod
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};
+pub use projects::Project;
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{
@@ -118,6 +120,10 @@ pub mod kinds {
     /// A canvas: its title names it and its body says what it is for (schema version 4). Made
     /// with [`Space::create_canvas`](crate::Space::create_canvas).
     pub const CANVAS: &str = "canvas";
+    /// A project, an area or anything else other nodes belong to: they link to it with
+    /// [`part-of`](crate::link_kinds::PART_OF), and so does a project inside it. Listed with
+    /// [`Space::projects`](crate::Space::projects).
+    pub const PROJECT: &str = "project";
 }
 
 /// The property keys the format defines. Any other key that follows the naming rule

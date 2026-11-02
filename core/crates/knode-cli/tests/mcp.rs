@@ -151,6 +151,7 @@ fn a_client_uses_every_tool() {
             "read_node",
             "write_node",
             "link_nodes",
+            "projects",
             "recent",
             "history",
             "undo",
@@ -230,6 +231,11 @@ fn a_client_uses_every_tool() {
         json!({ "id": pricing, "body": "Teams get a discount.", "append": true }),
     );
     assert_eq!(result["structuredContent"]["result"], "updated");
+
+    // projects: none yet, and the agent is told how to make one.
+    let result = client.call("projects", json!({}));
+    assert_eq!(result["structuredContent"]["projects"], json!([]));
+    assert!(text(&result).contains("No projects yet"), "{result}");
 
     // recent
     let result = client.call("recent", json!({}));
