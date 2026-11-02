@@ -371,6 +371,46 @@ struct MarkdownPreview: View {
             KDivider().padding(.vertical, KSpace.x2)
         case .embed(let name):
             AttachmentEmbed(name: name, attachments: attachments)
+        case .table(let header, let rows):
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    GridRow {
+                        ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
+                            Text(prose(cell, size: 13, weight: .semibold, color: theme.fg))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: 360, alignment: .leading)
+                        }
+                    }
+                    .background(theme.panel)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        Divider().overlay(theme.line)
+                        GridRow {
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                                Text(prose(cell, size: 13))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: 360, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+            .clipShape(RoundedRectangle(cornerRadius: KRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: KRadius.control, style: .continuous).strokeBorder(theme.line))
+        case .image(let alt, let source):
+            HStack(spacing: KSpace.x2) {
+                KIcon(.image, size: .sm, color: theme.muted)
+                if let url = URL(string: source), url.scheme == "https" || url.scheme == "http" {
+                    Link(alt.isEmpty ? source : alt, destination: url)
+                        .font(KFont.ui(13))
+                } else {
+                    Text(alt.isEmpty ? source : alt).font(KFont.ui(13)).foregroundStyle(theme.muted)
+                }
+            }
+            .help(source)
         }
     }
 
