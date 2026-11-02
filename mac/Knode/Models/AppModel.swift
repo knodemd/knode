@@ -333,7 +333,7 @@ final class AppModel {
     /// The open space at a sidebar URL.
     func space(at url: URL) -> Space? {
         if url == SpacePanels.exampleURL { return spaces.first { exampleSpaceIDs.contains($0.id) } }
-        return spaces.first { $0.url?.standardizedFileURL == url.standardizedFileURL && !exampleSpaceIDs.contains($0.id) }
+        return spaces.first { $0.url?.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) && !exampleSpaceIDs.contains($0.id) }
     }
 
     /// Renames a space: its name in `manifest.json`. The package keeps its file name.
@@ -384,7 +384,19 @@ final class AppModel {
             }
         }
         spaceLibrary?.remove(url)
-        library.removeAll { $0.url == url.standardizedFileURL }
+        library.removeAll { $0.url.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) }
+    }
+
+    /// Close the imported package before moving it, regardless of a caller's URL directory hint.
+    /// Recent bookmarks are removed before the move so they cannot resurrect an archived copy.
+    func prepareToArchiveImport(_ url: URL) async throws {
+        let target = URL(filePath: url.path(percentEncoded: false), directoryHint: .isDirectory).standardizedFileURL
+        await removeFromList(target, forget: true)
+        guard space(at: target) == nil else {
+            throw SpaceStoreError.invalid("The imported space could not be closed. It has not been archived.")
+        }
+        recentSpaces?.remove(target)
+        recentSpaceURLs = recentSpaces?.urls ?? []
     }
 
     /// Makes a space the default for agents and capture (`default_space` in `config.toml`), or

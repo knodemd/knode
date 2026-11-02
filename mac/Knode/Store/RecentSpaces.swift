@@ -34,6 +34,12 @@ struct RecentSpaces {
         save(Array(urls.prefix(Self.limit)))
     }
 
+    /// Forget one space while retaining the order and bookmarks of other recent spaces.
+    func remove(_ url: URL) {
+        let path = url.standardizedFileURL.path(percentEncoded: false)
+        save(urls.filter { $0.standardizedFileURL.path(percentEncoded: false) != path })
+    }
+
     func clear() {
         defaults.removeObject(forKey: key)
     }

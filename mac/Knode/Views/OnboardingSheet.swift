@@ -322,7 +322,7 @@ struct OnboardingSheet: View {
         guard let result else { return }
         await perform {
             let target = URL(filePath: result.destination, directoryHint: .isDirectory)
-            await model.removeFromList(target, forget: true)
+            try await model.prepareToArchiveImport(target)
             let text = try await command.run(["onboard", "archive", "--target", result.destination])
             let decoded = try JSONDecoder().decode([String: String].self, from: Data(text.utf8))
             if let path = decoded["archived"] { archive = URL(filePath: path, directoryHint: .isDirectory) }
