@@ -420,6 +420,8 @@ fn agent_call(
 /// `service.status` as an agent sees it: only the spaces it may see.
 fn agent_status(state: &State, agent: &AgentSession) -> Status {
     let mut status = state.status();
+    // The connection inventory belongs to the person, not to any individual agent.
+    status.connections.clear();
     status
         .spaces
         .retain(|space| level_in(state, agent, space).0 >= GrantLevel::Read);

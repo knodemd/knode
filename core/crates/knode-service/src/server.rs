@@ -1,6 +1,6 @@
 //! The service: one process that opens spaces and serves them on a Unix socket.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::io;
@@ -342,6 +342,8 @@ pub(crate) struct State {
     spaces: Mutex<OpenSpaces>,
     changes: broadcast::Sender<Notice>,
     clients: AtomicU64,
+    next_client: AtomicU64,
+    connections: Mutex<BTreeMap<u64, ConnectedClient>>,
     /// Set when the service is stopping: no space opens after that.
     closing: AtomicBool,
     /// The space conversations are captured into, while capture runs.
@@ -373,6 +375,8 @@ impl State {
             spaces: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGE_BUFFER).0,
             clients: AtomicU64::new(0),
+            next_client: AtomicU64::new(1),
+            connections: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
             capturing: Mutex::new(None),
             capture_wake: Mutex::new(None),
@@ -715,6 +719,10 @@ impl State {
             pid: std::process::id(),
             spaces,
             clients: self.clients.load(Ordering::Relaxed),
+            connections: lock_ignoring_poison(&self.connections)
+                .values()
+                .cloned()
+                .collect(),
             capture: lock_ignoring_poison(&self.capturing).clone(),
             index: Some(self.index.status()),
         }
@@ -1106,6 +1114,7 @@ impl Filter {
 /// connections run at once.
 async fn connection(stream: UnixStream, state: Arc<State>) {
     state.clients.fetch_add(1, Ordering::Relaxed);
+    let connection_id = state.next_client.fetch_add(1, Ordering::Relaxed);
     let (read, mut write) = stream.into_split();
     let (outbox, mut outgoing) = mpsc::channel::<String>(OUTBOX);
     let writer = tokio::spawn(async move {
@@ -1149,6 +1158,18 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
                 continue;
             }
         };
+        let used_space = if matches!(
+            request.method.as_str(),
+            methods::AUTH | methods::SERVICE_STATUS
+        ) {
+            None
+        } else {
+            request
+                .params
+                .get("space")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+        };
         let result = match request.method.as_str() {
             methods::AUTH => auth::handshake(&state, &mut session, request.params),
             _ if matches!(session, Session::Anonymous) => Err(auth::anonymous()),
@@ -1187,6 +1208,26 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
                 })
             }
         };
+        if request.method == methods::AUTH {
+            if let Ok(value) = &result
+                && let Ok(identity) = serde_json::from_value::<crate::Identity>(value.clone())
+            {
+                lock_ignoring_poison(&state.connections).insert(
+                    connection_id,
+                    ConnectedClient {
+                        id: connection_id,
+                        identity,
+                        space: None,
+                    },
+                );
+            }
+        } else if result.is_ok()
+            && let Some(path) = used_space.and_then(|path| fs::canonicalize(path).ok())
+            && lock_ignoring_poison(&state.spaces).contains_key(&path)
+            && let Some(client) = lock_ignoring_poison(&state.connections).get_mut(&connection_id)
+        {
+            client.space = Some(path);
+        }
         if let Some(id) = request.id {
             if outbox.send(response(id, result)).await.is_err() {
                 break;
@@ -1198,6 +1239,7 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
     }
     drop(outbox);
     let _ = writer.await;
+    lock_ignoring_poison(&state.connections).remove(&connection_id);
     state.clients.fetch_sub(1, Ordering::Relaxed);
 }
 

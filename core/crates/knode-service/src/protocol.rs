@@ -479,6 +479,17 @@ impl SpaceInfo {
     }
 }
 
+/// An authenticated connection and the last space it successfully used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedClient {
+    /// The connection's id, unique until the service restarts.
+    pub id: u64,
+    /// The identity established by authentication, never supplied as request metadata.
+    pub identity: crate::Identity,
+    /// The last space successfully used on this connection, if any.
+    pub space: Option<PathBuf>,
+}
+
 /// What the service is doing: the result of `service.status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
@@ -490,6 +501,9 @@ pub struct Status {
     pub spaces: Vec<PathBuf>,
     /// How many clients are connected, this one included.
     pub clients: u64,
+    /// Authenticated connections and their last-used spaces. Only returned to the person.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<ConnectedClient>,
     /// The default space while capture runs, where conversations of no folder go, or `None`.
     #[serde(default)]
     pub capture: Option<PathBuf>,
