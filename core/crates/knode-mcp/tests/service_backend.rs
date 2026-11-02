@@ -491,3 +491,44 @@ fn canvases_kinds_and_attachments_go_through_the_service_as_the_agent() {
     );
     service.stop().unwrap();
 }
+
+#[test]
+fn excerpts_follow_agent_read_grants_and_reject_revoked_access() {
+    use knode_format::{GrantLevel, NewNode, Provenance};
+    use knode_service::keys::{fingerprint, generate_key};
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let path = dir.path().join("Work.knode");
+    let owner = Client::connect(&socket).unwrap();
+    owner.create_space(&path, "Work").unwrap();
+    let me = Provenance::person("Tester");
+    let note = owner
+        .create_node(&path, NewNode::note("Plan", "Local memory"), &me)
+        .unwrap();
+    let key = generate_key().unwrap();
+    owner
+        .add_agent("claude-code", "claude-code", &fingerprint(&key), &me)
+        .unwrap();
+    owner
+        .set_grant("claude-code", &path, GrantLevel::Read, &me)
+        .unwrap();
+    let agent = ServiceBackend::new(path.clone(), move || {
+        Client::connect_as_agent(&socket, &key)
+    })
+    .unwrap();
+    let result = run(
+        &agent,
+        "read_excerpt",
+        json!({"id":note.id.to_string(),"max_chars":5}),
+    );
+    assert!(!result.is_error, "{}", result.text);
+    assert_eq!(result.structured.unwrap()["text"], "Local");
+    owner
+        .set_grant("claude-code", &path, GrantLevel::None, &me)
+        .unwrap();
+    let result = run(&agent, "read_excerpt", json!({"id":note.id.to_string()}));
+    assert!(result.is_error);
+    assert!(!result.text.contains("Local memory"));
+    service.stop().unwrap();
+}
