@@ -794,6 +794,7 @@ fn write_properties(
         stmt.execute(params![id.to_string(), key, value, now.0, prov])?;
         if key == property_keys::MARKDOWN_PATH {
             resolve_waiting_paths(tx, id, value, prov, now)?;
+            resolve_again_near(tx, id, prov, now)?;
         }
     }
     Ok(())
@@ -899,8 +900,14 @@ fn set_tags(tx: &Transaction<'_>, id: &NodeId, tags: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The node a `[[link]]` target names: a node id, or else the oldest node with that title.
-pub(crate) fn resolve(tx: &Connection, target: &str) -> Result<Option<String>> {
+/// The node a `[[link]]` target names: a node id, or else the node with that title. When several
+/// nodes have it, the one whose `markdown.path` is nearest to that of `from`, the linking node, as
+/// Obsidian resolves notes of the same name; else the oldest.
+pub(crate) fn resolve(
+    tx: &Connection,
+    from: Option<&NodeId>,
+    target: &str,
+) -> Result<Option<String>> {
     if let Ok(id) = NodeId::parse(target) {
         let found: Option<String> = tx
             .query_row(
@@ -913,13 +920,65 @@ pub(crate) fn resolve(tx: &Connection, target: &str) -> Result<Option<String>> {
             return Ok(found);
         }
     }
-    Ok(tx
-        .query_row(
-            "SELECT id FROM nodes WHERE title_key = ?1 ORDER BY seq LIMIT 1",
-            [knode_md::title_key(target)],
-            |row| row.get(0),
-        )
-        .optional()?)
+    let mut stmt = tx.prepare_cached(
+        "SELECT n.id, p.value FROM nodes n
+         LEFT JOIN properties p ON p.node_id = n.id AND p.key = ?2
+         WHERE n.title_key = ?1 ORDER BY n.seq",
+    )?;
+    let candidates = stmt
+        .query_map(
+            params![knode_md::title_key(target), property_keys::MARKDOWN_PATH],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    nearest(tx, from, candidates)
+}
+
+/// Of `candidates`, in order from the oldest, the one whose path is nearest to the path of
+/// `from`: the fewest folders to go up and down from one to the other. Ties, and a `from` or
+/// candidates without a path, keep the oldest.
+fn nearest(
+    tx: &Connection,
+    from: Option<&NodeId>,
+    candidates: Vec<(String, Option<String>)>,
+) -> Result<Option<String>> {
+    if candidates.len() < 2 {
+        return Ok(candidates.into_iter().next().map(|(id, _)| id));
+    }
+    let here: Option<String> = match from {
+        Some(from) => tx
+            .query_row(
+                "SELECT value FROM properties WHERE node_id = ?1 AND key = ?2",
+                params![from.to_string(), property_keys::MARKDOWN_PATH],
+                |row| row.get(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    let Some(here) = here else {
+        return Ok(candidates.into_iter().next().map(|(id, _)| id));
+    };
+    let here = folders_of(&here);
+    let mut best: Option<(usize, String)> = None;
+    for (id, path) in candidates {
+        let distance = path.map_or(usize::MAX, |path| {
+            let there = folders_of(&path);
+            let common = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
+            here.len() - common + there.len() - common
+        });
+        if best.as_ref().is_none_or(|(d, _)| distance < *d) {
+            best = Some((distance, id));
+        }
+    }
+    Ok(best.map(|(_, id)| id))
+}
+
+/// The folders of a `markdown.path`, compared by title key: `Work/Plan.md` is in `["work"]`.
+fn folders_of(path: &str) -> Vec<String> {
+    let key = path_key(path);
+    let mut parts: Vec<String> = key.split('/').map(str::to_owned).collect();
+    parts.pop();
+    parts
 }
 
 /// The key a file path is compared by when a `[[folder/note]]` link is resolved: its title key,
@@ -934,7 +993,11 @@ fn path_key(path: &str) -> String {
 /// The node a `[[folder/note]]` link names by the file it was imported from, as Obsidian does:
 /// the oldest node whose `markdown.path` is that path, or ends with it after a `/`. Only targets
 /// with a `/` are paths; tried after ids and titles, so a node titled `folder/note` still wins.
-pub(crate) fn resolve_path(tx: &Connection, target: &str) -> Result<Option<String>> {
+pub(crate) fn resolve_path(
+    tx: &Connection,
+    from: Option<&NodeId>,
+    target: &str,
+) -> Result<Option<String>> {
     let wanted = path_key(target);
     if !wanted.contains('/') {
         return Ok(None);
@@ -945,14 +1008,16 @@ pub(crate) fn resolve_path(tx: &Connection, target: &str) -> Result<Option<Strin
          WHERE p.key = ?1 ORDER BY n.seq",
     )?;
     let mut rows = stmt.query([property_keys::MARKDOWN_PATH])?;
+    let mut candidates = Vec::new();
     while let Some(row) = rows.next()? {
         let value: String = row.get(1)?;
         let key = path_key(&value);
         if key == wanted || key.ends_with(&suffix) {
-            return Ok(Some(row.get(0)?));
+            candidates.push((row.get(0)?, Some(value)));
         }
     }
-    Ok(None)
+    drop(rows);
+    nearest(tx, from, candidates)
 }
 
 /// Turns the unresolved links waiting for the file `path` into `mentions` links to `id`:
@@ -1003,12 +1068,12 @@ fn apply_body_links(
         if attached.contains(link.destination.as_str()) {
             continue;
         }
-        let mut found = resolve(tx, &link.destination)?;
+        let mut found = resolve(tx, Some(id), &link.destination)?;
         if found.is_none() && link.heading.is_some() {
-            found = resolve(tx, &link.target)?;
+            found = resolve(tx, Some(id), &link.target)?;
         }
         if found.is_none() {
-            found = resolve_path(tx, &link.target)?;
+            found = resolve_path(tx, Some(id), &link.target)?;
         }
         match found {
             Some(target) => {
@@ -1067,6 +1132,30 @@ pub(crate) fn refresh_body_links(
         .optional()?;
     if let Some(body) = body {
         apply_body_links(tx, id, &knode_md::wiki_links(&body), prov, now)?;
+    }
+    Ok(())
+}
+
+/// A node's `markdown.path` decides which of several notes of the same name its links and the
+/// links to that name mean (7.2): once it is set, read again the node's own links and those of
+/// every node linking to another node with its title.
+fn resolve_again_near(tx: &Transaction<'_>, id: &NodeId, prov: i64, now: Timestamp) -> Result<()> {
+    refresh_body_links(tx, id, prov, now)?;
+    let sources: Vec<String> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT DISTINCT l.source_id FROM links l
+             JOIN nodes t ON t.id = l.target_id
+             JOIN nodes me ON me.id = ?1
+             WHERE l.kind = ?2 AND t.title_key = me.title_key AND t.id != me.id
+               AND l.source_id != me.id",
+        )?;
+        let rows = stmt.query_map(params![id.to_string(), link_kinds::MENTIONS], |row| {
+            row.get(0)
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for source in sources {
+        refresh_body_links(tx, &NodeId::parse(&source)?, prov, now)?;
     }
     Ok(())
 }
