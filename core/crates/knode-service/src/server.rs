@@ -714,15 +714,16 @@ impl State {
 
     pub(crate) fn status(&self) -> Status {
         let spaces = self.open_paths();
+        let connections = {
+            let connections = lock_ignoring_poison(&self.connections);
+            connections.values().cloned().collect()
+        };
         Status {
             version: crate::version().to_string(),
             pid: std::process::id(),
             spaces,
             clients: self.clients.load(Ordering::Relaxed),
-            connections: lock_ignoring_poison(&self.connections)
-                .values()
-                .cloned()
-                .collect(),
+            connections,
             capture: lock_ignoring_poison(&self.capturing).clone(),
             index: Some(self.index.status()),
         }
@@ -1222,8 +1223,12 @@ async fn connection(stream: UnixStream, state: Arc<State>) {
                 );
             }
         } else if result.is_ok()
-            && let Some(path) = used_space.and_then(|path| fs::canonicalize(path).ok())
-            && lock_ignoring_poison(&state.spaces).contains_key(&path)
+            && let Some(path) = used_space
+                .and_then(|path| fs::canonicalize(path).ok())
+                .filter(|path| {
+                    let spaces = lock_ignoring_poison(&state.spaces);
+                    spaces.contains_key(path)
+                })
             && let Some(client) = lock_ignoring_poison(&state.connections).get_mut(&connection_id)
         {
             client.space = Some(path);
