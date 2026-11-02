@@ -99,6 +99,8 @@ pub struct AttachmentLink {
     pub name: String,
 }
 const RECEIPT: &str = "onboarding.json";
+/// The kind of the node made for each project, `kinds::PROJECT` once that lands in the format.
+const PROJECT_KIND: &str = "project";
 const OMIT: &[&str] = &[
     "node_modules",
     "target",
@@ -655,6 +657,13 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
             let out = input.join(&file.path);
             fs::create_dir_all(out.parent().unwrap()).map_err(io_error(&out))?;
             fs::copy(&source_file, &out).map_err(io_error(&source_file))?;
+            // The importer keeps the dates of the files it reads: give the copy the source's.
+            if let Ok(modified) = fs::metadata(&source_file).and_then(|m| m.modified()) {
+                let _ = fs::File::options()
+                    .write(true)
+                    .open(&out)
+                    .and_then(|f| f.set_modified(modified));
+            }
             if digest(&out)? != file.digest {
                 return Err(invalid("Source changed while copying. Analyze again."));
             }
@@ -749,17 +758,16 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
         if !members.contains_key(project) && !has_children && plan.mode == Mode::Vault {
             continue;
         }
-        let mut title = project.clone();
-        let mut suffix = 1;
-        while !space.find_by_title(&title)?.is_empty() {
-            title = if suffix == 1 {
-                format!("{project} (index)")
-            } else {
-                format!("{project} (index {suffix})")
-            };
-            suffix += 1;
-        }
-        let context = space.create_node(NewNode::note(&title, ""), by)?;
+        // A node of kind `project` (format kind `project`): the app and MCP list it as one, so
+        // it keeps the project's own name even when a note has the same title.
+        let context = space.create_node(
+            NewNode {
+                kind: PROJECT_KIND.into(),
+                title: project.clone(),
+                ..Default::default()
+            },
+            by,
+        )?;
         space.set_property(&context.id, "onboarding.generated", "project-context", by)?;
         contexts.insert(project.clone(), context.id);
     }
@@ -784,7 +792,7 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
                     .join(", ")
             ));
         }
-        body.push_str("Onboarding made it from the folder structure; edit it like any other note. Each imported note is linked to it as part-of.\n");
+        body.push_str("Onboarding made this project from the folder structure; edit this text freely. Each imported note is part of it.\n");
         if !mine.is_empty() {
             let mut key: Vec<_> = mine.iter().collect();
             key.sort_by_key(|(doc, _)| {
@@ -1249,6 +1257,10 @@ mod tests {
             .find_by_property(crate::property_keys::PATH, "Solo/README.md")
             .unwrap();
         assert_eq!(space.attachments(&readme[0].id).unwrap().len(), 1);
+        assert_eq!(
+            space.get_node(&context("Org")).unwrap().unwrap().kind,
+            "project"
+        );
         let body = space.get_node(&context("Org")).unwrap().unwrap().body;
         assert!(body.contains("## Projects inside") && !body.contains("To be filled"));
     }
