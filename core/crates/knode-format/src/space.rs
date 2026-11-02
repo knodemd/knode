@@ -653,7 +653,7 @@ impl Space {
         found.map(|_| ()).ok_or(Error::NotFound(*id))
     }
 
-    fn query_summaries<P: rusqlite::Params>(
+    pub(crate) fn query_summaries<P: rusqlite::Params>(
         &self,
         tail: &str,
         params: P,

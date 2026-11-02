@@ -966,6 +966,18 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = lock_ignoring_poison(&space);
             to_value(space.recent(p.limit.min(MAX_LIMIT))?)
         }
+        methods::PROJECTS => {
+            let p: ProjectsParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(space.projects()?)
+        }
+        methods::PROJECT_NOTES => {
+            let p: ProjectNotesParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(space.project_notes(&p.id, p.limit.min(MAX_LIMIT))?)
+        }
         methods::CHANGES => {
             let p: ChangesParams = params(method, raw)?;
             let space = state.space(&p.space)?;

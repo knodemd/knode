@@ -10,8 +10,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use knode_format::{
     Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, HybridHit, Link,
-    LinkKind, LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance,
-    SearchMode, Space, View, rrf_score, view_kinds,
+    LinkKind, LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Project,
+    Provenance, SearchMode, Space, View, rrf_score, view_kinds,
 };
 use knode_sync::{BodyEdit, Docs, Splice, Version};
 use serde::Serialize;
@@ -181,6 +181,10 @@ pub trait Backend: Send + Sync + 'static {
     fn backlinks(&self, id: &NodeId) -> BackendResult<Vec<Link>>;
     /// `recent`: the nodes changed last, newest first.
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>>;
+    /// `projects`: every project, by title.
+    fn projects(&self) -> BackendResult<Vec<Project>>;
+    /// `project.notes`: the nodes part of a project, most recently changed first.
+    fn project_notes(&self, id: &NodeId, limit: usize) -> BackendResult<Vec<NodeSummary>>;
     /// `history`: every version of a node, oldest first.
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>>;
     /// `changes`: the changes of the space, newest first, older than `before` when set.
@@ -444,6 +448,14 @@ impl Backend for DirectBackend {
         self.with(|s| s.recent(limit))
     }
 
+    fn projects(&self) -> BackendResult<Vec<Project>> {
+        self.with(|s| s.projects())
+    }
+
+    fn project_notes(&self, id: &NodeId, limit: usize) -> BackendResult<Vec<NodeSummary>> {
+        self.with(|s| s.project_notes(id, limit))
+    }
+
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {
         self.with(|s| s.history(id))
     }
@@ -665,6 +677,14 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         (**self).recent(limit)
+    }
+
+    fn projects(&self) -> BackendResult<Vec<Project>> {
+        (**self).projects()
+    }
+
+    fn project_notes(&self, id: &NodeId, limit: usize) -> BackendResult<Vec<NodeSummary>> {
+        (**self).project_notes(id, limit)
     }
 
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {

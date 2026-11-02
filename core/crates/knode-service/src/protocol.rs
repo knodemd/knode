@@ -58,6 +58,10 @@ pub mod methods {
     pub const INDEX_RUN: &str = "index.run";
     /// The nodes changed most recently.
     pub const RECENT: &str = "recent";
+    /// The projects of a space, with their parent and how much is in each.
+    pub const PROJECTS: &str = "projects";
+    /// The nodes that are part of a project, most recently changed first.
+    pub const PROJECT_NOTES: &str = "project.notes";
     /// Every version of a node.
     pub const HISTORY: &str = "history";
     /// The changes of a space, or of one subject such as a node, newest first.
@@ -700,6 +704,19 @@ pub(crate) struct SearchParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RecentParams {
     pub space: PathBuf,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectsParams {
+    pub space: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectNotesParams {
+    pub space: PathBuf,
+    pub id: NodeId,
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
