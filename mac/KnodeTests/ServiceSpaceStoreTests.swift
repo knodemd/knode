@@ -103,6 +103,19 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let hits = try await store.search("plan", in: space.id)
         #expect(hits.first?.excerpt == "Plan")
 
+        // Projects and the notes of one, with their first line.
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "Org", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 0, "projects": 1],
+            ["node": ["id": "P2", "kind": "project", "title": "app", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "parent": "P1", "notes": 1, "projects": 0],
+        ], notes: ["P2": [node.id]], in: path)
+        let projects = try await store.projects(in: space.id)
+        #expect(projects.map(\.title) == ["Org", "app"])
+        #expect(projects.last?.parent == "P1")
+        #expect(projects.last?.notes == 1)
+        let notes = try await store.projectNotes("P2", in: space.id)
+        #expect(notes.map(\.title) == ["Plan"])
+        #expect(notes.first?.excerpt == "Ship it.")
+
         await #expect(throws: SpaceStoreError.nodeNotFound("01NOPE")) {
             _ = try await store.node("01NOPE", in: space.id)
         }
@@ -418,6 +431,26 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         await folders.setCaptureEnabled(true)
         #expect(folders.captureEnabled)
         #expect(service.settings(of: path)["capture.enabled"] == nil)
+    }
+
+    @MainActor
+    @Test func theSidebarListsProjectsAndOpensOne() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
+        await model.openSpace(at: url)
+        let id = service.agentCreatesNode(in: path, title: "Estado", body: "Deployed.")
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "taskbot", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 1, "projects": 0],
+        ], notes: ["P1": [id]], in: path)
+        await model.reload()
+        // Through the app's store, as the window uses it, not the service store directly.
+        #expect(model.projects.map(\.title) == ["taskbot"])
+        #expect(model.showsProjects)
+        await model.selectProject("P1")
+        #expect(model.selectedProject?.title == "taskbot")
+        #expect(model.projectNotes.map(\.title) == ["Estado"])
+        model.listMode = .recent
+        #expect(!model.showsProjects)
     }
 
     @MainActor
