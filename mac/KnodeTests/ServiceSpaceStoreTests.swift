@@ -420,6 +420,21 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(service.settings(of: path)["capture.enabled"] == nil)
     }
 
+    @Test func whatAnAgentReadsArrivesAsActivity() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let changes = store.changes()
+        service.agentReads(["N1", "N2"], in: path)
+        var seen: SpaceChange?
+        for await change in changes where change.kind == .activity {
+            seen = change
+            break
+        }
+        #expect(seen?.space == space.id)
+        #expect(seen?.nodes == ["N1", "N2"])
+        #expect(seen?.author == Author(kind: .agent, name: "codex"))
+    }
+
     @MainActor
     @Test func theListFollowsAnAgentsWrites() async throws {
         let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")

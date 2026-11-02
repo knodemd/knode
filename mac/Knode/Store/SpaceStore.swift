@@ -108,6 +108,8 @@ public struct SpaceChange: Sendable, Hashable {
         /// A graph view or a canvas was created, changed or removed, or nodes or groups were
         /// placed on it.
         case views
+        /// An agent read `nodes`: nothing changed, the person can watch what it looks at.
+        case activity
     }
 
     public var space: Space.ID
@@ -119,12 +121,15 @@ public struct SpaceChange: Sendable, Hashable {
     public var version: String?
     /// Who made the change, when the store knows.
     public var author: Author?
+    /// For `activity`: the nodes the agent read.
+    public var nodes: [Node.ID] = []
 
-    public init(space: Space.ID, nodeID: Node.ID?, kind: Kind, version: String? = nil, author: Author? = nil) {
+    public init(space: Space.ID, nodeID: Node.ID?, kind: Kind, version: String? = nil, author: Author? = nil, nodes: [Node.ID] = []) {
         self.space = space
         self.nodeID = nodeID
         self.kind = kind
         self.version = version
         self.author = author
+        self.nodes = nodes
     }
 }

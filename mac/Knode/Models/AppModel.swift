@@ -794,6 +794,11 @@ final class AppModel {
             if let links { Task { await links.load() } }
             if let canvas { Task { await canvas.load() } }
             return
+        case .activity:
+            // Nothing changed: the graph shows what the agent is reading.
+            guard change.space == selectedSpaceID, let agent = change.author?.name else { return }
+            graph?.agentRead(change.nodes, by: agent)
+            return
         case .reload:
             await refreshSpace(change.space)
         case .create, .update, .delete, .link, .unlink:

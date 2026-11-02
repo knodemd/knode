@@ -324,6 +324,8 @@ pub(crate) enum Notice {
     Node(Change),
     /// A space was renamed, or its settings or folders changed: `space`.
     Space(SpaceEvent),
+    /// An agent read nodes: `activity`, to the person only.
+    Activity(Activity),
 }
 
 impl Notice {
@@ -331,6 +333,7 @@ impl Notice {
         match self {
             Notice::Node(change) => &change.space,
             Notice::Space(event) => &event.space,
+            Notice::Activity(activity) => &activity.space,
         }
     }
 }
@@ -578,6 +581,11 @@ impl State {
         self.index.changed(&change.space);
         // No receivers is not an error: nobody is subscribed.
         let _ = self.changes.send(Notice::Node(change));
+    }
+
+    /// Announces that an agent read nodes of a space, for the person watching.
+    pub(crate) fn notify_activity(&self, activity: Activity) {
+        let _ = self.changes.send(Notice::Activity(activity));
     }
 
     /// Announces that a space was renamed, or that its settings or folders changed. Capture
@@ -1253,6 +1261,10 @@ async fn subscribe(
                         if !lock_ignoring_poison(&filter).wants(notice.space()) {
                             continue;
                         }
+                        // What one agent reads is for the person, not for other agents.
+                        if agent.is_some() && matches!(notice, Notice::Activity(_)) {
+                            continue;
+                        }
                         // An agent hears only about the spaces it may see, checked on each
                         // change so a lower grant takes effect at once.
                         if let Some(agent) = &agent {
@@ -1279,6 +1291,7 @@ async fn subscribe(
                             }
                             Notice::Node(change) => notification(methods::CHANGED, change),
                             Notice::Space(event) => notification(methods::SPACE, event),
+                            Notice::Activity(activity) => notification(methods::ACTIVITY, activity),
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(missed)) => {

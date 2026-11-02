@@ -310,6 +310,17 @@ public actor ServiceSpaceStore: CoeditingStore {
             default: kind = .reload
             }
             broadcast.yield(SpaceChange(space: space, nodeID: nil, kind: kind))
+        case "activity":
+            guard let activity = try? notification.params(as: WireActivity.self),
+                  let space = spaces.first(where: { $0.value.path == activity.space })?.key
+            else { return }
+            broadcast.yield(SpaceChange(
+                space: space,
+                nodeID: activity.nodes.first,
+                kind: .activity,
+                author: Author(kind: .agent, name: activity.agent),
+                nodes: activity.nodes
+            ))
         case "lagged":
             for id in spaces.keys { broadcast.yield(SpaceChange(space: id, nodeID: nil, kind: .reload)) }
         default:
@@ -485,6 +496,14 @@ extension SpaceFolder {
             isMissing: object["missing"] as? Bool ?? false
         )
     }
+}
+
+/// An agent read nodes: the params of an `activity` notification.
+struct WireActivity: Decodable, Sendable {
+    var space: String
+    var agent: String
+    var method: String
+    var nodes: [String]
 }
 
 struct Changed: Decodable, Sendable {
