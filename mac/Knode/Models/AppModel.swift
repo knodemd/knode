@@ -4,6 +4,8 @@ import Observation
 /// A sheet over the main window.
 enum SpaceSheet: Identifiable, Hashable {
     case newSpace
+    case onboarding
+    case onboardingReview(URL)
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -543,6 +545,20 @@ final class AppModel {
         guard let space = selectedSpaceID else { return }
         do {
             let all = try await store(for: space).listNodes(in: space)
+            if let exact = all.first(where: { $0.id == title }) {
+                await openNode(exact.id)
+                return
+            }
+            if let url = selectedSpace?.url, let from = editor?.nodeID,
+               FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+                struct Resolved: Decodable { var node_id: String? }
+                let command = KnodeCommand(executable: Bundle.main.bundleURL.appending(path: "Contents/Helpers/knode"))
+                let text = try await command.run(["onboard", "resolve-link", "--target", url.path(percentEncoded: false), "--from", from, "--reference", title])
+                if let id = try JSONDecoder().decode(Resolved.self, from: Data(text.utf8)).node_id {
+                    await openNode(id)
+                    return
+                }
+            }
             if let match = all.first(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
                 await openNode(match.id)
             }

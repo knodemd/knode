@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::space::{
     add_change_with_detail, next_ulid, node_id, provenance, provenance_id, read_node,
-    refresh_body_links, resolve,
+    refresh_body_links, resolve, resolve_path,
 };
 use crate::types::ActorKind;
 use crate::{BLOBS_DIR, Error, NodeId, NodeSummary, Provenance, Result, Space, Timestamp, actions};
@@ -610,6 +610,14 @@ impl Space {
             if let Some((target, _)) = destination.split_once('#') {
                 found = resolve(&self.conn, target.trim())?;
             }
+        }
+        if found.is_none() {
+            found = resolve_path(&self.conn, destination)?;
+        }
+        if found.is_none()
+            && let Some((target, _)) = destination.split_once('#')
+        {
+            found = resolve_path(&self.conn, target.trim())?;
         }
         let Some(id) = found else {
             return Ok(None);
