@@ -95,7 +95,7 @@ struct OnboardingSheet: View {
                         Spacer()
                         KButton("Open imported space", icon: .folder, kind: .primary) {
                             Task {
-                                let url = URL(filePath: result.destination)
+                                let url = URL(filePath: result.destination, directoryHint: .isDirectory)
                                 await model.openSpace(at: url)
                                 if model.defaultSpaceURL == nil { model.setDefaultSpace(url) }
                                 model.sheet = nil
@@ -321,11 +321,11 @@ struct OnboardingSheet: View {
     private func archiveCopy() async {
         guard let result else { return }
         await perform {
-            let target = URL(filePath: result.destination)
+            let target = URL(filePath: result.destination, directoryHint: .isDirectory)
             await model.removeFromList(target, forget: true)
             let text = try await command.run(["onboard", "archive", "--target", result.destination])
             let decoded = try JSONDecoder().decode([String: String].self, from: Data(text.utf8))
-            if let path = decoded["archived"] { archive = URL(filePath: path) }
+            if let path = decoded["archived"] { archive = URL(filePath: path, directoryHint: .isDirectory) }
             recoveryNote = decoded["codex_configuration"]
             self.result = nil; connected = false; confirmArchive = false; step = 0
         }
