@@ -16,6 +16,7 @@ struct ContentView: View {
     @AppStorage("sidebarCollapsed") private var collapsed = false
     @State private var level: SidebarLevel = .spaces
     @State private var overlays = KOverlays()
+    @AppStorage("didOfferGuidedOnboarding") private var didOfferGuidedOnboarding = false
 
     var body: some View {
         @Bindable var model = model
@@ -51,6 +52,8 @@ struct ContentView: View {
             switch sheet {
             case .access(let url): SpaceAccessSheet(url: url)
             case .folders(let url): SpaceFoldersSheet(url: url)
+            case .onboarding: OnboardingSheet()
+            case .onboardingReview(let url): OnboardingSheet(existing: url)
             default: EmptyView()
             }
         }
@@ -73,6 +76,12 @@ struct ContentView: View {
             }
         }
         .kOverlayHost(overlays)
+        .task {
+            if !didOfferGuidedOnboarding, model.sheet == nil {
+                didOfferGuidedOnboarding = true
+                model.sheet = .onboarding
+            }
+        }
     }
 
     private func toggleSidebar() {
@@ -97,7 +106,7 @@ extension AppModel {
 extension SpaceSheet {
     fileprivate var isPanel: Bool {
         switch self {
-        case .access, .folders: true
+        case .access, .folders, .onboarding, .onboardingReview: true
         case .newSpace, .rename, .icon: false
         }
     }
@@ -296,6 +305,7 @@ private struct SpacesSidebar: View {
                 if model.isShowingExample {
                     ExampleNotice().padding(.bottom, KSpace.x2)
                 }
+                KButton("Import projects", icon: .folder, kind: .ghost, size: .small) { model.sheet = .onboarding }
                 KButton("New space", icon: .add, kind: .ghost, size: .small) { model.sheet = .newSpace }
                 KButton("Open space", icon: .folder, kind: .ghost, size: .small) {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
@@ -370,6 +380,9 @@ func spaceMenuEntries(_ item: SpaceItem, model: AppModel) -> [KMenuEntry] {
         entries.append(.divider)
         entries.append(.action("Agent access", icon: .`private`, isEnabled: !item.isMissing) { model.sheet = .access(item.url) })
         entries.append(.action("Folders and capture", icon: .folder, isEnabled: !item.isMissing) { model.sheet = .folders(item.url) })
+        if FileManager.default.fileExists(atPath: item.url.appending(path: "onboarding.json").path(percentEncoded: false)) {
+            entries.append(.action("Review import / archive", icon: .folder) { model.sheet = .onboardingReview(item.url) })
+        }
         if item.isDefault {
             entries.append(.action("Stop using for agents and capture", icon: .pin) { model.setDefaultSpace(nil) })
         } else {
@@ -648,7 +661,7 @@ struct WelcomeView: View {
                 KButton("Open space", icon: .folder, kind: .primary, size: .large) {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
                 }
-                KButton("New space", icon: .add, size: .large) { model.sheet = .newSpace }
+                KButton("Get started", icon: .add, size: .large) { model.sheet = .onboarding }
                 KButton("Try the example space", icon: .knode, kind: .ghost, size: .large) {
                     Task { await model.openExampleSpace() }
                 }

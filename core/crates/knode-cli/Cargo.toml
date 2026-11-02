@@ -29,6 +29,7 @@ knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }
 knode-mcp = { path = "../knode-mcp", version = "=0.0.0" }
 knode-service = { path = "../knode-service", version = "=0.0.0", default-features = false }
 knode-vault = { path = "../knode-vault", version = "=0.0.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 toml_edit = "=0.25.17"
 

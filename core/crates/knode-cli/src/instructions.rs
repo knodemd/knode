@@ -113,7 +113,7 @@ fn create_unique(path: &Path, suffix: &str) -> Result<(PathBuf, fs::File)> {
     bail!("no free backup/staging filename next to {}", path.display())
 }
 
-fn save(path: &Path, original: Option<&str>, updated: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn save(path: &Path, original: Option<&str>, updated: &str) -> Result<Option<PathBuf>> {
     if read(path)?.as_deref() != original {
         bail!("instructions changed since preview; retry");
     }

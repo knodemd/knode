@@ -4,6 +4,8 @@ import Observation
 /// A sheet over the main window.
 enum SpaceSheet: Identifiable, Hashable {
     case newSpace
+    case onboarding
+    case onboardingReview(URL)
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -331,7 +333,7 @@ final class AppModel {
     /// The open space at a sidebar URL.
     func space(at url: URL) -> Space? {
         if url == SpacePanels.exampleURL { return spaces.first { exampleSpaceIDs.contains($0.id) } }
-        return spaces.first { $0.url?.standardizedFileURL == url.standardizedFileURL && !exampleSpaceIDs.contains($0.id) }
+        return spaces.first { $0.url?.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) && !exampleSpaceIDs.contains($0.id) }
     }
 
     /// Renames a space: its name in `manifest.json`. The package keeps its file name.
@@ -382,7 +384,19 @@ final class AppModel {
             }
         }
         spaceLibrary?.remove(url)
-        library.removeAll { $0.url == url.standardizedFileURL }
+        library.removeAll { $0.url.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) }
+    }
+
+    /// Close the imported package before moving it, regardless of a caller's URL directory hint.
+    /// Recent bookmarks are removed before the move so they cannot resurrect an archived copy.
+    func prepareToArchiveImport(_ url: URL) async throws {
+        let target = URL(filePath: url.path(percentEncoded: false), directoryHint: .isDirectory).standardizedFileURL
+        await removeFromList(target, forget: true)
+        guard space(at: target) == nil else {
+            throw SpaceStoreError.invalid("The imported space could not be closed. It has not been archived.")
+        }
+        recentSpaces?.remove(target)
+        recentSpaceURLs = recentSpaces?.urls ?? []
     }
 
     /// Makes a space the default for agents and capture (`default_space` in `config.toml`), or
@@ -543,6 +557,20 @@ final class AppModel {
         guard let space = selectedSpaceID else { return }
         do {
             let all = try await store(for: space).listNodes(in: space)
+            if let exact = all.first(where: { $0.id == title }) {
+                await openNode(exact.id)
+                return
+            }
+            if let url = selectedSpace?.url, let from = editor?.nodeID,
+               FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+                struct Resolved: Decodable { var node_id: String? }
+                let command = KnodeCommand(executable: Bundle.main.bundleURL.appending(path: "Contents/Helpers/knode"))
+                let text = try await command.run(["onboard", "resolve-link", "--target", url.path(percentEncoded: false), "--from", from, "--reference", title])
+                if let id = try JSONDecoder().decode(Resolved.self, from: Data(text.utf8)).node_id {
+                    await openNode(id)
+                    return
+                }
+            }
             if let match = all.first(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
                 await openNode(match.id)
             }

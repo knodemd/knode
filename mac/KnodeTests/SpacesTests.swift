@@ -31,6 +31,18 @@ import Testing
         )
     }
 
+    @Test func preparingAnImportArchiveNormalizesItsURLAndKeepsOtherSpaces() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Trial", in: folder)
+        let trial = try #require(model.selectedSpace?.url)
+        await model.createSpace(named: "Keep", in: folder)
+        let fromReceipt = URL(filePath: trial.path(percentEncoded: false), directoryHint: .notDirectory)
+        try await model.prepareToArchiveImport(fromReceipt)
+        #expect(model.space(at: trial) == nil)
+        #expect(model.sidebarSpaces.map(\.name) == ["Keep"])
+        #expect(model.selectedSpace?.name == "Keep")
+    }
+
     @Test func projectSetupIsOptionalAndUsesTheNewSpace() async throws {
         let model = makeModel()
         await model.createSpace(named: "Work", in: folder, setupProjects: true)

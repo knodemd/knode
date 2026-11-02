@@ -432,7 +432,7 @@ fn claude_desktop_config() -> Result<PathBuf> {
     Ok(dir.join("claude_desktop_config.json"))
 }
 
-fn codex_config() -> Result<PathBuf> {
+pub(crate) fn codex_config() -> Result<PathBuf> {
     let dir = match std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => home()?.join(".codex"),

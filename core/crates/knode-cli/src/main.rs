@@ -8,6 +8,7 @@ mod index;
 mod instructions;
 mod maps;
 mod markdown;
+mod onboard;
 mod readwise;
 mod service;
 mod spaces;
@@ -36,6 +37,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Guided, reviewable imports into a new space, and recoverable archives.
+    Onboard {
+        #[command(subcommand)]
+        action: onboard::Action,
+    },
     /// Preview, install or remove Knode memory guidance in a project.
     Instructions(instructions::Options),
     /// Create a space, a <name>.knode file, in ~/Knode or --dir.
@@ -398,6 +404,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Service { action } => service::run(&paths, action),
         Command::Instructions(options) => instructions::run(options),
+        Command::Onboard { action } => onboard::run(&paths, action),
     }
 }
 

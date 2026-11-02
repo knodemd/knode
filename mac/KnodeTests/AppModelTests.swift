@@ -100,6 +100,14 @@ import Testing
         #expect(model.editor?.nodeID == model.nodes.first?.id)
     }
 
+    @Test func followsStableSourceLinksByIdentity() async throws {
+        let model = makeModel()
+        await model.openSpace(at: url)
+        let target = try #require(model.nodes.last)
+        await model.openLinkedNode(titled: target.id)
+        #expect(model.editor?.nodeID == target.id)
+    }
+
     @Test func followsWikiLinksByTitle() async throws {
         let model = makeModel()
         await model.openSpace(at: url)
