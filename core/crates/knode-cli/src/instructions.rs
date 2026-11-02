@@ -46,7 +46,10 @@ pub fn run(options: Options) -> Result<()> {
     let updated = knode_config::workflow::edit(original.as_deref().unwrap_or(""), options.remove)?;
     println!("Project instructions: {}", path.display());
     println!("This does not connect an agent, change its space or permissions, or enable capture.");
-    if matches!(options.agent, Agent::Codex) && project.join("AGENTS.override.md").exists() {
+    if !options.remove
+        && matches!(options.agent, Agent::Codex)
+        && project.join("AGENTS.override.md").exists()
+    {
         bail!(
             "AGENTS.override.md takes precedence here; resolve it before installing AGENTS.md guidance"
         );
