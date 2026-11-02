@@ -56,4 +56,27 @@ import Testing
         #expect(String(rendered.characters) == "Some bold and Note")
         #expect(rendered.runs.contains { $0.link?.scheme == "knode" })
     }
+
+    @Test func readsAReadmeWithABannerAndATable() {
+        let markdown = """
+        <p align="center">
+        <img src="https://example.com/banner.png" alt="Knode web" width="100%">
+        </p>
+
+        The site.
+        | Path | What |
+        |---|:--|
+        | `src/pages/` | The pages \\| and more |
+        | `public/` |
+        """
+        #expect(MarkdownBlock.parse(markdown) == [
+            .image(alt: "Knode web", source: "https://example.com/banner.png"),
+            .paragraph("The site."),
+            .table(header: ["Path", "What"], rows: [["`src/pages/`", "The pages | and more"], ["`public/`", ""]]),
+        ])
+    }
+
+    @Test func linesThatOnlyLookLikeATableStayText() {
+        #expect(MarkdownBlock.parse("| not a table\nstill text") == [.paragraph("| not a table still text")])
+    }
 }

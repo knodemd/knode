@@ -15,14 +15,28 @@ enum MarkdownBlock: Equatable {
     /// `![[name]]` on a line of its own: an attachment of the note shown where it is written,
     /// such as an image or a PDF.
     case embed(String)
+    /// A GitHub table: its header cells and its rows, inline Markdown in each cell.
+    case table(header: [String], rows: [[String]])
+    /// An HTML `<img>` on a line of its own, such as a README banner: its description and
+    /// address. The preview never loads it from the network; it shows a link to it.
+    case image(alt: String, source: String)
 
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
         var paragraph: [String] = []
         var quote: [String] = []
         var fence: (language: String?, lines: [String])?
+        var table: [String] = []
 
         func flush() {
+            if !table.isEmpty {
+                if let parsed = Self.table(table) {
+                    blocks.append(parsed)
+                } else {
+                    paragraph = table + paragraph
+                }
+                table = []
+            }
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
             if !quote.isEmpty { blocks.append(.quote(quote.joined(separator: " "))) }
             paragraph = []
@@ -43,6 +57,17 @@ enum MarkdownBlock: Equatable {
                 continue
             }
 
+            if line.hasPrefix("|") {
+                // A table may interrupt a paragraph, as on GitHub.
+                if table.isEmpty { flush() }
+                table.append(line)
+                continue
+            } else if !table.isEmpty {
+                // Not a table after all: its lines are text the next line may continue.
+                if let parsed = Self.table(table) { blocks.append(parsed) } else { paragraph += table }
+                table = []
+            }
+
             if line.hasPrefix("```") {
                 flush()
                 let language = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
@@ -55,6 +80,12 @@ enum MarkdownBlock: Equatable {
             } else if let names = embeds(line) {
                 flush()
                 blocks += names.map(MarkdownBlock.embed)
+            } else if line.hasPrefix("<"), let html = html(line) {
+                flush()
+                blocks += html
+            } else if line.hasPrefix("<"), Self.tagsOnly(line) {
+                // A line of HTML tags alone, such as `<p align="center">` or `</div>`: nothing to show.
+                flush()
             } else if line == "---" || line == "***" || line == "___" {
                 flush()
                 blocks.append(.rule)
@@ -104,6 +135,82 @@ enum MarkdownBlock: Equatable {
             rest = rest[close.upperBound...]
         }
         return names.isEmpty ? nil : names
+    }
+
+    /// A table from its lines, when the second is a delimiter row such as `|---|:--:|`.
+    static func table(_ lines: [String]) -> MarkdownBlock? {
+        guard lines.count >= 2 else { return nil }
+        let delimiter = cells(lines[1])
+        guard !delimiter.isEmpty, delimiter.allSatisfy({ cell in
+            !cell.isEmpty && cell.allSatisfy { "-:".contains($0) } && cell.contains("-")
+        }) else { return nil }
+        let header = cells(lines[0])
+        let rows = lines.dropFirst(2).map { row in
+            let values = cells(row)
+            return (0..<header.count).map { $0 < values.count ? values[$0] : "" }
+        }
+        return .table(header: header, rows: rows)
+    }
+
+    /// The cells of a table row, trimmed; `\|` stays in the cell as `|`.
+    static func cells(_ line: String) -> [String] {
+        var row = line.trimmingCharacters(in: .whitespaces)
+        if row.hasPrefix("|") { row.removeFirst() }
+        if row.hasSuffix("|"), !row.hasSuffix("\\|") { row.removeLast() }
+        var cells: [String] = []
+        var cell = ""
+        var escaped = false
+        for character in row {
+            if escaped {
+                cell.append(character == "|" ? "|" : "\\\(character)")
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "|" {
+                cells.append(cell.trimmingCharacters(in: .whitespaces))
+                cell = ""
+            } else {
+                cell.append(character)
+            }
+        }
+        if escaped { cell.append("\\") }
+        cells.append(cell.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// The `<img>` tags of a line of HTML, or nil when it has none.
+    static func html(_ line: String) -> [MarkdownBlock]? {
+        var images: [MarkdownBlock] = []
+        var rest = Substring(line)
+        while let open = rest.range(of: "<img", options: .caseInsensitive) {
+            guard let close = rest[open.upperBound...].range(of: ">") else { break }
+            let tag = rest[open.lowerBound..<close.upperBound]
+            if let source = attribute("src", in: tag) {
+                images.append(.image(alt: attribute("alt", in: tag) ?? "", source: source))
+            }
+            rest = rest[close.upperBound...]
+        }
+        return images.isEmpty ? nil : images
+    }
+
+    /// Whether a line is made only of HTML tags, with no text between them.
+    static func tagsOnly(_ line: String) -> Bool {
+        var text = ""
+        var inside = false
+        for character in line {
+            if character == "<" { inside = true } else if character == ">" { inside = false } else if !inside { text.append(character) }
+        }
+        return text.trimmingCharacters(in: .whitespaces).isEmpty && line.contains(">")
+    }
+
+    private static func attribute(_ name: String, in tag: Substring) -> String? {
+        for quote in ["\"", "'"] {
+            if let start = tag.range(of: "\(name)=\(quote)", options: .caseInsensitive),
+               let end = tag[start.upperBound...].range(of: quote) {
+                return String(tag[start.upperBound..<end.lowerBound])
+            }
+        }
+        return nil
     }
 
     private static func bullet(_ line: String) -> MarkdownBlock? {
