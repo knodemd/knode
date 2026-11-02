@@ -235,3 +235,33 @@ fn readwise_api_reads_the_token_from_the_credential_store() {
     assert!(out.contains("Forgot"), "{out}");
     assert!(!kept.exists());
 }
+
+#[test]
+fn preview_needs_no_destination_and_keeps_an_existing_space_unchanged() {
+    let sb = Sandbox::new();
+    let folder = sb.path("pilot-vault");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("Plan.md"), "Review [[Missing]].").unwrap();
+    let out = sb.ok(&["import", s(&folder), "--preview", "--json"]);
+    let report: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(report["simulation_only"], true);
+    assert_eq!(report["notes"][0]["unresolved"][0], "Missing");
+    sb.ok(&["init", "work"]);
+    let before = knode_format::Space::open(sb.space("work"))
+        .unwrap()
+        .node_count()
+        .unwrap();
+    let out = sb.ok(&["import", s(&folder), "--preview"]);
+    assert!(out.contains("source and destination unchanged"), "{out}");
+    assert_eq!(
+        knode_format::Space::open(sb.space("work"))
+            .unwrap()
+            .node_count()
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        fs::read_to_string(folder.join("Plan.md")).unwrap(),
+        "Review [[Missing]]."
+    );
+}
