@@ -182,11 +182,18 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
             if was_default || config.spaces.len() != previous_count {
                 config.save(paths)?;
             }
-            knode_service::stop_service(
+            let was_running = knode_service::stop_service(
                 paths.service_socket(),
                 std::time::Duration::from_secs(10),
-            )?;
-            let archived = onboarding::archive(&target)?;
+            )?
+            .is_some();
+            let archived = onboarding::archive(&target);
+            // The service was stopped only so the package could move: start it again, whatever
+            // happened to the archive, so the app and agents keep working.
+            if was_running {
+                crate::service::connect().context("Knode Service could not start again")?;
+            }
+            let archived = archived?;
             let recovery = restore_connection(paths, &receipt.space_id).unwrap_or("Copy archived, but Codex configuration recovery needs review. Reconnect your preferred space in Settings.");
             println!(
                 "{}",

@@ -62,9 +62,16 @@ fn guided_import_recovers_sources_copy_and_previous_codex_configuration() {
         target.to_str().unwrap(),
     ]);
 
+    // Knode Service runs before archiving: it is stopped to move the package, then started again.
+    sb.ok(&["service", "start"]);
     let raw = sb.ok(&["onboard", "archive", "--target", target.to_str().unwrap()]);
     let archived: Value = serde_json::from_str(&raw).unwrap();
     assert!(!target.exists());
+    assert!(
+        sb.ok(&["service", "status"]).contains("is running"),
+        "Knode Service did not start again after archiving"
+    );
+    sb.ok(&["service", "stop"]);
     assert!(std::path::Path::new(archived["archived"].as_str().unwrap()).exists());
     assert_eq!(
         fs::read_to_string(config).unwrap(),
