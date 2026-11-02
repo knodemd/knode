@@ -24,6 +24,10 @@ pub enum Action {
         destination: PathBuf,
         #[arg(long)]
         name: String,
+        /// Also bring the agent conversations (Claude Code, Codex and the other agents Knode
+        /// reads) held inside the source's project folders, each part of its project.
+        #[arg(long)]
+        sessions: bool,
     },
     /// Resolve a native note link through the core (ids, titles, imported paths and headings).
     ResolveLink {
@@ -67,6 +71,7 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
             plan,
             destination,
             name,
+            sessions,
         } => {
             let plan: Plan = serde_json::from_slice(&std::fs::read(plan)?)?;
             let receipt = onboarding::apply(
@@ -75,7 +80,12 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
                 &name,
                 &crate::person(),
             )?;
-            println!("{}", serde_json::to_string(&receipt)?);
+            let mut out = serde_json::to_value(&receipt)?;
+            if sessions {
+                let conversations = bring_sessions(&plan, &receipt, None)?;
+                out["conversations"] = serde_json::json!(conversations);
+            }
+            println!("{}", serde_json::to_string(&out)?);
         }
         Action::ResolveLink {
             target,
@@ -248,4 +258,186 @@ fn restore_connection(paths: &Paths, id: &str) -> Result<&'static str> {
         recovery.before.as_deref().unwrap_or(""),
     )?;
     Ok("Previous Codex configuration restored. Start a fresh Codex session.")
+}
+
+/// Brings into a new onboarding space the agent conversations held inside the source's project
+/// folders, each `part-of` the project whose folder is nearest, and returns how many. Others are
+/// left out. A capture state of its own, thrown away, keeps Knode Service's capture untouched.
+/// `roots` replaces where agents keep their sessions, for tests.
+pub(crate) fn bring_sessions(
+    plan: &Plan,
+    receipt: &onboarding::Receipt,
+    roots: Option<Vec<(knode_ingest::Agent, PathBuf)>>,
+) -> Result<usize> {
+    use knode_format::{NodeId, Space, link_kinds};
+    use knode_ingest::{Capture, CaptureError, Destinations};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    let Some(source) = &plan.source else {
+        return Ok(0);
+    };
+    // Each project's folder, deepest first so the nearest one wins.
+    let mut folders: Vec<(PathBuf, String)> = plan
+        .groups
+        .iter()
+        .filter(|g| g.id != "shared")
+        .map(|g| {
+            let folder = if g.id == "project" {
+                source.clone()
+            } else {
+                source.join(&g.id)
+            };
+            (folder, g.name.clone())
+        })
+        .collect();
+    folders.sort_by_key(|(folder, _)| std::cmp::Reverse(folder.components().count()));
+
+    struct Route<'a> {
+        folders: &'a [(PathBuf, String)],
+        key: String,
+        space: RefCell<Space>,
+        projects: RefCell<HashMap<PathBuf, String>>,
+    }
+    impl Destinations for Route<'_> {
+        fn routing(&self) -> String {
+            self.key.clone()
+        }
+        fn route(&self, conversation: &knode_ingest::Conversation, file: &Path) -> Vec<String> {
+            let Some(cwd) = conversation.project.as_deref() else {
+                return Vec::new();
+            };
+            let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+            match self
+                .folders
+                .iter()
+                .find(|(folder, _)| cwd.starts_with(folder))
+            {
+                Some((_, project)) => {
+                    self.projects
+                        .borrow_mut()
+                        .insert(file.to_path_buf(), project.clone());
+                    vec![self.key.clone()]
+                }
+                None => Vec::new(),
+            }
+        }
+        fn with_space(
+            &self,
+            _key: &str,
+            write: &mut dyn FnMut(&mut Space) -> Result<(), CaptureError>,
+        ) -> Result<(), CaptureError> {
+            write(&mut self.space.borrow_mut())
+        }
+    }
+
+    let space = Space::open(&receipt.destination)?;
+    let route = Route {
+        folders: &folders,
+        key: space.manifest().id.clone(),
+        space: RefCell::new(space),
+        projects: RefCell::new(HashMap::new()),
+    };
+    let state = std::env::temp_dir().join(format!(
+        "knode-onboard-capture-{}-{}",
+        std::process::id(),
+        receipt.space_id
+    ));
+    std::fs::create_dir_all(&state)?;
+    let mut capture = Capture::open(state.join("capture.json"))?;
+    if let Some(roots) = roots {
+        capture = capture.with_roots(roots);
+    }
+    let report = capture.sync_all_to(&route);
+    let _ = std::fs::remove_dir_all(&state);
+    let report = report?;
+    let projects = route.projects.into_inner();
+    let mut space = route.space.into_inner();
+    let by = crate::person();
+    let mut brought = 0;
+    for captured in report.created() {
+        brought += 1;
+        let Some(project) = projects.get(&captured.path) else {
+            continue;
+        };
+        if let Some(id) = receipt
+            .contexts
+            .get(project)
+            .and_then(|id| NodeId::parse(id).ok())
+        {
+            space.link(&captured.node_id, &id, link_kinds::PART_OF, &by)?;
+        }
+    }
+    Ok(brought)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knode_format::{Space, link_kinds};
+
+    #[test]
+    fn conversations_held_in_a_project_folder_join_that_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("vault");
+        for project in ["alpha", "beta"] {
+            std::fs::create_dir_all(source.join(project)).unwrap();
+            std::fs::write(source.join(project).join("README.md"), "A project.").unwrap();
+        }
+        let source = source.canonicalize().unwrap();
+        let plan = onboarding::analyze(Some(&source), Mode::Vault).unwrap();
+        let receipt = onboarding::apply(
+            &plan,
+            &dir.path().canonicalize().unwrap().join("Work.knode"),
+            "Work",
+            &knode_format::Provenance::person("Tester"),
+        )
+        .unwrap();
+
+        // Two Claude Code sessions: one held in alpha, one somewhere else.
+        let fixture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../knode-ingest/tests/fixtures/claude/projects/-Users-example-project/0f8e2c1a-1111-4222-8333-444455556666.jsonl"
+        ))
+        .unwrap();
+        let roots = dir.path().join("claude/projects");
+        for (folder, cwd, id) in [
+            (
+                "in-alpha",
+                source.join("alpha/src"),
+                "0f8e2c1a-1111-4222-8333-444455556666",
+            ),
+            (
+                "elsewhere",
+                PathBuf::from("/Users/example/other"),
+                "1f8e2c1a-1111-4222-8333-444455556666",
+            ),
+        ] {
+            let text = fixture
+                .replace("/Users/example/project", cwd.to_str().unwrap())
+                .replace("0f8e2c1a-1111-4222-8333-444455556666", id);
+            std::fs::create_dir_all(roots.join(folder)).unwrap();
+            std::fs::write(roots.join(folder).join(format!("{id}.jsonl")), text).unwrap();
+        }
+        let brought = bring_sessions(
+            &plan,
+            &receipt,
+            Some(vec![(knode_ingest::Agent::ClaudeCode, roots.clone())]),
+        )
+        .unwrap();
+        assert_eq!(brought, 1);
+
+        let space = Space::open(&receipt.destination).unwrap();
+        let alpha = knode_format::NodeId::parse(&receipt.contexts["alpha"]).unwrap();
+        let conversations: Vec<_> = space
+            .backlinks(&alpha)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.kind == link_kinds::PART_OF)
+            .filter_map(|l| space.get_node(&l.from).unwrap())
+            .filter(|n| n.kind == knode_format::kinds::CONVERSATION)
+            .collect();
+        assert_eq!(conversations.len(), 1);
+    }
 }
