@@ -495,7 +495,7 @@ private struct SpaceSidebar: View {
 
             HStack(spacing: KSpace.x1) {
                 KSearchField(placeholder: "Search", text: $model.searchText, hint: [.command, .char("F")],
-                             focus: $searchFocused, onSubmit: enterList)
+                             focus: $searchFocused, onSubmit: { enterList() })
                     // Down from the search field goes on to the first result, as Return does.
                     .onKeyPress(.downArrow) { enterList() ? .handled : .ignored }
                 SearchModeButton()
