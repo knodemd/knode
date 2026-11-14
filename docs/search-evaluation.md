@@ -69,6 +69,47 @@ for any kind of query:
   do.
 - The queries were written by the same author as the notes, which tends to favour them.
 
+## Indexing a large space
+
+Indexing by meaning from nothing on a synthetic space, measured with
+[`examples/index-bench.rs`](../core/crates/knode-embed/examples/index-bench.rs) (#177): 3,000
+long notes in English and Spanish made up from fixed sentences, 816 words on average (median
+about 400), **24,916 chunks**. No real user data.
+
+```sh
+cd core
+cargo run -p knode-embed --release --features accelerate,metal --example index-bench
+cargo run -p knode-embed --release --features accelerate --example index-bench -- --notes 500
+```
+
+Measured on an Apple M4 Pro, model multilingual-e5-small. Memory is the peak physical
+footprint of the process (`/usr/bin/time -l`).
+
+| Build | Notes/s | Chunks/s | Time | Peak memory |
+|---|---|---|---|---|
+| CPU (Accelerate), before | 2.9 | 23.8 | 1,047 s | 2,693 MB |
+| CPU (Accelerate), after | 2.9 | 24.0 | 1,039 s | **792 MB** |
+| GPU (Metal), before | 6.7 | 55.3 | 451 s | 1,634 MB |
+| **GPU (Metal), after** | **8.3** | **69.2** | **360 s** | **692 MB** |
+
+Knode Service on a Mac runs the model on the GPU, and on the CPU when there is none.
+
+Tokens per batch on the first 100 notes of the same space, on the GPU:
+
+| Most tokens in a batch | Chunks/s | Peak memory |
+|---|---|---|
+| 256 | 68.1 | 626 MB |
+| **512** | **67.5** | **632 MB** |
+| 1,024 | 61.4 | 721 MB |
+| 2,048 | 57.3 | 848 MB |
+| 4,096 | 51.0 | 1,101 MB |
+
+On the CPU (first 15 notes), 512 and 4,096 tokens per batch take the same CPU time; 512 peaks
+at 805 MB against 1,214 MB. The tokenizer of the model holds about 330 MB of the memory left.
+
+Scores of `search-eval` are the same before and after, on the CPU and the GPU: MRR@10 0.811
+by meaning and 0.854 hybrid.
+
 ## A real space
 
 The same three modes on a real, private space, measured with
