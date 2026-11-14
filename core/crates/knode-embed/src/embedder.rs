@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{BertModel, Config};
+use candle_transformers::models::bert::Config;
 use tokenizers::{Tokenizer, TruncationParams};
 
+use crate::bert::Bert;
 use crate::chunk::Chunk;
 use crate::model::{Manifest, Pooling};
 use crate::{Error, Result};
@@ -20,7 +20,7 @@ const MAX_BATCH_TOKENS: usize = 4096;
 /// Vectors have unit length, so the dot product of two of them is their cosine similarity.
 pub struct Embedder {
     manifest: Manifest,
-    model: BertModel,
+    model: Bert,
     tokenizer: Tokenizer,
     device: Device,
 }
@@ -79,10 +79,7 @@ impl Embedder {
         if !weights.is_file() {
             return Err(invalid("model.safetensors is missing".into()));
         }
-        // SAFETY: the file is memory-mapped read-only while the weights are loaded; Knode never
-        // writes into a model folder once its manifest exists.
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, &device)? };
-        let model = BertModel::load(vb, &config)
+        let model = Bert::load(&weights, &config, &device)
             .map_err(|err| invalid(format!("model.safetensors: {err}")))?;
 
         Ok(Embedder {
@@ -188,42 +185,47 @@ impl Embedder {
 
         let mut out = vec![Vec::new(); encodings.len()];
         for batch in batches {
-            let longest = encodings[batch[batch.len() - 1]].len().max(1);
-            let mut ids = Vec::with_capacity(batch.len() * longest);
-            let mut mask = Vec::with_capacity(batch.len() * longest);
-            for &i in batch {
-                let encoding = &encodings[i];
-                ids.extend(encoding.get_ids());
-                mask.extend(encoding.get_attention_mask());
-                let pad = longest - encoding.len();
-                ids.extend(std::iter::repeat_n(0u32, pad));
-                mask.extend(std::iter::repeat_n(0u32, pad));
-            }
-            let shape = (batch.len(), longest);
-            let ids = Tensor::from_vec(ids, shape, &self.device)?;
-            let mask = Tensor::from_vec(mask, shape, &self.device)?;
-            let types = ids.zeros_like()?;
-            let hidden = self.model.forward(&ids, &types, Some(&mask))?;
-            let pooled = match self.manifest.pooling {
-                Pooling::Mean => {
-                    let mask = mask.to_dtype(DType::F32)?.unsqueeze(2)?;
-                    let summed = hidden.broadcast_mul(&mask)?.sum(1)?;
-                    let counts = mask.sum(1)?.clamp(1e-9, f64::MAX)?;
-                    summed.broadcast_div(&counts)?
-                }
-                Pooling::Cls => hidden.narrow(1, 0, 1)?.squeeze(1)?,
-            };
-            let norms = pooled
-                .sqr()?
-                .sum_keepdim(1)?
-                .sqrt()?
-                .clamp(1e-12, f64::MAX)?;
-            let normalized = pooled.broadcast_div(&norms)?;
-            for (&i, vector) in batch.iter().zip(normalized.to_vec2::<f32>()?) {
+            let vectors = self.forward_batch(batch.iter().map(|&i| &encodings[i]))?;
+            for (&i, vector) in batch.iter().zip(vectors) {
                 out[i] = vector;
             }
         }
         Ok(out)
+    }
+
+    /// Runs one batch of encodings, sorted by length, through the model.
+    fn forward_batch<'e>(
+        &self,
+        batch: impl ExactSizeIterator<Item = &'e tokenizers::Encoding> + Clone,
+    ) -> Result<Vec<Vec<f32>>> {
+        let count = batch.len();
+        let longest = batch.clone().map(|e| e.len()).max().unwrap_or(0).max(1);
+        let mut ids = Vec::with_capacity(count * longest);
+        let mut mask = Vec::with_capacity(count * longest);
+        for encoding in batch {
+            ids.extend(encoding.get_ids());
+            mask.extend(encoding.get_attention_mask());
+            let pad = longest - encoding.len();
+            ids.extend(std::iter::repeat_n(0u32, pad));
+            mask.extend(std::iter::repeat_n(0u32, pad));
+        }
+        let hidden = self.model.forward(&ids, &mask, count, longest)?;
+        let mask = Tensor::from_vec(mask, (count, longest), &self.device)?;
+        let pooled = match self.manifest.pooling {
+            Pooling::Mean => {
+                let mask = mask.to_dtype(DType::F32)?.unsqueeze(2)?;
+                let summed = hidden.broadcast_mul(&mask)?.sum(1)?;
+                let counts = mask.sum(1)?.clamp(1e-9, f64::MAX)?;
+                summed.broadcast_div(&counts)?
+            }
+            Pooling::Cls => hidden.narrow(1, 0, 1)?.squeeze(1)?,
+        };
+        let norms = pooled
+            .sqr()?
+            .sum_keepdim(1)?
+            .sqrt()?
+            .clamp(1e-12, f64::MAX)?;
+        Ok(pooled.broadcast_div(&norms)?.to_vec2::<f32>()?)
     }
 }
 
@@ -280,6 +282,41 @@ mod tests {
             .remove(0);
         for (a, b) in alone.iter().zip(&batched) {
             assert!((a - b).abs() < 1e-5, "{alone:?} vs {batched:?}");
+        }
+    }
+
+    #[test]
+    fn vectors_match_candles_bert_model() {
+        use candle_nn::VarBuilder;
+        use candle_transformers::models::bert::{BertModel, Config};
+
+        let (dir, embedder) = tiny();
+        let config: Config =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+                .unwrap();
+        let weights = dir.path().join("model.safetensors");
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, &Device::Cpu).unwrap()
+        };
+        let reference = BertModel::load(vb, &config).unwrap();
+        let ids = [2u32, 14, 15, 4, 6, 8, 3, 0, 0];
+        let mask = [1u32, 1, 1, 1, 1, 1, 1, 0, 0];
+        let ours = embedder.model.forward(&ids, &mask, 1, ids.len()).unwrap();
+        let ids = Tensor::new(&ids[..], &Device::Cpu)
+            .unwrap()
+            .unsqueeze(0)
+            .unwrap();
+        let mask = Tensor::new(&mask[..], &Device::Cpu)
+            .unwrap()
+            .unsqueeze(0)
+            .unwrap();
+        let theirs = reference
+            .forward(&ids, &ids.zeros_like().unwrap(), Some(&mask))
+            .unwrap();
+        let ours = ours.to_device(&Device::Cpu).unwrap().flatten_all().unwrap();
+        let theirs = theirs.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        for (a, b) in ours.to_vec1::<f32>().unwrap().iter().zip(&theirs) {
+            assert!((a - b).abs() < 1e-4, "{a} vs {b}");
         }
     }
 
