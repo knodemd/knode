@@ -2078,6 +2078,7 @@ dependencies = [
  "chrono",
  "knode-format",
  "notify",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
