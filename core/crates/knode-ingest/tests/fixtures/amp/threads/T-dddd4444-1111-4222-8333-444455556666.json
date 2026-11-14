@@ -3,7 +3,7 @@
   "id": "T-dddd4444-1111-4222-8333-444455556666",
   "created": 1767358800000,
   "title": "Rename the config module",
-  "env": {"initial": {"trees": [{"displayName": "project", "uri": "file:///Users/example/my%20project"}]}},
+  "env": {"initial": {"trees": [{"displayName": "project", "uri": "file:///Users/example/my%20project", "repository": {"type": "git", "url": "https://example.com/project.git", "ref": "refs/heads/rename-config", "sha": "0000000000000000000000000000000000000000"}}]}},
   "messages": [
     {"role": "user", "messageId": 0, "content": [{"type": "text", "text": "Rename config.rs to settings.rs"}], "meta": {"sentAt": 1767358801000}},
     {"role": "assistant", "messageId": 1, "content": [

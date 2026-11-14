@@ -218,6 +218,7 @@ fn reads_an_amp_thread() {
         conversation.project.as_deref(),
         Some(Path::new("/Users/example/my project"))
     );
+    assert_eq!(conversation.git_branch.as_deref(), Some("rename-config"));
     assert_eq!(conversation.title(), "Rename the config module");
     assert_eq!(conversation.model.as_deref(), Some("amp-example-model"));
     assert_eq!(
