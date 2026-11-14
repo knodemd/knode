@@ -1519,11 +1519,11 @@ mod tests {
                 .unwrap()
                 .id
         };
-        let org = project(&mut space, "laaabs");
-        let app = project(&mut space, "haaarness");
+        let org = project(&mut space, "acme");
+        let app = project(&mut space, "harbor");
         space.link(&app, &org, link_kinds::PART_OF, &by).unwrap();
         let note = space
-            .create_node(knode_format::NewNode::note("Estado", "Phase 0."), &by)
+            .create_node(knode_format::NewNode::note("Status", "Phase 0."), &by)
             .unwrap()
             .id;
         space.link(&note, &app, link_kinds::PART_OF, &by).unwrap();
@@ -1531,16 +1531,16 @@ mod tests {
 
         let out = run(&backend, "projects", json!({}));
         check_schema("projects", &out);
-        assert!(out.text.contains("- **laaabs**"), "{}", out.text);
-        assert!(out.text.contains("\n  - **haaarness**"), "{}", out.text);
+        assert!(out.text.contains("- **acme**"), "{}", out.text);
+        assert!(out.text.contains("\n  - **harbor**"), "{}", out.text);
         assert!(out.text.contains("1 note"), "{}", out.text);
 
-        let out = run(&backend, "projects", json!({ "project": "HAAARNESS" }));
+        let out = run(&backend, "projects", json!({ "project": "HARBOR" }));
         check_schema("projects", &out);
-        assert!(out.text.contains("Part of **laaabs**"), "{}", out.text);
-        assert!(out.text.contains("**Estado**"), "{}", out.text);
+        assert!(out.text.contains("Part of **acme**"), "{}", out.text);
+        assert!(out.text.contains("**Status**"), "{}", out.text);
         let structured = out.structured.unwrap();
-        assert_eq!(structured["notes"][0]["title"], "Estado");
+        assert_eq!(structured["notes"][0]["title"], "Status");
         assert_eq!(structured["project"]["parent"], org.to_string());
 
         let out = run(&backend, "projects", json!({ "project": "nothing" }));
