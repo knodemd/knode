@@ -85,8 +85,6 @@ struct SpacesSettingsView: View {
 struct SpaceFoldersForm: View {
     @Bindable var folders: SpaceFoldersModel
     @Environment(\.kOverlays) private var overlays
-    @State private var projectToAdd: URL?
-    @State private var showingProjectSetup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: KSpace.x6) {
@@ -102,8 +100,7 @@ struct SpaceFoldersForm: View {
             KSettingsSection("Folders") {
                 AddFolderMenu { kind, url, agent in
                     if kind == .project {
-                        projectToAdd = url
-                        showingProjectSetup = true
+                        confirmProject(at: url)
                     } else {
                         Task { await folders.addFolder(kind, at: url, agent: agent) }
                     }
@@ -111,7 +108,7 @@ struct SpaceFoldersForm: View {
                 .disabled(!folders.isLoaded || folders.isBusy)
             } content: {
                 if folders.isLoaded, folders.folders.isEmpty {
-                    KExplanation("Add a project folder to get started, then repeat for other projects. Importing notes and connecting an agent are separate steps.", size: 13)
+                    KExplanation("Add the folder where a project's files live, then repeat for your other projects. Importing notes and connecting an agent are separate steps.", size: 13)
                 }
                 ForEach(Array(folders.folders.enumerated()), id: \.element.id) { offset, folder in
                     if offset > 0 { KHairline() }
@@ -121,24 +118,20 @@ struct SpaceFoldersForm: View {
                 }
             }
 
-            KSettingsSection("Use this project with an agent") {
-                KExplanation("Check the agent's access in Settings > Agents. Adding a project does not connect an agent, change its MCP space, or import the folder's notes. Projects in this space share its access permissions.")
+            KSettingsSection("Use a project with an agent") {
+                KExplanation("Check the agent's access in Settings > Agents. Adding a project folder does not connect an agent, change the space it uses, or import the folder's notes. Every project in this space shares the space's access.")
                 KExplanation("After connecting, ask the agent to save a project decision in Knode. Start a fresh session and ask it to retrieve that decision and the next action. Keep build and execution rules in your repository instructions.")
             }
             if let error = folders.errorMessage {
                 KErrorText(error)
             }
         }
-        .sheet(isPresented: $showingProjectSetup) {
-            if let projectToAdd {
-                AddProjectSheet(url: projectToAdd, spaceName: folders.spaceName, spaceCaptureEnabled: folders.captureEnabled) { capture in
-                    showingProjectSetup = false
-                    Task { await folders.addFolder(.project, at: projectToAdd, capture: capture) }
-                } cancel: {
-                    showingProjectSetup = false
-                }
-            }
-        }
+    }
+
+    private func confirmProject(at url: URL) {
+        overlays?.addingProject = PendingProject(
+            url: url, spaceName: folders.spaceName, spaceCaptureEnabled: folders.captureEnabled
+        ) { [folders] capture in Task { await folders.addFolder(.project, at: url, capture: capture) } }
     }
 
     private func confirmRemove(_ folder: SpaceFolder) {
@@ -264,33 +257,42 @@ struct AddFolderMenu: View {
 }
 
 
-/// Confirms the capture choice before registering a project. No change occurs on cancellation.
-private struct AddProjectSheet: View {
+/// A project folder waiting for its capture choice before it is added.
+struct PendingProject {
     let url: URL
     let spaceName: String
     let spaceCaptureEnabled: Bool
     let add: (Bool) -> Void
-    let cancel: () -> Void
-    @State private var capture = false
+}
+
+/// Confirms a project folder and its capture choice before adding it. Cancelling adds nothing.
+struct AddProjectSheet: View {
+    let project: PendingProject
+    let close: () -> Void
+    /// On by default, as for every folder (specification, section 15); the person can turn it off.
+    @State private var capture = true
 
     var body: some View {
         KSheetSurface(width: 540) {
-            KSheetTitle(kicker: "Project setup", title: "Add to \(spaceName)", close: cancel)
-            Text(url.path(percentEncoded: false)).font(KFont.mono(12)).textSelection(.enabled)
-            KExplanation("This registers a project folder in this space. It does not move files or import your notes. Review existing folder mappings before adding overlapping projects.")
-            KToggle("Capture conversations from this project", isOn: $capture)
+            KSheetTitle(kicker: "Project folder", title: "Add to \(project.spaceName)", close: close)
+            Text(project.url.path(percentEncoded: false)).font(KFont.mono(12)).textSelection(.enabled)
+            KExplanation("The folder where this project's files live. Knode does not move its files or import its notes.")
+            KToggle("Capture conversations held in this folder", isOn: $capture)
             KExplanation(capture
-                ? "Conversations can be captured into spaces that list this project with capture on. Capture for the space and the service must also be enabled."
-                : "Conversations from this project will not be captured into any space. The agent can still save notes intentionally through MCP when it has write access.")
-            if !spaceCaptureEnabled {
-                KExplanation("Capture is off for \(spaceName). Adding this project does not enable it.")
+                ? "Conversations agents hold in this folder, or in any folder inside it, are captured into this space while capture is on for the space and for Knode Service."
+                : "Nothing agents say in this folder is captured, in any space. Agents can still save notes through MCP when they can write to this space.")
+            if !project.spaceCaptureEnabled {
+                KExplanation("Capture is off for \(project.spaceName). Adding this folder does not turn it on.")
             }
             HStack {
-                KButton("Cancel", action: cancel)
+                KButton("Cancel", kind: .secondary, action: close)
                 Spacer()
-                KButton("Add project", icon: .add) { add(capture) }
+                KButton("Add project folder", icon: .add, kind: .primary) {
+                    close()
+                    project.add(capture)
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
-        .knodeTheme()
     }
 }

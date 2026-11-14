@@ -61,6 +61,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
+  so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
+  use other words. Existing spaces rebuild their search index on opening (schema version 5).
 - **Obsidian links written as paths**: `[[Work/Projects/Plan]]`, `[[Projects/Plan.md]]` and other
   endings of a file's path now link to the note imported from that file, as in Obsidian, so
   vaults with several notes of the same name, such as a `README` in each folder, keep their
@@ -75,6 +78,9 @@ belongs to, newest first.
 
 #### Added
 
+- **Connected clients and spaces**: Knode Service tracks the last space successfully used by
+  each authenticated connection and removes it on disconnect. `knode service status` shows
+  those connections to the person; agents never receive the connection inventory.
 - **Several spaces**: the Mac app lists every space like Apple Music libraries, with an icon, and
   switches with Command-1 to 9 or from the menu bar without restarting Knode Service. Rename a
   space, give it an emoji icon or make it the default from the app or with `knode spaces rename`,

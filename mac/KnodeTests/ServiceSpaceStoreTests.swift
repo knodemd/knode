@@ -103,6 +103,19 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let hits = try await store.search("plan", in: space.id)
         #expect(hits.first?.excerpt == "Plan")
 
+        // Projects and the notes of one, with their first line.
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "Org", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 0, "projects": 1],
+            ["node": ["id": "P2", "kind": "project", "title": "app", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "parent": "P1", "notes": 1, "projects": 0],
+        ], notes: ["P2": [node.id]], in: path)
+        let projects = try await store.projects(in: space.id)
+        #expect(projects.map(\.title) == ["Org", "app"])
+        #expect(projects.last?.parent == "P1")
+        #expect(projects.last?.notes == 1)
+        let notes = try await store.projectNotes("P2", in: space.id)
+        #expect(notes.map(\.title) == ["Plan"])
+        #expect(notes.first?.excerpt == "Ship it.")
+
         await #expect(throws: SpaceStoreError.nodeNotFound("01NOPE")) {
             _ = try await store.node("01NOPE", in: space.id)
         }
@@ -420,6 +433,41 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(service.settings(of: path)["capture.enabled"] == nil)
     }
 
+    @Test func whatAnAgentReadsArrivesAsActivity() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let changes = store.changes()
+        service.agentReads(["N1", "N2"], in: path)
+        var seen: SpaceChange?
+        for await change in changes where change.kind == .activity {
+            seen = change
+            break
+        }
+        #expect(seen?.space == space.id)
+        #expect(seen?.nodes == ["N1", "N2"])
+        #expect(seen?.author == Author(kind: .agent, name: "codex"))
+    }
+
+    @MainActor
+    @Test func theSidebarListsProjectsAndOpensOne() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let model = AppModel(store: store, searchDelay: .zero, saveDelay: .seconds(60))
+        await model.openSpace(at: url)
+        let id = service.agentCreatesNode(in: path, title: "Status", body: "Deployed.")
+        service.setProjects([
+            ["node": ["id": "P1", "kind": "project", "title": "harbor", "created_at": 1, "updated_at": 1, "updated_by": ["kind": "person", "actor": "Ada"]], "notes": 1, "projects": 0],
+        ], notes: ["P1": [id]], in: path)
+        await model.reload()
+        // Through the app's store, as the window uses it, not the service store directly.
+        #expect(model.projects.map(\.title) == ["harbor"])
+        #expect(model.showsProjects)
+        await model.selectProject("P1")
+        #expect(model.selectedProject?.title == "harbor")
+        #expect(model.projectNotes.map(\.title) == ["Status"])
+        model.listMode = .recent
+        #expect(!model.showsProjects)
+    }
+
     @MainActor
     @Test func theListFollowsAnAgentsWrites() async throws {
         let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
@@ -434,5 +482,17 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(model.editor?.body == "First.")
         service.agentUpdatesNode(id, in: path, body: "Second.")
         #expect(try await eventually { model.editor?.body == "Second." })
+    }
+}
+
+/// A note imported from a file shows the folder it came from, to tell apart notes of the same name.
+@Suite struct ImportedFolderTests {
+    @Test func summariesFromTheServiceCarryTheFolder() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = #"[{"id":"a","title":"README","updated_at":1,"path":"app/widget/README.md"},{"id":"b","title":"Top","updated_at":1,"path":"Top.md"},{"id":"c","title":"Here","updated_at":1}]"#
+        let notes = try decoder.decode([WireSummary].self, from: Data(json.utf8)).map { NodeSummary($0, excerpt: "") }
+        #expect(notes.map(\.folder) == ["app/widget", nil, nil])
+        #expect(notes[0].path == "app/widget/README.md")
     }
 }
