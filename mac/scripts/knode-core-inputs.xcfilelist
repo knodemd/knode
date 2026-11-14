@@ -4,6 +4,7 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
+$(SRCROOT)/../core/crates/knode-config/src/workflow.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
@@ -32,6 +33,7 @@ $(SRCROOT)/../core/crates/knode-format/src/sql/0001-initial.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0002-properties.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0003-v02.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0004-v03.sql
+$(SRCROOT)/../core/crates/knode-format/src/sql/0005-search-path.sql
 $(SRCROOT)/../core/crates/knode-format/src/types.rs
 $(SRCROOT)/../core/crates/knode-format/src/vector.rs
 $(SRCROOT)/../core/crates/knode-format/src/views.rs
@@ -118,6 +120,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
 $(SRCROOT)/../core/crates/knode-vault/src/live.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
+$(SRCROOT)/../core/crates/knode-vault/src/preview.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/book.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/dates.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/document.rs
