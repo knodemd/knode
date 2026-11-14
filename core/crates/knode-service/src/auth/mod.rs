@@ -414,7 +414,56 @@ fn agent_call(
         by.insert("actor".into(), Value::String(agent.name.clone()));
     }
     log.record(Some(&agent.id), id, method, Outcome::Allowed);
-    call(state, method, raw)
+    let asked = raw.get("id").and_then(Value::as_str).map(str::to_owned);
+    let result = call(state, method, raw);
+    if needs == GrantLevel::Read
+        && let Ok(value) = &result
+    {
+        announce_reading(state, agent, method, &path, asked, value);
+    }
+    result
+}
+
+/// Tells the person which nodes an agent just read: the node it asked for by id, and the nodes a
+/// list or a search answered with.
+fn announce_reading(
+    state: &State,
+    agent: &AgentSession,
+    method: &str,
+    path: &Path,
+    asked: Option<String>,
+    value: &Value,
+) {
+    let mut nodes: Vec<knode_format::NodeId> = Vec::new();
+    let mut add = |id: Option<&str>| {
+        if let Some(id) = id.and_then(|id| knode_format::NodeId::parse(id).ok())
+            && nodes.len() < crate::MAX_ACTIVITY_NODES
+            && !nodes.contains(&id)
+        {
+            nodes.push(id);
+        }
+    };
+    add(asked.as_deref());
+    let items = value
+        .as_array()
+        .or_else(|| value.get("hits").and_then(Value::as_array));
+    for item in items.into_iter().flatten() {
+        add(item
+            .get("id")
+            .or_else(|| item.get("node").and_then(|n| n.get("id")))
+            .and_then(Value::as_str));
+    }
+    if nodes.is_empty() {
+        return;
+    }
+    let Ok(space) = state.space(path) else { return };
+    let space = lock_ignoring_poison(&space).path().to_path_buf();
+    state.notify_activity(crate::Activity {
+        space,
+        agent: agent.name.clone(),
+        method: method.to_owned(),
+        nodes,
+    });
 }
 
 /// `service.status` as an agent sees it: only the spaces it may see.

@@ -483,3 +483,118 @@ fn agents_read_history_and_undo_only_their_own_changes() {
     let last = &f.person.changes(&work, 1, None).unwrap()[0];
     assert_eq!(last.changed_by.actor, "claude-code");
 }
+
+/// The person can watch what an agent reads; other agents cannot.
+#[test]
+fn the_person_hears_what_an_agent_reads() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let plan = f
+        .person
+        .create_node(&work, NewNode::note("Plan", "Ship v1."), &me())
+        .unwrap();
+    let ideas = f
+        .person
+        .create_node(&work, NewNode::note("Ideas", "For later."), &me())
+        .unwrap();
+    let reader_key = f.agent("codex");
+    let other_key = f.agent("other");
+    f.grant("codex", "Work", GrantLevel::Read);
+    f.grant("other", "Work", GrantLevel::Read);
+    let reader = f.connect(&reader_key);
+    let other = f.connect(&other_key);
+    let watching = f.person.subscribe(Some(&work)).unwrap();
+    let eavesdropping = other.subscribe(None).unwrap();
+
+    reader.get_node(&work, &plan.id).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(activity.agent, "codex");
+            assert_eq!(activity.method, "node.get");
+            assert_eq!(activity.nodes, vec![plan.id]);
+            assert_eq!(activity.space, work);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A search names the nodes it found.
+    reader.search(&work, "later", 10).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(
+                (activity.method.as_str(), activity.nodes),
+                ("search", vec![ideas.id])
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // Reading the same node again at once is not announced twice.
+    reader.get_node(&work, &plan.id).unwrap();
+    assert!(watching.recv_timeout(Duration::from_millis(300)).is_none());
+    assert!(
+        eavesdropping
+            .recv_timeout(Duration::from_millis(300))
+            .is_none()
+    );
+    // The person's own reads are not announced.
+    f.person.get_node(&work, &plan.id).unwrap();
+    assert!(watching.recv_timeout(Duration::from_millis(300)).is_none());
+}
+
+/// An agent reading in a burst never makes the person lag or lose a change: what agents read
+/// has a feed of its own, and the same node is announced once per interval.
+#[test]
+fn a_burst_of_reads_never_crowds_out_changes() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let nodes: Vec<_> = (0..40)
+        .map(|i| {
+            f.person
+                .create_node(&work, NewNode::note(format!("Note {i}"), "Body."), &me())
+                .unwrap()
+                .id
+        })
+        .collect();
+    let key = f.agent("codex");
+    f.grant("codex", "Work", GrantLevel::Read);
+    let reader = f.connect(&key);
+    let watching = f.person.subscribe(Some(&work)).unwrap();
+
+    let reads = 3000;
+    let flood = {
+        let (work, nodes) = (work.clone(), nodes.clone());
+        std::thread::spawn(move || {
+            for i in 0..reads {
+                reader.get_node(&work, &nodes[i % nodes.len()]).unwrap();
+            }
+        })
+    };
+    let mut written = Vec::new();
+    for i in 0..30 {
+        let node = f
+            .person
+            .create_node(&work, NewNode::note(format!("New {i}"), "Body."), &me())
+            .unwrap();
+        written.push(node.id);
+    }
+    flood.join().unwrap();
+    let last = f
+        .person
+        .create_node(&work, NewNode::note("Last", "Body."), &me())
+        .unwrap();
+    written.push(last.id);
+
+    let (mut changed, mut activity) = (Vec::new(), 0);
+    while changed.last() != Some(&last.id) {
+        match watching.recv_timeout(Duration::from_secs(10)) {
+            Some(Event::Changed(change)) => changed.push(change.node_id),
+            Some(Event::Activity(_)) => activity += 1,
+            other => panic!("expected only changes and activity, got {other:?}"),
+        }
+    }
+    assert_eq!(changed, written);
+    assert!(activity > 0);
+    assert!(
+        activity < reads / 2,
+        "{activity} activity notices for {reads} reads"
+    );
+}

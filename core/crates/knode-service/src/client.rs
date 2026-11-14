@@ -909,6 +909,9 @@ fn read_messages(stream: UnixStream, shared: &Shared) {
                 methods::SPACE => serde_json::from_value::<SpaceEvent>(params)
                     .ok()
                     .map(Event::Space),
+                methods::ACTIVITY => serde_json::from_value::<Activity>(params)
+                    .ok()
+                    .map(Event::Activity),
                 methods::LAGGED => serde_json::from_value::<LaggedParams>(params)
                     .ok()
                     .map(|p| Event::Lagged { missed: p.missed }),
@@ -945,6 +948,7 @@ fn deliver(shared: &Shared, event: Event) {
         let wanted = match (&event, &subscriber.space) {
             (Event::Changed(change), Some(space)) => change.space == *space,
             (Event::Space(event), Some(space)) => event.space == *space,
+            (Event::Activity(activity), Some(space)) => activity.space == *space,
             _ => true,
         };
         !wanted || subscriber.events.send(event.clone()).is_ok()

@@ -33,6 +33,19 @@ struct GraphScreen: View {
             .overlay(alignment: .bottomLeading) {
                 GraphLegend(graph: graph).padding(KSpace.x3)
             }
+            .overlay(alignment: .bottom) {
+                if graph.isGlowing, let reading = graph.reading {
+                    AgentReadingLine(reading: reading)
+                        .padding(.bottom, KSpace.x3)
+                        .transition(.opacity)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                KIconButton(.focus, title: graph.followsAgents ? "Stop following agents" : "Follow what agents read", isActive: graph.followsAgents) {
+                    graph.followsAgents.toggle()
+                }
+                .padding(KSpace.x3)
+            }
             .overlay(alignment: .bottomTrailing) {
                 MapZoomControls(
                     zoomOut: { graph.zoom(by: 1 / 1.4) },
@@ -140,8 +153,11 @@ struct GraphCanvas: View {
 
     var body: some View {
         GeometryReader { proxy in
-            Canvas(rendersAsynchronously: false) { context, size in
-                draw(in: &context, size: size)
+            // While agents' reads glow, draw every frame so the glow fades.
+            TimelineView(.animation(paused: !graph.isGlowing)) { timeline in
+                Canvas(rendersAsynchronously: false) { context, size in
+                    draw(in: &context, size: size, now: timeline.date)
+                }
             }
             .onAppear { graph.size = proxy.size }
             .onChange(of: proxy.size) { _, size in graph.size = size }
@@ -233,7 +249,7 @@ struct GraphCanvas: View {
 
     // MARK: Drawing
 
-    private func draw(in context: inout GraphicsContext, size: CGSize) {
+    private func draw(in context: inout GraphicsContext, size: CGSize, now: Date) {
         _ = graph.revision
         let inks = MapInks(theme)
         let layout = graph.layout
@@ -281,6 +297,19 @@ struct GraphCanvas: View {
         }
         for (glyph, path) in paths {
             inks.draw(glyph, path, in: &context, lineWidth: max(1, min(1.6, zoom * 1.3)))
+        }
+
+        // Nodes an agent just read: an indigo halo that widens and fades.
+        if graph.isGlowing {
+            for i in 0..<n where visible.contains(screen[i]) {
+                let glow = graph.glow(of: i, at: now)
+                guard glow > 0 else { continue }
+                let p = screen[i]
+                let r = base + 6 + (1 - glow) * 14
+                let circle = Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+                context.fill(circle, with: .color(inks.indigo.opacity(0.22 * glow)))
+                context.stroke(circle, with: .color(inks.indigo.opacity(glow)), lineWidth: 2)
+            }
         }
 
         // The focus and the node under the pointer.
@@ -630,5 +659,30 @@ struct GraphLegend: View {
             .fixedSize()
             .mapChrome()
         }
+    }
+}
+
+/// The line the graph shows while an agent reads: who, and the first notes it read.
+private struct AgentReadingLine: View {
+    let reading: AgentReading
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: KSpace.x2) {
+            Circle().fill(theme.indigo).frame(width: 6, height: 6)
+            Text(reading.agent).font(KFont.ui(12, .semibold)).foregroundStyle(theme.fg)
+            Text(description).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
+        }
+        .padding(.horizontal, KSpace.x3)
+        .frame(height: 28)
+        .background(Capsule().fill(theme.panel))
+        .overlay(Capsule().strokeBorder(theme.line))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var description: String {
+        guard !reading.titles.isEmpty else { return "is reading" }
+        let more = reading.count - reading.titles.count
+        return "is reading " + reading.titles.joined(separator: ", ") + (more > 0 ? " and \(more) more" : "")
     }
 }
