@@ -28,15 +28,21 @@ enum MarkdownBlock: Equatable {
         var fence: (language: String?, lines: [String])?
         var table: [String] = []
 
-        func flush() {
-            if !table.isEmpty {
-                if let parsed = Self.table(table) {
-                    blocks.append(parsed)
-                } else {
-                    paragraph = table + paragraph
-                }
-                table = []
+        /// Settles the pipe lines read so far: a table, or text that continues the paragraph above.
+        func settleTable() {
+            guard !table.isEmpty else { return }
+            if let parsed = Self.table(table) {
+                if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
+                paragraph = []
+                blocks.append(parsed)
+            } else {
+                paragraph += table
             }
+            table = []
+        }
+
+        func flush() {
+            settleTable()
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
             if !quote.isEmpty { blocks.append(.quote(quote.joined(separator: " "))) }
             paragraph = []
@@ -58,15 +64,13 @@ enum MarkdownBlock: Equatable {
             }
 
             if line.hasPrefix("|") {
-                // A table may interrupt a paragraph, as on GitHub.
-                if table.isEmpty { flush() }
+                // A table may interrupt a paragraph, as on GitHub; until it is one, the paragraph
+                // above stays open so that pipe lines which are not a table continue it.
+                if table.isEmpty, !quote.isEmpty { flush() }
                 table.append(line)
                 continue
-            } else if !table.isEmpty {
-                // Not a table after all: its lines are text the next line may continue.
-                if let parsed = Self.table(table) { blocks.append(parsed) } else { paragraph += table }
-                table = []
             }
+            settleTable()
 
             if line.hasPrefix("```") {
                 flush()
@@ -193,14 +197,37 @@ enum MarkdownBlock: Equatable {
         return images.isEmpty ? nil : images
     }
 
-    /// Whether a line is made only of HTML tags, with no text between them.
+    /// Whether a line is made only of HTML tags, with no text between them. An autolink such as
+    /// `<https://knode.md>` is not a tag: it is text the preview shows.
     static func tagsOnly(_ line: String) -> Bool {
         var text = ""
-        var inside = false
+        var tag: String?
         for character in line {
-            if character == "<" { inside = true } else if character == ">" { inside = false } else if !inside { text.append(character) }
+            if var open = tag {
+                if character == ">" {
+                    guard isTag(open) else { return false }
+                    tag = nil
+                } else {
+                    open.append(character)
+                    tag = open
+                }
+            } else if character == "<" {
+                tag = ""
+            } else {
+                text.append(character)
+            }
         }
-        return text.trimmingCharacters(in: .whitespaces).isEmpty && line.contains(">")
+        return tag == nil && text.trimmingCharacters(in: .whitespaces).isEmpty && line.contains(">")
+    }
+
+    /// Whether the inside of `<...>` is an HTML tag (`p align="center"`, `/div`, `br/`, `!-- note --`)
+    /// rather than an autolink (`https://knode.md`, `name@example.com`).
+    private static func isTag(_ inner: String) -> Bool {
+        if inner.hasPrefix("!") { return true }
+        let name = (inner.hasPrefix("/") ? inner.dropFirst() : Substring(inner))
+            .prefix(while: { !$0.isWhitespace && $0 != "/" })
+        guard let first = name.first, first.isLetter else { return false }
+        return name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
     }
 
     private static func attribute(_ name: String, in tag: Substring) -> String? {

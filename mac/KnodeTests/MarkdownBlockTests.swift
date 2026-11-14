@@ -79,4 +79,19 @@ import Testing
     @Test func linesThatOnlyLookLikeATableStayText() {
         #expect(MarkdownBlock.parse("| not a table\nstill text") == [.paragraph("| not a table still text")])
     }
+
+    @Test func pipeLinesThatAreNotATableContinueTheParagraphAbove() {
+        #expect(MarkdownBlock.parse("Choose one\n| or the other\nof them") == [
+            .paragraph("Choose one | or the other of them"),
+        ])
+        #expect(MarkdownBlock.parse("Choose one\n| a | b |") == [.paragraph("Choose one | a | b |")])
+    }
+
+    @Test func autolinksOnTheirOwnLineAreKept() {
+        #expect(MarkdownBlock.parse("<https://knode.md>") == [.paragraph("<https://knode.md>")])
+        #expect(MarkdownBlock.parse("<p align=\"center\">\n<https://knode.md>\n</p>") == [
+            .paragraph("<https://knode.md>"),
+        ])
+        #expect(MarkdownBlock.parse("<br/>\n<!-- note -->\n</div>") == [])
+    }
 }

@@ -290,6 +290,7 @@ struct MarkdownPreview: View {
     var attachments: NoteAttachmentsModel?
     @Environment(AppModel.self) private var model
     @Environment(\.kTheme) private var theme
+    @Environment(\.openURL) private var openURL
 
     static let bodySize: CGFloat = 15
 
@@ -377,20 +378,20 @@ struct MarkdownPreview: View {
                     GridRow {
                         ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
                             Text(prose(cell, size: 13, weight: .semibold, color: theme.fg))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
+                                .padding(.horizontal, KSpace.x3)
+                                .padding(.vertical, KSpace.x2)
                                 .frame(maxWidth: 360, alignment: .leading)
                         }
                     }
                     .background(theme.panel)
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        Divider().overlay(theme.line)
+                        KDivider()
                         GridRow {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 Text(prose(cell, size: 13))
                                     .fixedSize(horizontal: false, vertical: true)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, KSpace.x3)
+                                    .padding(.vertical, KSpace.x2)
                                     .frame(maxWidth: 360, alignment: .leading)
                             }
                         }
@@ -404,13 +405,14 @@ struct MarkdownPreview: View {
             HStack(spacing: KSpace.x2) {
                 KIcon(.image, size: .sm, color: theme.muted)
                 if let url = URL(string: source), url.scheme == "https" || url.scheme == "http" {
-                    Link(alt.isEmpty ? source : alt, destination: url)
+                    Button(alt.isEmpty ? source : alt) { openURL(url) }
+                        .buttonStyle(KLinkButtonStyle())
                         .font(KFont.ui(13))
                 } else {
                     Text(alt.isEmpty ? source : alt).font(KFont.ui(13)).foregroundStyle(theme.muted)
                 }
             }
-            .help(source)
+            .kTooltip(source)
         }
     }
 
