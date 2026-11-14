@@ -1,15 +1,18 @@
 import SwiftUI
 
 /// A row of a list. Selected: an indigo marker at the leading edge over a soft highlight.
+/// Focused (the row the keyboard is on while its list has focus): a thin indigo ring.
 struct KRow<Content: View>: View {
     var isSelected = false
+    var isFocused = false
     var action: (() -> Void)?
     @ViewBuilder var content: Content
     @Environment(\.kTheme) private var theme
     @State private var hovering = false
 
-    init(isSelected: Bool = false, action: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    init(isSelected: Bool = false, isFocused: Bool = false, action: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.isSelected = isSelected
+        self.isFocused = isFocused
         self.action = action
         self.content = content()
     }
@@ -24,6 +27,11 @@ struct KRow<Content: View>: View {
             .overlay(alignment: .leading) {
                 if isSelected {
                     Capsule().fill(theme.indigo).frame(width: 3).padding(.vertical, 8)
+                }
+            }
+            .overlay {
+                if isFocused {
+                    shape.strokeBorder(theme.indigo, lineWidth: 1.5)
                 }
             }
             .contentShape(shape)
