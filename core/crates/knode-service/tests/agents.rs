@@ -80,6 +80,81 @@ fn rpc(result: Result<impl std::fmt::Debug, Error>) -> knode_service::RpcError {
 }
 
 #[test]
+fn tracks_authenticated_clients_and_space_switches_for_the_person_only() {
+    let f = Fixture::new();
+    let owner = f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|client| client.identity == Identity::Person)
+        .unwrap();
+    assert_eq!(owner.space, Some(f.space("Personal")));
+    let key = f.agent("work-agent");
+    f.grant("work-agent", "Work", GrantLevel::Read);
+    let agent = f.connect(&key);
+    let identity = agent.identity().unwrap();
+    let connection = || {
+        f.person
+            .status()
+            .unwrap()
+            .connections
+            .into_iter()
+            .find(|connection| &connection.identity == identity)
+            .unwrap()
+    };
+    let first = connection();
+    assert_eq!(first.space, None);
+    agent.recent(f.space("Work"), 1).unwrap();
+    assert_eq!(connection().space, Some(f.space("Work")));
+    // Denied requests never change the recorded space.
+    assert!(agent.recent(f.space("Personal"), 1).is_err());
+    assert_eq!(connection().space, Some(f.space("Work")));
+    assert!(agent.status().unwrap().connections.is_empty());
+    f.grant("work-agent", "Personal", GrantLevel::Read);
+    agent.recent(f.space("Personal"), 1).unwrap();
+    assert_eq!(connection().space, Some(f.space("Personal")));
+    let id = first.id;
+    drop(agent);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .iter()
+        .any(|client| client.id == id)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "disconnected client remains"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let again = f.connect(&key);
+    let next = f
+        .person
+        .status()
+        .unwrap()
+        .connections
+        .into_iter()
+        .find(|client| Some(&client.identity) == again.identity())
+        .unwrap();
+    assert_ne!(next.id, id);
+    assert_eq!(next.space, None);
+}
+
+#[test]
+fn reads_status_from_a_server_before_connection_inventory() {
+    let legacy: knode_service::Status = serde_json::from_value(json!({
+        "version": "0.0.0", "pid": 123, "spaces": [], "clients": 1, "capture": null
+    }))
+    .unwrap();
+    assert!(legacy.connections.is_empty());
+}
+
+#[test]
 fn a_work_agent_cannot_see_a_personal_space() {
     let f = Fixture::new();
     let personal = f.space("Personal");
@@ -407,4 +482,119 @@ fn agents_read_history_and_undo_only_their_own_changes() {
         .unwrap();
     let last = &f.person.changes(&work, 1, None).unwrap()[0];
     assert_eq!(last.changed_by.actor, "claude-code");
+}
+
+/// The person can watch what an agent reads; other agents cannot.
+#[test]
+fn the_person_hears_what_an_agent_reads() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let plan = f
+        .person
+        .create_node(&work, NewNode::note("Plan", "Ship v1."), &me())
+        .unwrap();
+    let ideas = f
+        .person
+        .create_node(&work, NewNode::note("Ideas", "For later."), &me())
+        .unwrap();
+    let reader_key = f.agent("codex");
+    let other_key = f.agent("other");
+    f.grant("codex", "Work", GrantLevel::Read);
+    f.grant("other", "Work", GrantLevel::Read);
+    let reader = f.connect(&reader_key);
+    let other = f.connect(&other_key);
+    let watching = f.person.subscribe(Some(&work)).unwrap();
+    let eavesdropping = other.subscribe(None).unwrap();
+
+    reader.get_node(&work, &plan.id).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(activity.agent, "codex");
+            assert_eq!(activity.method, "node.get");
+            assert_eq!(activity.nodes, vec![plan.id]);
+            assert_eq!(activity.space, work);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A search names the nodes it found.
+    reader.search(&work, "later", 10).unwrap();
+    match watching.recv_timeout(Duration::from_secs(5)) {
+        Some(Event::Activity(activity)) => {
+            assert_eq!(
+                (activity.method.as_str(), activity.nodes),
+                ("search", vec![ideas.id])
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // Reading the same node again at once is not announced twice.
+    reader.get_node(&work, &plan.id).unwrap();
+    assert!(watching.recv_timeout(Duration::from_millis(300)).is_none());
+    assert!(
+        eavesdropping
+            .recv_timeout(Duration::from_millis(300))
+            .is_none()
+    );
+    // The person's own reads are not announced.
+    f.person.get_node(&work, &plan.id).unwrap();
+    assert!(watching.recv_timeout(Duration::from_millis(300)).is_none());
+}
+
+/// An agent reading in a burst never makes the person lag or lose a change: what agents read
+/// has a feed of its own, and the same node is announced once per interval.
+#[test]
+fn a_burst_of_reads_never_crowds_out_changes() {
+    let f = Fixture::new();
+    let work = f.space("Work");
+    let nodes: Vec<_> = (0..40)
+        .map(|i| {
+            f.person
+                .create_node(&work, NewNode::note(format!("Note {i}"), "Body."), &me())
+                .unwrap()
+                .id
+        })
+        .collect();
+    let key = f.agent("codex");
+    f.grant("codex", "Work", GrantLevel::Read);
+    let reader = f.connect(&key);
+    let watching = f.person.subscribe(Some(&work)).unwrap();
+
+    let reads = 3000;
+    let flood = {
+        let (work, nodes) = (work.clone(), nodes.clone());
+        std::thread::spawn(move || {
+            for i in 0..reads {
+                reader.get_node(&work, &nodes[i % nodes.len()]).unwrap();
+            }
+        })
+    };
+    let mut written = Vec::new();
+    for i in 0..30 {
+        let node = f
+            .person
+            .create_node(&work, NewNode::note(format!("New {i}"), "Body."), &me())
+            .unwrap();
+        written.push(node.id);
+    }
+    flood.join().unwrap();
+    let last = f
+        .person
+        .create_node(&work, NewNode::note("Last", "Body."), &me())
+        .unwrap();
+    written.push(last.id);
+
+    let (mut changed, mut activity) = (Vec::new(), 0);
+    while changed.last() != Some(&last.id) {
+        match watching.recv_timeout(Duration::from_secs(10)) {
+            Some(Event::Changed(change)) => changed.push(change.node_id),
+            Some(Event::Activity(_)) => activity += 1,
+            other => panic!("expected only changes and activity, got {other:?}"),
+        }
+    }
+    assert_eq!(changed, written);
+    assert!(activity > 0);
+    assert!(
+        activity < reads / 2,
+        "{activity} activity notices for {reads} reads"
+    );
 }

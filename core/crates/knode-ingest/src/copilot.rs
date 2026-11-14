@@ -1,6 +1,8 @@
 //! GitHub Copilot CLI sessions: `~/.copilot/session-state/<session id>/events.jsonl`.
 //!
-//! Each line is an event `{ "id", "parentId", "timestamp", "type", "data" }`. The ones read here:
+//! Each line is an event `{ "id", "parentId", "timestamp", "type", "data" }`, as described by the
+//! session event schema GitHub publishes with the Copilot SDK (`session-events.ts`). Events with
+//! an `agentId` come from a subagent and are left out. The ones read here:
 //!
 //! - `session.start` and `session.resume`: `sessionId`, `selectedModel` and `context` (`cwd`,
 //!   `gitRoot`, `branch`);
@@ -8,8 +10,9 @@
 //! - `user.message`: `content` as typed (`transformedContent` is what the model saw, with context
 //!   added, and is not kept); messages with a `source` such as `skill-…` were injected and are
 //!   left out;
-//! - `assistant.message`: `content` and `toolRequests` (`toolCallId`, `name`, `arguments`).
-//!   Messages with a `parentToolCallId` belong to a subagent and are left out;
+//! - `assistant.message`: `content`, `model` and `toolRequests` (`toolCallId`, `name`,
+//!   `arguments`). Messages with a `parentToolCallId`, which older versions wrote instead of
+//!   `agentId`, belong to a subagent and are left out too;
 //! - `tool.execution_complete`: `success`, used to mark failed calls.
 //!
 //! Streaming deltas, reasoning, usage, hooks, permissions and other events are ignored.
@@ -25,6 +28,9 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &Value) {
         conversation.saw_time(at);
     }
     let data = record.get("data").unwrap_or(&Value::Null);
+    if str_field(record, "agentId").is_some_and(|id| !id.is_empty()) {
+        return;
+    }
     match str_field(record, "type").unwrap_or_default() {
         "session.start" | "session.resume" => {
             if let Some(id) = first_str(data, &["sessionId"]) {
@@ -63,6 +69,9 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &Value) {
         "assistant.message" => {
             if data.get("parentToolCallId").is_some_and(|v| !v.is_null()) {
                 return;
+            }
+            if let Some(model) = first_str(data, &["model"]) {
+                conversation.model = Some(model.to_string());
             }
             if let Some(text) = str_field(data, "content").filter(|t| !t.trim().is_empty()) {
                 let text = text.trim_end().to_string();
@@ -160,6 +169,8 @@ mod tests {
             json!({"type": "assistant.message", "data": {"content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash", "arguments": {"command": "ls"}}, {"toolCallId": "c0", "name": "report_intent", "arguments": {"intent": "x"}}]}}),
             json!({"type": "tool.execution_complete", "data": {"toolCallId": "c1", "success": false}}),
             json!({"type": "assistant.message", "data": {"content": "sub", "parentToolCallId": "c9"}}),
+            json!({"type": "assistant.message", "agentId": "a1", "data": {"content": "sub too"}}),
+            json!({"type": "user.message", "agentId": "a1", "data": {"content": "a subagent prompt"}}),
             json!({"type": "assistant.message", "data": {"content": "Done."}}),
             json!({"type": "session.title_changed", "data": {"title": "Listing files"}}),
         ];

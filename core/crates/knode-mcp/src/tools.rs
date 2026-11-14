@@ -9,13 +9,14 @@ use std::fmt::Write as _;
 
 use knode_format::{
     ActorKind, Change, ChangeId, HybridHit, Link, Node, NodeId, NodeLink, NodeSummary, NodeUpdate,
-    Provenance, SearchMode, actions, link_kinds,
+    Project, Provenance, SearchMode, actions, link_kinds,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::backend::{Backend, BackendError};
 
+mod excerpt;
 mod maps;
 
 pub use maps::{MAX_ATTACH_BYTES, MAX_TEXT_BYTES};
@@ -82,11 +83,12 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 11] = [
+pub const TOOL_NAMES: [&str; 13] = [
     "search",
     "read_node",
     "write_node",
     "link_nodes",
+    "projects",
     "recent",
     "history",
     "undo",
@@ -94,6 +96,7 @@ pub const TOOL_NAMES: [&str; 11] = [
     "read_canvas",
     "attach_file",
     "read_attachment",
+    "read_excerpt",
 ];
 
 /// Every tool, in the order they are listed.
@@ -115,9 +118,23 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "kind": { "type": "string" },
             "created_at": { "type": "string", "description": "RFC 3339, UTC." },
             "updated_at": { "type": "string", "description": "RFC 3339, UTC." },
-            "updated_by": provenance
+            "updated_by": provenance,
+            "path": {
+                "type": "string",
+                "description": "The Markdown file the node was imported from, such as app/README.md: it tells apart nodes of the same title."
+            }
         },
         "required": ["id", "title", "kind", "created_at", "updated_at", "updated_by"]
+    });
+    let project = json!({
+        "type": "object",
+        "properties": {
+            "node": summary,
+            "parent": { "type": "string", "description": "The id of the project it is part of." },
+            "notes": { "type": "integer", "description": "How many nodes that are not projects are part of it." },
+            "projects": { "type": "integer", "description": "How many projects are part of it." }
+        },
+        "required": ["node", "notes", "projects"]
     });
     let link = json!({
         "type": "object",
@@ -346,6 +363,37 @@ pub fn definitions() -> Vec<ToolDefinition> {
             destructive: false,
         },
         ToolDefinition {
+            name: "projects",
+            title: "Projects",
+            description: "List the projects of the user's Knode memory, as a tree, with how many \
+                notes each has; or, given one by name or id, its notes, most recently changed \
+                first, and the projects inside it. Start here when the work is about a project: \
+                it finds the project's notes without searching, then read the ones you need \
+                with read_node.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "A project's title or id. Leave it out to list every project."
+                    },
+                    "limit": limit
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "projects": { "type": "array", "items": project },
+                    "project": project,
+                    "notes": { "type": "array", "items": summary }
+                },
+                "required": ["projects"]
+            }),
+            read_only: true,
+            idempotent: true,
+            destructive: false,
+        },
+        ToolDefinition {
             name: "recent",
             title: "Recent nodes",
             description: "List the nodes of the user's Knode memory that changed most recently, \
@@ -418,6 +466,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
     ];
     tools.extend(maps::definitions(node_ref, &provenance));
+    tools.push(excerpt::definition());
     tools
 }
 
@@ -433,9 +482,11 @@ pub fn call<B: Backend + ?Sized>(
     let output = match name {
         "search" => parse(arguments).and_then(|args| search(backend, args)),
         "read_node" => parse(arguments).and_then(|args| read_node(backend, args)),
+        "read_excerpt" => parse(arguments).and_then(|args| excerpt::read(backend, args)),
         "write_node" => parse(arguments).and_then(|args| write_node(backend, args, &by)),
         "link_nodes" => parse(arguments).and_then(|args| link_nodes(backend, args, &by)),
         "recent" => parse(arguments).and_then(|args| recent(backend, args)),
+        "projects" => parse(arguments).and_then(|args| projects(backend, args)),
         "history" => parse(arguments).and_then(|args| history(backend, args)),
         "undo" => parse(arguments).and_then(|args| undo(backend, args, &by)),
         "link_kinds" => maps::link_kinds(backend),
@@ -804,6 +855,133 @@ fn recent<B: Backend + ?Sized>(backend: &B, args: RecentArgs) -> Outcome {
 }
 
 #[derive(Deserialize)]
+struct ProjectsArgs {
+    project: Option<String>,
+    limit: Option<usize>,
+}
+
+fn projects<B: Backend + ?Sized>(backend: &B, args: ProjectsArgs) -> Outcome {
+    let all = backend.projects()?;
+    let known: std::collections::BTreeSet<NodeId> = all.iter().map(|p| p.node.id).collect();
+    let children = |of: Option<NodeId>| -> Vec<&Project> {
+        all.iter()
+            .filter(|p| p.parent.filter(|id| known.contains(id)) == of)
+            .collect()
+    };
+    let Some(wanted) = non_empty(args.project) else {
+        let mut text = String::new();
+        if all.is_empty() {
+            text.push_str(
+                "No projects yet. A project is a node of kind project that notes link to with \
+                 part-of; create one with write_node and link notes to it with link_nodes.\n",
+            );
+        } else {
+            let _ = writeln!(
+                text,
+                "{}. Pass one as project to list its notes.\n",
+                count(all.len(), "project")
+            );
+            fn tree<'a>(
+                text: &mut String,
+                depth: usize,
+                of: Option<NodeId>,
+                children: &dyn Fn(Option<NodeId>) -> Vec<&'a Project>,
+            ) {
+                for p in children(of) {
+                    let _ = writeln!(
+                        text,
+                        "{}- **{}** (id `{}`): {}{}",
+                        "  ".repeat(depth),
+                        p.node.title,
+                        p.node.id,
+                        count(usize::try_from(p.notes).unwrap_or(0), "note"),
+                        if p.projects > 0 {
+                            format!(
+                                ", {}",
+                                count(usize::try_from(p.projects).unwrap_or(0), "project")
+                            )
+                        } else {
+                            String::new()
+                        }
+                    );
+                    if depth < 8 {
+                        tree(text, depth + 1, Some(p.node.id), children);
+                    }
+                }
+            }
+            tree(&mut text, 0, None, &children);
+        }
+        let structured = json!({ "projects": all.iter().map(project_json).collect::<Vec<_>>() });
+        return Ok(ToolOutput::ok(text, structured));
+    };
+    let key = wanted.to_lowercase();
+    let Some(project) = all
+        .iter()
+        .find(|p| p.node.id.to_string() == wanted)
+        .or_else(|| all.iter().find(|p| p.node.title.to_lowercase() == key))
+    else {
+        return Err(ToolOutput::error(format!(
+            "No project is called \"{wanted}\". Call projects without project to list them."
+        )));
+    };
+    let notes = backend.project_notes(&project.node.id, clamp_limit(args.limit))?;
+    let inside = children(Some(project.node.id));
+    let mut text = String::new();
+    summary_line(&mut text, &project.node);
+    text.push('\n');
+    if let Some(parent) = project
+        .parent
+        .and_then(|id| all.iter().find(|p| p.node.id == id))
+    {
+        let _ = writeln!(
+            text,
+            "Part of **{}** (id `{}`).",
+            parent.node.title, parent.node.id
+        );
+    }
+    if !inside.is_empty() {
+        let names: Vec<_> = inside
+            .iter()
+            .map(|p| format!("**{}**", p.node.title))
+            .collect();
+        let _ = writeln!(text, "Projects inside: {}.", names.join(", "));
+    }
+    if notes.is_empty() {
+        text.push_str("No notes are part of it yet.\n");
+    } else {
+        let _ = writeln!(
+            text,
+            "\n{} of {}, most recently changed first (read_node reads one):",
+            count(notes.len(), "note"),
+            project.notes
+        );
+        for (i, node) in notes.iter().enumerate() {
+            let _ = write!(text, "\n{}. ", i + 1);
+            summary_line(&mut text, node);
+        }
+        text.push('\n');
+    }
+    let structured = json!({
+        "project": project_json(project),
+        "projects": inside.iter().map(|p| project_json(p)).collect::<Vec<_>>(),
+        "notes": notes.iter().map(summary_json).collect::<Vec<_>>(),
+    });
+    Ok(ToolOutput::ok(text, structured))
+}
+
+fn project_json(project: &Project) -> Value {
+    let mut json = json!({
+        "node": summary_json(&project.node),
+        "notes": project.notes,
+        "projects": project.projects,
+    });
+    if let Some(parent) = project.parent {
+        json["parent"] = json!(parent.to_string());
+    }
+    json
+}
+
+#[derive(Deserialize)]
 struct HistoryArgs {
     node: Option<String>,
     limit: Option<usize>,
@@ -994,12 +1172,14 @@ fn who(by: &Provenance) -> String {
 }
 
 fn summary_line(text: &mut String, node: &NodeSummary) {
+    let _ = write!(text, "**{}** ({}, id `{}`", node.title, node.kind, node.id);
+    // The imported file tells apart notes of the same name, such as many `README`.
+    if let Some(path) = &node.path {
+        let _ = write!(text, ", from `{path}`");
+    }
     let _ = write!(
         text,
-        "**{}** ({}, id `{}`), updated {} by {}",
-        node.title,
-        node.kind,
-        node.id,
+        "), updated {} by {}",
         node.updated_at,
         who(&node.updated_by)
     );
@@ -1029,6 +1209,7 @@ fn summary_of(node: &Node) -> NodeSummary {
         created_at: node.created_at,
         updated_at: node.updated_at,
         updated_by: node.updated_by.clone(),
+        path: None,
     }
 }
 
@@ -1037,14 +1218,18 @@ fn provenance_json(by: &Provenance) -> Value {
 }
 
 fn summary_json(node: &NodeSummary) -> Value {
-    json!({
+    let mut json = json!({
         "id": node.id.to_string(),
         "title": node.title,
         "kind": node.kind,
         "created_at": node.created_at.to_string(),
         "updated_at": node.updated_at.to_string(),
         "updated_by": provenance_json(&node.updated_by),
-    })
+    });
+    if let Some(path) = &node.path {
+        json["path"] = json!(path);
+    }
+    json
 }
 
 fn hit_json(hit: &HybridHit) -> Value {
@@ -1278,6 +1463,84 @@ mod tests {
         let out = run(&backend, "write_node", json!({ "title": 3 }));
         assert!(out.is_error);
         assert!(out.text.starts_with("Invalid arguments"));
+    }
+
+    #[test]
+    fn results_say_which_file_a_note_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
+        let by = Provenance::person("Tester");
+        let node = space
+            .create_node(
+                knode_format::NewNode::note("README", "The app readme."),
+                &by,
+            )
+            .unwrap();
+        space
+            .set_property(
+                &node.id,
+                knode_format::property_keys::MARKDOWN_PATH,
+                "app/README.md",
+                &by,
+            )
+            .unwrap();
+        let backend = DirectBackend::from_space(space);
+        let out = run(&backend, "search", json!({ "query": "app" }));
+        check_schema("search", &out);
+        assert!(out.text.contains("from `app/README.md`"), "{}", out.text);
+        assert_eq!(
+            out.structured.as_ref().unwrap()["hits"][0]["node"]["path"],
+            "app/README.md"
+        );
+        let out = run(&backend, "recent", json!({}));
+        check_schema("recent", &out);
+        assert!(out.text.contains("from `app/README.md`"), "{}", out.text);
+    }
+
+    #[test]
+    fn projects_list_a_tree_and_the_notes_of_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
+        let by = Provenance::person("Tester");
+        let project = |space: &mut Space, title: &str| {
+            space
+                .create_node(
+                    knode_format::NewNode {
+                        kind: knode_format::kinds::PROJECT.into(),
+                        title: title.into(),
+                        ..Default::default()
+                    },
+                    &by,
+                )
+                .unwrap()
+                .id
+        };
+        let org = project(&mut space, "acme");
+        let app = project(&mut space, "harbor");
+        space.link(&app, &org, link_kinds::PART_OF, &by).unwrap();
+        let note = space
+            .create_node(knode_format::NewNode::note("Status", "Phase 0."), &by)
+            .unwrap()
+            .id;
+        space.link(&note, &app, link_kinds::PART_OF, &by).unwrap();
+        let backend = DirectBackend::from_space(space);
+
+        let out = run(&backend, "projects", json!({}));
+        check_schema("projects", &out);
+        assert!(out.text.contains("- **acme**"), "{}", out.text);
+        assert!(out.text.contains("\n  - **harbor**"), "{}", out.text);
+        assert!(out.text.contains("1 note"), "{}", out.text);
+
+        let out = run(&backend, "projects", json!({ "project": "HARBOR" }));
+        check_schema("projects", &out);
+        assert!(out.text.contains("Part of **acme**"), "{}", out.text);
+        assert!(out.text.contains("**Status**"), "{}", out.text);
+        let structured = out.structured.unwrap();
+        assert_eq!(structured["notes"][0]["title"], "Status");
+        assert_eq!(structured["project"]["parent"], org.to_string());
+
+        let out = run(&backend, "projects", json!({ "project": "nothing" }));
+        assert!(out.is_error, "{}", out.text);
     }
 
     #[test]

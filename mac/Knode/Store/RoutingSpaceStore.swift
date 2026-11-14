@@ -60,6 +60,19 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space) { store in try await store.listNodes(in: space) }
     }
 
+    public func listLimit(in space: Space.ID) async -> Int? {
+        guard let entry = open[space] else { return nil }
+        return await store(entry.backend).listLimit(in: space)
+    }
+
+    public func projects(in space: Space.ID) async throws -> [ProjectSummary] {
+        try await route(space) { store in try await store.projects(in: space) }
+    }
+
+    public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] {
+        try await route(space) { store in try await store.projectNotes(project, in: space) }
+    }
+
     public func node(_ id: Node.ID, in space: Space.ID) async throws -> Node {
         try await route(space) { store in try await store.node(id, in: space) }
     }

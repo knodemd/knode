@@ -14,6 +14,7 @@
 //!   vectors through `knode-format`, which keeps them in sqlite-vec tables and searches them.
 //! - [`rrf`] fuses rankings into one, as hybrid search does.
 
+mod bert;
 mod chunk;
 #[cfg(feature = "download")]
 mod download;

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use knode_format::{
     ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit, SearchMode,
+    NodeUpdate, Project, Provenance, SearchHit, SearchMode,
 };
 use knode_vault::{ExportReport, ImportReport};
 use serde::Serialize;
@@ -579,6 +579,29 @@ impl Client {
         self.request(methods::RECENT, params)
     }
 
+    /// The projects of a space, by title.
+    pub fn projects(&self, space: impl AsRef<Path>) -> Result<Vec<Project>> {
+        let params = ProjectsParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::PROJECTS, params)
+    }
+
+    /// The nodes that are part of a project, most recently changed first.
+    pub fn project_notes(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        limit: usize,
+    ) -> Result<Vec<NodeSummary>> {
+        let params = ProjectNotesParams {
+            space: space_path(space.as_ref())?,
+            id: *id,
+            limit,
+        };
+        self.request(methods::PROJECT_NOTES, params)
+    }
+
     /// Every version of a node, oldest first.
     pub fn history(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Vec<HistoryEntry>> {
         self.request(methods::HISTORY, self.node_params(space.as_ref(), id)?)
@@ -909,6 +932,9 @@ fn read_messages(stream: UnixStream, shared: &Shared) {
                 methods::SPACE => serde_json::from_value::<SpaceEvent>(params)
                     .ok()
                     .map(Event::Space),
+                methods::ACTIVITY => serde_json::from_value::<Activity>(params)
+                    .ok()
+                    .map(Event::Activity),
                 methods::LAGGED => serde_json::from_value::<LaggedParams>(params)
                     .ok()
                     .map(|p| Event::Lagged { missed: p.missed }),
@@ -945,6 +971,7 @@ fn deliver(shared: &Shared, event: Event) {
         let wanted = match (&event, &subscriber.space) {
             (Event::Changed(change), Some(space)) => change.space == *space,
             (Event::Space(event), Some(space)) => event.space == *space,
+            (Event::Activity(activity), Some(space)) => activity.space == *space,
             _ => true,
         };
         !wanted || subscriber.events.send(event.clone()).is_ok()

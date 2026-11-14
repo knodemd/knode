@@ -31,6 +31,42 @@ import Testing
         )
     }
 
+    @Test func preparingAnImportArchiveNormalizesItsURLAndKeepsOtherSpaces() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Trial", in: folder)
+        let trial = try #require(model.selectedSpace?.url)
+        await model.createSpace(named: "Keep", in: folder)
+        let fromReceipt = URL(filePath: trial.path(percentEncoded: false), directoryHint: .notDirectory)
+        try await model.prepareToArchiveImport(fromReceipt)
+        #expect(model.space(at: trial) == nil)
+        #expect(model.sidebarSpaces.map(\.name) == ["Keep"])
+        #expect(model.selectedSpace?.name == "Keep")
+    }
+
+    @Test func projectSetupIsOptionalAndUsesTheNewSpace() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Work", in: folder, setupProjects: true)
+        let url = try #require(model.selectedSpace?.url)
+        #expect(model.sheet == .folders(url))
+        model.sheet = nil
+        await model.createSpace(named: "Personal", in: folder, setupProjects: false)
+        #expect(model.sheet == nil)
+    }
+
+    @Test func aProjectCanBeAddedWithoutEnablingCapture() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Work", in: folder)
+        let url = try #require(model.selectedSpace?.url)
+        let folders = try #require(await model.foldersModel(at: url))
+        defer { folders.stop() }
+        await folders.load()
+        let project = folder.appending(path: "demo", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        await folders.addFolder(.project, at: project, capture: false)
+        #expect(folders.folders.count == 1)
+        #expect(folders.folders[0].capture == false)
+    }
+
     @Test func createdSpacesAppearInTheSidebarInOrder() async {
         let model = makeModel()
         await model.createSpace(named: "Work", in: folder)

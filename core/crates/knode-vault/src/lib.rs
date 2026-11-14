@@ -114,6 +114,8 @@ mod import;
 mod live;
 mod mirror;
 mod names;
+pub mod onboarding;
+pub mod preview;
 pub mod reading;
 mod tags;
 mod time;

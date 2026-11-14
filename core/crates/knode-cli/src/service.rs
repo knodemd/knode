@@ -175,6 +175,17 @@ fn status(paths: &Paths) -> Result<()> {
             }
             // This command is one of the clients.
             println!("Clients: {}", status.clients.saturating_sub(1));
+            for connection in &status.connections {
+                if let Some(space) = &connection.space {
+                    let actor = match &connection.identity {
+                        knode_service::Identity::Person => "app/CLI".to_string(),
+                        knode_service::Identity::Agent { name, kind, .. } => {
+                            format!("{name} ({kind})")
+                        }
+                    };
+                    println!("  Client {} ({actor}): {}", connection.id, space.display());
+                }
+            }
             match &status.capture {
                 Some(space) => println!("Capture: on, into {}", space.display()),
                 None => println!("Capture: off"),
