@@ -336,6 +336,22 @@ order the writes were made:
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
+- When an agent reads a space the connection subscribed to, a person's connection receives an
+  `activity` notification, so the app can show what the agent looks at. It follows a successful
+  read call made with an agent key (`node.get`, a list, `search` and the like) and names the
+  node asked for by `id` and the nodes the answer listed, at most 25:
+
+  ```json
+  {"jsonrpc":"2.0","method":"activity","params":{"space":"/Users/ada/Knode/Personal.knode","agent":"codex","method":"search","nodes":["01K83N6V4W5D2XQJ0Y7RZ9T1AB"]}}
+  ```
+
+  Only the name of the agent, the method and node ids are sent: never a title, a body or a
+  query. Nothing is stored (the access log keeps the calls themselves, see Authentication).
+  Agents' connections never receive `activity`, and the person's own reads are not announced.
+  A node the same agent read less than a second ago is left out, and a notice with no node left
+  is not sent. `activity` has a feed of its own: a connection that falls behind on it, or whose
+  outgoing messages are full, misses some of these notices, never a `changed` one, and is
+  never sent `lagged` for them.
 
 Changes have the shape of the `changes` table of the [.knode specification](https://github.com/knodemd/format)
 (section 17): `{ "id", "changed_at", "changed_by", "action", "subject", "undoes"?, "detail" }`.
