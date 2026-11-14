@@ -28,6 +28,9 @@ final class FakeKnodeService: @unchecked Sendable {
         var folders: [[String: Any]] = []
         /// The notes marked `markdown.deleted`, with the path their file had.
         var deletedFiles: [String: String] = [:]
+        /// What `projects` answers, and the notes of each project by id.
+        var projects: [[String: Any]] = []
+        var projectNotes: [String: [String]] = [:]
     }
 
     let socketURL: URL
@@ -148,6 +151,14 @@ final class FakeKnodeService: @unchecked Sendable {
 
     func node(_ id: String, in path: String) -> StoredNode? {
         lock.withLock { spaces[path]?.nodes[id] }
+    }
+
+    /// Gives a space projects, as `projects` lists them, and the notes part of each.
+    func setProjects(_ projects: [[String: Any]], notes: [String: [String]], in path: String) {
+        lock.withLock {
+            spaces[path]?.projects = projects
+            spaces[path]?.projectNotes = notes
+        }
     }
 
     func params(of method: String) -> [String: Any]? {
@@ -448,6 +459,12 @@ final class FakeKnodeService: @unchecked Sendable {
         case "recent":
             let nodes = try space().nodes.values.sorted { $0.updatedAt > $1.updatedAt }
             return (nodes.map { ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by] }, nil)
+        case "projects":
+            return (try space().projects, nil)
+        case "project.notes":
+            let space = try space()
+            let ids = space.projectNotes[params["id"] as? String ?? ""] ?? []
+            return (ids.compactMap { space.nodes[$0] }.map { ["id": $0.id, "kind": "note", "title": $0.title, "created_at": $0.createdAt, "updated_at": $0.updatedAt, "updated_by": $0.by] }, nil)
         case "search":
             let query = (params["query"] as? String ?? "").lowercased()
             let found = try space().nodes.values
