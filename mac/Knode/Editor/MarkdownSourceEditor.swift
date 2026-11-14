@@ -7,20 +7,18 @@ import SwiftUI
 /// sent as a splice. Text that changes under it, written by someone else, is patched in place:
 /// only the runs that differ are replaced, and the selection moves with the text around it.
 /// With `attachments`, files dropped in the text and images pasted into it are attached and
-/// written as `![[name]]` where they went.
+/// written as `![[name]]` where they went. The Markdown syntax is coloured as it is typed
+/// (`MarkdownHighlighter`), and Command-clicking a `[[wiki link]]` calls `openWikiLink`.
 struct MarkdownSourceEditor: NSViewRepresentable {
     let editor: NoteEditorModel
     var attachments: AttachmentDrop?
+    var openWikiLink: ((String) -> Void)?
 
     /// Geist Mono, the type of the source on knode.md.
-    static var font: NSFont { KFont.nsMono(13.5) }
+    static var font: NSFont { MarkdownStyle.font }
 
     /// Lines a little apart, like the web's code blocks.
-    static var paragraphStyle: NSParagraphStyle {
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = 5
-        return style
-    }
+    static var paragraphStyle: NSParagraphStyle { MarkdownStyle.paragraphStyle }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(editor: editor)
@@ -40,6 +38,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
         textView.attachments = attachments
+        textView.openWikiLink = openWikiLink
         scroll.documentView = textView
         textView.delegate = context.coordinator
         textView.isRichText = false
@@ -59,8 +58,11 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
+        let highlighter = context.coordinator.highlighter
+        highlighter.isComposing = { [weak textView] in textView?.hasMarkedText() ?? false }
+        textView.textStorage?.delegate = highlighter
+        // Setting the text styles all of it, through the highlighter.
         textView.string = editor.body
-        textView.textStorage?.setAttributes(Coordinator.attributes, range: NSRange(location: 0, length: (editor.body as NSString).length))
         textView.setAccessibilityLabel("Markdown")
         context.coordinator.textView = textView
         return scroll
@@ -68,7 +70,10 @@ struct MarkdownSourceEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.editor = editor
-        (context.coordinator.textView as? AttachingTextView)?.attachments = attachments
+        if let textView = context.coordinator.textView as? AttachingTextView {
+            textView.attachments = attachments
+            textView.openWikiLink = openWikiLink
+        }
         // Read here, so the view updates when the body changes.
         context.coordinator.show(editor.body)
     }
@@ -77,12 +82,14 @@ struct MarkdownSourceEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var editor: NoteEditorModel
         weak var textView: NSTextView?
+        /// Colours the source; the delegate of the text storage, which holds it weakly.
+        let highlighter = MarkdownHighlighter()
         /// The edit the text view is about to make.
         private var change: (range: NSRange, replacement: String)?
         private var patching = false
 
         static var attributes: [NSAttributedString.Key: Any] {
-            [.font: MarkdownSourceEditor.font, .foregroundColor: KColor.ns(\.fg), .paragraphStyle: MarkdownSourceEditor.paragraphStyle]
+            MarkdownStyle.base
         }
 
         init(editor: NoteEditorModel) {
@@ -99,6 +106,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             let change = self.change
             self.change = nil
             editor.isComposing = textView.hasMarkedText()
+            if !editor.isComposing, let storage = textView.textStorage { highlighter.finishComposing(storage) }
             editor.viewDidEdit(text: textView.string, range: change?.range, replacement: change?.replacement)
         }
 
