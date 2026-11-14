@@ -111,6 +111,9 @@ pub struct CaptureReport {
     pub deleted: usize,
     /// Files that could not be read, with the reason. They are tried again next time.
     pub failed: Vec<(PathBuf, String)>,
+    /// Secrets replaced in what was written, when redaction is on (see
+    /// [`Capture::with_redaction`]).
+    pub redacted: usize,
 }
 
 impl CaptureReport {
@@ -198,6 +201,7 @@ pub struct Capture {
     state: State,
     filter: ProjectFilter,
     roots: Vec<(Agent, PathBuf)>,
+    redact: bool,
 }
 
 impl State {
@@ -303,7 +307,16 @@ impl Capture {
             state,
             filter: ProjectFilter::new(),
             roots,
+            redact: false,
         })
+    }
+
+    /// Replaces obvious secrets (API keys, tokens, private keys, assigned passwords) in each
+    /// conversation before it is written; [`CaptureReport::redacted`] counts them. See
+    /// [`redact_secrets`](crate::redact_secrets).
+    pub fn with_redaction(mut self) -> Self {
+        self.redact = true;
+        self
     }
 
     /// Uses these session folders instead of the default ones.
@@ -579,9 +592,16 @@ impl Capture {
             let same = previous_session.as_deref() == Some(finished.session_id.as_str());
             for key in destinations.route(&finished, &file.path) {
                 let known = if same { nodes.get(&key).copied() } else { None };
-                if let Written::Changed(captured) =
-                    write_to(destinations, &key, &finished, &file.path, known)?
-                {
+                let (written, redacted) = write_to(
+                    destinations,
+                    &key,
+                    &finished,
+                    &file.path,
+                    known,
+                    self.redact,
+                )?;
+                if let Written::Changed(captured) = written {
+                    report.redacted += redacted;
                     report.changes.push(captured);
                 }
             }
@@ -611,8 +631,17 @@ impl Capture {
                     report.unchanged += 1;
                     continue;
                 }
-                match write_to(destinations, &key, conversation, &file.path, known)? {
+                let (written, redacted) = write_to(
+                    destinations,
+                    &key,
+                    conversation,
+                    &file.path,
+                    known,
+                    self.redact,
+                )?;
+                match written {
                     Written::Changed(captured) => {
+                        report.redacted += redacted;
                         nodes.insert(key, captured.node_id);
                         report.changes.push(captured);
                     }
@@ -658,24 +687,37 @@ enum Written {
     Deleted,
 }
 
-/// Writes a conversation into the space of `key`.
+/// Writes a conversation into the space of `key`, its obvious secrets replaced first when
+/// `redact` is set, and says how many were.
 fn write_to(
     destinations: &dyn Destinations,
     key: &str,
     conversation: &Conversation,
     path: &Path,
     known: Option<NodeId>,
-) -> Result<Written, CaptureError> {
+    redact: bool,
+) -> Result<(Written, usize), CaptureError> {
+    let mut redacted = 0;
+    let cleaned;
+    let conversation = if redact {
+        let mut copy = conversation.clone();
+        redacted = crate::redact::redact_conversation(&mut copy);
+        cleaned = copy;
+        &cleaned
+    } else {
+        conversation
+    };
     let mut written = None;
     destinations.with_space(key, &mut |space| {
         written = Some(write_conversation(space, key, conversation, path, known)?);
         Ok(())
     })?;
-    written.ok_or_else(|| {
+    let written = written.ok_or_else(|| {
         CaptureError::Space(knode_format::Error::Invalid(format!(
             "no space to write the conversation to: {key}"
         )))
-    })
+    })?;
+    Ok((written, redacted))
 }
 
 /// The properties of a conversation node.
