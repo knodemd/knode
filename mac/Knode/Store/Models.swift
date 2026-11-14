@@ -173,7 +173,7 @@ public struct NodeSummary: Identifiable, Hashable, Sendable {
     public var updatedAt: Date
     /// What the node is, such as `note` or `canvas`.
     public var kind: String
-    /// The Markdown file the note was imported from, such as `taskbot/README.md`.
+    /// The Markdown file the note was imported from, such as `app/README.md`.
     public var path: String?
 
     public init(id: Node.ID, title: String, excerpt: String, updatedAt: Date, kind: String = NodeKind.note, path: String? = nil) {
@@ -186,7 +186,7 @@ public struct NodeSummary: Identifiable, Hashable, Sendable {
     }
 
     /// The folder of the file the note was imported from, to tell apart notes of the same name:
-    /// `taskbot/macos-widget` for `taskbot/macos-widget/README.md`, nil at the top or when written here.
+    /// `app/widget` for `app/widget/README.md`, nil at the top or when written here.
     public var folder: String? {
         guard let path, let slash = path.lastIndex(of: "/") else { return nil }
         return String(path[..<slash])
