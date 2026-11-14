@@ -14,6 +14,8 @@ struct AttachmentDrop {
 /// `![[name]]` where they went. Without `attachments` it behaves as `NSTextView`.
 final class AttachingTextView: NSTextView {
     var attachments: AttachmentDrop?
+    /// Opens a `[[wiki link]]` Command-clicked in the text, by the name it points to.
+    var openWikiLink: ((String) -> Void)?
 
     private static let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
 
@@ -57,6 +59,23 @@ final class AttachingTextView: NSTextView {
             return true
         }
         return super.readSelection(from: pboard, type: type)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), let openWikiLink, let name = wikiLink(at: event) {
+            openWikiLink(name)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// The name of the wiki link under the pointer, as the highlighter marked it.
+    private func wikiLink(at event: NSEvent) -> String? {
+        guard let window, let storage = textStorage else { return nil }
+        let point = window.convertPoint(toScreen: event.locationInWindow)
+        let index = characterIndex(for: point)
+        guard index != NSNotFound, index < storage.length else { return nil }
+        return storage.attribute(.knodeWikiLink, at: index, effectiveRange: nil) as? String
     }
 
     /// Writes `![[name]]` for each name in place of `range`, each on a line of its own, as the
