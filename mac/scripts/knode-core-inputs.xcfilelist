@@ -4,6 +4,7 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
+$(SRCROOT)/../core/crates/knode-config/src/workflow.rs
 $(SRCROOT)/../core/crates/knode-ffi/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ffi/src/attachments.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/bin/uniffi-bindgen.rs
