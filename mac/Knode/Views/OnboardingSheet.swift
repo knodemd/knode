@@ -223,7 +223,7 @@ struct OnboardingSheet: View {
     private var completion: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let result {
-                KExplanation("Created \(result.contexts.count) project context indexes. Review them in the app and fill in actual goals and next steps. The import left your original source unchanged; edits here are independent. Optional instruction installation is a separate file edit.")
+                KExplanation("Created \(result.contexts.count) projects from your folders, each with its notes, the projects inside it and related projects. The import left your original source unchanged; edits here are independent. Optional instruction installation is a separate file edit.")
                 Text(result.contexts.keys.sorted().joined(separator: " · ")).font(KFont.ui(13))
                 if !result.unresolved.isEmpty || !result.report.attachments.isEmpty || !result.report.unlinked.isEmpty {
                     ScrollView {
