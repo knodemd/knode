@@ -8,6 +8,7 @@
 {"type":"assistant.message","data":{"messageId":"m2","content":"","toolRequests":[{"toolCallId":"c3","name":"create","arguments":{"path":"/Users/example/project/README.md","file_text":"# Example"}}]},"id":"e8","timestamp":"2026-01-02T12:00:06.000Z","parentId":"e7"}
 {"type":"tool.execution_complete","data":{"toolCallId":"c3","success":false,"error":{"message":"denied"}},"id":"e9","timestamp":"2026-01-02T12:00:07.000Z","parentId":"e8"}
 {"type":"assistant.message","data":{"messageId":"m3","content":"Subagent notes","parentToolCallId":"c9"},"id":"e10","timestamp":"2026-01-02T12:00:08.000Z","parentId":"e9"}
+{"type":"assistant.message","agentId":"explore-1","data":{"messageId":"m3b","content":"Subagent notes from the explore agent","model":"model-sub"},"id":"e10b","timestamp":"2026-01-02T12:00:08.500Z","parentId":"e10"}
 {"type":"assistant.message","data":{"messageId":"m4","content":"Writing the file was denied."},"id":"e11","timestamp":"2026-01-02T12:00:09.000Z","parentId":"e10"}
 {"type":"assistant.turn_end","data":{"turnId":"0"},"id":"e12","timestamp":"2026-01-02T12:00:10.000Z","parentId":"e11"}
 {"type":"session.title_changed","data":{"title":"Add a README"},"id":"e13","timestamp":"2026-01-02T12:00:11.000Z","parentId":"e12"}

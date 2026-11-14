@@ -218,6 +218,7 @@ fn reads_an_amp_thread() {
         conversation.project.as_deref(),
         Some(Path::new("/Users/example/my project"))
     );
+    assert_eq!(conversation.git_branch.as_deref(), Some("rename-config"));
     assert_eq!(conversation.title(), "Rename the config module");
     assert_eq!(conversation.model.as_deref(), Some("amp-example-model"));
     assert_eq!(
@@ -532,6 +533,7 @@ fn captures_every_agent_into_a_space() {
             "opencode"
         ]
     );
+    let mut without_project = Vec::new();
     for change in report.created() {
         let node = space.get_node(&change.node_id).unwrap().unwrap();
         assert_eq!(node.kind, kinds::CONVERSATION);
@@ -542,7 +544,26 @@ fn captures_every_agent_into_a_space() {
                 .as_deref(),
             Some(change.agent.id())
         );
+        // One node per conversation, with the date it started, and its project when the agent
+        // recorded one.
+        let started = space
+            .property(&change.node_id, property_keys::CONVERSATION_STARTED_AT)
+            .unwrap();
+        assert!(started.is_some_and(|v| !v.is_empty()), "{change:?}");
+        if space
+            .property(&change.node_id, property_keys::CONVERSATION_PROJECT)
+            .unwrap()
+            .is_none()
+        {
+            without_project.push(change.agent.id());
+        }
     }
+    // Only the older Gemini CLI session, kept under a hash of its project folder, has none.
+    assert_eq!(without_project, ["gemini-cli"]);
+    let mut sessions: Vec<&str> = report.created().map(|c| c.session_id.as_str()).collect();
+    sessions.sort_unstable();
+    sessions.dedup();
+    assert_eq!(sessions.len(), report.created().count());
 
     // Nothing new: nothing written.
     let again = capture.sync_all(&mut space).unwrap();

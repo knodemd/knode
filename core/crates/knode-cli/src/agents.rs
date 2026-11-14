@@ -1,11 +1,11 @@
-//! `knode agents`: list the agents of this machine, change what they may do in each space, and
-//! revoke their keys.
+//! `knode agents`: list the agents of this machine, the ones whose conversations are captured,
+//! change what they may do in each space, and revoke their keys.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
-use knode_config::Paths;
+use knode_config::{Config, Paths};
 use knode_format::{GrantLevel, Manifest};
 use knode_service::AgentInfo;
 
@@ -13,7 +13,8 @@ use crate::connect::{self, Agent};
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
-    /// List the agents of this machine and what they may do in each space.
+    /// List the agents of this machine, what they may do in each space, and the agents whose
+    /// conversations are captured.
     List,
     /// Set what an agent may do in a space: none (the space is invisible to it), read or write.
     Grant {
@@ -55,7 +56,7 @@ impl From<Level> for GrantLevel {
 
 pub fn run(paths: &Paths, action: Action) -> Result<()> {
     match action {
-        Action::List => list(),
+        Action::List => list(paths),
         Action::Grant {
             agent,
             target,
@@ -117,7 +118,7 @@ pub fn print_access(agent: &AgentInfo) {
     }
 }
 
-fn list() -> Result<()> {
+fn list(paths: &Paths) -> Result<()> {
     let client = crate::service::connect().context("Knode Service could not start")?;
     let agents = client.agents()?;
     if agents.is_empty() {
@@ -163,7 +164,45 @@ fn list() -> Result<()> {
             );
         }
     }
+    println!();
+    print_captured(paths)?;
     Ok(())
+}
+
+/// Prints the agents whose sessions are on this machine, and so are captured, or that capture
+/// is off.
+fn print_captured(paths: &Paths) -> Result<()> {
+    if !Config::load(paths)?.capture_enabled() {
+        println!(
+            "Capture of agent conversations is off (`capture = false` in {}).",
+            paths.config_file().display()
+        );
+        return Ok(());
+    }
+    let found = captured_agents();
+    if found.is_empty() {
+        println!("No agent sessions on this machine yet: nothing to capture.");
+        return Ok(());
+    }
+    println!("Conversations captured from:");
+    let width = found.iter().map(|(a, _)| a.name().len()).max().unwrap_or(0);
+    for (agent, root) in &found {
+        println!("  {:width$}  {}", agent.name(), root.display());
+    }
+    Ok(())
+}
+
+/// The agents whose session folder is on this machine, with the folder.
+fn captured_agents() -> Vec<(knode_ingest::Agent, PathBuf)> {
+    knode_ingest::Agent::ALL
+        .into_iter()
+        .filter_map(|agent| {
+            let root = knode_ingest::default_roots(agent)
+                .into_iter()
+                .find(|root| root.is_dir())?;
+            Some((agent, root))
+        })
+        .collect()
 }
 
 fn grant(paths: &Paths, agent: &str, space: &str, level: GrantLevel) -> Result<()> {
