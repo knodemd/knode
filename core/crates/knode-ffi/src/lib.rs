@@ -289,6 +289,19 @@ impl From<format::NodeSummary> for NodeSummary {
     }
 }
 
+/// A project of a space: a node of kind `project` that other nodes are part of.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Project {
+    /// The project node.
+    pub node: NodeSummary,
+    /// The id of the project it is part of, if any.
+    pub parent: Option<String>,
+    /// How many nodes that are not projects are part of it.
+    pub notes: u64,
+    /// How many projects are part of it.
+    pub projects: u64,
+}
+
 /// A node in a list, with the first line of its text.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct RecentNode {
@@ -497,6 +510,42 @@ impl KnodeSpace {
         let space = self.lock();
         let summaries = space.recent(limit as usize)?;
         summaries
+            .into_iter()
+            .map(|summary| {
+                let excerpt = space
+                    .get_node(&summary.id)?
+                    .map(|node| excerpt(&node.body))
+                    .unwrap_or_default();
+                Ok(RecentNode {
+                    node: summary.into(),
+                    excerpt,
+                })
+            })
+            .collect()
+    }
+
+    /// Every project of the space, by title.
+    pub fn projects(&self) -> Result<Vec<Project>> {
+        Ok(self
+            .lock()
+            .projects()?
+            .into_iter()
+            .map(|p| Project {
+                node: p.node.into(),
+                parent: p.parent.map(|id| id.to_string()),
+                notes: p.notes,
+                projects: p.projects,
+            })
+            .collect())
+    }
+
+    /// The nodes part of a project that are not projects, most recently changed first, each
+    /// with the first line of its text.
+    pub fn project_notes(&self, id: String, limit: u32) -> Result<Vec<RecentNode>> {
+        let id = parse_id(&id)?;
+        let space = self.lock();
+        space
+            .project_notes(&id, limit as usize)?
             .into_iter()
             .map(|summary| {
                 let excerpt = space
