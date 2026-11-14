@@ -16,16 +16,16 @@ fn me() -> Provenance {
 fn links_to_a_shared_name_go_to_the_nearest_note() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
-    put(&vault, "Alpha/Estado.md", "Alpha status.\n");
-    put(&vault, "Alpha/Plan.md", "See [[Estado]].\n");
+    put(&vault, "Alpha/Status.md", "Alpha status.\n");
+    put(&vault, "Alpha/Plan.md", "See [[Status]].\n");
     put(
         &vault,
-        "Basket/Season/Plan.md",
-        "See [[Estado]] and [[app/README]].\n",
+        "Beta/Sprint/Plan.md",
+        "See [[Status]] and [[app/README]].\n",
     );
-    put(&vault, "Basket/Estado.md", "Basket status.\n");
-    put(&vault, "Labs/app/README.md", "The other app.\n");
-    put(&vault, "Basket/Season/app/README.md", "This app.\n");
+    put(&vault, "Beta/Status.md", "Beta status.\n");
+    put(&vault, "Other/app/README.md", "The other app.\n");
+    put(&vault, "Beta/Sprint/app/README.md", "This app.\n");
     put(
         &vault,
         "Zeta/Note.md",
@@ -49,21 +49,21 @@ fn links_to_a_shared_name_go_to_the_nearest_note() {
     }
     assert_eq!(
         targets(&space, "Alpha/Plan.md"),
-        vec![by_path(&space, "Alpha/Estado.md")]
+        vec![by_path(&space, "Alpha/Status.md")]
     );
-    let mut season = vec![
-        by_path(&space, "Basket/Estado.md"),
-        by_path(&space, "Basket/Season/app/README.md"),
+    let mut sprint = vec![
+        by_path(&space, "Beta/Status.md"),
+        by_path(&space, "Beta/Sprint/app/README.md"),
     ];
-    season.sort();
-    assert_eq!(targets(&space, "Basket/Season/Plan.md"), season);
+    sprint.sort();
+    assert_eq!(targets(&space, "Beta/Sprint/Plan.md"), sprint);
     // Of the two notes named Plan, Alpha/Plan.md is fewer folders away from Zeta/Note.md.
     assert_eq!(
         targets(&space, "Zeta/Note.md"),
         vec![by_path(&space, "Alpha/Plan.md")]
     );
     // Editing the note keeps the same targets: they are part of what its body means.
-    let id = by_path(&space, "Basket/Season/Plan.md");
+    let id = by_path(&space, "Beta/Sprint/Plan.md");
     let body = space.get_node(&id).unwrap().unwrap().body;
     space
         .update_node(
@@ -75,5 +75,5 @@ fn links_to_a_shared_name_go_to_the_nearest_note() {
             &me(),
         )
         .unwrap();
-    assert_eq!(targets(&space, "Basket/Season/Plan.md"), season);
+    assert_eq!(targets(&space, "Beta/Sprint/Plan.md"), sprint);
 }
