@@ -55,7 +55,7 @@ remembering beyond this conversation (decisions and their reasons, findings, pla
 with write_node, one topic per node, and link related nodes with [[Title]] in the text or with \
 link_nodes, with a kind from link_kinds that says how they relate. Search first and update an \
 existing node instead of creating a duplicate. history shows who changed what; undo takes back a \
-change of your own.";
+change of your own. Use read_excerpt for bounded body ranges of long notes; its snapshot is for continuation, not a full-note rewrite. Read surrounding ranges when qualifications may be missing and read_node before rewriting a note.";
 
 /// The version of this crate.
 pub fn version() -> &'static str {

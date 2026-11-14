@@ -92,6 +92,9 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// Rehearse a Markdown-folder import locally without changing a destination space.
+        #[arg(long)]
+        preview: bool,
     },
     /// Show the links of a node, going out and coming in, each as it reads from the node.
     Links {
@@ -289,7 +292,11 @@ fn run(cli: Cli) -> Result<()> {
             from,
             vault,
             json,
+            preview,
         } => {
+            if preview {
+                return import::preview(target.as_deref(), from.as_deref(), json);
+            }
             let space = existing_space(&paths, cli.space.as_deref())?;
             let request = import::Request {
                 target: target.as_deref(),
