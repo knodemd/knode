@@ -10,6 +10,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/connect/places.rs
 $(SRCROOT)/../core/crates/knode-cli/src/history.rs
 $(SRCROOT)/../core/crates/knode-cli/src/import.rs
 $(SRCROOT)/../core/crates/knode-cli/src/index.rs
+$(SRCROOT)/../core/crates/knode-cli/src/instructions.rs
 $(SRCROOT)/../core/crates/knode-cli/src/main.rs
 $(SRCROOT)/../core/crates/knode-cli/src/maps.rs
 $(SRCROOT)/../core/crates/knode-cli/src/markdown.rs
@@ -18,6 +19,7 @@ $(SRCROOT)/../core/crates/knode-cli/src/service.rs
 $(SRCROOT)/../core/crates/knode-cli/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
+$(SRCROOT)/../core/crates/knode-config/src/workflow.rs
 $(SRCROOT)/../core/crates/knode-embed/Cargo.toml
 $(SRCROOT)/../core/crates/knode-embed/src/chunk.rs
 $(SRCROOT)/../core/crates/knode-embed/src/download.rs
@@ -46,6 +48,7 @@ $(SRCROOT)/../core/crates/knode-format/src/sql/0001-initial.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0002-properties.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0003-v02.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0004-v03.sql
+$(SRCROOT)/../core/crates/knode-format/src/sql/0005-search-path.sql
 $(SRCROOT)/../core/crates/knode-format/src/types.rs
 $(SRCROOT)/../core/crates/knode-format/src/vector.rs
 $(SRCROOT)/../core/crates/knode-format/src/views.rs
@@ -81,6 +84,7 @@ $(SRCROOT)/../core/crates/knode-mcp/src/backend.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/lib.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/service.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/tools.rs
+$(SRCROOT)/../core/crates/knode-mcp/src/tools/excerpt.rs
 $(SRCROOT)/../core/crates/knode-mcp/src/tools/maps.rs
 $(SRCROOT)/../core/crates/knode-md/Cargo.toml
 $(SRCROOT)/../core/crates/knode-md/src/lib.rs
@@ -138,6 +142,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
 $(SRCROOT)/../core/crates/knode-vault/src/live.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
+$(SRCROOT)/../core/crates/knode-vault/src/preview.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/book.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/dates.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/document.rs

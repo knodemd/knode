@@ -53,17 +53,38 @@ jobs:
   macos:
     name: Build macOS (Apple silicon, Intel, universal)
     needs: version
-    runs-on: macos-15
+    runs-on: macos-26
+    # The Linux jobs do not depend on this one: without the Mac credentials they still build,
+    # but this job fails and no draft release is created, so there is never an unsigned Mac
+    # download. Each secret is passed only to the steps that use it.
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
     steps:
+      - name: Require release signing credentials
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          missing=0
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY \
+                      APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The repository secret $name is not set"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "::error::The Mac release needs Developer ID signing and notarisation credentials. The Linux builds still run, but no draft release is created until this job passes."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
 
       - name: Install Rust
         run: |
@@ -91,22 +112,26 @@ jobs:
           lipo -info dist/bin/universal-apple-darwin/knode
 
       - name: Import the Developer ID certificate
-        if: env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/release.keychain-db"
+          certificate="$RUNNER_TEMP/certificate.p12"
+          trap 'rm -f "$certificate"' EXIT
           keychain_password="$(openssl rand -hex 24)"
-          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+          security import "$certificate" -k "$keychain" \
             -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
-          rm "$RUNNER_TEMP/certificate.p12"
 
-      - name: Sign
-        if: env.MACOS_CERTIFICATE_P12 != ''
+      - name: Sign the command-line binaries
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
           for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
             codesign --force --timestamp --options runtime \
@@ -114,28 +139,104 @@ jobs:
             codesign --verify --strict --verbose=2 "dist/bin/$target/knode"
           done
 
-      - name: Skip signing
-        if: env.MACOS_CERTIFICATE_P12 == ''
-        run: echo "::warning::MACOS_CERTIFICATE_P12 is not set, the macOS binaries are not signed or notarised"
-
-      - name: Notarise
-        if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_API_KEY_P8 != ''
+      - name: Notarise the command-line binaries
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           key="$RUNNER_TEMP/AuthKey.p8"
+          trap 'rm -f "$key"' EXIT
           echo "$APPLE_API_KEY_P8" | base64 --decode > "$key"
           # A bare binary cannot be stapled; notarising it registers the ticket with
           # Apple, which Gatekeeper checks online.
-          ditto -c -k --keepParent dist/bin/universal-apple-darwin/knode "$RUNNER_TEMP/knode-notarise.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/knode-notarise.zip" \
-            --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
-            --wait --timeout 30m
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+          for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
             ditto -c -k --keepParent "dist/bin/$target/knode" "$RUNNER_TEMP/knode-$target.zip"
             xcrun notarytool submit "$RUNNER_TEMP/knode-$target.zip" \
               --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
               --wait --timeout 30m
           done
-          rm "$key"
+
+      - name: Build the universal Mac app
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          # Notarisation needs the hardened runtime and a secure timestamp on every signature.
+          # scripts/embed-knode-cli.sh signs the embedded knode command the same way.
+          xcodebuild -project mac/Knode.xcodeproj -scheme Knode -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath mac/build/ReleaseData \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" \
+            ENABLE_HARDENED_RUNTIME=YES OTHER_CODE_SIGN_FLAGS=--timestamp \
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+            build
+
+      - name: Check the app signatures
+        run: |
+          app="mac/build/ReleaseData/Build/Products/Release/Knode.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          for code in "$app" "$app/Contents/Helpers/knode"; do
+            details="$(codesign -dv --verbose=4 "$code" 2>&1)"
+            echo "$details" | grep -q '^Authority=Developer ID Application:' \
+              || { echo "::error::$code is not signed with Developer ID Application"; exit 1; }
+            echo "$details" | grep -q '^Timestamp=' \
+              || { echo "::error::$code has no secure timestamp"; exit 1; }
+            echo "$details" | grep -Eq '^CodeDirectory .*flags=.*runtime' \
+              || { echo "::error::$code is not signed with the hardened runtime"; exit 1; }
+          done
+
+      - name: Notarise and staple the app
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          app="mac/build/ReleaseData/Build/Products/Release/Knode.app"
+          key="$RUNNER_TEMP/AppAuthKey.p8"
+          trap 'rm -f "$key"' EXIT
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$key"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/Knode-notarise.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Knode-notarise.zip" \
+            --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Package the disk image
+        run: |
+          mac/scripts/package-app.sh mac/build/ReleaseData/Build/Products/Release/Knode.app \
+            "$VERSION" dist/release
+
+      - name: Sign the disk image
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          image="dist/release/Knode-$VERSION.dmg"
+          codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$image"
+          codesign --verify --strict --verbose=2 "$image"
+          codesign -dv --verbose=4 "$image" 2>&1 | grep -q '^Timestamp=' \
+            || { echo "::error::$image has no secure timestamp"; exit 1; }
+
+      - name: Notarise and staple the disk image
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          image="dist/release/Knode-$VERSION.dmg"
+          key="$RUNNER_TEMP/ImageAuthKey.p8"
+          trap 'rm -f "$key"' EXIT
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$key"
+          xcrun notarytool submit "$image" \
+            --key "$key" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
+            --wait --timeout 30m
+          xcrun stapler staple "$image"
+          xcrun stapler validate "$image"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$image"
+          # Signing and stapling change the image: checksum its final bytes.
+          (cd dist/release && shasum -a 256 "Knode-$VERSION.dmg" > "Knode-$VERSION.dmg.sha256")
 
       - name: Package
         run: |
@@ -150,9 +251,16 @@ jobs:
           done
           ls -l dist/release
 
-      - name: Remove the signing keychain
-        if: always() && env.MACOS_CERTIFICATE_P12 != ''
-        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
+      - name: Remove the signing keychain and keys
+        if: always()
+        run: |
+          temp="${RUNNER_TEMP:?}"
+          if [ -e "$temp/release.keychain-db" ]; then
+            security delete-keychain "$temp/release.keychain-db" || true
+          fi
+          for file in certificate.p12 AuthKey.p8 AppAuthKey.p8 ImageAuthKey.p8; do
+            rm -f "$temp/$file"
+          done
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -258,7 +366,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum knode-*.tar.gz > SHA256SUMS
+          sha256sum knode-*.tar.gz Knode-*.dmg > SHA256SUMS
           cat SHA256SUMS
 
       - name: Release notes from the changelog
@@ -290,4 +398,4 @@ jobs:
             flags+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-            knode-*.tar.gz knode-*.tar.gz.sha256 SHA256SUMS
+            knode-*.tar.gz knode-*.tar.gz.sha256 Knode-*.dmg Knode-*.dmg.sha256 SHA256SUMS
