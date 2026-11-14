@@ -50,6 +50,7 @@ mod gemini;
 mod model;
 mod opencode;
 mod reader;
+mod redact;
 mod render;
 mod text;
 mod vscdb;
@@ -69,6 +70,7 @@ pub use exports::{
 pub use filter::ProjectFilter;
 pub use model::{Agent, Conversation, Message, Part, Role, Title, TitleSource, ToolCall};
 pub use reader::{Error, Progress, SessionReader, read_session, read_sessions};
+pub use redact::{REDACTED, count_secrets, redact_conversation, redact_secrets};
 pub use render::{derive_title, to_markdown};
 pub use watch::{Changes, WatchOptions, Watcher};
 

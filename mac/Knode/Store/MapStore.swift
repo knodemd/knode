@@ -433,5 +433,7 @@ public enum NodeKind {
     public static let decision = "decision"
     public static let idea = "idea"
     public static let source = "source"
+    /// A project other nodes are part of.
+    public static let project = "project"
     public static let canvas = "canvas"
 }

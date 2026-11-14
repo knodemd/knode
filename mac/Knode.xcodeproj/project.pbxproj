@@ -39,6 +39,7 @@
 		2556C9564A101734F7E6D5BA /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = F62D33407D7A83E40E34FE2B /* AppIcon.icns */; };
 		2828A910729438B595879406 /* CanvasModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C55F8766EB17ECEAB8C72A3 /* CanvasModel.swift */; };
 		289DD507AC4934F3420B6385 /* SettingsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3441CBD4377727751FFE4729 /* SettingsComponents.swift */; };
+		297179EA0971A4FCC02DEC41 /* OnboardingSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D2698167640C287EE15FF2C /* OnboardingSheet.swift */; };
 		2CB586498FAD814BF606BD8C /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D00F921E755F4E322D2982 /* ContentView.swift */; };
 		2ED0A76CE39001070DC3D06D /* ServiceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75DF6639443EF78D2ED2F4B /* ServiceMonitor.swift */; };
 		3008E96DA4F7E745ECEB73C6 /* KFloating.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70D1C4573D175A9D3C5111 /* KFloating.swift */; };
@@ -229,6 +230,7 @@
 		96D250CA89BC07524A87D4A6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		9789760F309094F157FE9CFB /* FakeKnodeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeKnodeService.swift; sourceTree = "<group>"; };
 		9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreSpaceStore.swift; sourceTree = "<group>"; };
+		9D2698167640C287EE15FF2C /* OnboardingSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingSheet.swift; sourceTree = "<group>"; };
 		A28D94F7C875354C8F9F80AA /* KFont.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KFont.swift; sourceTree = "<group>"; };
 		A2BD7995016E9A8B78A2D927 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		A4192875931DFC4D972A9798 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
@@ -332,6 +334,7 @@
 				4E9CD836D628011CD6A0F9CD /* MapStyle.swift */,
 				12943BF030851C5E11A446C8 /* NoteLinksPanel.swift */,
 				95BDD689D2D618AB825F4B13 /* NoteView.swift */,
+				9D2698167640C287EE15FF2C /* OnboardingSheet.swift */,
 				0FAB5829AF7223F860C6050E /* SearchViews.swift */,
 				BF3ED96DA1B41A929B0F4B43 /* ServiceMenu.swift */,
 				3441CBD4377727751FFE4729 /* SettingsComponents.swift */,
@@ -826,6 +829,7 @@
 				AD54F3BC930DA6854C362FA0 /* NoteLinksModel.swift in Sources */,
 				3D5C44AA169C751B90369AEE /* NoteLinksPanel.swift in Sources */,
 				0ACCD9BFF3C785E4E92120BF /* NoteView.swift in Sources */,
+				297179EA0971A4FCC02DEC41 /* OnboardingSheet.swift in Sources */,
 				3E88B7387E23A386FBD137B6 /* PreviewSpaceStore.swift in Sources */,
 				19BBBB44F9A5DEDF562BF8BB /* RecentSpaces.swift in Sources */,
 				3639B690B7D233A6F3AD4E4B /* RoutingSpaceStore.swift in Sources */,

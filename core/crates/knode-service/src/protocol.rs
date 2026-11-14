@@ -58,6 +58,10 @@ pub mod methods {
     pub const INDEX_RUN: &str = "index.run";
     /// The nodes changed most recently.
     pub const RECENT: &str = "recent";
+    /// The projects of a space, with their parent and how much is in each.
+    pub const PROJECTS: &str = "projects";
+    /// The nodes that are part of a project, most recently changed first.
+    pub const PROJECT_NOTES: &str = "project.notes";
     /// Every version of a node.
     pub const HISTORY: &str = "history";
     /// The changes of a space, or of one subject such as a node, newest first.
@@ -115,6 +119,8 @@ pub mod methods {
     pub const SPACE: &str = "space";
     /// Notification: this connection fell behind and missed changes.
     pub const LAGGED: &str = "lagged";
+    /// Notification: an agent read nodes. Only sent to the person, never kept.
+    pub const ACTIVITY: &str = "activity";
 
     // Link kinds, labelled links, views, canvases and attachments (schema version 4), and
     // data exports.
@@ -360,6 +366,24 @@ pub enum ChangeKind {
     Unlink,
 }
 
+/// The params of an `activity` notification: an agent just read these nodes of a space, so the
+/// person can watch what it looks at. Sent to the person's connections only and never kept; the
+/// access log keeps the calls themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    /// The space, as the service opened it (an absolute, canonical path).
+    pub space: PathBuf,
+    /// The name of the agent, as its key says.
+    pub agent: String,
+    /// What it called, such as `node.get` or `search`.
+    pub method: String,
+    /// The nodes it read or found, at most [`MAX_ACTIVITY_NODES`].
+    pub nodes: Vec<NodeId>,
+}
+
+/// The most nodes an `activity` notification names.
+pub const MAX_ACTIVITY_NODES: usize = 25;
+
 /// The params of a `changed` notification: one node changed in one space.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
@@ -441,6 +465,8 @@ pub enum Event {
     Changed(Change),
     /// A space was renamed, or its settings or folders changed.
     Space(SpaceEvent),
+    /// An agent read nodes: only the person's connections hear it.
+    Activity(Activity),
     /// The connection fell behind and missed this many changes; reload what is shown.
     Lagged {
         /// How many changes were missed.
@@ -714,6 +740,19 @@ pub(crate) struct SearchParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct RecentParams {
     pub space: PathBuf,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectsParams {
+    pub space: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectNotesParams {
+    pub space: PathBuf,
+    pub id: NodeId,
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
