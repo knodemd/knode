@@ -484,7 +484,7 @@ fn lists_projects_and_their_notes() {
             .create_node(
                 format::NewNode {
                     kind: format::kinds::PROJECT.into(),
-                    title: "taskbot".into(),
+                    title: "harbor".into(),
                     ..Default::default()
                 },
                 &by,
@@ -492,7 +492,7 @@ fn lists_projects_and_their_notes() {
             .unwrap()
             .id;
         let note = inner
-            .create_node(format::NewNode::note("Estado", "Deployed.\n"), &by)
+            .create_node(format::NewNode::note("Status", "Deployed.\n"), &by)
             .unwrap()
             .id;
         inner
@@ -504,7 +504,7 @@ fn lists_projects_and_their_notes() {
     assert_eq!(projects.len(), 1);
     assert_eq!(
         (projects[0].node.title.as_str(), projects[0].notes),
-        ("taskbot", 1)
+        ("harbor", 1)
     );
     let notes = space.project_notes(project.to_string(), 10).unwrap();
     assert_eq!(notes[0].node.id, note.to_string());
