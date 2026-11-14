@@ -77,8 +77,8 @@ struct NewSpaceSheet: View {
                     .foregroundStyle(theme.muted)
             }
             VStack(alignment: .leading, spacing: KSpace.x1) {
-                KToggle("Add projects next", isOn: $setupProjects)
-                Text("Choose one or more project folders after creating the space. Several projects can share a space; use separate spaces when agent access must differ.")
+                KToggle("Add project folders next", isOn: $setupProjects)
+                Text("Choose the folders where your projects' files live. Several projects can share a space; use separate spaces when agents need different access.")
                     .font(KFont.ui(12))
                     .foregroundStyle(theme.muted)
             }

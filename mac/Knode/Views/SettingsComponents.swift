@@ -194,6 +194,7 @@ struct KSheetSurface<Content: View>: View {
 final class KOverlays {
     var confirmation: KConfirmation?
     var connecting: ConnectableAgent?
+    var addingProject: PendingProject?
 }
 
 extension EnvironmentValues {
@@ -210,6 +211,9 @@ extension View {
             .environment(\.kOverlays, overlays)
             .kSheet(item: $overlays.connecting, width: 520) { agent in
                 ConnectAgentView(initial: agent) { overlays.connecting = nil }
+            }
+            .kSheet(item: $overlays.addingProject, width: 540) { project in
+                AddProjectSheet(project: project) { overlays.addingProject = nil }
             }
             .kConfirm($overlays.confirmation)
     }
