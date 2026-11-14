@@ -63,7 +63,7 @@ struct SpaceLibrary {
     /// Takes a space off the list. Its files stay where they are.
     func remove(_ url: URL) {
         let url = url.standardizedFileURL
-        save(entries.filter { $0.url != url })
+        save(entries.filter { $0.url.standardizedFileURL.path(percentEncoded: false) != url.path(percentEncoded: false) })
     }
 
     /// Saves the list as it is, empty or not, so it is no longer filled automatically.

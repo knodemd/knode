@@ -50,12 +50,13 @@ pub const UNKNOWN_AGENT: &str = "mcp-client";
 /// What the server tells agents when they connect.
 pub const INSTRUCTIONS: &str = "Knode is the user's long-term memory, shared by all their AI \
 agents and their Knode app. Every node is Markdown with a title. Search it before answering \
-questions about earlier work, decisions, preferences or project context. Save what is worth \
+questions about earlier work, decisions, preferences or project context; when the work is about \
+a project, projects lists its notes directly. Save what is worth \
 remembering beyond this conversation (decisions and their reasons, findings, plans, summaries) \
 with write_node, one topic per node, and link related nodes with [[Title]] in the text or with \
 link_nodes, with a kind from link_kinds that says how they relate. Search first and update an \
 existing node instead of creating a duplicate. history shows who changed what; undo takes back a \
-change of your own.";
+change of your own. Use read_excerpt for bounded body ranges of long notes; its snapshot is for continuation, not a full-note rewrite. Read surrounding ranges when qualifications may be missing and read_node before rewriting a note.";
 
 /// The version of this crate.
 pub fn version() -> &'static str {

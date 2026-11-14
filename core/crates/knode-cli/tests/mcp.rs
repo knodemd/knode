@@ -151,13 +151,15 @@ fn a_client_uses_every_tool() {
             "read_node",
             "write_node",
             "link_nodes",
+            "projects",
             "recent",
             "history",
             "undo",
             "link_kinds",
             "read_canvas",
             "attach_file",
-            "read_attachment"
+            "read_attachment",
+            "read_excerpt"
         ]
     );
     for tool in &tools {
@@ -178,6 +180,12 @@ fn a_client_uses_every_tool() {
         .unwrap()
         .to_string();
     assert!(text(&result).starts_with("Created decision [[Pricing decision]]"));
+
+    let excerpt = client.call("read_excerpt", json!({"id": pricing, "max_chars": 6}));
+    assert_eq!(excerpt["isError"], false, "{excerpt}");
+    assert_eq!(excerpt["structuredContent"]["text"], "We cha");
+    assert_eq!(excerpt["structuredContent"]["next_start"], 6);
+    assert_eq!(excerpt["structuredContent"]["partial"], true);
 
     let result = client.call(
         "write_node",
@@ -230,6 +238,11 @@ fn a_client_uses_every_tool() {
         json!({ "id": pricing, "body": "Teams get a discount.", "append": true }),
     );
     assert_eq!(result["structuredContent"]["result"], "updated");
+
+    // projects: none yet, and the agent is told how to make one.
+    let result = client.call("projects", json!({}));
+    assert_eq!(result["structuredContent"]["projects"], json!([]));
+    assert!(text(&result).contains("No projects yet"), "{result}");
 
     // recent
     let result = client.call("recent", json!({}));
