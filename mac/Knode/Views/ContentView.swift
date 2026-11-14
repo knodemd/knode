@@ -266,6 +266,9 @@ private struct SpacesSidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.kTheme) private var theme
     let open: () -> Void
+    /// The space the keyboard is on. Moving it does not open the space; Return does.
+    @State private var cursor: URL?
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -280,18 +283,19 @@ private struct SpacesSidebar: View {
             KScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(Array(model.sidebarSpaces.enumerated()), id: \.element.id) { index, item in
-                        SpaceRow(item: item, number: index + 1, isSelected: item.url == model.selectedSpaceURL) {
-                            if item.url != model.selectedSpaceURL {
-                                Task { await model.selectSpace(at: item.url) }
-                            }
-                            open()
+                        SpaceRow(item: item, number: index + 1, isSelected: item.url == model.selectedSpaceURL,
+                                 isFocused: listFocused && item.url == cursor) {
+                            openSpace(item.url)
                         }
                         .kContextMenu { spaceMenuEntries(item, model: model) }
+                        .id(item.url)
                     }
                 }
                 .padding(.horizontal, KSpace.x2)
                 .padding(.bottom, KSpace.x2)
             }
+            .kKeyboardList(ids: model.sidebarSpaces.map(\.url), selection: cursor, focus: $listFocused,
+                           select: { cursor = $0 }, activate: openSpace)
             VStack(alignment: .leading, spacing: KSpace.x1) {
                 if model.isShowingExample {
                     ExampleNotice().padding(.bottom, KSpace.x2)
@@ -305,7 +309,19 @@ private struct SpacesSidebar: View {
             .padding(KSpace.x3)
             .overlay(alignment: .top) { KDivider() }
         }
-        .onAppear { model.reloadDefaultSpace() }
+        .onAppear {
+            model.reloadDefaultSpace()
+            cursor = model.selectedSpaceURL
+            if !KFocus.isEditingText { listFocused = true }
+        }
+    }
+
+    private func openSpace(_ url: URL) {
+        cursor = url
+        if url != model.selectedSpaceURL {
+            Task { await model.selectSpace(at: url) }
+        }
+        open()
     }
 }
 
@@ -314,12 +330,13 @@ struct SpaceRow: View {
     let item: SpaceItem
     let number: Int
     var isSelected = false
+    var isFocused = false
     var action: () -> Void = {}
     @Environment(\.kTheme) private var theme
     @State private var hovering = false
 
     var body: some View {
-        KRow(isSelected: isSelected, action: action) {
+        KRow(isSelected: isSelected, isFocused: isFocused, action: action) {
             SpaceIconView(icon: item.icon)
                 .frame(width: 18)
             Text(item.name)
@@ -451,6 +468,7 @@ private struct SpaceSidebar: View {
     @Environment(\.kTheme) private var theme
     let back: () -> Void
     @FocusState private var searchFocused: Bool
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -476,7 +494,10 @@ private struct SpaceSidebar: View {
             .padding(.bottom, KSpace.x3)
 
             HStack(spacing: KSpace.x1) {
-                KSearchField(placeholder: "Search", text: $model.searchText, hint: [.command, .char("F")], focus: $searchFocused)
+                KSearchField(placeholder: "Search", text: $model.searchText, hint: [.command, .char("F")],
+                             focus: $searchFocused, onSubmit: enterList)
+                    // Down from the search field goes on to the first result, as Return does.
+                    .onKeyPress(.downArrow) { enterList() ? .handled : .ignored }
                 SearchModeButton()
             }
             .padding(.horizontal, KSpace.x3)
@@ -509,7 +530,7 @@ private struct SpaceSidebar: View {
             .padding(.top, KSpace.x3)
             .padding(.bottom, KSpace.x1)
 
-            NoteList()
+            NoteList(focus: $listFocused)
                 .frame(maxHeight: .infinity)
 
             HStack(spacing: KSpace.x1) {
@@ -525,6 +546,23 @@ private struct SpaceSidebar: View {
             .padding(KSpace.x3)
             .overlay(alignment: .top) { KDivider() }
         }
+    }
+
+    /// Opens the first note of the list, unless one in it is open, and gives the list the keys.
+    @discardableResult
+    private func enterList() -> Bool {
+        let ids = model.noteListIDs
+        guard let first = ids.first else { return false }
+        if model.selectedNodeID.map(ids.contains) != true { model.selectedNodeID = first }
+        listFocused = true
+        return true
+    }
+}
+
+extension AppModel {
+    /// The notes the sidebar lists, in order: the search results while searching, else every note.
+    var noteListIDs: [Node.ID] {
+        searchResults?.hits.map(\.id) ?? nodes.map(\.id)
     }
 }
 
@@ -549,6 +587,10 @@ private struct SearchModeButton: View {
 private struct NoteList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.kTheme) private var theme
+    let focus: FocusState<Bool>.Binding
+    /// The note the keyboard is on. It opens a moment after the keys stop, so holding Down runs
+    /// through the list without opening every note on the way.
+    @State private var cursor: Node.ID?
 
     var body: some View {
         if model.nodes.isEmpty {
@@ -567,23 +609,59 @@ private struct NoteList: View {
                 LazyVStack(spacing: 2) {
                     if let results = model.searchResults {
                         ForEach(results.hits) { hit in
-                            KRow(isSelected: model.selectedNodeID == hit.id, action: { model.selectedNodeID = hit.id }) {
+                            KRow(isSelected: model.selectedNodeID == hit.id, isFocused: isFocused(hit.id), action: { choose(hit.id) }) {
                                 SearchResultRow(hit: hit)
                             }
                             .draggable(hit.id)
+                            .id(hit.id)
                         }
                     } else {
                         ForEach(model.nodes) { node in
-                            KRow(isSelected: model.selectedNodeID == node.id, action: { model.selectedNodeID = node.id }) {
+                            KRow(isSelected: model.selectedNodeID == node.id, isFocused: isFocused(node.id), action: { choose(node.id) }) {
                                 NodeRow(node: node)
                             }
                             .draggable(node.id)
+                            .id(node.id)
                         }
                     }
                 }
                 .padding(.horizontal, KSpace.x2)
                 .padding(.bottom, KSpace.x2)
             }
+            .kKeyboardList(ids: model.noteListIDs, selection: cursor ?? model.selectedNodeID, focus: focus,
+                           select: { cursor = $0 }, activate: edit)
+            .onAppear {
+                cursor = model.selectedNodeID
+                if !KFocus.isEditingText { focus.wrappedValue = true }
+            }
+            .onChange(of: model.selectedNodeID) { _, id in cursor = id }
+            .task(id: cursor) {
+                guard let cursor, cursor != model.selectedNodeID else { return }
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                await model.openNode(cursor)
+            }
+        }
+    }
+
+    private func isFocused(_ id: Node.ID) -> Bool {
+        focus.wrappedValue && (cursor ?? model.selectedNodeID) == id
+    }
+
+    /// A click opens the note and gives the list the keys, so Up and Down go on from there.
+    private func choose(_ id: Node.ID) {
+        cursor = id
+        model.selectedNodeID = id
+        focus.wrappedValue = true
+    }
+
+    /// Return: opens the note if it is not open yet, then puts the caret in its source.
+    private func edit(_ id: Node.ID) {
+        Task {
+            await model.openNode(id)
+            // One pass for the note view to come on screen.
+            try? await Task.sleep(for: .milliseconds(30))
+            KFocus.focusNoteEditor()
         }
     }
 }
