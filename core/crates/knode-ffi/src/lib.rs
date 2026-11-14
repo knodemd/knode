@@ -271,6 +271,8 @@ pub struct NodeSummary {
     pub updated_at: i64,
     /// Who changed the node last.
     pub updated_by: Provenance,
+    /// The Markdown file the node was imported from, when the list read it.
+    pub path: Option<String>,
 }
 
 impl From<format::NodeSummary> for NodeSummary {
@@ -282,6 +284,7 @@ impl From<format::NodeSummary> for NodeSummary {
             created_at: n.created_at.as_millis(),
             updated_at: n.updated_at.as_millis(),
             updated_by: n.updated_by.into(),
+            path: n.path,
         }
     }
 }
