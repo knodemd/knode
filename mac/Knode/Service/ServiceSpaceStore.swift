@@ -64,6 +64,10 @@ public actor ServiceSpaceStore: CoeditingStore {
         return await withIcon(register(info))
     }
 
+    public func listLimit(in space: Space.ID) async -> Int? {
+        Int(Self.listLimit)
+    }
+
     public func listNodes(in space: Space.ID) async throws -> [NodeSummary] {
         let path = try path(space)
         let recent = try await call("recent", ["space": .string(path), "limit": .int(Self.listLimit)], as: [WireSummary].self)

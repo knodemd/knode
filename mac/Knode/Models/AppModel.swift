@@ -50,6 +50,8 @@ final class AppModel {
     private(set) var selectedSpaceID: Space.ID?
     /// The nodes shown in the list: every node newest first, or the search results.
     private(set) var nodes: [NodeSummary] = []
+    /// The most nodes the store of the selected space lists, or nil when it lists them all.
+    private(set) var listLimit: Int?
     /// The projects of the selected space, by title.
     private(set) var projects: [ProjectSummary] = []
     /// Whether the sidebar lists the projects or the most recent notes.
@@ -516,9 +518,11 @@ final class AppModel {
             let spaceStore = store(for: space)
             let results: SearchResults?
             let list: [NodeSummary]
+            var limit = listLimit
             if query.isEmpty {
                 results = nil
                 list = try await spaceStore.listNodes(in: space)
+                limit = await spaceStore.listLimit(in: space)
             } else {
                 let found = try await spaceStore.search(query, mode: mode, in: space)
                 results = found
@@ -528,6 +532,7 @@ final class AppModel {
             guard space == selectedSpaceID, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines), mode == searchMode else { return }
             nodes = list
             searchResults = results
+            listLimit = limit
             if query.isEmpty {
                 let found = (try? await spaceStore.projects(in: space)) ?? []
                 guard space == selectedSpaceID else { return }

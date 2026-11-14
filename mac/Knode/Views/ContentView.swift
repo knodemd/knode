@@ -555,7 +555,8 @@ extension SpaceSidebar {
         }
         // The list holds the most recent notes only: say so when it is full.
         let shown = model.recentNotes.count
-        return model.nodes.count >= Int(ServiceSpaceStore.listLimit) ? "\(shown)+" : "\(shown)"
+        if let limit = model.listLimit, model.nodes.count >= limit { return "\(shown)+" }
+        return "\(shown)"
     }
 }
 

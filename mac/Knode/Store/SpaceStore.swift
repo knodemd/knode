@@ -19,6 +19,9 @@ public protocol SpaceStore: Sendable {
     /// Every node in the space, newest first (by last update).
     func listNodes(in space: Space.ID) async throws -> [NodeSummary]
 
+    /// The most nodes `listNodes` answers with for the space, or nil when it lists them all.
+    func listLimit(in space: Space.ID) async -> Int?
+
     /// The projects of a space, by title: nodes of kind `project`, with their parent and counts.
     func projects(in space: Space.ID) async throws -> [ProjectSummary]
 
@@ -94,6 +97,11 @@ public protocol SpaceStore: Sendable {
 extension SpaceStore {
     public func changes() -> AsyncStream<SpaceChange> {
         AsyncStream { $0.finish() }
+    }
+
+    /// A store lists every node unless it says otherwise.
+    public func listLimit(in space: Space.ID) async -> Int? {
+        nil
     }
 
     /// The projects of a space, by title. A store without projects has none.

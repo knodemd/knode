@@ -165,7 +165,6 @@ public struct Node: Identifiable, Hashable, Sendable {
     }
 }
 
-/// What a list or a search result shows about a node, without its whole body.
 /// A project of a space: a node of kind `project` that other nodes are part of.
 public struct ProjectSummary: Identifiable, Hashable, Sendable {
     public var id: Node.ID
@@ -186,6 +185,7 @@ public struct ProjectSummary: Identifiable, Hashable, Sendable {
     }
 }
 
+/// What a list or a search result shows about a node, without its whole body.
 public struct NodeSummary: Identifiable, Hashable, Sendable {
     public var id: Node.ID
     public var title: String

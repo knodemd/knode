@@ -45,6 +45,10 @@ public final class CoreSpaceStore: SpaceStore {
         return try await register(core)
     }
 
+    public func listLimit(in space: Space.ID) async -> Int? {
+        Int(Self.listLimit)
+    }
+
     public func listNodes(in space: Space.ID) async throws -> [NodeSummary] {
         let core = try self.core(space)
         let recent = try await run { try core.recent(limit: Self.listLimit) }
