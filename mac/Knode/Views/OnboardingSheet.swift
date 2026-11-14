@@ -7,11 +7,11 @@ private struct ReviewRow: Identifiable {
     var index: Int
     var id: String { "\(section):\(index)" }
 }
-private struct ImportGroup: Codable, Identifiable {
+private struct ImportGroup: Codable, Equatable, Identifiable {
     var id: String
     var name: String
 }
-private struct ImportDocument: Codable, Identifiable {
+private struct ImportDocument: Codable, Equatable, Identifiable {
     var path: String
     var title: String
     var project: String
@@ -19,11 +19,11 @@ private struct ImportDocument: Codable, Identifiable {
     var digest: String
     var id: String { path }
 }
-private struct ImportSourceFile: Codable {
+private struct ImportSourceFile: Codable, Equatable {
     var path: String
     var digest: String
 }
-private struct ImportPlan: Codable {
+private struct ImportPlan: Codable, Equatable {
     var version = 1
     var mode = "vault"
     var source: String?
@@ -32,19 +32,34 @@ private struct ImportPlan: Codable {
     var files: [ImportSourceFile] = []
     var warnings: [String] = []
 }
+/// The conversations onboarding would bring in, listed before anything is written.
+private struct SessionsPreview: Decodable {
+    var projects: [String: [Session]]
+    var total: Int
+    var secrets: Int
+    struct Session: Decodable { var agent: String; var session: String; var title: String; var messages: Int; var secrets: Int }
+}
+/// What bringing conversations into the new space did.
+private struct BroughtSessions: Decodable {
+    var brought: Int
+    var projects: [String: Int]
+    var redacted: Int
+}
 private struct ImportResult: Decodable {
     var destination: String
     var contexts: [String: String]
     var unresolved: [String: [String]]
     var report: Report
     var plan: ImportPlan
+    var conversations: BroughtSessions?
+    var conversationsError: String?
     struct Report: Decodable {
         var attachments: [String]
         var attached: [String]
         var unlinked: [Skipped]
     }
     struct Skipped: Decodable { var path: String; var reason: String }
-    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan; case report = "import" }
+    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan, conversations; case report = "import"; case conversationsError = "conversations_error" }
 }
 
 struct OnboardingSheet: View {
@@ -61,8 +76,11 @@ struct OnboardingSheet: View {
     @State private var busy = false
     @State private var error: String?
     @State private var acknowledged = false
-    /// Whether to bring the agent conversations held in the source's project folders.
-    @State private var bringsSessions = true
+    /// Whether to bring the agent conversations held in the source's project folders. Off
+    /// until the person turns it on, after seeing which ones would come.
+    @State private var bringsSessions = false
+    /// The conversations that would be brought in, for the plan as it is now.
+    @State private var sessionsPreview: SessionsPreview?
     @State private var connected = false
     @State private var workingFolder: URL?
     @State private var instructionPreview: String?
@@ -199,6 +217,12 @@ struct OnboardingSheet: View {
             }.frame(height: 300)
             if mode != "empty" {
                 Toggle("Also bring the conversations your agents (Claude Code, Codex…) held in these project folders, each in its project.", isOn: $bringsSessions)
+                    .font(KFont.ui(12))
+                    .onChange(of: bringsSessions) { _, on in
+                        sessionsPreview = nil
+                        if on { Task { await previewSessions() } }
+                    }
+                if bringsSessions, let sessionsPreview { sessionsSummary(sessionsPreview) }
             }
             Toggle("I reviewed the assignments and compatibility notes. Create a separate copy with capture off.", isOn: $acknowledged)
                 .font(KFont.ui(12))
@@ -206,7 +230,36 @@ struct OnboardingSheet: View {
                 KButton("Back") { step = 0; acknowledged = false }
                 Spacer()
                 KButton("Create imported copy", icon: .add, kind: .primary) { Task { await createCopy() } }
-                    .disabled(!acknowledged || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || plan.groups.isEmpty || (mode == "vault" && included == 0))
+                    .disabled(!acknowledged || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || plan.groups.isEmpty || (mode == "vault" && included == 0) || (bringsSessions && sessionsPreview == nil))
+            }
+        }
+        .onChange(of: plan) { _, _ in
+            // The projects kept decide which conversations come: list them again.
+            sessionsPreview = nil
+            if bringsSessions { Task { await previewSessions() } }
+        }
+    }
+
+    private func sessionsSummary(_ preview: SessionsPreview) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if preview.total == 0 {
+                Text("No agent conversations were held in the projects you kept.").font(KFont.ui(11))
+            } else {
+                Text("\(preview.total) conversations will be brought in:").font(KFont.ui(11))
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(preview.projects.keys.sorted(), id: \.self) { project in
+                            let sessions = preview.projects[project, default: []]
+                            Text("\(project): \(sessions.count)").font(KFont.ui(11))
+                            ForEach(sessions, id: \.session) { session in
+                                Text("  \(session.agent)  \(session.title)").font(KFont.mono(10)).lineLimit(1)
+                            }
+                        }
+                    }
+                }.frame(maxHeight: 80)
+                if preview.secrets > 0 {
+                    Text("\(preview.secrets) likely secrets (keys, tokens, passwords) will be replaced with [redacted]. Other sensitive text is kept as written.").font(KFont.ui(11))
+                }
             }
         }
     }
@@ -230,6 +283,13 @@ struct OnboardingSheet: View {
             if let result {
                 KExplanation("Created \(result.contexts.count) projects from your folders, each with its notes, the projects inside it and related projects. The import left your original source unchanged; edits here are independent. Optional instruction installation is a separate file edit.")
                 Text(result.contexts.keys.sorted().joined(separator: " · ")).font(KFont.ui(13))
+                if let brought = result.conversations {
+                    Text("Brought \(brought.brought) agent conversations into their projects\(brought.redacted > 0 ? ", with \(brought.redacted) likely secrets replaced with [redacted]" : "").").font(KFont.ui(12))
+                }
+                if let message = result.conversationsError {
+                    KErrorText(message).textSelection(.enabled)
+                    KButton("Try bringing conversations again", icon: .chat, size: .small) { Task { await retrySessions() } }
+                }
                 if !result.unresolved.isEmpty || !result.report.attachments.isEmpty || !result.report.unlinked.isEmpty {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 5) {
@@ -291,16 +351,38 @@ struct OnboardingSheet: View {
             acknowledged = false; step = 1
         }
     }
+    /// Writes the plan as it is now to a temporary file for the CLI, which removes it after.
+    private func withPlanFile<T>(_ body: (URL) async throws -> T) async throws -> T {
+        let file = FileManager.default.temporaryDirectory.appending(path: "knode-plan-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try JSONEncoder().encode(plan).write(to: file, options: .atomic)
+        return try await body(file)
+    }
+    private func previewSessions() async {
+        await perform {
+            let text = try await withPlanFile { file in
+                try await command.run(["onboard", "sessions", "--plan", file.path(percentEncoded: false)])
+            }
+            sessionsPreview = try JSONDecoder().decode(SessionsPreview.self, from: Data(text.utf8))
+        }
+    }
+    private func retrySessions() async {
+        guard let current = result else { return }
+        await perform {
+            let text = try await command.run(["onboard", "sessions", "--target", current.destination, "--apply"])
+            result?.conversations = try JSONDecoder().decode(BroughtSessions.self, from: Data(text.utf8))
+            result?.conversationsError = nil
+        }
+    }
     private func createCopy() async {
         await perform {
             let folder = destinationFolder ?? model.settings.spacesFolder
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let file = FileManager.default.temporaryDirectory.appending(path: "knode-plan-\(UUID().uuidString).json")
-            defer { try? FileManager.default.removeItem(at: file) }
-            try JSONEncoder().encode(plan).write(to: file, options: .atomic)
-            var args = ["onboard", "apply", "--plan", file.path(percentEncoded: false), "--destination", destination.path(percentEncoded: false), "--name", name]
-            if bringsSessions, mode != "empty" { args.append("--sessions") }
-            let text = try await command.run(args)
+            let text = try await withPlanFile { file in
+                var args = ["onboard", "apply", "--plan", file.path(percentEncoded: false), "--destination", destination.path(percentEncoded: false), "--name", name]
+                if bringsSessions, mode != "empty" { args.append("--sessions") }
+                return try await command.run(args)
+            }
             result = try JSONDecoder().decode(ImportResult.self, from: Data(text.utf8))
             connected = false; confirmArchive = false; step = 2
         }
