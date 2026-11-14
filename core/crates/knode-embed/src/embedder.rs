@@ -12,8 +12,11 @@ use crate::{Error, Result};
 /// The most texts that go through the model at once.
 const MAX_BATCH: usize = 32;
 /// The most tokens (padding included) in one batch, which bounds the memory used by attention.
-/// Texts are sorted by length first, so a batch carries little padding.
-const MAX_BATCH_TOKENS: usize = 4096;
+/// Texts are sorted by length first, so a batch carries little padding. Chunks of `knode-1` are
+/// up to about 300 tokens, so most go through alone; batching them brought no speed on the CPU
+/// or the GPU and cost up to twice the memory (`examples/index-bench`). Short texts still share
+/// a batch.
+const MAX_BATCH_TOKENS: usize = 512;
 
 /// A loaded embedding model: text in, normalized vectors out.
 ///
