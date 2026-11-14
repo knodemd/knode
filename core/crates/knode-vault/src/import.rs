@@ -106,14 +106,9 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
                 continue;
             }
         };
-        batch.note(
-            space,
-            &rel,
-            parse(&rel, &text),
-            by,
-            &mut report,
-            &mut no_hook,
-        )?;
+        let mut note = parse(&rel, &text);
+        note.file_times = file_times(&full);
+        batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
     }
     batch.finish(space, by, &mut report)?;
     Ok(report)
@@ -402,6 +397,28 @@ pub(crate) struct Note {
     /// Whether the frontmatter was not written by Knode.
     pub(crate) vault: bool,
     pub(crate) body: String,
+    /// When the file was created and last modified, for a note whose dates Knode did not write.
+    pub(crate) file_times: Option<(Timestamp, Timestamp)>,
+}
+
+/// When a file was created and last modified, as far as the file system says: a file system
+/// without creation times gives its modification time for both.
+pub(crate) fn file_times(path: &Path) -> Option<(Timestamp, Timestamp)> {
+    let meta = fs::metadata(path).ok()?;
+    let millis = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_millis()).ok())
+            .map(Timestamp)
+    };
+    let modified = millis(meta.modified().ok()?)?;
+    let created = meta
+        .created()
+        .ok()
+        .and_then(millis)
+        .unwrap_or(modified)
+        .min(modified);
+    Some((created, modified))
 }
 
 /// Whether a frontmatter was written by Knode: it starts with an `id` and has a `kind`,
@@ -618,7 +635,8 @@ fn write(
             let now = Timestamp::now();
             let read = |value: &Option<String>| value.as_deref().and_then(time::parse);
             let (created_at, updated_at, created_by, updated_by) = if note.vault {
-                (now, now, by.clone(), by.clone())
+                let (created_at, updated_at) = note.file_times.unwrap_or((now, now));
+                (created_at, updated_at, by.clone(), by.clone())
             } else {
                 let created_at = read(&note.created).unwrap_or(now);
                 let updated_at = read(&note.updated).unwrap_or(created_at).max(created_at);
@@ -643,6 +661,30 @@ fn write(
                     updated_at,
                     created_by,
                     updated_by,
+                },
+                &props,
+                by,
+            )?;
+            (node.id, Outcome::Created)
+        }
+        // A note from another app keeps the dates of its file, so the most recently changed
+        // notes are the ones last changed there, not every note at the time of the import.
+        None if note.vault && note.file_times.is_some() => {
+            let (created_at, updated_at) = note.file_times.expect("checked above");
+            let id = space.new_node_id();
+            let node = space.import_node(
+                ImportedNode {
+                    id,
+                    node: NewNode {
+                        kind: note.kind.clone().unwrap_or_default(),
+                        title: note.title.clone(),
+                        body: note.body.clone(),
+                        tags: note.tags.clone(),
+                    },
+                    created_at,
+                    updated_at,
+                    created_by: by.clone(),
+                    updated_by: by.clone(),
                 },
                 &props,
                 by,

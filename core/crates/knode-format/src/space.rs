@@ -172,6 +172,12 @@ impl Space {
         Ok(count as u64)
     }
 
+    /// A new node id, in the order [`create_node`](Self::create_node) gives them, for an import
+    /// that creates the node with [`import_node`](Self::import_node) to keep its own dates.
+    pub fn new_node_id(&mut self) -> NodeId {
+        NodeId::from_ulid(next_ulid(&mut self.ids))
+    }
+
     /// Creates a node and returns it.
     ///
     /// The body is read once: its plain text goes to the full-text index and each `[[link]]`
