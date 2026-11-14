@@ -40,10 +40,19 @@ impl std::fmt::Debug for Embedder {
 
 impl Embedder {
     /// Loads the model in `model_dir`: `knode-model.json`, `config.json`, `tokenizer.json` and
-    /// `model.safetensors`. Uses the GPU when built with the `metal` feature and one is there,
-    /// else the CPU.
+    /// `model.safetensors`. Uses the GPU when built with the `metal` feature and one is there
+    /// and embeds a first text, else the CPU.
     pub fn load(model_dir: &Path) -> Result<Embedder> {
-        Self::load_on(model_dir, default_device())
+        #[cfg(feature = "metal")]
+        if let Ok(device) = Device::new_metal(0) {
+            // A GPU that fails on a first text (as some virtual machines do) is not used.
+            if let Ok(embedder) = Self::load_on(model_dir, device)
+                && embedder.embed(&["Knode"]).is_ok()
+            {
+                return Ok(embedder);
+            }
+        }
+        Self::load_on(model_dir, Device::Cpu)
     }
 
     /// Loads the model in `model_dir` on the CPU.
@@ -230,14 +239,6 @@ impl Embedder {
             .clamp(1e-12, f64::MAX)?;
         Ok(pooled.broadcast_div(&norms)?.to_vec2::<f32>()?)
     }
-}
-
-fn default_device() -> Device {
-    #[cfg(feature = "metal")]
-    if let Ok(device) = Device::new_metal(0) {
-        return device;
-    }
-    Device::Cpu
 }
 
 #[cfg(test)]
