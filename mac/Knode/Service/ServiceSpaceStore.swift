@@ -64,15 +64,38 @@ public actor ServiceSpaceStore: CoeditingStore {
         return await withIcon(register(info))
     }
 
+    public func listLimit(in space: Space.ID) async -> Int? {
+        Int(Self.listLimit)
+    }
+
     public func listNodes(in space: Space.ID) async throws -> [NodeSummary] {
         let path = try path(space)
         let recent = try await call("recent", ["space": .string(path), "limit": .int(Self.listLimit)], as: [WireSummary].self)
-        var missing = recent.filter { excerpts[$0.id]?.updatedAt != $0.updatedAt }.prefix(Self.excerptBatch)
+        return try await withExcerpts(recent, path: path)
+    }
+
+    public func projects(in space: Space.ID) async throws -> [ProjectSummary] {
+        let path = try path(space)
+        let projects = try await call("projects", ["space": .string(path)], as: [WireProject].self)
+        return projects.map {
+            ProjectSummary(id: $0.node.id, title: $0.node.title, parent: $0.parent, notes: $0.notes, projects: $0.projects)
+        }
+    }
+
+    public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] {
+        let path = try path(space)
+        let notes = try await call("project.notes", ["space": .string(path), "id": .string(project), "limit": .int(Self.listLimit)], as: [WireSummary].self)
+        return try await withExcerpts(notes, path: path)
+    }
+
+    /// Summaries with the first line of each note, reading at most a batch of bodies not seen yet.
+    private func withExcerpts(_ summaries: [WireSummary], path: String) async throws -> [NodeSummary] {
+        var missing = summaries.filter { excerpts[$0.id]?.updatedAt != $0.updatedAt }.prefix(Self.excerptBatch)
         while let summary = missing.popFirst() {
             guard let node = try await call("node.get", ["space": .string(path), "id": .string(summary.id)], as: WireNode?.self) else { continue }
             excerpts[node.id] = (node.updatedAt, NodeSummary.excerpt(of: node.body))
         }
-        return recent.map { summary in
+        return summaries.map { summary in
             let excerpt = excerpts[summary.id].flatMap { $0.updatedAt == summary.updatedAt ? $0.excerpt : nil } ?? ""
             return NodeSummary(summary, excerpt: excerpt)
         }
@@ -310,6 +333,17 @@ public actor ServiceSpaceStore: CoeditingStore {
             default: kind = .reload
             }
             broadcast.yield(SpaceChange(space: space, nodeID: nil, kind: kind))
+        case "activity":
+            guard let activity = try? notification.params(as: WireActivity.self),
+                  let space = spaces.first(where: { $0.value.path == activity.space })?.key
+            else { return }
+            broadcast.yield(SpaceChange(
+                space: space,
+                nodeID: activity.nodes.first,
+                kind: .activity,
+                author: Author(kind: .agent, name: activity.agent),
+                nodes: activity.nodes
+            ))
         case "lagged":
             for id in spaces.keys { broadcast.yield(SpaceChange(space: id, nodeID: nil, kind: .reload)) }
         default:
@@ -403,6 +437,15 @@ struct WireSummary: Decodable, Sendable {
     var title: String
     var updatedAt: Int64
     var kind: String?
+    var path: String?
+}
+
+/// A project, as `projects` returns it.
+struct WireProject: Decodable, Sendable {
+    var node: WireSummary
+    var parent: String?
+    var notes: Int
+    var projects: Int
 }
 
 /// A link, as `link.create` returns it; the app only needs to know it was made.
@@ -487,6 +530,14 @@ extension SpaceFolder {
     }
 }
 
+/// An agent read nodes: the params of an `activity` notification.
+struct WireActivity: Decodable, Sendable {
+    var space: String
+    var agent: String
+    var method: String
+    var nodes: [String]
+}
+
 struct Changed: Decodable, Sendable {
     var space: String
     var nodeId: String
@@ -523,7 +574,7 @@ extension Node {
 
 extension NodeSummary {
     init(_ summary: WireSummary, excerpt: String) {
-        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note)
+        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note, path: summary.path)
     }
 }
 

@@ -163,7 +163,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `doc.updates` | `space`, `id`, `since`? | `{ "update", "version" }`: the Loro updates made since the version `since` (the whole document without it), in base64. |
 | `subscribe` | `space`?, `updates`? (default `false`) | `true`. Starts `changed` notifications; see below. With `updates`, those of body writes carry the Loro updates. |
 | `unsubscribe` | none | `true`. Stops them. |
-| `service.status` | none | `{ "version", "pid", "spaces", "clients", "capture", "index" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. `index` is as `index.status` answers it, from what the index last saw. An agent only sees the spaces it may read. |
+| `service.status` | none | `{ "version", "pid", "spaces", "clients", "connections"?, "capture", "index" }`. `capture` is the default space while capture runs (where conversations of no folder go), or `null`. `index` is as `index.status` answers it, from what the index last saw. An agent only sees the spaces it may read. `connections` is returned to the person only: authenticated connections as `{ "id", "identity", "space" }`, with the identity from `auth` and the last space successfully used, or `null` before using one. A successful request updates its space; a refused request does not. Entries disappear on disconnect; ids are unique until restart. Older clients may ignore the field and older servers omit it. |
 | `index.status` | none | How far the open spaces are indexed for search by meaning, and the model. See Search. People only. |
 | `index.run` | `space`? | As `index.status`. Opens `space` when given, then indexes every open space now, even on battery, and tries a failed download again. People only. |
 | `auth` | `owner` or `key` | `{ "as": "person" }`, or `{ "as": "agent", "id", "name", "kind" }`. See Authentication. |
@@ -336,6 +336,22 @@ order the writes were made:
 - A write that changes nothing sends nothing.
 - A connection that falls more than 1024 changes behind receives
   `{"jsonrpc":"2.0","method":"lagged","params":{"missed":12}}` and should reload what it shows.
+- When an agent reads a space the connection subscribed to, a person's connection receives an
+  `activity` notification, so the app can show what the agent looks at. It follows a successful
+  read call made with an agent key (`node.get`, a list, `search` and the like) and names the
+  node asked for by `id` and the nodes the answer listed, at most 25:
+
+  ```json
+  {"jsonrpc":"2.0","method":"activity","params":{"space":"/Users/ada/Knode/Personal.knode","agent":"codex","method":"search","nodes":["01K83N6V4W5D2XQJ0Y7RZ9T1AB"]}}
+  ```
+
+  Only the name of the agent, the method and node ids are sent: never a title, a body or a
+  query. Nothing is stored (the access log keeps the calls themselves, see Authentication).
+  Agents' connections never receive `activity`, and the person's own reads are not announced.
+  A node the same agent read less than a second ago is left out, and a notice with no node left
+  is not sent. `activity` has a feed of its own: a connection that falls behind on it, or whose
+  outgoing messages are full, misses some of these notices, never a `changed` one, and is
+  never sent `lagged` for them.
 
 Changes have the shape of the `changes` table of the [.knode specification](https://github.com/knodemd/format)
 (section 17): `{ "id", "changed_at", "changed_by", "action", "subject", "undoes"?, "detail" }`.

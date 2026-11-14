@@ -486,6 +486,46 @@ fn agents_list_offers_to_connect_agents_set_up_without_a_key() {
     assert!(!list.contains("stopped until"), "{list}");
 }
 
+#[test]
+fn agents_list_shows_the_agents_whose_conversations_are_captured() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let list = sb.ok(&["agents", "list"]);
+    assert!(
+        list.contains("No agent sessions on this machine yet"),
+        "{list}"
+    );
+
+    for dir in [
+        "home/.copilot/session-state",
+        "data/amp/threads",
+        "home/.gemini/tmp",
+    ] {
+        fs::create_dir_all(sb.path(dir)).unwrap();
+    }
+    let list = sb.ok(&["agents", "list"]);
+    assert!(list.contains("Conversations captured from:"), "{list}");
+    for name in ["Gemini CLI", "Copilot CLI", "Amp"] {
+        assert!(list.contains(name), "{list}");
+    }
+    assert!(!list.contains("OpenCode"), "{list}");
+    assert!(
+        list.contains(&sb.path("data/amp/threads").display().to_string()),
+        "{list}"
+    );
+
+    let config = sb.knode_home().join("config.toml");
+    let mut text = fs::read_to_string(&config).unwrap_or_default();
+    text.insert_str(0, "capture = false\n");
+    fs::write(&config, text).unwrap();
+    let list = sb.ok(&["agents", "list"]);
+    assert!(
+        list.contains("Capture of agent conversations is off"),
+        "{list}"
+    );
+    assert!(!list.contains("Conversations captured from:"), "{list}");
+}
+
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     for entry in fs::read_dir(dir).unwrap() {

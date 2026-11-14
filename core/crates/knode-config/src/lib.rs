@@ -35,6 +35,8 @@
 
 #![warn(missing_docs)]
 
+pub mod workflow;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;

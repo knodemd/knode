@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use knode_format::{
     Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
-    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Provenance, SearchMode,
-    View,
+    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Project, Provenance,
+    SearchMode, View,
 };
 use knode_service::{Client, Error};
 
@@ -181,6 +181,14 @@ impl Backend for ServiceBackend {
 
     fn recent(&self, limit: usize) -> BackendResult<Vec<NodeSummary>> {
         self.with(|c, s| c.recent(s, limit))
+    }
+
+    fn projects(&self) -> BackendResult<Vec<Project>> {
+        self.with(|c, s| c.projects(s))
+    }
+
+    fn project_notes(&self, id: &NodeId, limit: usize) -> BackendResult<Vec<NodeSummary>> {
+        self.with(|c, s| c.project_notes(s, id, limit))
     }
 
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {

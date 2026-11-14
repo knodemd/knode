@@ -4,6 +4,8 @@ import Observation
 /// A sheet over the main window.
 enum SpaceSheet: Identifiable, Hashable {
     case newSpace
+    case onboarding
+    case onboardingReview(URL)
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -50,6 +52,52 @@ final class AppModel {
     private(set) var selectedSpaceID: Space.ID?
     /// The nodes shown in the list: every node newest first, or the search results.
     private(set) var nodes: [NodeSummary] = []
+    /// The most nodes the store of the selected space lists, or nil when it lists them all.
+    private(set) var listLimit: Int?
+    /// The projects of the selected space, by title.
+    private(set) var projects: [ProjectSummary] = []
+    /// Whether the sidebar lists the projects or the most recent notes.
+    var listMode: SidebarListMode = .projects
+    /// The project whose page and notes are shown, if any.
+    private(set) var selectedProjectID: Node.ID?
+    /// The notes of the selected project, most recently changed first.
+    private(set) var projectNotes: [NodeSummary] = []
+
+    var selectedProject: ProjectSummary? {
+        selectedProjectID.flatMap { id in projects.first { $0.id == id } }
+    }
+
+    /// Whether the sidebar shows projects: the space has some and no search is running.
+    var showsProjects: Bool {
+        !projects.isEmpty && listMode == .projects && searchResults == nil
+    }
+
+    /// The most recent notes, without the project nodes the projects list shows.
+    var recentNotes: [NodeSummary] {
+        projects.isEmpty ? nodes : nodes.filter { $0.kind != NodeKind.project }
+    }
+
+    /// Shows a project's page and notes, or the list of projects with `nil`.
+    func selectProject(_ id: Node.ID?) async {
+        selectedProjectID = id
+        projectNotes = []
+        if id != nil { await openNode(nil) }
+        await reloadProjectNotes()
+    }
+
+    private func reloadProjectNotes() async {
+        guard let project = selectedProjectID, let space = selectedSpaceID else {
+            projectNotes = []
+            return
+        }
+        do {
+            let notes = try await store(for: space).projectNotes(project, in: space)
+            guard space == selectedSpaceID, project == selectedProjectID else { return }
+            projectNotes = notes
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
     /// The results of the current search, with how each note was found; `nil` while not searching.
     private(set) var searchResults: SearchResults?
     private(set) var editor: NoteEditorModel? {
@@ -209,7 +257,7 @@ final class AppModel {
 
     /// Creates `<folder>/<name>.knode` and opens it; with `makeDefault`, agents and capture write
     /// to it from now on.
-    func createSpace(named name: String, in folder: URL, makeDefault: Bool = false) async {
+    func createSpace(named name: String, in folder: URL, makeDefault: Bool = false, setupProjects: Bool = false) async {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             errorMessage = SpaceStoreError.invalid("a space needs a name").localizedDescription
@@ -224,9 +272,14 @@ final class AppModel {
             errorMessage = error.localizedDescription
             return
         }
+        let existingIDs = Set(spaces.map(\.id))
         await show(remembering: url) { try await self.store.createSpace(at: url, name: name) }
         if makeDefault, let space = selectedSpace, space.url?.standardizedFileURL == url.standardizedFileURL {
             setDefaultSpace(url)
+        }
+        if setupProjects, let space = selectedSpace, !existingIDs.contains(space.id),
+           space.url?.standardizedFileURL == url.standardizedFileURL {
+            sheet = .folders(url)
         }
     }
 
@@ -255,6 +308,9 @@ final class AppModel {
         selectedSpaceID = id
         editor = nil
         canvas = nil
+        selectedProjectID = nil
+        projectNotes = []
+        projects = []
         if graph?.spaceID != id {
             await graph?.flush()
             graph = nil
@@ -326,7 +382,7 @@ final class AppModel {
     /// The open space at a sidebar URL.
     func space(at url: URL) -> Space? {
         if url == SpacePanels.exampleURL { return spaces.first { exampleSpaceIDs.contains($0.id) } }
-        return spaces.first { $0.url?.standardizedFileURL == url.standardizedFileURL && !exampleSpaceIDs.contains($0.id) }
+        return spaces.first { $0.url?.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) && !exampleSpaceIDs.contains($0.id) }
     }
 
     /// Renames a space: its name in `manifest.json`. The package keeps its file name.
@@ -377,7 +433,19 @@ final class AppModel {
             }
         }
         spaceLibrary?.remove(url)
-        library.removeAll { $0.url == url.standardizedFileURL }
+        library.removeAll { $0.url.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) }
+    }
+
+    /// Close the imported package before moving it, regardless of a caller's URL directory hint.
+    /// Recent bookmarks are removed before the move so they cannot resurrect an archived copy.
+    func prepareToArchiveImport(_ url: URL) async throws {
+        let target = URL(filePath: url.path(percentEncoded: false), directoryHint: .isDirectory).standardizedFileURL
+        await removeFromList(target, forget: true)
+        guard space(at: target) == nil else {
+            throw SpaceStoreError.invalid("The imported space could not be closed. It has not been archived.")
+        }
+        recentSpaces?.remove(target)
+        recentSpaceURLs = recentSpaces?.urls ?? []
     }
 
     /// Makes a space the default for agents and capture (`default_space` in `config.toml`), or
@@ -469,9 +537,11 @@ final class AppModel {
             let spaceStore = store(for: space)
             let results: SearchResults?
             let list: [NodeSummary]
+            var limit = listLimit
             if query.isEmpty {
                 results = nil
                 list = try await spaceStore.listNodes(in: space)
+                limit = await spaceStore.listLimit(in: space)
             } else {
                 let found = try await spaceStore.search(query, mode: mode, in: space)
                 results = found
@@ -481,6 +551,16 @@ final class AppModel {
             guard space == selectedSpaceID, query == searchText.trimmingCharacters(in: .whitespacesAndNewlines), mode == searchMode else { return }
             nodes = list
             searchResults = results
+            listLimit = limit
+            if query.isEmpty {
+                let found = (try? await spaceStore.projects(in: space)) ?? []
+                guard space == selectedSpaceID else { return }
+                projects = found
+                if let selected = selectedProjectID, !found.contains(where: { $0.id == selected }) {
+                    selectedProjectID = nil
+                }
+                await reloadProjectNotes()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -538,6 +618,20 @@ final class AppModel {
         guard let space = selectedSpaceID else { return }
         do {
             let all = try await store(for: space).listNodes(in: space)
+            if let exact = all.first(where: { $0.id == title }) {
+                await openNode(exact.id)
+                return
+            }
+            if let url = selectedSpace?.url, let from = editor?.nodeID,
+               FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+                struct Resolved: Decodable { var node_id: String? }
+                let command = KnodeCommand(executable: Bundle.main.bundleURL.appending(path: "Contents/Helpers/knode"))
+                let text = try await command.run(["onboard", "resolve-link", "--target", url.path(percentEncoded: false), "--from", from, "--reference", title])
+                if let id = try JSONDecoder().decode(Resolved.self, from: Data(text.utf8)).node_id {
+                    await openNode(id)
+                    return
+                }
+            }
             if let match = all.first(where: { $0.title.caseInsensitiveCompare(title) == .orderedSame }) {
                 await openNode(match.id)
             }
@@ -794,6 +888,11 @@ final class AppModel {
             if let links { Task { await links.load() } }
             if let canvas { Task { await canvas.load() } }
             return
+        case .activity:
+            // Nothing changed: the graph shows what the agent is reading.
+            guard change.space == selectedSpaceID, let agent = change.author?.name else { return }
+            graph?.agentRead(change.nodes, by: agent)
+            return
         case .reload:
             await refreshSpace(change.space)
         case .create, .update, .delete, .link, .unlink:
@@ -885,5 +984,18 @@ final class AppModel {
         }
         nodes.removeAll { $0.id == node.id }
         nodes.insert(node.summary, at: 0)
+    }
+}
+
+/// What the sidebar of a space lists: its projects, or its most recent notes.
+enum SidebarListMode: Hashable {
+    case projects, recent
+}
+
+extension AppModel {
+    /// The text of a node, for a project's page; empty when it cannot be read.
+    func body(of id: Node.ID) async -> String {
+        guard let space = selectedSpaceID else { return "" }
+        return (try? await store(for: space).node(id, in: space).body) ?? ""
     }
 }
