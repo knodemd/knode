@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use knode_format::{
     ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Provenance, SearchHit, SearchMode,
+    NodeUpdate, Project, Provenance, SearchHit, SearchMode,
 };
 use knode_vault::{ExportReport, ImportReport};
 use serde::Serialize;
@@ -577,6 +577,29 @@ impl Client {
             limit,
         };
         self.request(methods::RECENT, params)
+    }
+
+    /// The projects of a space, by title.
+    pub fn projects(&self, space: impl AsRef<Path>) -> Result<Vec<Project>> {
+        let params = ProjectsParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::PROJECTS, params)
+    }
+
+    /// The nodes that are part of a project, most recently changed first.
+    pub fn project_notes(
+        &self,
+        space: impl AsRef<Path>,
+        id: &NodeId,
+        limit: usize,
+    ) -> Result<Vec<NodeSummary>> {
+        let params = ProjectNotesParams {
+            space: space_path(space.as_ref())?,
+            id: *id,
+            limit,
+        };
+        self.request(methods::PROJECT_NOTES, params)
     }
 
     /// Every version of a node, oldest first.

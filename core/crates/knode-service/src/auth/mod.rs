@@ -212,6 +212,8 @@ fn access(method: &str) -> Access {
         | methods::LINKS_UNRESOLVED
         | methods::SEARCH
         | methods::RECENT
+        | methods::PROJECTS
+        | methods::PROJECT_NOTES
         | methods::HISTORY
         | methods::CHANGES
         | methods::CHANGE
