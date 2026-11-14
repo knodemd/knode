@@ -40,6 +40,11 @@ mod maps;
 const CHANGE_BUFFER: usize = 1024;
 /// How many outgoing messages wait for a slow connection.
 const OUTBOX: usize = 256;
+/// How many `activity` notices a connection may fall behind before the oldest are dropped. They
+/// have their own feed, so a burst of reads never makes a connection miss a change.
+const ACTIVITY_BUFFER: usize = 64;
+/// How long a node one agent read is not announced again for that agent.
+const ACTIVITY_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
 /// How often the service writes the live Markdown folders whose changes are due.
 const LIVE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 /// How often the service checks that its socket is still there. A service whose socket was
@@ -341,6 +346,11 @@ pub(crate) struct State {
     /// to one space happen one at a time, in one place.
     spaces: Mutex<OpenSpaces>,
     changes: broadcast::Sender<Notice>,
+    /// What agents read, for the person: a feed of its own, so it never crowds out a change.
+    activity: broadcast::Sender<Activity>,
+    /// When each node was last announced as read, by agent and space, to announce it once per
+    /// [`ACTIVITY_QUIET`].
+    reads: Mutex<HashMap<(String, PathBuf, NodeId), std::time::Instant>>,
     clients: AtomicU64,
     next_client: AtomicU64,
     connections: Mutex<BTreeMap<u64, ConnectedClient>>,
@@ -374,6 +384,8 @@ impl State {
             auth,
             spaces: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGE_BUFFER).0,
+            activity: broadcast::channel(ACTIVITY_BUFFER).0,
+            reads: Mutex::new(HashMap::new()),
             clients: AtomicU64::new(0),
             next_client: AtomicU64::new(1),
             connections: Mutex::new(BTreeMap::new()),
@@ -582,6 +594,31 @@ impl State {
         self.index.changed(&change.space);
         // No receivers is not an error: nobody is subscribed.
         let _ = self.changes.send(Notice::Node(change));
+    }
+
+    /// Announces that an agent read nodes of a space, for the person watching. A node the same
+    /// agent read less than [`ACTIVITY_QUIET`] ago is left out, and nothing is sent when no node
+    /// is left, so an agent reading in a loop sends at most one notice per node per interval.
+    pub(crate) fn notify_activity(&self, mut activity: Activity) {
+        if self.activity.receiver_count() == 0 {
+            return;
+        }
+        let now = std::time::Instant::now();
+        {
+            let mut reads = lock_ignoring_poison(&self.reads);
+            reads.retain(|_, at| now.duration_since(*at) < ACTIVITY_QUIET);
+            activity.nodes.retain(|node| {
+                let key = (activity.agent.clone(), activity.space.clone(), *node);
+                if reads.contains_key(&key) {
+                    return false;
+                }
+                reads.insert(key, now);
+                true
+            });
+        }
+        if !activity.nodes.is_empty() {
+            let _ = self.activity.send(activity);
+        }
     }
 
     /// Announces that a space was renamed, or that its settings or folders changed. Capture
@@ -1301,13 +1338,33 @@ async fn subscribe(
     if forwarder.is_none() {
         // Subscribe to the feed before answering, so no change made after the answer is missed.
         let mut changes = state.changes.subscribe();
+        // What one agent reads is for the person, not for other agents.
+        let mut activity = agent.is_none().then(|| state.activity.subscribe());
         let filter = filter.clone();
         let updates = updates.clone();
         let outbox = outbox.clone();
         let state = state.clone();
         *forwarder = Some(tokio::spawn(async move {
             loop {
-                let message = match changes.recv().await {
+                let received = tokio::select! {
+                    // Changes first: an activity notice never holds one back.
+                    biased;
+                    received = changes.recv() => received,
+                    read = next_activity(&mut activity) => {
+                        // A notice for the person to watch, never a change: one that finds the
+                        // outbox full, or that this connection fell behind on, is dropped, so
+                        // reads never slow the changes down or make them lag.
+                        match read {
+                            Ok(read) if lock_ignoring_poison(&filter).wants(&read.space) => {
+                                let _ = outbox.try_send(notification(methods::ACTIVITY, &read));
+                            }
+                            Err(broadcast::error::RecvError::Closed) => activity = None,
+                            _ => {}
+                        }
+                        continue;
+                    }
+                };
+                let message = match received {
                     Ok(notice) => {
                         if !lock_ignoring_poison(&filter).wants(notice.space()) {
                             continue;
@@ -1352,6 +1409,16 @@ async fn subscribe(
         }));
     }
     Ok(Value::Bool(true))
+}
+
+/// The next `activity` notice, or never for a connection that does not hear them.
+async fn next_activity(
+    activity: &mut Option<broadcast::Receiver<Activity>>,
+) -> std::result::Result<Activity, broadcast::error::RecvError> {
+    match activity {
+        Some(activity) => activity.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 struct Request {
