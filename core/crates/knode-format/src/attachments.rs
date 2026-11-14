@@ -605,24 +605,28 @@ impl Space {
         if let Some(found) = read_attachment(&self.conn, from, destination)? {
             return Ok(Some(LinkTarget::Attachment(found)));
         }
-        let mut found = resolve(&self.conn, destination)?;
+        let mut found = resolve(&self.conn, Some(from), destination)?;
         if found.is_none() {
             if let Some((target, _)) = destination.split_once('#') {
-                found = resolve(&self.conn, target.trim())?;
+                found = resolve(&self.conn, Some(from), target.trim())?;
             }
         }
         if found.is_none() {
-            found = resolve_path(&self.conn, destination)?;
+            found = resolve_path(&self.conn, Some(from), destination)?;
         }
         if found.is_none()
             && let Some((target, _)) = destination.split_once('#')
         {
-            found = resolve_path(&self.conn, target.trim())?;
+            found = resolve_path(&self.conn, Some(from), target.trim())?;
         }
         let Some(id) = found else {
             return Ok(None);
         };
         let node = read_node(&self.conn, &NodeId::parse(&id)?)?;
+        let path = match &node {
+            Some(n) => self.property(&n.id, crate::property_keys::MARKDOWN_PATH)?,
+            None => None,
+        };
         Ok(node.map(|n| {
             LinkTarget::Node(NodeSummary {
                 id: n.id,
@@ -631,6 +635,7 @@ impl Space {
                 created_at: n.created_at,
                 updated_at: n.updated_at,
                 updated_by: n.updated_by,
+                path,
             })
         }))
     }

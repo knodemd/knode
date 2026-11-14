@@ -310,6 +310,17 @@ public actor ServiceSpaceStore: CoeditingStore {
             default: kind = .reload
             }
             broadcast.yield(SpaceChange(space: space, nodeID: nil, kind: kind))
+        case "activity":
+            guard let activity = try? notification.params(as: WireActivity.self),
+                  let space = spaces.first(where: { $0.value.path == activity.space })?.key
+            else { return }
+            broadcast.yield(SpaceChange(
+                space: space,
+                nodeID: activity.nodes.first,
+                kind: .activity,
+                author: Author(kind: .agent, name: activity.agent),
+                nodes: activity.nodes
+            ))
         case "lagged":
             for id in spaces.keys { broadcast.yield(SpaceChange(space: id, nodeID: nil, kind: .reload)) }
         default:
@@ -403,6 +414,7 @@ struct WireSummary: Decodable, Sendable {
     var title: String
     var updatedAt: Int64
     var kind: String?
+    var path: String?
 }
 
 /// A link, as `link.create` returns it; the app only needs to know it was made.
@@ -487,6 +499,14 @@ extension SpaceFolder {
     }
 }
 
+/// An agent read nodes: the params of an `activity` notification.
+struct WireActivity: Decodable, Sendable {
+    var space: String
+    var agent: String
+    var method: String
+    var nodes: [String]
+}
+
 struct Changed: Decodable, Sendable {
     var space: String
     var nodeId: String
@@ -523,7 +543,7 @@ extension Node {
 
 extension NodeSummary {
     init(_ summary: WireSummary, excerpt: String) {
-        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note)
+        self.init(id: summary.id, title: summary.title, excerpt: excerpt, updatedAt: Date(unixMilliseconds: summary.updatedAt), kind: summary.kind ?? NodeKind.note, path: summary.path)
     }
 }
 

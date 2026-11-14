@@ -11,7 +11,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
 use crate::chunking::{CHUNKING, TextChunk, chunk_node_text};
-use crate::space::{SUMMARY_COLUMNS, add_change_with_detail, limit_param, provenance_id, summary};
+use crate::space::{
+    SUMMARY_COLUMNS, SUMMARY_PATH, add_change_with_detail, limit_param, provenance_id, summary,
+};
 use crate::{
     Error, NodeId, NodeSummary, Provenance, Result, Space, Timestamp, actions, setting_keys,
 };
@@ -754,7 +756,8 @@ fn nearest_sql(table: &str) -> String {
              )
              SELECT {SUMMARY_COLUMNS}, best.distance, best.ord, best.text_start, best.text_end,
                     best.heading,
-                    substr(n.plain, best.text_start + 1, best.text_end - best.text_start)
+                    substr(n.plain, best.text_start + 1, best.text_end - best.text_start),
+                    {SUMMARY_PATH}
              FROM best
              JOIN nodes n ON n.id = best.node_id
              JOIN provenance u ON u.id = n.updated_by

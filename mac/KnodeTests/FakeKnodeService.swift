@@ -506,10 +506,15 @@ final class FakeKnodeService: @unchecked Sendable {
         }
     }
 
-    private func notifySpace(_ params: [String: Any]) {
+    /// Announces that an agent read nodes, as the service does for the person.
+    func agentReads(_ ids: [String], in path: String, agent: String = "codex") {
+        notifySpace(["space": path, "agent": agent, "method": "node.get", "nodes": ids], method: "activity")
+    }
+
+    private func notifySpace(_ params: [String: Any], method: String = "space") {
         let subscribers = lock.withLock { clients.filter(\.value).map(\.key) }
         for client in subscribers {
-            send(["jsonrpc": "2.0", "method": "space", "params": params], to: client)
+            send(["jsonrpc": "2.0", "method": method, "params": params], to: client)
         }
     }
 

@@ -420,6 +420,21 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(service.settings(of: path)["capture.enabled"] == nil)
     }
 
+    @Test func whatAnAgentReadsArrivesAsActivity() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let changes = store.changes()
+        service.agentReads(["N1", "N2"], in: path)
+        var seen: SpaceChange?
+        for await change in changes where change.kind == .activity {
+            seen = change
+            break
+        }
+        #expect(seen?.space == space.id)
+        #expect(seen?.nodes == ["N1", "N2"])
+        #expect(seen?.author == Author(kind: .agent, name: "codex"))
+    }
+
     @MainActor
     @Test func theListFollowsAnAgentsWrites() async throws {
         let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
@@ -434,5 +449,17 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(model.editor?.body == "First.")
         service.agentUpdatesNode(id, in: path, body: "Second.")
         #expect(try await eventually { model.editor?.body == "Second." })
+    }
+}
+
+/// A note imported from a file shows the folder it came from, to tell apart notes of the same name.
+@Suite struct ImportedFolderTests {
+    @Test func summariesFromTheServiceCarryTheFolder() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let json = #"[{"id":"a","title":"README","updated_at":1,"path":"app/widget/README.md"},{"id":"b","title":"Top","updated_at":1,"path":"Top.md"},{"id":"c","title":"Here","updated_at":1}]"#
+        let notes = try decoder.decode([WireSummary].self, from: Data(json.utf8)).map { NodeSummary($0, excerpt: "") }
+        #expect(notes.map(\.folder) == ["app/widget", nil, nil])
+        #expect(notes[0].path == "app/widget/README.md")
     }
 }
