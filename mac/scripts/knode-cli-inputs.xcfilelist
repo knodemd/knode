@@ -21,6 +21,7 @@ $(SRCROOT)/../core/crates/knode-config/Cargo.toml
 $(SRCROOT)/../core/crates/knode-config/src/lib.rs
 $(SRCROOT)/../core/crates/knode-config/src/workflow.rs
 $(SRCROOT)/../core/crates/knode-embed/Cargo.toml
+$(SRCROOT)/../core/crates/knode-embed/src/bert.rs
 $(SRCROOT)/../core/crates/knode-embed/src/chunk.rs
 $(SRCROOT)/../core/crates/knode-embed/src/download.rs
 $(SRCROOT)/../core/crates/knode-embed/src/embedder.rs
