@@ -138,7 +138,11 @@ struct NoteView: View {
     }
 
     private var source: some View {
-        MarkdownSourceEditor(editor: editor, attachments: attachmentDrop)
+        MarkdownSourceEditor(editor: editor, attachments: attachmentDrop, openWikiLink: { [model] name in
+            // As in the preview: the note's attachment of that name, else the note so titled.
+            if model.openAttachment(named: name) { return }
+            Task { await model.openLinkedNode(titled: name) }
+        })
             .id(editor.nodeID)
     }
 
