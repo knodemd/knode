@@ -209,7 +209,7 @@ final class AppModel {
 
     /// Creates `<folder>/<name>.knode` and opens it; with `makeDefault`, agents and capture write
     /// to it from now on.
-    func createSpace(named name: String, in folder: URL, makeDefault: Bool = false) async {
+    func createSpace(named name: String, in folder: URL, makeDefault: Bool = false, setupProjects: Bool = false) async {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
             errorMessage = SpaceStoreError.invalid("a space needs a name").localizedDescription
@@ -224,9 +224,14 @@ final class AppModel {
             errorMessage = error.localizedDescription
             return
         }
+        let existingIDs = Set(spaces.map(\.id))
         await show(remembering: url) { try await self.store.createSpace(at: url, name: name) }
         if makeDefault, let space = selectedSpace, space.url?.standardizedFileURL == url.standardizedFileURL {
             setDefaultSpace(url)
+        }
+        if setupProjects, let space = selectedSpace, !existingIDs.contains(space.id),
+           space.url?.standardizedFileURL == url.standardizedFileURL {
+            sheet = .folders(url)
         }
     }
 
