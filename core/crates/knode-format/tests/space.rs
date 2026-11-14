@@ -570,12 +570,12 @@ fn mentions(space: &Space, node: &knode_format::Node) -> Vec<knode_format::NodeI
 fn path_links_resolve_by_the_file_a_node_came_from() {
     let (_dir, mut space) = new_space();
     let first = imported(&mut space, "README", "", "Work/README.md");
-    let second = imported(&mut space, "README", "", "Home/Taskbot/README.md");
+    let second = imported(&mut space, "README", "", "Home/App/README.md");
     let source = space
         .create_node(
             NewNode::note(
                 "Index",
-                "[[Home/Taskbot/README|taskbot]], [[taskbot/readme.md#Stack]] and [[README]]",
+                "[[Home/App/README|app]], [[app/readme.md#Stack]] and [[README]]",
             ),
             &me(),
         )

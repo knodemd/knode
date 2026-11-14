@@ -1,11 +1,12 @@
 //! Amp threads: `~/.local/share/amp/threads/T-<id>.json`.
 //!
-//! Unverified format: no Amp thread file was available to check this reader against, so it
-//! follows the format described by people who inspected one, and reads it tolerantly. Each
-//! thread is one JSON document, rewritten as it grows, and read whole when it changes:
+//! Amp does not document this file, so the reader follows the format as independent open-source
+//! readers of it describe it, and reads it tolerantly. Each thread is one JSON document,
+//! rewritten as it grows, and read whole when it changes:
 //!
 //! - `id`, `created` (milliseconds or RFC 3339), `title`;
-//! - `env.initial.trees[].uri`: the project, as a `file://` URL;
+//! - `env.initial.trees[]`: the project, `uri` as a `file://` URL, and its branch,
+//!   `repository.ref` (`refs/heads/<branch>`);
 //! - `messages[]`: `role` (`user`, `assistant`), `content` (a string or a list of blocks:
 //!   `text`, `thinking`, `tool_use` with `id`, `name` and `input`, `tool_result` with
 //!   `toolUseID` and `run.status`, `image`), and `meta.sentAt`.
@@ -33,6 +34,9 @@ pub(crate) fn apply_document(conversation: &mut Conversation, thread: &Value) {
     if let Some(project) = project(thread) {
         conversation.project = Some(project.into());
     }
+    if let Some(branch) = branch(thread) {
+        conversation.git_branch = Some(branch.to_string());
+    }
     for message in thread
         .get("messages")
         .and_then(Value::as_array)
@@ -50,6 +54,16 @@ fn project(thread: &Value) -> Option<String> {
         let uri = str_field(tree, "uri")?;
         let path = uri.strip_prefix("file://")?;
         Some(percent_decode(path))
+    })
+}
+
+/// The branch of the thread's first workspace tree with a repository.
+fn branch(thread: &Value) -> Option<&str> {
+    let trees = thread.pointer("/env/initial/trees")?.as_array()?;
+    trees.iter().find_map(|tree| {
+        let reference = tree.pointer("/repository/ref")?.as_str()?;
+        let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        (!branch.is_empty()).then_some(branch)
     })
 }
 

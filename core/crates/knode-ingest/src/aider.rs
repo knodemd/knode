@@ -1,14 +1,18 @@
 //! Aider chat history: `.aider.chat.history.md` in each project folder.
 //!
-//! Unverified format: no Aider history file was available to check this reader against, so it
-//! follows the format Aider documents and writes in its source, read tolerantly. The file is
-//! Markdown that only grows, and holds every session run in the project:
+//! The format is the one Aider's own code writes (`aider/io.py`), read tolerantly. The file is
+//! Markdown that only grows, and holds every session run in the project. Aider writes it in the
+//! root of the project's git repository, or in the folder it was started in, unless
+//! `--chat-history-file` names another file:
 //!
 //! - `# aider chat started at YYYY-MM-DD HH:MM:SS` (local time) starts a session;
-//! - lines starting with `#### ` are what the person typed, one line each;
+//! - lines starting with `#### ` are what the person typed, one line each, `#### <blank>` for
+//!   an empty input;
 //! - lines starting with `>` are Aider's own output (edits applied, commits, questions, token
-//!   counts). Applied edits, commits and commands run become tool calls; the rest is left out;
-//! - everything else is the model's reply.
+//!   counts). Applied edits (`Applied edit to <file>`), commits (`Commit <hash> <message>`) and
+//!   commands run (`Running <command>`) become tool calls; the rest is left out;
+//! - everything else is the model's reply. A line of a reply that itself starts with `#### ` or
+//!   `>` reads as typed input or as output: the file has nothing that tells them apart.
 //!
 //! Each session becomes its own conversation, with an id made from the project folder and the
 //! start time. Lines carry no times, so a conversation's start is its session's start.
