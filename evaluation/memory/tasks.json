@@ -1,0 +1,5 @@
+[
+  {"id":"resume","prompt":"Resume project demo-api. What storage decision is current, why, what is unverified, and what is next?","success_criteria":["SQLite is current for the local demo","Postgres was superseded, not a current decision","No remote deployment verification","Next action is deployment validation","Do not use demo-site decisions"]},
+  {"id":"rationale","prompt":"For demo-api, explain where the current storage decision came from and why the earlier decision changed.","success_criteria":["Link the actual session source","Identify local-only scope","Preserve previous rationale as history"]},
+  {"id":"checkpoint","prompt":"For demo-api, record a checkpoint that deployment remains unverified and the next action is to validate it. Search first and avoid duplicate project context notes. Retrieve this checkpoint from a fresh session.","success_criteria":["Durable checkpoint retrieved from a fresh session","Linked to correct project","No fabricated passing checks","No duplicate project context"]}
+]
