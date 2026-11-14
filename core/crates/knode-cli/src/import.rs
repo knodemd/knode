@@ -194,3 +194,57 @@ fn plural(n: usize, noun: &str) -> String {
         format!("{n} {noun}s")
     }
 }
+
+/// Run the deterministic Markdown importer against a disposable local space.
+pub fn preview(target: Option<&str>, from: Option<&str>, json: bool) -> Result<()> {
+    if from.is_some_and(|f| f != "markdown") {
+        bail!("--preview currently supports Markdown folders only");
+    }
+    let target = target.ok_or_else(|| anyhow!("--preview requires a Markdown folder path"))?;
+    let path = crate::absolute(Path::new(target))?;
+    if !path.is_dir() {
+        bail!("--preview requires a Markdown folder path, not a URL or file");
+    }
+    let report = knode_vault::preview::preview(path)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!(
+        "Preview only: {} notes in a temporary space; source and destination unchanged.",
+        report.notes.len()
+    );
+    println!(
+        "{} skipped, {} attached, {} unused files, {} failed typed links.",
+        report.import.skipped.len(),
+        report.import.attached.len(),
+        report.import.attachments.len(),
+        report.import.unlinked.len()
+    );
+    for note in &report.notes {
+        println!(
+            "  {} → {}",
+            note.path.as_deref().unwrap_or("(no path)"),
+            note.title
+        );
+        for target in &note.unresolved {
+            println!("    Unresolved: {target}");
+        }
+    }
+    for (title, paths) in &report.duplicate_titles {
+        println!("Duplicate title {title:?}: {}", paths.join(", "));
+    }
+    for item in report.import.skipped.iter().chain(&report.import.unlinked) {
+        println!("Review {}: {}", item.path, item.reason);
+    }
+    for path in &report.import.attachments {
+        println!("Not attached: {path}");
+    }
+    for warning in &report.warnings {
+        println!("Review {}: {}", warning.path, warning.reason);
+    }
+    println!(
+        "Use --json for the complete machine-readable report. This is not a round-trip fidelity certificate."
+    );
+    Ok(())
+}
