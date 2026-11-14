@@ -11,6 +11,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sql/0002-properties.sql"),
     include_str!("sql/0003-v02.sql"),
     include_str!("sql/0004-v03.sql"),
+    include_str!("sql/0005-search-path.sql"),
 ];
 
 /// The schema version this library writes: the `user_version` of an up to date `knode.db`.
@@ -109,10 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_has_every_table_of_version_4() {
+    fn a_fresh_database_has_every_table_of_the_latest_version() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(SCHEMA_VERSION, 4);
+        assert_eq!(SCHEMA_VERSION, 5);
         for table in [
             "settings",
             "provenance",
@@ -272,7 +273,7 @@ mod tests {
             .map(|t| count(&conn, t))
             .collect();
         migrate(&mut conn).unwrap();
-        assert_eq!(version(&conn).unwrap(), 4);
+        assert_eq!(version(&conn).unwrap(), SCHEMA_VERSION);
         let after: Vec<i64> = ["nodes", "history", "changes", "provenance"]
             .iter()
             .map(|t| count(&conn, t))
@@ -335,5 +336,27 @@ mod tests {
         assert!(migrate(&mut conn).is_err());
         assert_eq!(version(&conn).unwrap(), 3);
         assert!(!table_exists(&conn, "link_kinds"));
+    }
+
+    #[test]
+    fn a_failed_search_path_migration_preserves_the_old_index() {
+        let mut conn = version_3_database();
+        conn.execute_batch(MIGRATIONS[3]).unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        // The conflict occurs after migration 5 drops the old index.
+        conn.execute_batch("CREATE VIEW nodes_fts_content AS SELECT 1 AS seq")
+            .unwrap();
+        assert!(migrate(&mut conn).is_err());
+        assert_eq!(version(&conn).unwrap(), 4);
+        let hits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM nodes_fts WHERE nodes_fts MATCH 'one'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
+        assert!(trigger_exists(&conn, "nodes_fts_update"));
+        assert!(!trigger_exists(&conn, "properties_fts_insert"));
     }
 }

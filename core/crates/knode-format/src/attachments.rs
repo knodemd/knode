@@ -605,10 +605,10 @@ impl Space {
         if let Some(found) = read_attachment(&self.conn, from, destination)? {
             return Ok(Some(LinkTarget::Attachment(found)));
         }
-        let mut found = resolve(&self.conn, destination)?;
+        let mut found = resolve(&self.conn, Some(from), destination)?;
         if found.is_none() {
             if let Some((target, _)) = destination.split_once('#') {
-                found = resolve(&self.conn, target.trim())?;
+                found = resolve(&self.conn, Some(from), target.trim())?;
             }
         }
         let Some(id) = found else {
