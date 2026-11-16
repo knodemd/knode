@@ -63,6 +63,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
+  including the default space, now appear in the sidebar the next time the app opens, unless you
+  took them off the list.
 - **Obsidian links with a relative path**: `[[../Research/Insights]]` and `[[./Glossary]]`, as Obsidian
   writes them with "relative path to file", now link to the file they name, even when it is
   imported after the note.
