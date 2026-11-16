@@ -32,7 +32,6 @@ final class CommandLineToolInstaller {
 
     // MARK: First run
 
-    /// On the first run, offers to install the command, unless one is installed already.
     /// On every launch: when `knode` runs another copy of Knode, offers to point it at this one;
     /// otherwise, on the first run, offers to install it.
     func offerOnLaunch() {
@@ -65,6 +64,7 @@ final class CommandLineToolInstaller {
         }
     }
 
+    /// On the first run, offers to install the command, unless one is installed already.
     func offerOnFirstRun() {
         guard !defaults.bool(forKey: Self.offeredKey) else { return }
         defaults.set(true, forKey: Self.offeredKey)
