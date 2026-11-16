@@ -29,11 +29,26 @@ Ask, unless it is already clear, which of these fits, and follow its path:
 - **Nothing yet**: they want to start using Knode with their agents now. Go to "Starting from
   nothing", then steps 6 to 8.
 
+Run `knode spaces`. If the person already has a space (not marked archived), ask whether this
+import should become their memory or stay a separate space; see "If they already have a space".
+
 Also look for memory their agents already keep, and offer to bring it: Claude Code's
 `~/.claude/projects/*/memory/` folders, global instruction files (`~/.claude/CLAUDE.md`,
 `~/.codex/AGENTS.md`), and memory tools or plugins. If another memory tool injects context into
 every session, ask whether to turn it off once Knode is in place, so agents do not keep two
 memories.
+
+To bring Claude Code's memory: each folder in `~/.claude/projects/` is a working folder whose
+path has every character that is not a letter or digit replaced by `-`
+(`/Users/ada/Work/web.app` is `-Users-ada-Work-web-app`); skip folders that are symbolic links.
+Match each to the project whose folder it is, or that contains it, by encoding the project
+folders the same way and taking the longest match. Copy each `memory/*.md` file (not the
+`MEMORY.md` index) into `<working folder>/<project>/Agent memory/`, and the ones of no project
+into `<working folder>/_agent-memory/`, import the working folder after step 4
+(`knode --space <space> import <working folder>`), then link each note to its project:
+`knode --space <space> link <note id> "<project>" --kind part-of` (ids are in an export, or in
+`knode search`). A project that has no node yet can be created by importing a note whose
+frontmatter has `kind: project`.
 
 ## Projects spread around
 
@@ -82,6 +97,20 @@ leave a link at the old place until nothing uses it.
    unless they choose it, per space (`knode spaces capture "<Name>" on`).
 
 Then continue with steps 6 to 8.
+
+## If they already have a space
+
+When the new import is meant to replace an existing space (for example, a first try made by hand):
+
+1. Before archiving anything, list the notes only the old space has: export both
+   (`knode --space <old> export <folder>` and the same for the new one) and compare paths and
+   titles; notes written in Knode itself (checkpoints, decisions) are the usual ones. Import those
+   into the new space and link them to their projects.
+2. Put the old one aside, never delete it: `knode onboard archive --target <old space>` for a
+   space onboarding created; otherwise leave it and tell the person.
+3. Give the new space the name the person and their instruction files already use:
+   `knode spaces rename <new space> "<Name>"`, make it the default, and connect the agents to it
+   (step 6), since their connection still points at the old space.
 
 ## 1. Look before deciding
 

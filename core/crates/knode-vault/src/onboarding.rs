@@ -552,7 +552,9 @@ pub fn agent_guide(source: Option<&Path>) -> String {
 
 /// The short prompt a person pastes into an agent to start: it points the agent at the guide.
 pub fn agent_prompt(source: Option<&Path>) -> String {
-    match source {
+    // A folder chosen in a panel can end with `/`; the commands read better without it.
+    let source = source.map(|p| p.components().collect::<std::path::PathBuf>());
+    match source.as_deref() {
         Some(path) => format!(
             "Bring my notes from {0} into Knode, the local memory my agents share. Run `knode onboard guide --source \"{0}\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.",
             path.display()
@@ -1302,6 +1304,10 @@ mod tests {
         let prompt = agent_prompt(Some(source));
         assert!(prompt.contains("knode onboard guide --source \"/Users/ada/Notes\""));
         assert!(agent_prompt(None).contains("Ask me which folder"));
+        assert!(
+            agent_prompt(Some(Path::new("/Users/ada/Notes/")))
+                .contains("--source \"/Users/ada/Notes\"")
+        );
         let unknown = agent_guide(None);
         assert!(
             unknown.contains("Ask the person which folder")
