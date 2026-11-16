@@ -61,6 +61,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
+  including the default space, now appear in the sidebar the next time the app opens, unless you
+  took them off the list.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).

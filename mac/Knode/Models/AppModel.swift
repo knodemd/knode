@@ -238,6 +238,9 @@ final class AppModel {
                     library.add(url)
                 }
                 library.markSaved()
+            } else {
+                // Spaces made since outside the app: from the command line, by an agent or an import.
+                library.addKnown([defaultSpaceURL].compactMap { $0 } + settings.knownSpaces())
             }
             self.library = library.entries
         }
