@@ -14,6 +14,10 @@ belongs to, newest first.
 
 #### Added
 
+- **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
+  any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
+  asks you only what needs your judgment, imports a copy, connects itself and moves your
+  instruction files to Knode. `knode onboard prompt` prints the prompt.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.

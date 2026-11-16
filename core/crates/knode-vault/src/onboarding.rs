@@ -534,6 +534,29 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
     plan.warnings = notices;
     Ok(plan)
 }
+/// The step-by-step guide an agent follows to bring a person's notes into Knode: `knode onboard
+/// guide`. Agents decide what needs judgment (which notes are the person's, which projects keep
+/// their files); the deterministic parts stay in [`analyze`] and [`apply`].
+pub fn agent_guide(source: Option<&Path>) -> String {
+    include_str!("onboarding_guide.md").replace("{source}", &source_text(source))
+}
+
+/// The short prompt a person pastes into an agent to start: it points the agent at the guide.
+pub fn agent_prompt(source: Option<&Path>) -> String {
+    format!(
+        "Bring my notes from {} into Knode, the local memory my agents share. Run `knode onboard guide --source \"{}\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.",
+        source_text(source),
+        source_text(source)
+    )
+}
+
+fn source_text(source: Option<&Path>) -> String {
+    source.map_or_else(
+        || "the folder where I keep my notes (ask me which)".to_owned(),
+        |path| path.display().to_string(),
+    )
+}
+
 /// Groups with the same suggested name would merge on import, since equal names merge on
 /// purpose: tell them apart by their parent folder instead.
 fn unique_names(groups: BTreeMap<String, String>) -> Vec<Group> {
@@ -1263,6 +1286,18 @@ mod tests {
         );
         let body = space.get_node(&context("Org")).unwrap().unwrap().body;
         assert!(body.contains("## Projects inside") && !body.contains("To be filled"));
+    }
+
+    #[test]
+    fn the_agent_guide_and_prompt_name_the_source() {
+        let source = Path::new("/Users/ada/Notes");
+        let guide = agent_guide(Some(source));
+        assert!(guide.contains("Source folder: /Users/ada/Notes"));
+        assert!(guide.contains("knode onboard analyze --mode vault --source \"/Users/ada/Notes\""));
+        assert!(!guide.contains("{source}"));
+        let prompt = agent_prompt(Some(source));
+        assert!(prompt.contains("knode onboard guide --source \"/Users/ada/Notes\""));
+        assert!(agent_prompt(None).contains("ask me which"));
     }
 
     #[test]
