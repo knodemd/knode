@@ -17,6 +17,72 @@ Source folder: {source}
   every file you edit.
 - If a command fails, show the person the error and stop that step; do not work around it.
 
+## 0. Find out where the person starts
+
+Ask, unless it is already clear, which of these fits, and follow its path:
+
+- **A folder of notes**, such as an Obsidian vault or a folder that holds their projects: steps 1
+  to 8 below, with that folder as the source.
+- **Projects spread around**, such as twenty folders on the Desktop next to photos, downloads and
+  other files, or projects in several places (Desktop, `~/Developer`, `~/Documents`): first
+  "Projects spread around", then steps 1 to 8.
+- **Nothing yet**: they want to start using Knode with their agents now. Go to "Starting from
+  nothing", then steps 6 to 8.
+
+Also look for memory their agents already keep, and offer to bring it: Claude Code's
+`~/.claude/projects/*/memory/` folders, global instruction files (`~/.claude/CLAUDE.md`,
+`~/.codex/AGENTS.md`), and memory tools or plugins. If another memory tool injects context into
+every session, ask whether to turn it off once Knode is in place, so agents do not keep two
+memories.
+
+## Projects spread around
+
+Knode reads only Markdown and the files notes refer to: photos, PDFs, downloads, installers and
+code in a folder are never imported. So a parent folder full of other things can still be the
+source.
+
+1. List the candidate folders: `ls` the places the person names (Desktop, Documents, Developer,
+   Projects…), and for each subfolder note whether it is a git repository
+   (`git -C <folder> rev-parse --show-toplevel`), how many Markdown files it has, and what else is
+   in it.
+2. Sort them into projects (code, writing, client or study work, with or without git), the person's
+   notes, and everything else (photos, downloads, archives, installers, other people's material).
+   Show the person the list and let them correct it.
+3. If all their projects live under one folder, use that folder as the source and, in step 2,
+   leave out the groups that are not projects.
+4. If they live in several places, do not move anything. Make a working folder outside all of
+   them, for example `/tmp/knode-source`, and copy into `<working folder>/<project>/` only the
+   Markdown files of each project that are the person's notes (in a git repository,
+   `git -C <project> ls-files` tells repository documentation apart; decide as in step 2), keeping
+   their relative paths and the images and PDFs they link to. Use the working folder as the source
+   in step 1 with `--mode vault`. Projects become one group each.
+5. Register every project's real folder so future agent conversations go to it:
+   `knode --space <space> folders add <project folder> --kind project`, after step 4. Agent
+   conversations held in those folders are brought with `--sessions` only when the source holds the
+   real folders; with a working folder, say so to the person.
+
+Moving their projects into one folder is a separate decision, never a side effect. Only if they ask:
+check first `git worktree list` and submodules in each repository, absolute paths in scripts,
+launch agents and editors, and the agent's own per-folder settings and history (for Claude Code,
+`~/.claude/projects/` and the projects in `~/.claude.json`); move, run `git worktree repair`, and
+leave a link at the old place until nothing uses it.
+
+## Starting from nothing
+
+1. Create the space and make it the default: `knode init "<Name>"` and
+   `knode spaces default "<Name>"`.
+2. Ask which projects they work on now, and where. For each: register its folder
+   (`knode --space "<Name>" folders add <folder> --kind project`), read its `README`, instruction
+   files and recent history (`git log --oneline -20`), and save one short context note for it:
+   what it is, its goal, its current state, key decisions and the next step, marked as written by
+   you from those sources. Ask the person to correct anything you could not verify.
+3. Bring the memory their agents already keep (see step 0): import a folder that holds those
+   files, `knode --space "<Name>" import <folder>`, and link each note to its project.
+4. Ask whether Knode should also keep their agent conversations from now on (capture): it is off
+   unless they choose it, per space (`knode spaces capture "<Name>" on`).
+
+Then continue with steps 6 to 8.
+
 ## 1. Look before deciding
 
 ```sh
@@ -106,7 +172,10 @@ knode --space "$HOME/Knode/<Name>.knode" connect <agent> --print
 knode --space "$HOME/Knode/<Name>.knode" connect <agent>
 ```
 
-The agent needs a new session to see Knode.
+The agent needs a new session to see Knode. For Claude Code, also offer one line in its global
+instruction file (`~/.claude/CLAUDE.md`), with a backup: "Your memory is Knode, space <Name>:
+search it before asking about earlier work, and save decisions there." Global files load in
+every session, so keep it to that line.
 
 ## 7. Move the memory habit to Knode
 
