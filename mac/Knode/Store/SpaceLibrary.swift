@@ -24,6 +24,14 @@ struct SpaceLibrary {
         self.key = key
     }
 
+    /// `<name>-archive-<digits>.knode`: a copy onboarding put aside (`knode onboard archive`).
+    static func isArchive(_ url: URL) -> Bool {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let range = stem.range(of: "-archive-", options: .backwards) else { return false }
+        let stamp = stem[range.upperBound...]
+        return !stamp.isEmpty && stamp.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     /// False until the list is first saved: the app then fills it from the spaces it knows.
     var hasBeenSaved: Bool {
         defaults.object(forKey: key) != nil
@@ -40,6 +48,9 @@ struct SpaceLibrary {
                     url = resolved.standardizedFileURL
                 }
             }
+            // A space archived from the command line moved; its bookmark followed it to the
+            // archive. Archives are kept for recovery, not listed: drop it from the sidebar.
+            if Self.isArchive(url) && !Self.isArchive(URL(filePath: path)) { return nil }
             let exists = FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
             let name = item["name"] as? String ?? url.deletingPathExtension().lastPathComponent
             return Entry(url: url, name: name, icon: item["icon"] as? String, isMissing: !exists)

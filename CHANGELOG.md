@@ -61,6 +61,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
+  skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
+  the command line.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
