@@ -69,7 +69,9 @@ struct OnboardingSheet: View {
     @State private var step = 0
     @State private var mode = "vault"
     @State private var source: URL?
-    @State private var name = "Imported memory"
+    /// The suggested name before a source is chosen, and for an empty start.
+    static let defaultName = "Imported memory"
+    @State private var name = OnboardingSheet.defaultName
     @State private var destinationFolder: URL?
     @State private var plan = ImportPlan()
     @State private var result: ImportResult?
@@ -348,6 +350,8 @@ struct OnboardingSheet: View {
             if mode != "empty", let source { args += ["--source", source.path(percentEncoded: false)] }
             let text = try await command.run(args)
             plan = try JSONDecoder().decode(ImportPlan.self, from: Data(text.utf8))
+            // Name the new space after its source, unless the person already typed a name.
+            if name == Self.defaultName, mode != "empty", let source { name = source.lastPathComponent }
             acknowledged = false; step = 1
         }
     }

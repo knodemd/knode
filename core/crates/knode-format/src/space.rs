@@ -1015,8 +1015,11 @@ pub(crate) fn resolve_path(
     from: Option<&NodeId>,
     target: &str,
 ) -> Result<Option<String>> {
-    let wanted = path_key(target);
-    if !wanted.contains('/') {
+    // A `[[../folder/note]]` names one file, relative to the linking note's: only that path.
+    let relative = relative_target(tx, from, target)?;
+    let exact = relative.is_some();
+    let wanted = path_key(relative.as_deref().unwrap_or(target));
+    if !exact && !wanted.contains('/') {
         return Ok(None);
     }
     let suffix = format!("/{wanted}");
@@ -1049,12 +1052,51 @@ pub(crate) fn resolve_path(
     while let Some(row) = rows.next()? {
         let value: String = row.get(1)?;
         let key = path_key(&value);
-        if key == wanted || key.ends_with(&suffix) {
+        if key == wanted || (!exact && key.ends_with(&suffix)) {
             candidates.push((row.get(0)?, Some(value)));
         }
     }
     drop(rows);
     nearest(tx, from, candidates)
+}
+
+/// A `[[link]]` target written relative to the linking note's file, as Obsidian writes links
+/// with its "relative path to file" setting: `[[../Research/Notes]]` from `OFM/Course/Plan.md` is
+/// `OFM/Research/Notes`. `None` when the target does not start with `../` or `./`, the linking
+/// node has no `markdown.path`, or the target goes above the root of the imported folder.
+fn relative_target(tx: &Connection, from: Option<&NodeId>, target: &str) -> Result<Option<String>> {
+    let target = target.trim();
+    if !(target.starts_with("../") || target.starts_with("./")) {
+        return Ok(None);
+    }
+    let Some(from) = from else {
+        return Ok(None);
+    };
+    let here: Option<String> = tx
+        .query_row(
+            "SELECT value FROM properties WHERE node_id = ?1 AND key = ?2",
+            params![from.to_string(), property_keys::MARKDOWN_PATH],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(here) = here else {
+        return Ok(None);
+    };
+    let mut parts: Vec<&str> = here.split('/').collect();
+    parts.pop();
+    for segment in target.split('/') {
+        match segment {
+            ".." => {
+                if parts.pop().is_none() {
+                    return Ok(None);
+                }
+            }
+            "." | "" => {}
+            name => parts.push(name),
+        }
+    }
+    let path = parts.join("/");
+    Ok(Some(path.strip_suffix(".md").unwrap_or(&path).to_owned()))
 }
 
 /// Turns the unresolved links waiting for the file `path` into `mentions` links to `id`:
@@ -1116,8 +1158,11 @@ fn apply_body_links(
             Some(target) => {
                 targets.insert(target);
             }
-            // A link waits for the title before `#`: `[[Roadmap#Plan]]` waits for `Roadmap`.
-            None => waiting.push(link.target.clone()),
+            // A link waits for the title before `#`: `[[Roadmap#Plan]]` waits for `Roadmap`. A
+            // relative one waits for the path it names, so the file finds it when it arrives.
+            None => waiting.push(
+                relative_target(tx, Some(id), &link.target)?.unwrap_or_else(|| link.target.clone()),
+            ),
         }
     }
     let existing: Vec<String> = {
