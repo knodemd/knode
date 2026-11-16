@@ -230,7 +230,7 @@ pub fn rename_links(markdown: &str, old: &str, new: &str) -> String {
         }
         // Prefer the whole destination as a title (titles may contain `#`), then the part
         // before `#`.
-        let whole = dest.as_ref();
+        let whole = unescaped(dest.as_ref());
         let candidates = [Some(whole), whole.split_once('#').map(|(t, _)| t)];
         for part in candidates.into_iter().flatten() {
             if title_key(part) == title_key(old) {
@@ -251,8 +251,15 @@ pub fn rename_links(markdown: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// A `[[link]]` destination without the `\` that escapes a label's `|` in a table cell:
+/// Obsidian writes `[[Plan\|the plan]]` there, and the parser stops the destination before `|`.
+pub fn unescaped(dest: &str) -> &str {
+    dest.strip_suffix('\\').unwrap_or(dest)
+}
+
 /// Splits a `[[link]]` destination into a target and a `#heading`, both trimmed.
 fn split_target(dest: &CowStr<'_>) -> (String, Option<String>) {
+    let dest = unescaped(dest);
     match dest.split_once('#') {
         Some((target, heading)) => (target.trim().to_string(), Some(heading.trim().to_string())),
         None => (dest.trim().to_string(), None),
@@ -360,6 +367,19 @@ mod tests {
         assert_eq!(links[0].label, None);
         assert_eq!(links[1].label.as_deref(), Some("the plan"));
         assert_eq!(plain_text(md), "See Roadmap, the plan and Spec#Schema.");
+    }
+
+    #[test]
+    fn finds_wiki_links_with_an_escaped_pipe_in_tables() {
+        // Obsidian escapes the label's `|` inside a table cell: `[[Plan\|the plan]]`.
+        let md = "| Project | Link |\n|---|---|\n| Web | [[Start/web/README\\|web]] |\n";
+        let links = wiki_links(md);
+        assert_eq!(targets(md), ["Start/web/README"]);
+        assert_eq!(links[0].label.as_deref(), Some("web"));
+        assert_eq!(
+            rename_links(md, "Start/web/README", "Web readme"),
+            md.replace("Start/web/README", "Web readme")
+        );
     }
 
     #[test]
