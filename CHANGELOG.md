@@ -64,6 +64,9 @@ belongs to, newest first.
 - **Obsidian links with a relative path**: `[[../Research/Insights]]` and `[[./Glossary]]`, as Obsidian
   writes them with "relative path to file", now link to the file they name, even when it is
   imported after the note.
+- **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
+  label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
+  written that way finds its attachment on import.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
