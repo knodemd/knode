@@ -42,6 +42,10 @@ pub struct Document {
     pub include: bool,
     /// Source digest; revalidated before writing.
     pub digest: String,
+    /// The repository inside the source that tracks this document, when it was proposed
+    /// unchecked for that reason, so a review can bring a repository's documents back at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
 }
 /// An immutable fingerprint of an eligible source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,23 +556,27 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
                     missing.push(format!("{path} → {target}"));
                 }
             }
-            let tracked_here = mode == Mode::Vault
-                && repo_of(path, &found.repos).is_some_and(|repo| {
+            let repository = if mode == Mode::Vault {
+                repo_of(path, &found.repos).filter(|repo| {
                     indexes
                         .entry(repo)
                         .or_insert_with(|| tracked(&root.join(repo)))
                         .as_ref()
                         .is_some_and(|paths| paths.contains(&path[repo.len() + 1..]))
-                });
-            if tracked_here {
+                })
+            } else {
+                None
+            };
+            if repository.is_some() {
                 unchecked.push(path.as_str());
             }
             plan.documents.push(Document {
                 path: path.clone(),
                 title: note.title,
                 project: id,
-                include: !tracked_here,
+                include: repository.is_none(),
                 digest,
+                repository: repository.map(str::to_owned),
             });
         }
         if !unchecked.is_empty() {
@@ -1443,6 +1451,15 @@ mod tests {
                 .iter()
                 .any(|w| w.starts_with("Unchecked 3 documents tracked by git"))
         );
+        let repository: BTreeMap<_, _> = plan
+            .documents
+            .iter()
+            .map(|d| (d.path.as_str(), d.repository.as_deref()))
+            .collect();
+        assert_eq!(repository["Org/alpha/docs/Guide.md"], Some("Org/alpha"));
+        assert_eq!(repository["Org/beta/README.md"], Some("Org/beta"));
+        assert_eq!(repository["Org/alpha/Status.md"], None);
+        assert_eq!(repository["Ideas.md"], None);
         // A single project brings its own documentation, tracked or not.
         let project = analyze(Some(&alpha), Mode::Project).unwrap();
         assert!(project.documents.iter().all(|d| d.include));
