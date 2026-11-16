@@ -538,23 +538,27 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
 /// guide`. Agents decide what needs judgment (which notes are the person's, which projects keep
 /// their files); the deterministic parts stay in [`analyze`] and [`apply`].
 pub fn agent_guide(source: Option<&Path>) -> String {
-    include_str!("onboarding_guide.md").replace("{source}", &source_text(source))
+    let guide = include_str!("onboarding_guide.md");
+    match source {
+        Some(path) => guide.replace("{source}", &path.display().to_string()),
+        None => guide
+            .replace(
+                "Source folder: {source}",
+                "Source folder: not given yet. Ask the person which folder their notes are in, and use it where the commands below say `<source>`.",
+            )
+            .replace("{source}", "<source>"),
+    }
 }
 
 /// The short prompt a person pastes into an agent to start: it points the agent at the guide.
 pub fn agent_prompt(source: Option<&Path>) -> String {
-    format!(
-        "Bring my notes from {} into Knode, the local memory my agents share. Run `knode onboard guide --source \"{}\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.",
-        source_text(source),
-        source_text(source)
-    )
-}
-
-fn source_text(source: Option<&Path>) -> String {
-    source.map_or_else(
-        || "the folder where I keep my notes (ask me which)".to_owned(),
-        |path| path.display().to_string(),
-    )
+    match source {
+        Some(path) => format!(
+            "Bring my notes from {0} into Knode, the local memory my agents share. Run `knode onboard guide --source \"{0}\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.",
+            path.display()
+        ),
+        None => "Bring my notes into Knode, the local memory my agents share. Ask me which folder they are in, then run `knode onboard guide --source \"<that folder>\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.".to_owned(),
+    }
 }
 
 /// Groups with the same suggested name would merge on import, since equal names merge on
@@ -1297,7 +1301,12 @@ mod tests {
         assert!(!guide.contains("{source}"));
         let prompt = agent_prompt(Some(source));
         assert!(prompt.contains("knode onboard guide --source \"/Users/ada/Notes\""));
-        assert!(agent_prompt(None).contains("ask me which"));
+        assert!(agent_prompt(None).contains("Ask me which folder"));
+        let unknown = agent_guide(None);
+        assert!(
+            unknown.contains("Ask the person which folder")
+                && unknown.contains("--source \"<source>\"")
+        );
     }
 
     #[test]

@@ -109,7 +109,7 @@ struct OnboardingSheet: View {
 
     var body: some View {
         KSheetSurface(width: 760) {
-            KSheetTitle(kicker: "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
+            KSheetTitle(kicker: step == 0 && byAgent ? "Get started" : "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
             if step == 0 { startingPoint }
             if step == 1 { review }
             if step == 2 {
