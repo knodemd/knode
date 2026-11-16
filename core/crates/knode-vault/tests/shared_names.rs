@@ -77,3 +77,27 @@ fn links_to_a_shared_name_go_to_the_nearest_note() {
         .unwrap();
     assert_eq!(targets(&space, "Beta/Sprint/Plan.md"), sprint);
 }
+
+/// Inside a table, Obsidian escapes a label's `|` as `\|`; the link still goes to its note.
+#[test]
+fn links_in_tables_with_an_escaped_pipe_find_their_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    put(&vault, "Start/web/README.md", "The website.\n");
+    put(
+        &vault,
+        "Index.md",
+        "| Project | Notes |\n|---|---|\n| Web | [[Start/web/README\\|web]] |\n",
+    );
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+    import(&mut space, &vault, &me()).unwrap();
+    let id = |path: &str| space.find_by_property(property_keys::PATH, path).unwrap()[0].id;
+    let to: Vec<_> = space
+        .links_from(&id("Index.md"))
+        .unwrap()
+        .into_iter()
+        .filter(|l| l.kind == "mentions")
+        .map(|l| l.to)
+        .collect();
+    assert_eq!(to, vec![id("Start/web/README.md")]);
+}

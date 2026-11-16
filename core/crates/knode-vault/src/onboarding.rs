@@ -360,10 +360,15 @@ fn references(body: &str) -> Vec<(String, bool)> {
                     dest_url,
                     ..
                 },
-            ) => Some((
-                dest_url.to_string(),
-                matches!(link_type, LinkType::WikiLink { .. }),
-            )),
+            ) => {
+                let wiki = matches!(link_type, LinkType::WikiLink { .. });
+                let dest = if wiki {
+                    knode_md::unescaped(&dest_url)
+                } else {
+                    &dest_url
+                };
+                Some((dest.to_owned(), wiki))
+            }
             _ => None,
         })
         .filter(|(dest, _)| !dest.contains("://") && !dest.starts_with("mailto:"))
