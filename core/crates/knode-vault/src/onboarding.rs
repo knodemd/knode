@@ -295,7 +295,8 @@ fn inventory(root: &Path, prefix: &str, found: &mut Inventory) -> Result<()> {
 }
 /// The paths a repository tracks, read from its `.git/index` (versions 2 to 4) without running
 /// `git`. `None` when the index is missing or cannot be read: callers then treat nothing as
-/// tracked, as before.
+/// tracked, as before. A repository whose `.git` is a file (a worktree or a submodule) has no
+/// index there, so this returns `None` and its documents stay checked.
 fn tracked(repo: &Path) -> Option<BTreeSet<String>> {
     let data = fs::read(repo.join(".git").join("index")).ok()?;
     let config = fs::read_to_string(repo.join(".git").join("config")).unwrap_or_default();
