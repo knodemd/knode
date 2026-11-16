@@ -827,22 +827,45 @@ fn markdown_file(
     by: &Provenance,
     result: &mut ImportResult,
 ) -> Result<(), ImportError> {
+    // The same reader as a folder: frontmatter as properties and the file as its identity, so
+    // importing it again updates its node instead of making a copy. Titled by the `title` of
+    // its frontmatter, else its first heading, else its file name.
     let text = fs::read_to_string(file)
         .map_err(|e| ImportError::Unreadable(format!("{}: {e}", file.display())))?;
-    let title = markdown_title(&text, file);
-    // Importing the same file again does not make a copy.
-    for found in space.find_by_title(&title)? {
-        if let Some(node) = space.get_node(&found.id)?
-            && node.body == text
-        {
-            result.node(Some(node.id), title, ImportOutcome::Unchanged);
-            return Ok(());
+    let title = frontmatter_title(&text).unwrap_or_else(|| markdown_title(&text, file));
+    let report =
+        knode_vault::import_file(space, file, Some(title.clone()), by).map_err(vault_error)?;
+    // One file, one note: the report names it by its title, as before.
+    if !report.created.is_empty() {
+        result.node(None, title.clone(), ImportOutcome::Created);
+    }
+    if !report.updated.is_empty() {
+        result.node(None, title, ImportOutcome::Updated);
+    }
+    result.unchanged += report.unchanged;
+    result.attached = report.attached.len();
+    for s in report.skipped.iter().chain(&report.unlinked) {
+        result.skip(s.path.clone(), s.reason.clone());
+    }
+    Ok(())
+}
+
+/// The `title:` of a Markdown file's frontmatter, when it has one.
+fn frontmatter_title(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    for line in lines {
+        if line.trim_end() == "---" {
+            return None;
+        }
+        if let Some(value) = line.strip_prefix("title:") {
+            let value = value.trim().trim_matches(['"', '\'']).trim();
+            return (!value.is_empty()).then(|| value.to_owned());
         }
     }
-    let source = by.clone().with_source(file.display().to_string());
-    let node = space.create_node(NewNode::note(title.clone(), text), &source)?;
-    result.node(Some(node.id), title, ImportOutcome::Created);
-    Ok(())
+    None
 }
 
 /// The title of a Markdown note: its first heading, else the file name without extension.

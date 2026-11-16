@@ -61,6 +61,8 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Importing one Markdown file** reads its frontmatter as properties instead of text, takes its
+  `title` when it has one, and updates the same note when imported again instead of adding a copy.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).

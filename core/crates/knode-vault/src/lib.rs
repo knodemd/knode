@@ -122,7 +122,7 @@ mod time;
 
 use std::path::PathBuf;
 
-pub use import::{ImportReport, Skipped, import};
+pub use import::{ImportReport, Skipped, import, import_file};
 pub use live::{BodyWritten, LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
 pub use mirror::{ExportReport, export};
 

@@ -114,6 +114,53 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
     Ok(report)
 }
 
+/// Imports one Markdown file as [`import`] would if it were alone in its folder: its frontmatter,
+/// its dates and its `markdown.path` (the file name), so importing it again updates the same node.
+/// `title`, when given, names the note instead of its file name. Files next to it that it embeds
+/// are attached.
+pub fn import_file(
+    space: &mut Space,
+    file: impl AsRef<Path>,
+    title: Option<String>,
+    by: &Provenance,
+) -> Result<ImportReport> {
+    let file = file.as_ref();
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let rel = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut report = ImportReport::default();
+    // Only the files beside it can be its attachments; the other notes there are not read.
+    let siblings: Vec<String> = fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.') && !n.to_lowercase().ends_with(".md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut batch = Batch::new(dir, &siblings);
+    match fs::read_to_string(file) {
+        Ok(text) => {
+            let mut note = parse(&rel, &text);
+            if let Some(title) = title {
+                note.title = title;
+            }
+            note.file_times = file_times(file);
+            batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
+        }
+        Err(e) => report.skipped.push(Skipped {
+            path: rel,
+            reason: e.to_string(),
+        }),
+    }
+    batch.finish(space, by, &mut report)?;
+    Ok(report)
+}
+
 /// Called with a note about to update the node it matches, before the node is written: it may
 /// change the note, or write the node itself first. See [`Batch::note`].
 pub(crate) type Hook<'a> = dyn FnMut(&mut Space, NodeId, &str, &mut Note) -> Result<()> + 'a;

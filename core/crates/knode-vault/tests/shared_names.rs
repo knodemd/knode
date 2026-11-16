@@ -77,3 +77,40 @@ fn links_to_a_shared_name_go_to_the_nearest_note() {
         .unwrap();
     assert_eq!(targets(&space, "Beta/Sprint/Plan.md"), sprint);
 }
+
+/// One file is read like a folder of one: its frontmatter kept as properties rather than text,
+/// named by the title given, and importing it again updates the same note.
+#[test]
+fn a_single_file_keeps_its_frontmatter_and_is_updated_on_reimport() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes").join("fichero.md");
+    put(
+        &dir.path().join("notes"),
+        "fichero.md",
+        "---\ntitle: Mi nota\ntags: [a]\n---\nCuerpo.\n\n## Sección\n\nTexto.\n",
+    );
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+    let report =
+        knode_vault::import_file(&mut space, &file, Some("Mi nota".into()), &me()).unwrap();
+    assert_eq!(report.created.len(), 1);
+    let found = space
+        .find_by_property(property_keys::PATH, "fichero.md")
+        .unwrap();
+    let node = space.get_node(&found[0].id).unwrap().unwrap();
+    assert_eq!(node.title, "Mi nota");
+    assert!(!node.body.contains("title:"));
+    std::fs::write(
+        &file,
+        "---\ntitle: Mi nota\ntags: [a]\n---\nCuerpo nuevo.\n",
+    )
+    .unwrap();
+    let again = knode_vault::import_file(&mut space, &file, Some("Mi nota".into()), &me()).unwrap();
+    assert_eq!((again.created.len(), again.updated.len()), (0, 1));
+    assert_eq!(
+        space
+            .find_by_property(property_keys::PATH, "fichero.md")
+            .unwrap()
+            .len(),
+        1
+    );
+}
