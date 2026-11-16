@@ -175,6 +175,26 @@ import Testing
         #expect(makeModel(settings: MemoryKnodeSettings(defaultSpace: work)).sidebarSpaces.isEmpty)
     }
 
+    @Test func spacesMadeOutsideTheAppAppearOnTheNextLaunch() throws {
+        // The first launch saves an empty list: no space exists yet.
+        #expect(makeModel().sidebarSpaces.isEmpty)
+        // Then the command line makes a space and sets it as the default.
+        let memory = folder.appending(path: "Memoria.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: memory, withIntermediateDirectories: true)
+        try Data(#"{"format":0,"id":"01K83N6V4W5D2XQJ0Y7RZ9T1AC","name":"Memoria"}"#.utf8).write(to: memory.appending(path: "manifest.json"))
+        let settings = MemoryKnodeSettings(defaultSpace: memory)
+        let model = makeModel(settings: settings)
+        #expect(model.sidebarSpaces.map(\.name) == ["Memoria"])
+        #expect(model.sidebarSpaces.first?.isDefault == true)
+        // Taken off the list, it stays off, until the person opens it again.
+        SpaceLibrary(defaults: defaults).remove(memory)
+        #expect(makeModel(settings: settings).sidebarSpaces.isEmpty)
+        SpaceLibrary(defaults: defaults).add(memory)
+        SpaceLibrary(defaults: defaults).remove(memory)
+        SpaceLibrary(defaults: defaults).add(memory)
+        #expect(makeModel(settings: settings).sidebarSpaces.map(\.name) == ["Memoria"])
+    }
+
     @Test func theFirstLaunchListsTheSpacesKnodeKnows() throws {
         let home = folder.appending(path: "Home.knode", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
