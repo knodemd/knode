@@ -226,6 +226,8 @@ final class ApplicationMover {
         let location = ApplicationLocation(bundle: bundle, home: manager.homeDirectoryForCurrentUser)
         let path = bundle.path(percentEncoded: false)
         guard location.shouldOfferMove, defaults.string(forKey: Self.keptLocationKey) != path else { return false }
+        let destination = URL(filePath: "/Applications").appending(path: bundle.lastPathComponent)
+        let replaces = manager.fileExists(atPath: destination.path(percentEncoded: false))
         let alert = NSAlert()
         alert.messageText = "Move Knode to the Applications folder?"
         alert.informativeText = location == .diskImage || location == .translocated
@@ -233,13 +235,15 @@ final class ApplicationMover {
                 + "and the knode command your agents use keeps working."
             : "Knode is running from \(bundle.deletingLastPathComponent().path(percentEncoded: false)). "
                 + "In Applications it stays put, and the knode command your agents use keeps working."
+        if replaces {
+            alert.informativeText += "\n\n" + Self.replacementNote(existing: Self.version(of: destination), this: Self.version(of: bundle))
+        }
         alert.addButton(withTitle: "Move to Applications")
         alert.addButton(withTitle: "Do Not Move")
         guard alert.runModal() == .alertFirstButtonReturn else {
             defaults.set(path, forKey: Self.keptLocationKey)
             return false
         }
-        let destination = URL(filePath: "/Applications").appending(path: bundle.lastPathComponent)
         do {
             if manager.fileExists(atPath: destination.path(percentEncoded: false)) {
                 try manager.trashItem(at: destination, resultingItemURL: nil)
@@ -260,5 +264,18 @@ final class ApplicationMover {
             Task { @MainActor in NSApp.terminate(nil) }
         }
         return true
+    }
+
+    /// The version an app bundle declares, if it can be read.
+    private static func version(of app: URL) -> String? {
+        Bundle(url: app)?.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    /// What the alert says when a copy of Knode in Applications is about to go to the Trash.
+    nonisolated static func replacementNote(existing: String?, this: String?) -> String {
+        let copy = existing.map { "The copy of Knode already in Applications (version \($0))" }
+            ?? "The copy of Knode already in Applications"
+        let replacement = this.map { " and replaced by this one (version \($0))" } ?? " and replaced by this one"
+        return copy + " will be moved to the Trash" + replacement + "."
     }
 }

@@ -183,4 +183,12 @@ import Testing
         #expect(!location("/Volumes/Knode/Knode.app").removesOriginal)
         #expect(!location("/private/var/folders/x/AppTranslocation/1234/d/Knode.app").removesOriginal)
     }
+
+    @Test func replacingACopyInApplicationsSaysSoWithBothVersions() {
+        #expect(ApplicationMover.replacementNote(existing: "0.2.0", this: "0.1.0")
+            == "The copy of Knode already in Applications (version 0.2.0) will be moved to the Trash "
+            + "and replaced by this one (version 0.1.0).")
+        #expect(ApplicationMover.replacementNote(existing: nil, this: nil)
+            == "The copy of Knode already in Applications will be moved to the Trash and replaced by this one.")
+    }
 }
