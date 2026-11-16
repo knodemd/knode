@@ -61,6 +61,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Obsidian links with a relative path**: `[[../Research/Insights]]` and `[[./Glossary]]`, as Obsidian
+  writes them with "relative path to file", now link to the file they name, even when it is
+  imported after the note.
 - **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
   label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
   written that way finds its attachment on import.
