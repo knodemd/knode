@@ -58,6 +58,9 @@ belongs to, newest first.
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
+- **Installing the Mac app**: opened from its disk image, Downloads or any other folder, Knode offers
+  to move itself to Applications. When the `knode` command points to another copy of Knode, the app
+  names it and offers to point the command to itself, so agents do not keep running an old copy.
 
 #### Fixed
 
