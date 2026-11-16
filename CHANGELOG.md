@@ -54,6 +54,8 @@ belongs to, newest first.
 
 #### Changed
 
+- **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
+  "Imported memory" for every import; the name stays editable.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
