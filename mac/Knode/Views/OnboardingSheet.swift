@@ -298,7 +298,7 @@ struct OnboardingSheet: View {
                     }
                 )) {
                     let partly = repository.brought > 0 && repository.brought < repository.total ? ", \(repository.brought) brought" : ""
-                    Text("\(repository.name) · \(repository.total) \(repository.total == 1 ? "document" : "documents")\(partly)").font(KFont.mono(11))
+                    Text("\(repository.name), \(repository.total) \(repository.total == 1 ? "document" : "documents")\(partly)").font(KFont.mono(11))
                 }
             }
         }
