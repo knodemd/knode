@@ -162,6 +162,10 @@ belongs to, newest first.
 #### Changed
 
 - `knode spaces` shows each space's icon, which one is the default and where capture is off.
+- **The install script** takes `--prefix <dir>` to put `knode` in `<dir>/bin` instead of
+  `~/.local/bin` (`curl -fsSL https://knode.md/install.sh | sh -s -- --prefix /opt/knode`), on
+  a Mac it says that Homebrew and the Mac app also install `knode`, and it says plainly when no
+  release is published yet.
 
 ### v0.1 - You use it
 
