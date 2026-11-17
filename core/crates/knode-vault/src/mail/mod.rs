@@ -5,17 +5,21 @@
 //! | Source | What is read | Status |
 //! | --- | --- | --- |
 //! | Gmail ([`MailSource::Mbox`]) | The `.mbox` file of a Google Takeout export of Mail, a folder of `.mbox` files, or any other `mbox` file (such as a mailbox Apple Mail exported) | Labels from `X-Gmail-Labels`; a plain `mbox` without labels gets the file's name as its folder |
-//! | Apple Mail ([`MailSource::AppleMail`]) | The local store, `~/Library/Mail/V<n>` (macOS, needs Full Disk Access), or any folder of `.emlx` files | The mailbox is the path of `.mbox` folders a message is in; attachments Apple Mail keeps outside the message (`.partial.emlx`) are not read |
+//! | Apple Mail ([`MailSource::AppleMail`]) | The local store, `~/Library/Mail/V<n>` (macOS, needs Full Disk Access), any folder of `.emlx` files, or a mailbox Apple Mail exported (`<name>.mbox`, read as an `mbox`) | The mailbox is the path of `.mbox` folders a message is in; attachments Apple Mail keeps outside the message (`.partial.emlx`) are not read |
 //!
 //! # Threads
 //!
 //! Every thread becomes one node of kind [`kinds::THREAD`], titled with its subject (without
 //! `Re:` and `Fwd:`). Messages are grouped by `Message-ID`, `In-Reply-To` and `References`; a
-//! reply that has neither of the last two joins the thread with the same subject. The body has
+//! reply that has neither of the last two joins the thread with the same subject only when it
+//! shares one of the thread's people and was sent at most 30 days after its last message. When
+//! one message joins two threads written before, it goes to the older node, each message stays
+//! in the one node it is in, and the two nodes are linked as `related`. The body has
 //! one section per message, in the order they were sent: a `##` heading with the sender and the
 //! date, the sender and the recipients, then the text. The text part is preferred; HTML is
 //! turned into Markdown when a message has no text part. Every section starts with a
-//! `<!-- mail <message-id> <date> -->` line, which is how the next import finds it.
+//! `<!-- mail <message-id> <date> <lines> <digest> -->` line, which is how the next import finds
+//! it and tells whether it was changed in Knode.
 //!
 //! # People
 //!
@@ -36,8 +40,10 @@
 //!
 //! A thread is found again by [`keys::THREAD`], so importing the same mailbox again, a newer
 //! export, or another date range adds the new messages to the thread's node instead of making a
-//! new one. The section of a message read again is written again from the mail; sections of
-//! messages this import did not read are kept as they are.
+//! new one. What someone wrote in Knode is never lost: the section of a message read again is
+//! written again from the mail only while it is as Knode wrote it; a section changed in Knode is
+//! left as it is, and text added between sections or after the last one is kept where it is.
+//! Files attached by an earlier import stay linked when an import without attachments runs.
 
 mod apple;
 mod mbox;
@@ -304,13 +310,16 @@ pub fn apple_mail_location() -> Option<PathBuf> {
     Some(home.join("Library").join("Mail"))
 }
 
-/// Where the mail at `path` comes from, when it can be told:
+/// Where the mail at `path` comes from, when the path itself is mail:
 ///
 /// - [`MailSource::Mbox`]: an `.mbox` file, a file named `mbox` that starts like one, a mailbox
-///   Apple Mail exported (an `.mbox` folder with an `mbox` file in it), or a folder with `.mbox`
-///   files in it, such as the `Mail` folder of a Google Takeout export;
+///   Apple Mail exported (an `.mbox` folder with an `mbox` file in it), or a folder that holds
+///   only `.mbox` files, such as the `Mail` folder of a Google Takeout export;
 /// - [`MailSource::AppleMail`]: an `.emlx` file, Apple Mail's `~/Library/Mail` or a `V<n>`
-///   folder in it, or a folder with `.emlx` files in it.
+///   folder in it, or one of its mailbox folders (`INBOX.mbox`).
+///
+/// A folder that holds other things too, such as notes with one `.mbox` among them, is not mail:
+/// name the source to import it as mail.
 pub fn detect(path: impl AsRef<Path>) -> Option<MailSource> {
     let path = path.as_ref();
     if path.is_file() {
@@ -329,10 +338,10 @@ pub fn detect(path: impl AsRef<Path>) -> Option<MailSource> {
     if !path.is_dir() {
         return None;
     }
-    if mbox::is_exported_mailbox(path) || !mbox::files(path).is_empty() {
+    if mbox::is_exported_mailbox(path) || mbox::only_mbox_files(path) {
         return Some(MailSource::Mbox);
     }
-    if apple::has_emlx(path) {
+    if apple::is_mailbox(path) {
         return Some(MailSource::AppleMail);
     }
     None
