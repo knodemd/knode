@@ -7,7 +7,7 @@ use knode_format::{ChangeOp, NewNode, NodeId, NodeUpdate, Properties, Provenance
 
 use super::files::Files;
 use super::model::{Chat, ChatMessage, Media};
-use super::render::{Shown, append};
+use super::render::{Shown, append, insert_late};
 use super::{CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, keys};
 use crate::exports::Imported;
 
@@ -68,19 +68,37 @@ impl ChatWriter<'_> {
             Some(id) => self.mark(&id)?,
             None => None,
         };
+        // Messages that say where they arrived in the app (`seq`) are new past the last one
+        // written; the others, and every message of a node no app wrote to yet, past the last
+        // mark (an export's messages, or those an export already brought in).
+        let last_seq = match existing {
+            Some(id) => self
+                .space
+                .property(&id, keys::LAST_SEQ)?
+                .and_then(|s| s.parse::<i64>().ok()),
+            None => None,
+        };
+        let max_seq = chat.messages.iter().filter_map(|m| m.seq).max();
         let new: Vec<&ChatMessage> = chat
             .messages
             .iter()
-            .filter(|m| match &mark {
-                None => true,
-                Some(mark) => {
-                    m.mark > mark.last
-                        || (m.mark == mark.last
-                            && !mark.keys.contains(&m.key)
-                            && !m.export_key.as_ref().is_some_and(|k| mark.keys.contains(k)))
-                }
+            .filter(|m| match (last_seq, m.seq) {
+                (Some(last), Some(seq)) => seq > last,
+                _ => match &mark {
+                    None => true,
+                    Some(mark) => {
+                        m.mark > mark.last
+                            || (m.mark == mark.last
+                                && !mark.keys.contains(&m.key)
+                                && !m.export_key.as_ref().is_some_and(|k| mark.keys.contains(k)))
+                    }
+                },
             })
             .collect();
+        let seq_after = match (last_seq, max_seq) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
         let imported = |node_id, op| Imported {
             node_id,
             op,
@@ -98,8 +116,11 @@ impl ChatWriter<'_> {
             return Ok(Some(id));
         };
         // Messages before where the last import stopped are not added: most were imported then.
-        // Those beyond the count imported then were not, and are reported.
-        let before = chat.messages.len() - new.len();
+        // Those beyond the count imported then were not, and are reported. (Messages known by
+        // their place in the app were written before when they are left out.)
+        let by_mark = |m: &ChatMessage| last_seq.is_none() || m.seq.is_none();
+        let before = chat.messages.iter().filter(|m| by_mark(m)).count()
+            - new.iter().filter(|m| by_mark(m)).count();
         let imported_before = self
             .space
             .property(&id, keys::MESSAGES)?
@@ -117,6 +138,12 @@ impl ChatWriter<'_> {
             );
         }
         if new.is_empty() {
+            if let Some(seq) = seq_after
+                && Some(seq) != last_seq
+            {
+                self.space
+                    .set_property(&id, keys::LAST_SEQ, &seq.to_string(), &self.by)?;
+            }
             if let Some(jid) = &chat.jid
                 && self.space.property(&id, keys::JID)?.as_deref() != Some(jid.as_str())
             {
@@ -130,16 +157,30 @@ impl ChatWriter<'_> {
             self.report.unchanged += 1;
             return Ok(Some(id));
         }
-        let mut placed = Vec::with_capacity(new.len());
-        for message in &new {
+        // A message that arrived after later ones (sent offline, say) goes into its own day;
+        // the others are added at the end.
+        let (on_time, late): (Vec<&ChatMessage>, Vec<&ChatMessage>) = new
+            .iter()
+            .copied()
+            .partition(|m| mark.as_ref().is_none_or(|mark| m.mark >= mark.last));
+        let mut placed = Vec::with_capacity(on_time.len());
+        for message in &on_time {
             let shown = self.attach_all(&id, &message.media, files, &chat.title)?;
             placed.push((*message, shown));
+        }
+        let mut placed_late = Vec::with_capacity(late.len());
+        for message in &late {
+            let shown = self.attach_all(&id, &message.media, files, &chat.title)?;
+            placed_late.push((*message, shown));
         }
         let current = self
             .space
             .get_node(&id)?
             .ok_or(knode_format::Error::NotFound(id))?;
-        let body = append(&current.body, &placed);
+        let mut body = append(&current.body, &placed);
+        if !placed_late.is_empty() {
+            body = insert_late(&body, &mut placed_late);
+        }
         self.space.update_node(
             &id,
             NodeUpdate {
@@ -150,7 +191,10 @@ impl ChatWriter<'_> {
         )?;
         let total = imported_before + new.len();
         let started = self.space.property(&id, keys::STARTED_AT)?;
-        let mut props = properties(chat, &new, mark.as_ref(), total, started);
+        let mut props = properties(chat, &on_time, mark.as_ref(), total, started);
+        if let Some(seq) = seq_after {
+            props.insert(keys::LAST_SEQ.into(), seq.to_string());
+        }
         // Who wrote before stays: a connector hands over only the messages that are new.
         if let Some(before) = self.space.property(&id, keys::PARTICIPANTS)? {
             let mut everyone: Vec<String> = before
@@ -210,7 +254,10 @@ impl ChatWriter<'_> {
             placed.push((*message, shown));
         }
         let body = append("", &placed);
-        let props = properties(chat, new, None, new.len(), None);
+        let mut props = properties(chat, new, None, new.len(), None);
+        if let Some(seq) = chat.messages.iter().filter_map(|m| m.seq).max() {
+            props.insert(keys::LAST_SEQ.into(), seq.to_string());
+        }
         let node = self.space.create_node_with_properties(
             NewNode::note(chat.title.clone(), body).with_kind(CHAT_KIND),
             &props,

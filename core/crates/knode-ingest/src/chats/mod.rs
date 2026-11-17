@@ -52,6 +52,10 @@ pub mod keys {
     /// (`<number>@s.whatsapp.net`, `<id>@g.us`). Exports carry none; a chat is found by its JID
     /// first and by [`ID`] when no node has it, and the JID is then stored on that node.
     pub const JID: &str = "chat.jid";
+    /// Where the last message written arrived in the app, when the app numbers its messages in
+    /// that order (WhatsApp for Mac: the message's `Z_PK`). Messages past it are new, whenever
+    /// they were sent.
+    pub const LAST_SEQ: &str = "chat.last_seq";
     /// What the chat is: `personal`, `group`, `channel`, `private-channel` or `thread`.
     pub const TYPE: &str = "chat.type";
     /// Who wrote in it, separated by `, `.

@@ -691,7 +691,7 @@ mod connector {
         let fake = Fake::new();
         let connector = WhatsAppMacConnector::new(fake.app(), "Me");
         let info = connector.info();
-        assert_eq!(info.id, "whatsapp");
+        assert_eq!(info.id, "whatsapp-mac");
         assert_eq!(info.permissions, [Permission::FullDiskAccess]);
         assert_eq!(info.container.as_deref(), Some("chat"));
         match connector.trigger() {
@@ -730,7 +730,7 @@ mod connector {
 
         let dir = tempfile::tempdir().unwrap();
         let mut space = space(&dir);
-        let by = provenance("whatsapp");
+        let by = provenance("whatsapp-mac");
         let mut cursor: Option<SourceCursor> = None;
         let mut items = 0;
         let mut runs = 0;
@@ -856,4 +856,117 @@ mod connector {
             .unwrap_err();
         assert_eq!(error.kind(), "failed");
     }
+}
+
+/// The files in a folder and its subfolders, by path.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        out.push(
+            path.strip_prefix(dir)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        if path.is_dir() {
+            out.extend(
+                listing(&path)
+                    .into_iter()
+                    .map(|p| format!("{}/{p}", path.display())),
+            );
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn whatsapps_folder_gains_no_files() {
+    // Rollback journal, as a database at rest: no -wal or -shm beside it.
+    let mut fake = Fake::new();
+    fake.chat(1, ADA, "Ada Lovelace", false);
+    fake.text(1, false, at(yesterday(), 8, 0), "At rest");
+    let container = fake.container.clone();
+    let before = listing(&container);
+    assert!(
+        !before
+            .iter()
+            .any(|f| f.ends_with("-wal") || f.ends_with("-shm"))
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let app = fake.app();
+    app.check().unwrap();
+    app.chats().unwrap();
+    app.sync(&mut space, Cursor::default(), &everything(), &by())
+        .unwrap();
+    assert_eq!(listing(&container), before);
+
+    // In WAL mode, with WhatsApp's own connection open: nothing new beside it either.
+    fake.db.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+    fake.text(1, false, at(yesterday(), 8, 1), "In the log");
+    let before = listing(&container);
+    let report = app
+        .sync(&mut space, Cursor::after(1), &everything(), &by())
+        .unwrap();
+    assert_eq!(report.import.messages, 1);
+    assert_eq!(listing(&container), before);
+}
+
+#[test]
+fn a_message_that_arrives_late_goes_into_its_day() {
+    let mut fake = Fake::new();
+    fake.chat(1, ADA, "Ada Lovelace", false);
+    let day = yesterday();
+    fake.text(1, false, at(day, 9, 30), "Half past nine");
+    fake.text(1, false, at(day, 10, 0), "Ten");
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let app = fake.app();
+    let first = app
+        .sync(&mut space, Cursor::default(), &everything(), &by())
+        .unwrap();
+
+    // Sent offline at 09:00 and two days before, both reaching the Mac after 10:00.
+    fake.text(1, false, at(day, 9, 0), "Nine, sent offline");
+    fake.text(
+        1,
+        false,
+        at(day - Duration::days(2), 18, 0),
+        "Two days ago, sent offline",
+    );
+    let second = app
+        .sync(&mut space, first.cursor, &everything(), &by())
+        .unwrap();
+    assert_eq!(second.import.messages, 2, "{:?}", second.import);
+    assert!(
+        second.import.skipped.is_empty(),
+        "{:?}",
+        second.import.skipped
+    );
+
+    let node = node_with_jid(&space, ADA);
+    let body = &node.body;
+    let nine = body.find("Nine, sent offline").unwrap();
+    let half = body.find("Half past nine").unwrap();
+    let ten = body.find("Ten").unwrap();
+    assert!(nine < half && half < ten, "{body}");
+    let older = body.find("Two days ago").unwrap();
+    let older_day = format!("## {}", (day - Duration::days(2)).format("%Y-%m-%d"));
+    let this_day = format!("## {}", day.format("%Y-%m-%d"));
+    assert!(body.find(&older_day).unwrap() < older, "{body}");
+    assert!(older < body.find(&this_day).unwrap(), "{body}");
+    assert_eq!(prop(&space, &node, chat_keys::MESSAGES), "4");
+    assert!(prop(&space, &node, chat_keys::ENDED_AT).contains("T10:00"));
+
+    // Read again from the start: nothing is added twice.
+    let again = app
+        .sync(&mut space, Cursor::default(), &everything(), &by())
+        .unwrap();
+    assert_eq!(again.import.messages, 0);
+    let body = node_with_jid(&space, ADA).body;
+    assert_eq!(body.matches("Nine, sent offline").count(), 1);
+    assert_eq!(body.matches("Two days ago").count(), 1);
 }

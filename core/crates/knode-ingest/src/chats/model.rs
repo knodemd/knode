@@ -65,6 +65,10 @@ pub(crate) struct ChatMessage {
     /// The key an export of the chat gives the same message, when it is read from somewhere
     /// else (an app's database): a message an export already brought in is not added again.
     pub export_key: Option<String>,
+    /// Where the message arrived in the app, when the app numbers them in that order (WhatsApp
+    /// for Mac's `Z_PK`): a message with a higher number is new even when it was sent before
+    /// the last one written, and it goes into its own day.
+    pub seq: Option<i64>,
     /// Where the message is in the chat: text that sorts the way the messages do, such as the
     /// time. Importing again adds only the messages after the last one imported.
     pub mark: String,
@@ -95,6 +99,7 @@ impl ChatMessage {
         ChatMessage {
             key: key.into(),
             export_key: None,
+            seq: None,
             mark: mark.into(),
             time,
             sender,
