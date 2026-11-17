@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use knode_config::{Config, Paths};
-use knode_format::{Manifest, Provenance, Space, setting_keys};
+use knode_format::{FolderProject, Manifest, Provenance, Space, setting_keys};
 use knode_service::{Client, FolderInfo, FolderInput, spaces};
 
 use crate::service;
@@ -124,6 +124,7 @@ struct Listed {
     default: bool,
     capture: bool,
     missing: bool,
+    archived: bool,
 }
 
 /// Every space Knode knows: those in `config.toml`, then those in the spaces folder.
@@ -155,6 +156,8 @@ pub fn find(paths: &Paths, arg: &str) -> Result<PathBuf> {
     let wanted = arg.trim().to_lowercase();
     let matches: Vec<PathBuf> = known(paths, &config)?
         .into_iter()
+        // An archived copy keeps its name; asked by name, the space in use is meant.
+        .filter(|path| !knode_config::is_archived_space(path))
         .filter(|path| {
             let stem = path.file_stem().map(|s| s.to_string_lossy().to_lowercase());
             let name = Manifest::read(path).ok().map(|m| m.name.to_lowercase());
@@ -284,17 +287,20 @@ fn list(paths: &Paths, json: bool) -> Result<()> {
                 .get(setting_keys::CAPTURE_ENABLED)
                 .is_none_or(|v| v == "on"),
             missing: !path.exists(),
+            archived: knode_config::is_archived_space(&path),
             path,
             default,
         });
     }
+    // Archived copies last, so the spaces in use come first.
+    listed.sort_by_key(|s| s.archived);
     if json {
         let list: Vec<serde_json::Value> = listed
             .iter()
             .map(|s| {
                 serde_json::json!({
                     "name": s.name, "path": s.path, "icon": s.icon, "default": s.default,
-                    "capture": s.capture, "missing": s.missing,
+                    "capture": s.capture, "missing": s.missing, "archived": s.archived,
                 })
             })
             .collect();
@@ -315,6 +321,9 @@ fn list(paths: &Paths, json: bool) -> Result<()> {
             (None, false) => "(not a space)".to_string(),
         };
         let mut notes = Vec::new();
+        if space.archived {
+            notes.push("archived");
+        }
         if space.default {
             notes.push("default");
         }
@@ -393,12 +402,12 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             println!("{} is fed by:", name_of(space));
             print_folder(&info);
             if let Some(project) = &info.project {
-                if project.created {
-                    println!("Added the project {}.", project.node.title);
-                } else {
-                    println!(
-                        "It holds the files of the project {}, which the space already had.",
-                        project.node.title
+                println!("{}", project_message(project));
+                if !project.shared_with.is_empty() {
+                    eprintln!(
+                        "warning: the project {} also holds the files of {}",
+                        project.node.title,
+                        project.shared_with.join(", ")
                     );
                 }
             }
@@ -446,6 +455,28 @@ fn list_folders(client: Option<&Client>, space: &Path) -> Result<Vec<FolderInfo>
         Some(client) => client.folders(space)?,
         None => spaces::folders(&Space::open(space)?)?,
     })
+}
+
+/// What adding a project folder did to the projects of the space, in one sentence.
+fn project_message(project: &FolderProject) -> String {
+    let title = &project.node.title;
+    match (&project.passed_over, project.created, project.already_held) {
+        (Some(other), true, _) => format!(
+            "Added the project {title}, named after its parent folder too: the project {} already holds the files of {}.",
+            other.title,
+            other.folders.join(", ")
+        ),
+        (Some(other), false, _) => format!(
+            "It holds the files of the project {title}, which the space already had: the project {} already holds the files of {}.",
+            other.title,
+            other.folders.join(", ")
+        ),
+        (None, true, _) => format!("Added the project {title}."),
+        (None, false, true) => format!("It already holds the files of the project {title}."),
+        (None, false, false) => {
+            format!("It holds the files of the project {title}, which the space already had.")
+        }
+    }
 }
 
 fn print_folder(info: &FolderInfo) {

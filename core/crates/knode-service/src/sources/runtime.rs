@@ -3,6 +3,11 @@
 //! change or its interval comes, writes what it read through the space's mutex, saves the
 //! cursor only after the write, and waits longer after each error in a row.
 //!
+//! A file event runs a watching connector only when its files really changed since its last
+//! run ([`FileStamp`]): on macOS a connector's own copy of a database is reported as events on
+//! it, which would otherwise run it again and again. Writes to files kept open are reported
+//! late, so a watching connector also runs at least every [`SourcesOptions::watch_every`].
+//!
 //! Nothing runs while `sources` or `capture` is off in `config.toml`: Knode Service then brings
 //! nothing in on its own. Runs happen one at a time, so a space is never written by two
 //! connectors at once and locks are always taken in the same order (the space, then the state
@@ -20,8 +25,8 @@ use knode_format::Timestamp;
 use notify::{RecursiveMode, Watcher as _};
 
 use super::{
-    Connector, FetchRequest, LastError, SourceError, SourceSecrets, SourceSetting, SourcesOptions,
-    Trigger, Written, provenance, source_settings, state_key,
+    Connector, FetchRequest, FileStamp, LastError, SourceError, SourceSecrets, SourceSetting,
+    SourcesOptions, Trigger, Written, provenance, source_settings, state_key,
 };
 use crate::server::{State, last_change, lock_ignoring_poison};
 
@@ -69,6 +74,7 @@ impl SourcesTask {
                         watchers: BTreeMap::new(),
                         files_changed: BTreeMap::new(),
                         forced: BTreeSet::new(),
+                        stamps: BTreeMap::new(),
                         last_config_error: None,
                     };
                     runtime.supervise(&woken);
@@ -130,6 +136,9 @@ struct Runtime {
     files_changed: BTreeMap<String, Instant>,
     /// Sources asked to run now.
     forced: BTreeSet<String>,
+    /// The files a watching connector watches as they were when it last ran, by
+    /// `<space id>/<source id>`: a file event runs it only when they changed since.
+    stamps: BTreeMap<String, FileStamp>,
     last_config_error: Option<String>,
 }
 
@@ -150,15 +159,35 @@ impl Runtime {
                 .map(|(id, _)| id.clone())
                 .collect();
             self.files_changed.retain(|id, _| !files.contains(id));
+            // The watched files as they are now, by source id, for the sources woken by them.
+            let mut now: BTreeMap<String, Option<FileStamp>> = BTreeMap::new();
             for entry in &entries {
                 if self.stopping.load(Ordering::SeqCst) {
                     return;
                 }
-                if self.due(entry, &files) {
+                // An event on files that did not change since the last run (the connector's
+                // own read of them, on macOS) runs nothing.
+                let changed = files.contains(&entry.source_id) && {
+                    let stamp = now
+                        .entry(entry.source_id.clone())
+                        .or_insert_with(|| stamp(entry.connector.as_ref()));
+                    match (stamp, self.stamps.get(&entry.key())) {
+                        (Some(now), Some(last)) => now != last,
+                        _ => true,
+                    }
+                };
+                if self.due(entry, changed) {
                     self.forced.remove(&entry.key());
+                    // Taken before the run, so a change made while it runs runs it again.
+                    match stamp(entry.connector.as_ref()) {
+                        Some(stamp) => self.stamps.insert(entry.key(), stamp),
+                        None => self.stamps.remove(&entry.key()),
+                    };
                     self.run(entry);
                 }
             }
+            let keys: BTreeSet<String> = entries.iter().map(Entry::key).collect();
+            self.stamps.retain(|key, _| keys.contains(key));
             let wait = self.wait(&entries);
             match woken.recv_timeout(wait) {
                 Ok(wake) => {
@@ -278,9 +307,9 @@ impl Runtime {
         }
     }
 
-    /// Whether the entry should run now: asked to, or its time came, or its files changed and
-    /// are quiet, unless it waits after an error.
-    fn due(&self, entry: &Entry, files: &BTreeSet<String>) -> bool {
+    /// Whether the entry should run now: asked to, or its time came, or its files `changed`
+    /// and are quiet, unless it waits after an error.
+    fn due(&self, entry: &Entry, changed: bool) -> bool {
         let key = entry.key();
         if self.forced.contains(&key) {
             return true;
@@ -291,7 +320,7 @@ impl Runtime {
         if state.failures > 0 && state.next_run.is_some_and(|t| now < t) {
             return false;
         }
-        files.contains(&entry.source_id) || state.next_run.is_none_or(|t| now >= t)
+        changed || state.next_run.is_none_or(|t| now >= t)
     }
 
     /// How long to wait before looking again.
@@ -322,7 +351,8 @@ impl Runtime {
         let result = self.batches(entry, &key);
         registry.set_running(&key, false);
         let interval = match entry.connector.trigger() {
-            Trigger::Watch { every, .. } => every,
+            // Events on files kept open come late: the interval is the bound.
+            Trigger::Watch { every, .. } => every.min(self.options.watch_every),
             Trigger::Interval(every) => every,
         };
         let mut states = registry.states();
@@ -334,6 +364,10 @@ impl Runtime {
                 state.last_success = Some(now);
                 state.last_items = written.items;
                 state.last_error = None;
+                state.notice = state
+                    .cursor
+                    .as_ref()
+                    .and_then(|c| entry.connector.notice(c));
                 state.failures = 0;
                 state.next_run = Some(later(now, interval));
             }
@@ -422,6 +456,15 @@ impl Runtime {
             }
         }
         Ok(written)
+    }
+}
+
+/// The files a connector watches as they are now; `None` when it watches none, or they cannot
+/// be told.
+fn stamp(connector: &dyn Connector) -> Option<FileStamp> {
+    match connector.trigger() {
+        Trigger::Watch { paths, .. } => FileStamp::of(&paths),
+        Trigger::Interval(_) => None,
     }
 }
 

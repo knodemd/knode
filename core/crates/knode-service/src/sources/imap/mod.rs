@@ -43,7 +43,7 @@ use knode_vault::mail::{MailSource, RawMail, is_junk_folder};
 use serde::{Deserialize, Serialize};
 
 use self::client::{
-    Account, FetchedMessage, IMAPS_PORT, ImapConnect, ImapError, ImapSession, Mailbox,
+    Account, IMAPS_PORT, ImapConnect, ImapError, ImapSession, Mailbox, MessageInfo,
 };
 use super::mail_live::{MailBatch, gmail_system_label, is_gmail_junk};
 
@@ -242,7 +242,7 @@ impl Layout {
     fn folders(
         &self,
         mailbox: &Mailbox,
-        message: &FetchedMessage,
+        message: &MessageInfo,
         request: &FetchRequest<'_>,
     ) -> Option<Vec<String>> {
         let Some(gmail) = &self.gmail else {
@@ -467,15 +467,28 @@ fn read(
                 read_all = false;
                 break;
             }
-            let mut fetched = session
-                .fetch(chunk, layout.gmail.is_some())
+            // What each message is first, then the bytes of only the ones that come in: spam,
+            // trash, excluded labels, older mail and huge messages are never downloaded.
+            let mut infos = session
+                .fetch_info(chunk, layout.gmail.is_some())
                 .map_err(failed)?;
-            fetched.sort_by_key(|m| m.uid);
-            for message in fetched {
-                let wanted = message.internal_date.is_none_or(|at| request.wants(at));
-                if let (true, Some(bytes)) = (wanted, &message.bytes)
-                    && let Some(folders) = layout.folders(mailbox, &message, request)
+            infos.sort_by_key(|m| m.uid);
+            let mut wanted: Vec<(u32, Vec<String>)> = Vec::new();
+            for info in &infos {
+                let recent = info.internal_date.is_none_or(|at| request.wants(at));
+                let small = info.size.is_none_or(|size| size <= wire::MAX_MESSAGE);
+                if recent
+                    && small
+                    && let Some(folders) = layout.folders(mailbox, info, request)
                 {
+                    wanted.push((info.uid, folders));
+                }
+            }
+            let uids: Vec<u32> = wanted.iter().map(|(uid, _)| *uid).collect();
+            let mut bodies = session.fetch_bodies(&uids).map_err(failed)?;
+            bodies.sort_by_key(|(uid, _)| *uid);
+            for (uid, folders) in wanted {
+                if let Some((_, bytes)) = bodies.iter().find(|(u, _)| *u == uid) {
                     mails.push(RawMail::new(bytes.clone(), folders));
                 }
             }

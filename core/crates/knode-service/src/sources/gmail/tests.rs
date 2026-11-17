@@ -51,6 +51,8 @@ struct Google {
     /// The paths of the API asked for.
     asked: Vec<String>,
     refreshed: usize,
+    /// The ids of the messages whose content was downloaded.
+    downloaded: Vec<String>,
 }
 
 impl Google {
@@ -166,7 +168,15 @@ impl Http for Fake {
                 let (items, next) = page(&records, &params, 100);
                 let history: Vec<Value> = items
                     .iter()
-                    .map(|(h, id)| json!({"id": h.to_string(), "messagesAdded": [{"message": {"id": id}}]}))
+                    .map(|(h, id)| {
+                        let labels = g
+                            .messages
+                            .iter()
+                            .find(|m| &m.id == id)
+                            .map(|m| m.labels.clone())
+                            .unwrap_or_default();
+                        json!({"id": h.to_string(), "messagesAdded": [{"message": {"id": id, "labelIds": labels}}]})
+                    })
                     .collect();
                 let mut out = json!({"history": history, "historyId": g.history_id.to_string()});
                 if let Some(next) = next {
@@ -175,15 +185,25 @@ impl Http for Fake {
                 ok(out)
             }
             other => {
-                let id = other.strip_prefix("/messages/").unwrap();
-                assert_eq!(get("format").as_deref(), Some("raw"));
-                match g.messages.iter().find(|m| m.id == id) {
-                    Some(m) => ok(json!({
+                let id = other.strip_prefix("/messages/").unwrap().to_string();
+                let format = get("format").unwrap();
+                let found = g.messages.iter().find(|m| m.id == id).cloned();
+                match found {
+                    Some(m) if format == "minimal" => ok(json!({
                         "id": m.id,
                         "labelIds": m.labels,
                         "internalDate": m.at.0.to_string(),
-                        "raw": base64::engine::general_purpose::URL_SAFE.encode(&m.raw),
                     })),
+                    Some(m) => {
+                        assert_eq!(format, "raw");
+                        g.downloaded.push(m.id.clone());
+                        ok(json!({
+                            "id": m.id,
+                            "labelIds": m.labels,
+                            "internalDate": m.at.0.to_string(),
+                            "raw": base64::engine::general_purpose::URL_SAFE.encode(&m.raw),
+                        }))
+                    }
                     None => Ok(HttpResponse::json(
                         404,
                         &json!({"error": {"message": "Not Found"}}),
@@ -530,6 +550,12 @@ fn everything_comes_in_once_except_spam_trash_and_excluded_labels() {
         &secrets,
     );
     assert_eq!(added, 3);
+    // The excluded and the spam and trash messages were never downloaded.
+    let downloaded = fake.0.lock().unwrap().downloaded.clone();
+    assert_eq!(downloaded.len(), 3, "{downloaded:?}");
+    for id in ["a3", "a4", "a5"] {
+        assert!(!downloaded.contains(&id.to_string()), "{id} was downloaded");
+    }
     assert_eq!(
         message_ids(&space),
         vec!["new@example.com", "old@example.com", "sent@example.com"]
@@ -883,4 +909,119 @@ fn the_same_mail_from_takeout_apple_mail_imap_and_the_api_is_written_once() {
 
 fn provenance_of(id: &str) -> Provenance {
     crate::sources::provenance(id)
+}
+
+#[test]
+fn excluded_and_spam_mail_from_the_history_is_never_downloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let fake = Fake::default();
+    let (connector, secrets) = signed_in(&fake);
+    let excluded = [Container::new("Label_2", "Private")];
+    let (cursor, _) = run(
+        &connector,
+        &mut space,
+        None,
+        History::Everything,
+        &excluded,
+        &secrets,
+    );
+    {
+        let mut g = fake.0.lock().unwrap();
+        g.add(
+            "h1",
+            &["INBOX"],
+            day(13),
+            message("h1@example.com", "Hello", 13, "hi"),
+        );
+        g.add(
+            "h2",
+            &["SPAM"],
+            day(13),
+            message("h2@example.com", "Win", 13, "spam"),
+        );
+        g.add(
+            "h3",
+            &["INBOX", "Label_2"],
+            day(13),
+            message("h3@example.com", "Secret", 13, "p"),
+        );
+        g.asked.clear();
+    }
+    let (_, added) = run(
+        &connector,
+        &mut space,
+        Some(cursor),
+        History::Everything,
+        &excluded,
+        &secrets,
+    );
+    assert_eq!(added, 1);
+    let g = fake.0.lock().unwrap();
+    assert_eq!(g.downloaded, vec!["h1"]);
+    // The history gave the labels: no message was asked for them.
+    assert!(
+        !g.asked.iter().any(|p| p.contains("format=minimal")),
+        "{:?}",
+        g.asked
+    );
+}
+
+#[test]
+fn a_long_backfill_stops_at_the_time_budget_and_goes_on_next_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let fake = Fake::default();
+    for i in 0..5 {
+        fake.0.lock().unwrap().add(
+            &format!("t{i}"),
+            &["INBOX"],
+            day(11),
+            message(&format!("t{i}@example.com"), &format!("Time {i}"), 11, "x"),
+        );
+    }
+    let (connector, secrets) = signed_in(&fake);
+    let connector = connector.with_time_budget(std::time::Duration::ZERO);
+    let first = connector
+        .fetch(&request(None, History::Everything, &[], &secrets))
+        .unwrap();
+    assert!(first.more);
+    assert_eq!(first.batch.as_ref().unwrap().len(), 1);
+    let saved: Value = serde_json::from_str(first.cursor.as_str()).unwrap();
+    assert_eq!(saved["queue"].as_array().unwrap().len(), 4);
+    let cursor = first.cursor.clone();
+    write(&mut space, first, ID);
+    let (_, added) = run(
+        &connector,
+        &mut space,
+        Some(cursor),
+        History::Everything,
+        &[],
+        &secrets,
+    );
+    assert_eq!(added, 4);
+    assert_eq!(message_ids(&space).len(), 5);
+    // Each message was downloaded once.
+    assert_eq!(fake.0.lock().unwrap().downloaded.len(), 5);
+}
+
+#[test]
+fn with_exclusions_a_listed_message_is_checked_before_it_is_downloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let fake = Fake::default();
+    mailbox(&fake);
+    let (connector, secrets) = signed_in(&fake);
+    let excluded = [Container::new("Label_1", "Work/Clients")];
+    run(
+        &connector,
+        &mut space,
+        None,
+        History::Everything,
+        &excluded,
+        &secrets,
+    );
+    let g = fake.0.lock().unwrap();
+    assert!(g.asked.iter().any(|p| p == "/messages/a2?format=minimal"));
+    assert!(!g.downloaded.contains(&"a2".to_string()));
 }

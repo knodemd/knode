@@ -9,7 +9,7 @@ use knode_ingest::sources::{
 };
 
 use super::client::{
-    Account, FetchedMessage, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus,
+    Account, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus, MessageInfo,
 };
 use super::*;
 use crate::sources::mail_test_support::{
@@ -42,6 +42,8 @@ struct Server {
     fetched: usize,
     /// How many times a mailbox was examined.
     examined: usize,
+    /// Every message whose bytes were read.
+    downloaded: Vec<String>,
 }
 
 impl Server {
@@ -60,6 +62,7 @@ impl Server {
                 .collect(),
             fetched: 0,
             examined: 0,
+            downloaded: Vec::new(),
         }
     }
 
@@ -198,7 +201,28 @@ impl ImapSession for MemSession {
         Ok(uids)
     }
 
-    fn fetch(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<FetchedMessage>, ImapError> {
+    fn fetch_info(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<MessageInfo>, ImapError> {
+        let server = self.server.lock().unwrap();
+        let name = self.selected.clone().expect("a mailbox is selected");
+        let b = server
+            .boxes
+            .iter()
+            .find(|b| b.mailbox.name == name)
+            .unwrap();
+        Ok(b.messages
+            .iter()
+            .filter(|m| uids.contains(&m.uid))
+            .map(|m| MessageInfo {
+                uid: m.uid,
+                size: Some(m.bytes.len() as u64),
+                internal_date: Some(m.date),
+                gmail_id: gmail.then_some(m.gmail_id),
+                gmail_labels: if gmail { m.labels.clone() } else { Vec::new() },
+            })
+            .collect())
+    }
+
+    fn fetch_bodies(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>, ImapError> {
         let mut server = self.server.lock().unwrap();
         let name = self.selected.clone().expect("a mailbox is selected");
         let b = server
@@ -206,19 +230,18 @@ impl ImapSession for MemSession {
             .iter()
             .find(|b| b.mailbox.name == name)
             .unwrap();
-        let out: Vec<FetchedMessage> = b
+        let out: Vec<(u32, Vec<u8>)> = b
             .messages
             .iter()
             .filter(|m| uids.contains(&m.uid))
-            .map(|m| FetchedMessage {
-                uid: m.uid,
-                internal_date: Some(m.date),
-                bytes: Some(m.bytes.clone()),
-                gmail_id: gmail.then_some(m.gmail_id),
-                gmail_labels: if gmail { m.labels.clone() } else { Vec::new() },
-            })
+            .map(|m| (m.uid, m.bytes.clone()))
             .collect();
         server.fetched += out.len();
+        let downloaded: Vec<String> = out
+            .iter()
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .collect();
+        server.downloaded.extend(downloaded);
         Ok(out)
     }
 
@@ -601,8 +624,11 @@ fn from_today_leaves_out_older_mail_and_excluded_mailboxes_are_never_opened() {
     );
     assert_eq!(added, 1);
     assert_eq!(message_ids(&space), vec!["new@example.com"]);
-    // INBOX and Archive were opened, never Family.
+    // INBOX and Archive were opened, never Family, and the old mail was never downloaded.
     assert_eq!(net.0.lock().unwrap().examined, 2);
+    let downloaded = net.0.lock().unwrap().downloaded.join("\n");
+    assert!(downloaded.contains("new@example.com"));
+    assert!(!downloaded.contains("old@example.com") && !downloaded.contains("fam@example.com"));
 }
 
 #[test]

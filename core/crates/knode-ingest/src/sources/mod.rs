@@ -53,7 +53,10 @@
 //!
 //! See decisions 0010 (sources and plugins) and 0013 (live connectors) of the Knode handbook.
 
+pub mod files;
 pub mod sqlite;
+
+pub use files::FileStamp;
 
 use std::fmt;
 use std::io;
@@ -190,11 +193,21 @@ pub fn provenance(source_id: &str) -> Provenance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trigger {
     /// When a file under one of these paths changes (a local database and its `-wal`), and at
-    /// least every `every`, in case an event was missed.
+    /// least every `every`.
+    ///
+    /// A file event runs the connector only when the files really changed: Knode Service
+    /// compares their size and modification time, and those of their `-wal`, with the ones of
+    /// the last run ([`FileStamp`]), so the connector's own reads (a copy made with
+    /// [`sqlite::open_copy`], which macOS reports as events) never run it again.
+    ///
+    /// `every` is the bound to rely on, not the events: macOS reports writes to a file another
+    /// app keeps open (Messages' `chat.db`, Mail's Envelope Index) late, often only when it is
+    /// closed. Knode Service runs a watching connector at least once a minute, whatever
+    /// `every` says.
     Watch {
         /// The files or folders to watch.
         paths: Vec<PathBuf>,
-        /// The longest time between two runs.
+        /// The longest time between two runs (at most a minute).
         every: Duration,
     },
     /// Every so often: for network APIs.
@@ -637,6 +650,14 @@ pub trait Connector: Send + Sync {
     fn containers(&self, request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
         let _ = request;
         Ok(Vec::new())
+    }
+
+    /// What the person should know after a run that went well, shown with the source's status
+    /// until a later run says otherwise: what the connector could not bring in yet, and why.
+    /// `cursor` is where the run stopped. Nothing unless the connector says otherwise.
+    fn notice(&self, cursor: &Cursor) -> Option<String> {
+        let _ = cursor;
+        None
     }
 
     /// Reads what is new after `request.cursor`, at most about `request.max_items` items,

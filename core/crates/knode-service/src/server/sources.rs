@@ -37,7 +37,17 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     }
     let id = source(&p, method)?;
     match method {
-        methods::SOURCES_CONTAINERS => to_value(registry.containers(&space, &id).map_err(rpc)?),
+        methods::SOURCES_CONTAINERS => {
+            let (space_id, setting) = registry.containers_request(&space, &id).map_err(rpc)?;
+            // A connector may take long to list them, over the network: the space is not kept
+            // locked meanwhile, so other calls and the runs of connectors go on.
+            drop(space);
+            to_value(
+                registry
+                    .containers_of(&space_id, &setting, &id)
+                    .map_err(rpc)?,
+            )
+        }
         methods::SOURCES_RUN => {
             let status = registry.get(&space, &id)?;
             if status.setting.as_ref().is_none_or(|s| !s.on) {
@@ -91,7 +101,7 @@ fn change(
                 .iter()
                 .map(|c| c.info().id)
                 .collect();
-            sources::connect(space, &known, id, p.history, by)?;
+            sources::connect_with(space, &known, id, p.history, p.on.unwrap_or(true), by)?;
         }
         methods::SOURCES_PAUSE => {
             sources::set_on(space, id, false, by)?;
@@ -124,6 +134,8 @@ fn change(
 
 /// `sources.account`, `sources.sign_in` and `sources.sign_out`: the account a connector
 /// reads belongs to this machine, not to a space. Its session goes only into the keychain.
+/// No space is locked here: a sign-in step can wait on the network as long as it needs
+/// without holding up other calls on any space.
 fn account(state: &State, method: &str, p: SourceParams) -> Result<Value, RpcError> {
     let id = source(&p, method)?;
     let registry = state.registry();
@@ -167,6 +179,8 @@ fn forget_unused_account(state: &State, id: &str) {
     {
         return;
     }
+    // Each space is locked only to read its settings; the connector signs out (on the
+    // network) with none locked.
     let still = known_spaces(state).into_iter().any(|path| {
         let Ok(space) = state.space(&path) else {
             return false;

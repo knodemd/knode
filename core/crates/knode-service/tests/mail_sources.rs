@@ -13,7 +13,7 @@ use chrono::NaiveDate;
 use knode_format::{Provenance, Space};
 use knode_service::sources::imap::ImapConnector;
 use knode_service::sources::imap::client::{
-    Account, FetchedMessage, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus,
+    Account, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus, MessageInfo,
 };
 use knode_service::sources::{SignInState, SignInStep, SourcesOptions};
 use knode_service::{Client, Config, ServiceHandle, start};
@@ -65,20 +65,14 @@ impl ImapSession for Session {
         let n = self.0.lock().unwrap().messages.len() as u32;
         Ok((from.max(1)..=n).collect())
     }
-    fn fetch(&mut self, uids: &[u32], _gmail: bool) -> Result<Vec<FetchedMessage>, ImapError> {
+    fn fetch_info(&mut self, uids: &[u32], _gmail: bool) -> Result<Vec<MessageInfo>, ImapError> {
+        Ok(uids.iter().map(|uid| MessageInfo::new(*uid)).collect())
+    }
+    fn fetch_bodies(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>, ImapError> {
         let inbox = self.0.lock().unwrap();
         Ok(uids
             .iter()
-            .filter_map(|uid| {
-                let bytes = inbox.messages.get(*uid as usize - 1)?.clone();
-                Some(FetchedMessage {
-                    uid: *uid,
-                    internal_date: None,
-                    bytes: Some(bytes),
-                    gmail_id: None,
-                    gmail_labels: Vec::new(),
-                })
-            })
+            .filter_map(|uid| Some((*uid, inbox.messages.get(*uid as usize - 1)?.clone())))
             .collect())
     }
     fn logout(&mut self) {}

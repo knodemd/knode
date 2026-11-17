@@ -43,6 +43,10 @@ struct Store {
     times: Vec<Instant>,
     /// The cursor and the excluded ids of every fetch.
     requests: Vec<(Option<String>, Vec<String>)>,
+    /// A synthetic database each fetch reads a copy of, as connectors to local apps do.
+    reads: Option<PathBuf>,
+    /// How long listing the containers takes, as over the network.
+    slow_containers: Duration,
 }
 
 #[derive(Clone)]
@@ -87,6 +91,8 @@ impl Connector for Fake {
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
+        let slow = self.store().slow_containers;
+        thread::sleep(slow);
         Ok(vec![
             Container::new("family", "Family"),
             Container::new("work", "Work"),
@@ -101,6 +107,9 @@ impl Connector for Fake {
             request.cursor.map(|c| c.as_str().to_string()),
             request.excluded.iter().map(|c| c.id.clone()).collect(),
         ));
+        if let Some(db) = &store.reads {
+            read_like_macos(db);
+        }
         if store.fail > 0 {
             store.fail -= 1;
             return Err(SourceError::Failed("the fake service is down".into()));
@@ -124,6 +133,32 @@ impl Connector for Fake {
             .collect();
         Ok(Fetched::batch(FakeBatch(items), Cursor::new(last.to_string())).with_more(more))
     }
+}
+
+/// Reads a copy of the database at `db` and leaves behind the file events macOS reports for
+/// such a read, on every system: a file beside it appears and goes (as its `-shm` does, which
+/// the app holds mapped and is left alone here), and its metadata is touched (its permissions
+/// are set again, which changes neither its size nor its modification time).
+fn read_like_macos(db: &Path) {
+    drop(knode_service::sources::sqlite::open_copy(db).unwrap());
+    let beside = PathBuf::from(format!("{}-read", db.display()));
+    fs::write(&beside, b"").unwrap();
+    fs::remove_file(&beside).unwrap();
+    let permissions = fs::metadata(db).unwrap().permissions();
+    fs::set_permissions(db, permissions).unwrap();
+}
+
+/// A synthetic database in WAL mode, kept open by the "app", which writes to it with the
+/// connection returned.
+fn synthetic_db(dir: &Path) -> (PathBuf, rusqlite::Connection) {
+    let db = dir.join("Synthetic.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         CREATE TABLE message (id INTEGER PRIMARY KEY, text TEXT);",
+    )
+    .unwrap();
+    (db, conn)
 }
 
 /// Messages to write: one node per message, found again by its id, as importers do.
@@ -155,6 +190,7 @@ struct Fixture {
     dir: TempDir,
     fake: Fake,
     service: Option<ServiceHandle>,
+    tune: fn(&mut SourcesOptions),
 }
 
 impl Fixture {
@@ -163,6 +199,11 @@ impl Fixture {
     }
 
     fn with_trigger(trigger: Trigger) -> Self {
+        Self::with_options(trigger, |_| {})
+    }
+
+    /// With the options of the tests changed by `tune`.
+    fn with_options(trigger: Trigger, tune: fn(&mut SourcesOptions)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         drop(Space::create(dir.path().join("Personal.knode"), "Personal").unwrap());
         let fake = Fake {
@@ -173,6 +214,7 @@ impl Fixture {
             dir,
             fake,
             service: None,
+            tune,
         };
         fixture.write_config("");
         fixture.start();
@@ -180,7 +222,7 @@ impl Fixture {
     }
 
     fn start(&mut self) {
-        let options = SourcesOptions {
+        let mut options = SourcesOptions {
             settings_poll: Duration::from_millis(50),
             backoff: Duration::from_millis(200),
             max_backoff: Duration::from_millis(800),
@@ -188,6 +230,7 @@ impl Fixture {
             max_items: 3,
             ..SourcesOptions::with_connectors(vec![Arc::new(self.fake.clone())])
         };
+        (self.tune)(&mut options);
         let config = Config::new(self.home()).with_sources(options);
         self.service = Some(start(config).unwrap());
     }
@@ -550,4 +593,117 @@ fn agents_cannot_manage_sources() {
             .sources_connect(f.space(), ID, None, &by)
             .is_err()
     );
+}
+
+#[test]
+fn a_connectors_own_read_of_its_files_does_not_run_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app) = synthetic_db(dir.path());
+    let f = Fixture::with_trigger(Trigger::Watch {
+        paths: vec![db.clone()],
+        every: Duration::from_secs(3600),
+    });
+    f.fake.store().reads = Some(db.clone());
+    f.client()
+        .sources_connect(f.space(), ID, None, &me())
+        .unwrap();
+    f.wait_until("the first run", |f| f.status().last_success.is_some());
+    // The events of its read come and are quiet many times over: nothing runs.
+    thread::sleep(Duration::from_millis(1500));
+    assert_eq!(f.fake.store().fetches, 1);
+
+    // The app writes to its database and closes it (macOS reports writes to a file kept open
+    // only late): that runs it.
+    f.fake.add("work", Timestamp::now(), "Hello");
+    app.execute("INSERT INTO message (text) VALUES ('Hello')", [])
+        .unwrap();
+    drop(app);
+    f.wait_until("a run after the write", |f| f.written().len() == 1);
+    // And its own read after that runs nothing again.
+    let after = f.fake.store().fetches;
+    thread::sleep(Duration::from_millis(1500));
+    assert_eq!(f.fake.store().fetches, after);
+}
+
+#[test]
+fn a_watching_connector_runs_at_its_interval_when_events_come_late() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _app) = synthetic_db(dir.path());
+    let f = Fixture::with_options(
+        Trigger::Watch {
+            paths: vec![db],
+            // Longer than the service allows: it runs at least every `watch_every`.
+            every: Duration::from_secs(3600),
+        },
+        |o| o.watch_every = Duration::from_millis(300),
+    );
+    f.client()
+        .sources_connect(f.space(), ID, None, &me())
+        .unwrap();
+    f.wait_until("the first run", |f| f.status().last_success.is_some());
+    // Something new, and no file event at all.
+    f.fake.add("work", Timestamp::now(), "Hello");
+    f.wait_until("a run at the interval", |f| f.written().len() == 1);
+    let times = f.fake.store().times.clone();
+    assert!(times.len() >= 2);
+    assert!(times[1] - times[0] >= Duration::from_millis(250));
+}
+
+#[test]
+fn a_source_connected_paused_reads_nothing_until_resumed() {
+    let f = Fixture::new();
+    f.fake.add("family", Timestamp::now(), "Private");
+    f.fake.add("work", Timestamp::now(), "Hello");
+    let connected = f
+        .client()
+        .sources_connect_paused(f.space(), ID, Some(History::Everything), &me())
+        .unwrap();
+    assert_eq!(connected.state, SourceState::Paused);
+    let setting = connected.setting.unwrap();
+    assert!(!setting.on);
+    assert_eq!(setting.history, History::Everything);
+    // The containers can be listed and excluded before anything is read.
+    let containers = f.client().sources_containers(f.space(), ID).unwrap();
+    assert_eq!(containers.len(), 2);
+    f.client()
+        .sources_exclude(f.space(), ID, "family", Some("Family"), &me())
+        .unwrap();
+    thread::sleep(Duration::from_millis(400));
+    assert_eq!(f.fake.store().fetches, 0);
+    assert!(f.written().is_empty());
+
+    f.client()
+        .sources_set_on(f.space(), ID, true, &me())
+        .unwrap();
+    f.wait_until("the message", |f| f.written().len() == 1);
+    assert_eq!(f.written(), vec!["work 2"]);
+    // The first fetch already left the excluded chat out.
+    assert_eq!(f.fake.store().requests[0].1, vec!["family".to_string()]);
+}
+
+#[test]
+fn listing_containers_slowly_does_not_hold_up_the_space() {
+    let f = Fixture::new();
+    f.fake.store().slow_containers = Duration::from_secs(2);
+    f.client()
+        .sources_connect_paused(f.space(), ID, None, &me())
+        .unwrap();
+    let listing = {
+        let client = f.client();
+        let space = f.space();
+        thread::spawn(move || client.sources_containers(space, ID).unwrap())
+    };
+    thread::sleep(Duration::from_millis(200));
+    // Other calls on the space go on while the connector lists its chats.
+    let started = Instant::now();
+    f.client()
+        .create_node(f.space(), NewNode::note("Meanwhile", ""), &me())
+        .unwrap();
+    assert_eq!(f.status().state, SourceState::Paused);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the space waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(listing.join().unwrap().len(), 2);
 }
