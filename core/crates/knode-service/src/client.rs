@@ -601,6 +601,23 @@ impl Client {
         Ok(answer.set_up)
     }
 
+    /// Applies a reviewed onboarding plan into `space`, which must not be set up yet: its
+    /// documents, a node for each project and the receipt, while what the space holds stays.
+    /// See `knode_vault::onboarding::apply_into`. People only.
+    pub fn onboarding_apply_into(
+        &self,
+        space: impl AsRef<Path>,
+        plan: &knode_vault::onboarding::Plan,
+        by: &Provenance,
+    ) -> Result<knode_vault::onboarding::Receipt> {
+        let params = OnboardingApplyIntoParams {
+            space: space_path(space.as_ref())?,
+            plan: plan.clone(),
+            by: by.clone(),
+        };
+        self.request(methods::ONBOARDING_APPLY_INTO, params)
+    }
+
     /// The nodes that are part of a project, most recently changed first.
     pub fn project_notes(
         &self,

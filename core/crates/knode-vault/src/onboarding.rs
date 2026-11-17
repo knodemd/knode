@@ -87,6 +87,10 @@ pub struct Receipt {
     /// Source attachment references normalized to node-local names or blob URLs.
     #[serde(default)]
     pub attachment_links: Vec<AttachmentLink>,
+    /// Whether the plan was applied into a space that existed before ([`apply_into`]) rather
+    /// than into a new one. Archiving such a space also puts aside what it held before.
+    #[serde(default)]
+    pub applied_into: bool,
 }
 /// A reviewable attachment-link adaptation; original source files remain unchanged.
 #[derive(Debug, Serialize, Deserialize)]
@@ -642,6 +646,130 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
             "Destination already exists. Choose a new space; existing spaces are never overwritten.",
         ));
     }
+    let groups = checked_groups(plan)?;
+    if let Some(source) = &plan.source
+        && parent.starts_with(source)
+    {
+        return Err(invalid("Choose a destination outside the source folder."));
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".knode-onboarding-")
+        .tempdir_in(&parent)
+        .map_err(io_error(&parent))?;
+    let input = stage(plan, staging.path())?;
+    let staged = staging.path().join("Import.knode");
+    let mut space = Space::create(&staged, name)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))
+            .map_err(io_error(&staged))?;
+    }
+    let receipt = fill(
+        &mut space,
+        plan,
+        &groups,
+        &input,
+        &destination,
+        &BTreeSet::new(),
+        by,
+    )?;
+    fs::write(
+        staged.join(RECEIPT),
+        serde_json::to_vec_pretty(&receipt).map_err(|e| invalid(e.to_string()))?,
+    )
+    .map_err(io_error(&staged))?;
+    drop(space);
+    // Reserve the name atomically; rename only replaces this empty reservation. On failure,
+    // remove_dir never removes someone else's nonempty directory.
+    fs::create_dir(&destination).map_err(io_error(&destination))?;
+    if let Err(e) = fs::rename(&staged, &destination) {
+        let _ = fs::remove_dir(&destination);
+        return Err(io_error(&destination)(e));
+    }
+    Ok(receipt)
+}
+
+/// Apply the reviewed plan into `space`, a space that exists but is not set up yet
+/// ([`is_set_up`]), such as the new default space an agent is already connected to, instead of
+/// into a new one. What it already holds (captured conversations, a note or two) stays.
+///
+/// The same checks as [`apply`] run first, and the whole plan is rehearsed in a throwaway space
+/// before anything is written here, so a plan that [`apply`] would refuse writes nothing into
+/// this space. The receipt is written into the space like [`apply`] writes it, so the space
+/// counts as set up afterwards and applying again is refused. Capture is turned off as
+/// [`apply`] leaves a new space.
+pub fn apply_into(plan: &Plan, space: &mut Space, by: &Provenance) -> Result<Receipt> {
+    if plan.version != 1 {
+        return Err(invalid("A version-1 plan is required."));
+    }
+    if is_set_up(space)? {
+        return Err(invalid(format!(
+            "{} is already set up (it has an onboarding receipt, projects or notes of its own), so onboarding does not write into it. Apply into a new space with --destination instead.",
+            space.manifest().name
+        )));
+    }
+    let path = space
+        .path()
+        .canonicalize()
+        .map_err(io_error(space.path()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("The space has no parent folder."))?
+        .to_path_buf();
+    let groups = checked_groups(plan)?;
+    if let Some(source) = &plan.source
+        && path.starts_with(source)
+    {
+        return Err(invalid(
+            "This space is inside the source folder. Apply into a space outside it.",
+        ));
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".knode-onboarding-")
+        .tempdir_in(&parent)
+        .map_err(io_error(&parent))?;
+    let input = stage(plan, staging.path())?;
+    // Rehearse the whole plan in a throwaway space: what would make `apply` publish nothing
+    // must leave this space untouched too.
+    let rehearsed = {
+        let staged = staging.path().join("Rehearsal.knode");
+        let mut rehearsal = Space::create(&staged, &space.manifest().name)?;
+        fill(
+            &mut rehearsal,
+            plan,
+            &groups,
+            &input,
+            &path,
+            &BTreeSet::new(),
+            by,
+        )?;
+        let count = usize::try_from(rehearsal.node_count()?).unwrap_or(usize::MAX);
+        rehearsal.recent(count)?
+    };
+    for node in &rehearsed {
+        if space.get_node(&node.id)?.is_some() {
+            return Err(invalid(format!(
+                "The note \"{}\" has the id of a note already in this space. Nothing was written; exclude it or repair its id before importing.",
+                node.title
+            )));
+        }
+    }
+    let count = usize::try_from(space.node_count()?).unwrap_or(usize::MAX);
+    let before: BTreeSet<_> = space.recent(count)?.into_iter().map(|n| n.id).collect();
+    let mut receipt = fill(space, plan, &groups, &input, &path, &before, by)?;
+    receipt.applied_into = true;
+    let written = path.join(RECEIPT);
+    fs::write(
+        &written,
+        serde_json::to_vec_pretty(&receipt).map_err(|e| invalid(e.to_string()))?,
+    )
+    .map_err(io_error(&written))?;
+    Ok(receipt)
+}
+
+/// The plan's groups, id to trimmed name, after checking the groups and the documents.
+fn checked_groups(plan: &Plan) -> Result<BTreeMap<String, String>> {
     let groups: BTreeMap<_, _> = plan
         .groups
         .iter()
@@ -664,10 +792,13 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
             ));
         }
     }
+    Ok(groups)
+}
+
+/// Checks the plan against the source as it is now and copies the files it imports into
+/// `staging/input`, checking each copy. Returns the copy, which is what gets imported.
+fn stage(plan: &Plan, staging: &Path) -> Result<PathBuf> {
     if let Some(source) = &plan.source {
-        if parent.starts_with(source) {
-            return Err(invalid("Choose a destination outside the source folder."));
-        }
         let current = analyze(Some(source), plan.mode)?;
         if current.files != plan.files || current.documents.len() != plan.documents.len() {
             return Err(invalid(
@@ -686,11 +817,7 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
     } else if plan.mode != Mode::Empty || !plan.documents.is_empty() || !plan.files.is_empty() {
         return Err(invalid("Invalid empty-start plan."));
     }
-    let staging = tempfile::Builder::new()
-        .prefix(".knode-onboarding-")
-        .tempdir_in(&parent)
-        .map_err(io_error(&parent))?;
-    let input = staging.path().join("input");
+    let input = staging.join("input");
     fs::create_dir(&input).map_err(io_error(&input))?;
     if let Some(source) = &plan.source {
         let selected: BTreeSet<_> = plan
@@ -737,24 +864,35 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
             "Source changed while copying. Analyze again; no space was published.",
         ));
     }
-    let staged = staging.path().join("Import.knode");
-    let mut space = Space::create(&staged, name)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))
-            .map_err(io_error(&staged))?;
-    }
+    Ok(input)
+}
+
+/// Imports the staged `input` into `space` and makes the plan's project nodes, returning the
+/// receipt to write. `before` holds the nodes the space had already, which are left alone and
+/// are not counted as imported.
+fn fill(
+    space: &mut Space,
+    plan: &Plan,
+    groups: &BTreeMap<String, String>,
+    input: &Path,
+    destination: &Path,
+    before: &BTreeSet<knode_format::NodeId>,
+    by: &Provenance,
+) -> Result<Receipt> {
     space.set_setting("capture.enabled", Some("false"), by)?;
-    let mut import = crate::import(&mut space, &input, by)?;
-    let attachment_links = attach_source_references(&mut space, &input, plan, &mut import, by)?;
+    let mut import = crate::import(space, input, by)?;
+    let attachment_links = attach_source_references(space, input, plan, &mut import, before, by)?;
     if !import.skipped.is_empty() {
         return Err(invalid(format!(
             "Import could not preserve {} items. Nothing was published. Review source warnings and excluded documents.",
             import.skipped.len()
         )));
     }
-    let nodes = space.recent(usize::try_from(space.node_count()?).unwrap_or(usize::MAX))?;
+    let nodes: Vec<_> = space
+        .recent(usize::try_from(space.node_count()?).unwrap_or(usize::MAX))?
+        .into_iter()
+        .filter(|n| !before.contains(&n.id))
+        .collect();
     if nodes.len() != plan.documents.iter().filter(|d| d.include).count() {
         return Err(invalid(
             "Source note IDs would merge documents. Nothing was published; exclude duplicates or repair their IDs before importing.",
@@ -776,6 +914,9 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
     for doc in plan.documents.iter().filter(|d| d.include) {
         let project = &groups[&doc.project];
         for node in space.find_by_property(crate::property_keys::PATH, &doc.path)? {
+            if before.contains(&node.id) {
+                continue;
+            }
             owner.insert(node.id, project.clone());
             members
                 .entry(project.clone())
@@ -945,29 +1086,16 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
             );
         }
     }
-    let receipt = Receipt {
+    Ok(Receipt {
         space_id: space.manifest().id.clone(),
-        destination: destination.clone(),
+        destination: destination.to_path_buf(),
         plan: plan.clone(),
         import,
         contexts,
         unresolved,
         attachment_links,
-    };
-    fs::write(
-        staged.join(RECEIPT),
-        serde_json::to_vec_pretty(&receipt).map_err(|e| invalid(e.to_string()))?,
-    )
-    .map_err(io_error(&staged))?;
-    drop(space);
-    // Reserve the name atomically; rename only replaces this empty reservation. On failure,
-    // remove_dir never removes someone else's nonempty directory.
-    fs::create_dir(&destination).map_err(io_error(&destination))?;
-    if let Err(e) = fs::rename(&staged, &destination) {
-        let _ = fs::remove_dir(&destination);
-        return Err(io_error(&destination)(e));
-    }
-    Ok(receipt)
+        applied_into: false,
+    })
 }
 /// Notes to list first in a project's index: its readme, status and agent instructions.
 fn importance(path: &str) -> usize {
@@ -1011,6 +1139,7 @@ fn attach_source_references(
     input: &Path,
     plan: &Plan,
     report: &mut ImportReport,
+    before: &BTreeSet<knode_format::NodeId>,
     by: &Provenance,
 ) -> Result<Vec<AttachmentLink>> {
     let assets: BTreeSet<_> = plan
@@ -1024,6 +1153,9 @@ fn attach_source_references(
     for doc in plan.documents.iter().filter(|d| d.include) {
         let parent = doc.path.rsplit_once('/').map_or("", |(p, _)| p);
         for summary in space.find_by_property(crate::property_keys::PATH, &doc.path)? {
+            if before.contains(&summary.id) {
+                continue;
+            }
             let Some(node) = space.get_node(&summary.id)? else {
                 continue;
             };
@@ -1389,6 +1521,115 @@ mod tests {
         let space = Space::create(dir.path().join("Onboarded.knode"), "Onboarded").unwrap();
         fs::write(space.path().join(RECEIPT), "{}").unwrap();
         assert!(is_set_up(&space).unwrap());
+    }
+
+    #[test]
+    fn applies_into_a_space_that_is_not_set_up_and_keeps_what_it_held() {
+        use knode_format::kinds;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        fs::create_dir_all(root.join("Web")).unwrap();
+        fs::create_dir_all(root.join("Book")).unwrap();
+        fs::write(root.join("Web/Plan.md"), "See [[Draft]].").unwrap();
+        fs::write(root.join("Book/Draft.md"), "chapter one").unwrap();
+        let plan = analyze(Some(&root), Mode::Vault).unwrap();
+
+        // A fresh default space holding conversations captured before onboarding.
+        let path = dir.path().join("Memory.knode");
+        let mut space = Space::create(&path, "Memory").unwrap();
+        let agent = Provenance::agent("claude-code");
+        let mut chat = NewNode::note("A session", "captured");
+        chat.kind = kinds::CONVERSATION.into();
+        let chat = space.create_node(chat, &agent).unwrap();
+        let person = Provenance::person("Ada");
+        let receipt = apply_into(&plan, &mut space, &person).unwrap();
+
+        assert!(receipt.applied_into);
+        assert_eq!(receipt.space_id, space.manifest().id);
+        assert_eq!(receipt.destination, path.canonicalize().unwrap());
+        assert_eq!(receipt.contexts.len(), 2);
+        assert!(path.join(RECEIPT).exists());
+        // The conversation stays, next to the two notes and their two projects.
+        assert_eq!(space.node_count().unwrap(), 5);
+        assert_eq!(space.get_node(&chat.id).unwrap().unwrap().body, "captured");
+        assert_eq!(space.projects().unwrap().len(), 2);
+        let plan_note = space.find_by_title("Plan").unwrap()[0].id;
+        let web = NodeId::parse(&receipt.contexts["Web"]).unwrap();
+        assert!(
+            space
+                .links_from(&plan_note)
+                .unwrap()
+                .iter()
+                .any(|l| l.to == web && l.kind == "part-of")
+        );
+        assert_eq!(
+            space.setting("capture.enabled").unwrap().as_deref(),
+            Some("false")
+        );
+        // Nothing is left next to the space, and the source is unchanged.
+        let left: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".knode-onboarding-"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(
+            fs::read_to_string(root.join("Book/Draft.md")).unwrap(),
+            "chapter one"
+        );
+
+        // Now it is set up: applying again is refused and writes nothing.
+        assert!(is_set_up(&space).unwrap());
+        let again = apply_into(&plan, &mut space, &person).unwrap_err();
+        assert!(again.to_string().contains("already set up"), "{again}");
+        assert_eq!(space.node_count().unwrap(), 5);
+
+        // Archive still puts it aside, with what it held before.
+        drop(space);
+        let archived = archive(&path).unwrap();
+        assert!(!path.exists());
+        assert_eq!(Space::open(&archived).unwrap().node_count().unwrap(), 5);
+    }
+
+    #[test]
+    fn applying_into_a_set_up_space_or_over_its_notes_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        fs::create_dir_all(&root).unwrap();
+        let person = Provenance::person("Ada");
+
+        // A space with notes of its person is someone's memory already.
+        fs::write(root.join("Plan.md"), "plan").unwrap();
+        let plan = analyze(Some(&root), Mode::Project).unwrap();
+        let mut space = Space::create(dir.path().join("Used.knode"), "Used").unwrap();
+        for i in 0..SET_UP_NOTES {
+            space
+                .create_node(NewNode::note(format!("Mine {i}"), ""), &person)
+                .unwrap();
+        }
+        let refused = apply_into(&plan, &mut space, &person).unwrap_err();
+        assert!(refused.to_string().contains("already set up"), "{refused}");
+        assert_eq!(space.node_count().unwrap(), SET_UP_NOTES as u64);
+        assert!(!space.path().join(RECEIPT).exists());
+
+        // A note of the source with the id of one already in the space is refused before any
+        // write, rather than overwriting it.
+        let mut space = Space::create(dir.path().join("Fresh.knode"), "Fresh").unwrap();
+        let taken = space
+            .create_node(NewNode::note("Taken", "mine"), &Provenance::agent("codex"))
+            .unwrap();
+        fs::write(
+            root.join("Plan.md"),
+            format!("---\nid: {}\ntitle: Plan\n---\nplan", taken.id),
+        )
+        .unwrap();
+        let plan = analyze(Some(&root), Mode::Project).unwrap();
+        let refused = apply_into(&plan, &mut space, &person).unwrap_err();
+        assert!(refused.to_string().contains("id of a note"), "{refused}");
+        assert_eq!(space.node_count().unwrap(), 1);
+        assert_eq!(space.get_node(&taken.id).unwrap().unwrap().body, "mine");
+        assert!(!space.path().join(RECEIPT).exists());
+        assert_eq!(space.setting("capture.enabled").unwrap(), None);
     }
 
     #[test]

@@ -198,13 +198,29 @@ Wait for the answer, then do steps 4 to 8 without asking again.
 Edit `/tmp/knode-plan.json` as agreed: `include`, `project` and group `name` only. Never edit
 digests or `files`; if the source changed meanwhile, analyze again.
 
+If you are connected to a Knode space that is not set up yet (the `projects` MCP tool lists no
+project, or `knode spaces` shows a default space holding only captured conversations), apply into
+that space, so you and the person keep the connection you have: no reconnection, no new session.
+
+```sh
+knode onboard apply --plan /tmp/knode-plan.json --into "<space>" --sessions
+knode onboard inspect --target "<space path>"
+```
+
+`<space>` is its name or `.knode` path, as `knode spaces` lists it; what it already holds stays.
+A space that is already set up is refused: then, or when the person wants a separate space, create
+a new one instead:
+
 ```sh
 knode onboard apply --plan /tmp/knode-plan.json --destination "$HOME/Knode/<Name>.knode" --name "<Name>" --sessions
 knode onboard inspect --target "$HOME/Knode/<Name>.knode"
 ```
 
-Leave out `--sessions` if the person said no. Existing spaces are never overwritten. If the person
-wants this to be their main memory: `knode spaces default "$HOME/Knode/<Name>.knode"`.
+Leave out `--sessions` if the person said no. Existing spaces are never overwritten. Both leave
+capture off: if the person chose it in step 3, `knode spaces capture "<space>" on`. If a new space
+is to be their main memory: `knode spaces default "$HOME/Knode/<Name>.knode"`. In the steps below,
+use the space you applied into wherever they say `$HOME/Knode/<Name>.knode`, and skip connecting
+again in step 6 the agents already connected to it.
 
 ## 5. Check it
 
