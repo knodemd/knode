@@ -197,6 +197,12 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
+        ImportSource::Mbox => ("Mail (mbox)", "An .mbox file, such as a Gmail Takeout", &[]),
+        ImportSource::AppleMail => (
+            "Apple Mail",
+            "The mail of Apple Mail on this Mac",
+            &[FullDiskAccess],
+        ),
     };
     SourceInfo {
         id: source.id().to_string(),
