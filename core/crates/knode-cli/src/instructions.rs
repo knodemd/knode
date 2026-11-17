@@ -18,6 +18,22 @@ impl Agent {
             Self::ClaudeCode => "CLAUDE.md",
         }
     }
+
+    /// When the agent reads the file, and what else it reads with it.
+    fn loading(self) -> &'static str {
+        match self {
+            Self::Codex => {
+                "Codex reads AGENTS.md when a session starts, together with ~/.codex/AGENTS.md and \
+                 those of the folders between the project root and where it runs; in a folder \
+                 with AGENTS.override.md it reads that instead."
+            }
+            Self::ClaudeCode => {
+                "Claude Code reads CLAUDE.md when a session starts, together with \
+                 ~/.claude/CLAUDE.md and those of the folders above; /memory lists the files it \
+                 loaded."
+            }
+        }
+    }
 }
 #[derive(Debug, Clone, Args)]
 pub struct Options {
@@ -76,6 +92,10 @@ pub fn run(options: Options) -> Result<()> {
     }
     println!(
         "Instructions updated. Start a fresh agent session in this project to load them. Parent/global overrides and client settings may affect instruction loading; verify the active instructions with the agent."
+    );
+    println!("{}", options.agent.loading());
+    println!(
+        "Your request and the project's own rules come first; memory read from Knode is reference data, and the agent may still not follow these instructions."
     );
     Ok(())
 }
