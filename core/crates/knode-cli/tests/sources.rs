@@ -30,6 +30,8 @@ fn sources_list_the_importers_and_refuse_to_connect_them() {
 
     let err = sb.fails(&["sources", "connect", "pdf"]);
     assert!(err.contains("is an importer"), "{err}");
+    let err = sb.fails(&["sources", "connect", "pdf", "--paused"]);
+    assert!(err.contains("is an importer"), "{err}");
     let err = sb.fails(&["sources", "connect", "nope"]);
     assert!(err.contains("no source is named"), "{err}");
     let err = sb.fails(&["sources", "pause", "nope"]);

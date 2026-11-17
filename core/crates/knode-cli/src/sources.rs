@@ -33,6 +33,10 @@ pub enum Action {
         /// How much history to bring in: `from-today` or `everything`.
         #[arg(long, value_name = "HISTORY", value_parser = ["from-today", "everything"])]
         history: Option<String>,
+        /// Connect it paused, to exclude chats, channels or folders before anything is read;
+        /// `knode sources resume` turns it on.
+        #[arg(long)]
+        paused: bool,
     },
     /// Pause a connector: it stops bringing things in until it is resumed.
     Pause {
@@ -98,9 +102,16 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                 print_list(&list);
             }
         }
-        Action::Connect { source, history } => {
+        Action::Connect {
+            source,
+            history,
+            paused,
+        } => {
             let history = history.as_deref().and_then(History::from_id);
             let status = match &client {
+                Some(client) if paused => {
+                    client.sources_connect_paused(space, &source, history, by)?
+                }
                 Some(client) => client.sources_connect(space, &source, history, by)?,
                 None => {
                     let mut space = Space::open(space)?;
@@ -108,7 +119,7 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                         .iter()
                         .map(|c| c.info().id)
                         .collect();
-                    sources::connect(&mut space, &known, &source, history, by)?;
+                    sources::connect_with(&mut space, &known, &source, history, !paused, by)?;
                     find(sources::list_offline(&paths.home, &space)?, &source)?
                 }
             };
@@ -132,6 +143,11 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                     .map(|p| p.describe())
                     .collect();
                 println!("It needs: {}.", needs.join(", "));
+            }
+            if paused {
+                println!(
+                    "It is paused: exclude what it should not read, then `knode sources resume {source}`."
+                );
             }
         }
         Action::Pause { source } => {

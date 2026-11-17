@@ -29,7 +29,17 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     }
     let id = source(&p, method)?;
     match method {
-        methods::SOURCES_CONTAINERS => to_value(registry.containers(&space, &id).map_err(rpc)?),
+        methods::SOURCES_CONTAINERS => {
+            let (space_id, setting) = registry.containers_request(&space, &id).map_err(rpc)?;
+            // A connector may take long to list them, over the network: the space is not kept
+            // locked meanwhile, so other calls and the runs of connectors go on.
+            drop(space);
+            to_value(
+                registry
+                    .containers_of(&space_id, &setting, &id)
+                    .map_err(rpc)?,
+            )
+        }
         methods::SOURCES_RUN => {
             let status = registry.get(&space, &id)?;
             if status.setting.as_ref().is_none_or(|s| !s.on) {
@@ -79,7 +89,7 @@ fn change(
                 .iter()
                 .map(|c| c.info().id)
                 .collect();
-            sources::connect(space, &known, id, p.history, by)?;
+            sources::connect_with(space, &known, id, p.history, p.on.unwrap_or(true), by)?;
         }
         methods::SOURCES_PAUSE => {
             sources::set_on(space, id, false, by)?;
