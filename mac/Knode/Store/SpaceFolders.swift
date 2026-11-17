@@ -35,7 +35,7 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         public var created: Bool
         /// The folder had been added before and already held this project.
         public var alreadyHeld: Bool
-        /// When adding the folder made a project named after its parent folder too, such as
+        /// When adding the folder gave it a project named after its parent folder too, such as
         /// "api (b)", the project of its own name that another folder holds.
         public var passedOver: String?
         /// The folders, as recorded, that hold the files of `passedOver`.
