@@ -239,6 +239,11 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
+        ImportSource::ClaudeCodeMemory => (
+            "Claude Code memory",
+            "The memory Claude Code keeps for each folder it works in",
+            &[],
+        ),
     };
     SourceInfo {
         id: source.id().to_string(),

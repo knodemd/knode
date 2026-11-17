@@ -84,14 +84,17 @@ enum Command {
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
     /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
     /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, mail
-    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), or a
-    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`) or a Telegram Desktop
-    /// export in JSON (the folder with `result.json`) or a Slack workspace export.
-    /// Knode tells which from the path; --from says it.
+    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), a
+    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`), a Telegram Desktop
+    /// export in JSON (the folder with `result.json`), a Slack workspace export, or the memory
+    /// Claude Code keeps for each folder (`--from claude-code-memory`), each note linked to the
+    /// project of the space its folder belongs to. Knode tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes`,
-        /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, and
-        /// with `--from readwise-api`.
+        /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, with
+        /// `--from readwise-api`, and with `--from claude-code-memory` to read
+        /// `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` (or give the `.claude` folder
+        /// or its `projects` folder).
         #[arg(value_name = "PATH|URL", required_unless_present = "from")]
         target: Option<String>,
         /// What it is, when Knode should not guess.
@@ -106,6 +109,15 @@ enum Command {
         /// Rehearse a Markdown-folder import locally without changing a destination space.
         #[arg(long)]
         preview: bool,
+        /// Folder of Markdown files: also write the migration report, as JSON, to this file
+        /// (where each file went, what was left out and why, links and attachments that did not
+        /// come through).
+        #[arg(long, value_name = "FILE", conflicts_with = "preview")]
+        report: Option<PathBuf>,
+        /// Folder of Markdown files: import again, as new notes, the notes deleted in Knode since
+        /// they were imported. Without it they stay deleted.
+        #[arg(long, conflicts_with = "preview")]
+        include_deleted: bool,
         /// Mail: only this folder, a Gmail label or an Apple Mail mailbox. Repeat for more.
         #[arg(long, value_name = "NAME", visible_aliases = ["label", "mailbox"])]
         folder: Vec<String>,
@@ -161,6 +173,13 @@ enum Command {
     Export {
         /// The folder; created if needed. Files Knode did not write are never touched.
         dir: PathBuf,
+        /// Then compare the export with this folder, the one imported (such as an Obsidian
+        /// vault), and list what differs. Changes neither folder.
+        #[arg(long, value_name = "SOURCE")]
+        compare: Option<PathBuf>,
+        /// With --compare: print the comparison as JSON.
+        #[arg(long, requires = "compare")]
+        json: bool,
     },
     /// Show the latest changes to the space, or the history of one node.
     History {
@@ -196,6 +215,7 @@ enum Command {
     /// Give an agent its own key and add Knode to it. `--list` shows every agent and whether it
     /// is on this machine. The first time, it may read and write the default space (or --space)
     /// only.
+    #[command(group = clap::ArgGroup::new("json_with").args(["list", "check"]))]
     Connect {
         /// The agent.
         #[arg(required_unless_present = "list")]
@@ -206,6 +226,10 @@ enum Command {
         /// List every agent Knode can be added to, and whether it is on this machine.
         #[arg(long, conflicts_with_all = ["agent", "print", "instructions"])]
         list: bool,
+        /// With --list: print it as JSON, with whether each agent is already connected. With
+        /// --check: print the report as JSON, and succeed whatever it says.
+        #[arg(long, requires = "json_with")]
+        json: bool,
         /// Also install project-local memory instructions (Codex or Claude Code only).
         /// --print previews the instructions without changing files or connecting the agent.
         #[arg(long, value_name = "PROJECT")]
@@ -218,9 +242,6 @@ enum Command {
         /// With --check: the project folder the agent works in.
         #[arg(long, value_name = "FOLDER", requires = "check")]
         project: Option<PathBuf>,
-        /// With --check: print the report as JSON, and succeed whatever it says.
-        #[arg(long, requires = "check")]
-        json: bool,
     },
     /// Run the MCP server on standard input and output. Agents start it themselves.
     Mcp {
@@ -333,6 +354,8 @@ fn run(cli: Cli) -> Result<()> {
             vault,
             json,
             preview,
+            report,
+            include_deleted,
             folder,
             since,
             until,
@@ -351,6 +374,8 @@ fn run(cli: Cli) -> Result<()> {
                 json,
                 home: &paths.home,
                 mail,
+                report: report.as_deref(),
+                include_deleted,
             };
             import::run(&space, request, &person())
         }
@@ -375,9 +400,9 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             maps::attachments(service::backend(&space)?.as_ref(), &node, json)
         }
-        Command::Export { dir } => {
+        Command::Export { dir, compare, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
-            markdown::export(&absolute(&space)?, &dir)
+            markdown::export(&absolute(&space)?, &dir, compare.as_deref(), json)
         }
         Command::History { node, limit, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
@@ -410,10 +435,10 @@ fn run(cli: Cli) -> Result<()> {
             agent,
             print,
             list,
+            json,
             instructions,
             check,
             project,
-            json,
         } => {
             match agent {
                 Some(agent) if check => connect::check(
@@ -443,6 +468,7 @@ fn run(cli: Cli) -> Result<()> {
                     }
                     Ok(())
                 }
+                _ if json => connect::list_json(),
                 _ => connect::list(),
             }
         }

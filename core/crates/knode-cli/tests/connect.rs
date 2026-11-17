@@ -352,6 +352,51 @@ fn list_shows_every_agent_and_what_is_here() {
 }
 
 #[test]
+fn list_json_says_which_agents_are_here_and_connected() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.home().join(".cursor")).unwrap();
+    write(
+        &sb.path("config/opencode/opencode.json"),
+        r#"{"mcp": {"knode": {"type": "local", "command": ["/bin/knode", "mcp", "--agent", "opencode"]}}}"#,
+    );
+    write(
+        &sb.path("codex/config.toml"),
+        "[mcp_servers.knode]\ncommand = \"/bin/knode\"\nargs = [\"mcp\", \"--agent\", \"codex\"]\n",
+    );
+    // Set up before agent keys: Knode is there, but not as the agent.
+    write(
+        &sb.path("claude/.claude.json"),
+        r#"{"mcpServers": {"knode": {"command": "/bin/knode", "args": ["mcp"]}}}"#,
+    );
+    let out: Value = serde_json::from_str(&sb.ok(&["connect", "--list", "--json"])).unwrap();
+    let agents = out["agents"].as_array().unwrap();
+    let order: Vec<&str> = agents
+        .iter()
+        .map(|a| a["agent"].as_str().unwrap())
+        .collect();
+    assert_eq!(&order[..2], ["claude-code", "codex"]);
+    assert_eq!(order.len(), 14);
+    let row = |agent: &str| agents.iter().find(|a| a["agent"] == agent).unwrap().clone();
+    assert_eq!(row("cursor")["detected"], true);
+    assert_eq!(row("cursor")["connected"], false);
+    assert_eq!(row("cursor")["title"], "Cursor");
+    assert_eq!(row("opencode")["connected"], true);
+    assert_eq!(row("codex")["connected"], true);
+    assert_eq!(row("claude-code")["detected"], false);
+    assert_eq!(row("claude-code")["connected"], false);
+    assert_eq!(row("gemini")["name"], "gemini-cli");
+    assert_eq!(row("zed")["detected"], false);
+    assert_eq!(row("aider")["can_connect"], false);
+    assert_eq!(row("cursor")["can_connect"], true);
+    // Listing starts nothing and changes nothing.
+    assert!(!sb.knode_home().exists());
+    assert!(!sb.home().join(".cursor/mcp.json").exists());
+
+    let err = sb.fails(&["connect", "--json"]);
+    assert!(err.contains("--list"), "{err}");
+}
+
+#[test]
 fn project_instructions_preview_is_read_only_and_connect_installs_the_block() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);

@@ -120,6 +120,22 @@ The `knode` command is at `Knode.app/Contents/Helpers/knode`. On the first run, 
 password). When a `knode` is already installed, for example with Homebrew, the app uses that one
 and says so. **Uninstall Command Line Tool…** removes only the link the app made.
 
+On the first run Get started opens, on **Let your agent do it**, which starts with **Connect your
+agents**; if Get started is not open when the command is installed on the first run (or found
+already installed), the app shows the step on its own. It is also in **Knode > Connect Your
+Agents…**, which is disabled while another sheet is open so it never replaces one. It lists what
+`knode connect --list --json` reports: the agents on this Mac and the ones already connected,
+Claude Code first, then Codex, then the others. **Connect** runs `knode connect <agent>` (with
+`--space` only when the chosen space is not the space for agents) with the login shell's `PATH`
+and agent settings variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `CLINE_DIR`,
+`CLINE_MCP_SETTINGS_PATH`, `XDG_CONFIG_HOME`), read once from an interactive login shell, so the
+agent's own command is found and the folder its sessions read is configured. Then it reads the
+list again: the core says whether the agent is connected. Once it is, the app says to open a new
+session of the agent, which sets the memory up. When the `knode` it would run is the one inside
+the app and the app runs from its disk image, a translocated copy, Downloads or a temporary
+folder, connecting is refused and the step offers to move Knode to Applications: agents' settings
+would point at a copy that goes away. A `knode` too old for `--json` is told to update.
+
 ## Requirements
 
 - macOS 26 or later

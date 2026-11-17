@@ -619,8 +619,18 @@ fn a_connectors_own_read_of_its_files_does_not_run_it_again() {
         .unwrap();
     drop(app);
     f.wait_until("a run after the write", |f| f.written().len() == 1);
-    // And its own read after that runs nothing again.
-    let after = f.fake.store().fetches;
+    // And its own read after that runs nothing again. Linux can report the app's write and
+    // close as separate, late events, so wait until the runs settle before checking.
+    let mut after = f.fake.store().fetches;
+    let settle = std::time::Instant::now();
+    loop {
+        thread::sleep(Duration::from_millis(1000));
+        let now = f.fake.store().fetches;
+        if now == after || settle.elapsed() > Duration::from_secs(10) {
+            break;
+        }
+        after = now;
+    }
     thread::sleep(Duration::from_millis(1500));
     assert_eq!(f.fake.store().fetches, after);
 }

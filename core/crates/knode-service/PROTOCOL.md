@@ -52,7 +52,7 @@ grant takes effect on the next call:
 - With `none` the space is **invisible**: a call that names it fails exactly as for a space that
   does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
   its changes are not sent to the agent.
-- With `read`, `space.open`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
+- With `read`, `space.open`, `space.set_up`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
   `markdown.folder.get`, `doc.open`, `doc.updates` and `subscribe` are allowed; writes fail with
   `forbidden`.
@@ -126,9 +126,11 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | --- | --- | --- |
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
+| `space.set_up` | `space` | `{ "set_up" }`: whether the space has been set up, so an agent should not offer to set Knode up on its own. `false` only when the space has no onboarding receipt (`onboarding.json`), no `project` node and fewer than 3 nodes created by a person, not counting `conversation` nodes and titles starting with `Example:`. |
+| `onboarding.apply_into` | `space`, `plan` (a reviewed `knode onboard analyze` plan), `by` | The onboarding receipt. Applies the plan into this space instead of a new one, only while `space.set_up` is `false`: the source is checked against the plan, the plan is rehearsed in a throwaway space, then its documents, a `project` node per project with the documents `part-of` it and `onboarding.json` are written into the space, and `capture.enabled` is set to `off`. What the space held stays. Fails with `invalid` when the space is set up, the source changed or a note of the source has the id of a node already in the space, and then writes nothing. People only. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
 | `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
-| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
+| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, both stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
 | `folders.remove` | `space`, `id`, `by` | `true` if there was such a folder. Nothing captured or imported from it is removed. People only. |
@@ -261,7 +263,7 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `include_deleted`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
 file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
@@ -282,6 +284,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
 | `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
+| `claude-code-memory` | Claude Code's `.claude` folder or its `projects` folder; without `path`, `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`, of the service. Each `<folder>/memory/*.md` but `MEMORY.md` becomes a note (`markdown.path` `claude-code-memory/<folder>/<file>`), `part-of` the project its folder belongs to; folders that are symbolic links are left out |
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -294,10 +297,21 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 - `source` is the `from` it was read as, and `format` what it was, for people.
 - `nodes` lists the nodes created or changed, in order (for reading, every document read), each
   with `outcome` `created`, `updated`, `unchanged` or `edited` (the source changed, but so did the
-  node, in Knode, since the last import, so it was left as it is), and `highlights` added. `id` is
-  missing for the files of a Markdown folder, which are named by their path.
+  node, in Knode, since the last import, so it was left as it is), and `highlights` added. The
+  nodes of a Markdown folder are named by their path.
+- `report`, for a folder of Markdown files only, is the migration report
+  (`knode_vault::migration::MigrationReport`, `version` 1): every file of the folder with its
+  `status` (`created`, `updated`, `unchanged`, `edited`, `attached`, `skipped` or `failed`), its
+  `node` and a `reason`; `counts`; `unresolved_links`, `ambiguous_links`, `missing_attachments`
+  and `failed_links`; and `limits`, what it does not check. A note imported before whose node
+  was deleted in Knode is not imported again: it is `skipped`, with the deleted `node` and a
+  reason saying so, and counted in `counts.deleted`. `include_deleted: true`, only for a folder
+  of Markdown files, imports such notes again as new nodes.
 - `skipped` lists `{ "item", "reason" }` for what could not be imported; the rest was. `notes`
   lists what else is worth knowing, such as files left out or parts of a note read only in part.
+- `linked` (`{ "<project title>": <count> }`) and `unmatched` (a list), only when not empty, say
+  how many nodes were linked `part-of` each project and what matched no project, for
+  `claude-code-memory`, where `unmatched` lists the encoded folders whose notes have no project.
 - Importing the same thing again finds the same nodes: it writes only what changed.
 - Every node written is announced with `changed`, as for any write, even when the import fails
   part way.
@@ -436,6 +450,20 @@ each conversation goes follows section 15.5 of the
    project means nothing of it is kept, not that it goes somewhere else.
 3. A conversation of no project goes to the space of the `agent` folder it was read from, or
    else to the default space, if that space's `capture.enabled` is `on`.
+
+A new space nobody has set up yet receives nothing, so a space that `knode init` or the app has
+just created, and that `knode connect` starts the service for, does not fill with every earlier
+agent conversation of the machine before the person was asked. Such a space has no
+`capture.enabled` value, no `onboarding.json` receipt, no folders and no nodes. Capture into it
+starts as soon as the person turns capture on (`settings.set` `capture.enabled` `on`,
+`knode spaces capture <space> on`), onboarding sets it up, a folder is added, or anything is
+written into it. A space capture has already written to has nodes, so it never waits.
+
+When the person turns capture on for a space whose capture was off or waiting for setup, the
+service records the time in the setting `capture.since` (RFC 3339, UTC), and that space receives
+only conversations started at or after it: "from now on" does not bring every earlier one. When
+the wait ends any other way (onboarding, a folder, a note), earlier sessions are caught up as
+before.
 
 The service knows the spaces named in `$KNODE_HOME/config.toml` (`default_space` and `spaces`,
 which `knode init` and the app keep) and every space it has open. It reads the file and the

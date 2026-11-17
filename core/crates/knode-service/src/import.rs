@@ -15,7 +15,10 @@
 //!   [`MailOptions`](knode_vault::mail::MailOptions).
 //! - chat exports, with [`knode_ingest::import_chat_export`]: WhatsApp, Telegram Desktop and
 //!   Slack.
+//! - the memory Claude Code keeps for each folder, with [`knode_vault::claude_memory`], each note
+//!   `part-of` the project of the space its folder belongs to.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -23,6 +26,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{NewNode, NodeId, NodeUpdate, Provenance, Space, kinds};
 use knode_ingest::{Agent, ChatFormat, SessionReader, to_markdown};
 use knode_vault::apps::{self, NoteApp};
+use knode_vault::claude_memory::{self, MemoryOutcome};
 use knode_vault::mail::{self, MailOptions, MailSource};
 use knode_vault::reading::{self, Outcome, ReadingReport};
 use serde::{Deserialize, Serialize};
@@ -70,11 +74,14 @@ pub enum ImportSource {
     Telegram,
     /// A Slack workspace export: the `.zip` or its folder.
     Slack,
+    /// The memory Claude Code keeps for each folder it works in: its `.claude` folder or the
+    /// `projects` folder inside, by default the one of this machine.
+    ClaudeCodeMemory,
 }
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 17] = [
+    pub const ALL: [ImportSource; 18] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -92,11 +99,12 @@ impl ImportSource {
         ImportSource::WhatsApp,
         ImportSource::Telegram,
         ImportSource::Slack,
+        ImportSource::ClaudeCodeMemory,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
     /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `mbox`,
-    /// `apple-mail`, `whatsapp`, `telegram`, `slack`.
+    /// `apple-mail`, `whatsapp`, `telegram`, `slack`, `claude-code-memory`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -116,6 +124,7 @@ impl ImportSource {
             ImportSource::WhatsApp => "whatsapp",
             ImportSource::Telegram => "telegram",
             ImportSource::Slack => "slack",
+            ImportSource::ClaudeCodeMemory => "claude-code-memory",
         }
     }
 
@@ -248,6 +257,18 @@ pub struct ImportResult {
     /// What else is worth knowing: what was left out or read only in part.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// For a folder of Markdown files, such as an Obsidian vault: where each file went, what was
+    /// left out and why, and the links and attachments that did not come through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<knode_vault::migration::MigrationReport>,
+    /// How many nodes were linked `part-of` each project, by project title, for imports that
+    /// link what they read to projects (Claude Code memory).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub linked: BTreeMap<String, usize>,
+    /// What matched no project of the space and was imported without one: for Claude Code
+    /// memory, the encoded folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unmatched: Vec<String>,
 }
 
 impl ImportResult {
@@ -265,6 +286,9 @@ impl ImportResult {
             nodes: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
+            report: None,
+            linked: BTreeMap::new(),
+            unmatched: Vec::new(),
         }
     }
 
@@ -338,6 +362,10 @@ pub(crate) struct ImportRunParams {
     /// files. Left out: everything but spam and trash, without attachments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailOptions>,
+    /// For a folder of Markdown files: import again the notes deleted in Knode since they were
+    /// imported. Left out, they stay deleted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_deleted: bool,
 }
 
 /// A token: sent where it is needed, never printed.
@@ -357,7 +385,8 @@ pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of 
      http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
      Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, \
      an .mbox file (Gmail through Google Takeout), Apple Mail's store, \
-     a WhatsApp chat export, a Telegram Desktop export (JSON) or a Slack workspace export";
+     a WhatsApp chat export, a Telegram Desktop export (JSON), a Slack workspace export \
+     or Claude Code's memory";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,6 +394,8 @@ pub struct Prepared {
     input: Input,
     /// The program that reads the files when it is not one people started: Knode Service.
     reader: Option<PathBuf>,
+    /// For a folder of Markdown files: import again the notes deleted in Knode.
+    include_deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +415,7 @@ enum Input {
     App(NoteApp, PathBuf),
     Mail(MailSource, PathBuf, MailOptions),
     Chat(ChatFormat, PathBuf),
+    ClaudeCodeMemory(PathBuf),
 }
 
 impl Prepared {
@@ -401,6 +433,7 @@ impl Prepared {
             Input::App(app, _) => ImportSource::of_app(*app),
             Input::Mail(source, ..) => ImportSource::of_mail(*source),
             Input::Chat(format, _) => ImportSource::of_chat(*format),
+            Input::ClaudeCodeMemory(_) => ImportSource::ClaudeCodeMemory,
         }
     }
 
@@ -432,6 +465,7 @@ impl Prepared {
                 _ => "Apple Mail".into(),
             },
             Input::Chat(format, _) => format.to_string(),
+            Input::ClaudeCodeMemory(_) => "Claude Code memory".into(),
         }
     }
 
@@ -460,6 +494,18 @@ impl Prepared {
         self
     }
 
+    /// Whether it reads a folder of Markdown files.
+    pub fn is_markdown_folder(&self) -> bool {
+        matches!(self.input, Input::MarkdownFolder(_))
+    }
+
+    /// For a folder of Markdown files, imports again the notes deleted in Knode since they were
+    /// imported, as new notes; nothing otherwise.
+    pub fn with_include_deleted(mut self, include: bool) -> Self {
+        self.include_deleted = include && self.is_markdown_folder();
+        self
+    }
+
     /// Gives the options to read mail with; nothing otherwise.
     pub fn with_mail_options(mut self, options: MailOptions) -> Self {
         if let Input::Mail(_, _, slot) = &mut self.input {
@@ -485,7 +531,8 @@ impl Prepared {
             | Input::ReadwiseMarkdown(p)
             | Input::App(_, p)
             | Input::Mail(_, p, _)
-            | Input::Chat(_, p) => p.display().to_string(),
+            | Input::Chat(_, p)
+            | Input::ClaudeCodeMemory(p) => p.display().to_string(),
         }
     }
 }
@@ -498,7 +545,8 @@ pub fn is_url(text: &str) -> bool {
 
 /// Tells what to import: the page at `url` (only `http` and `https`, fetched when [`run`]
 /// runs), or what is at `path`, as `from` names it or as found from the path and its content.
-/// For Apple Notes and Bear, no path means the app's own notes on this Mac. `path` must be
+/// For Apple Notes and Bear, no path means the app's own notes on this Mac; for Claude Code
+/// memory, the `projects` folder of `CLAUDE_CONFIG_DIR`, else of `~/.claude`. `path` must be
 /// absolute.
 pub fn prepare(
     path: Option<&Path>,
@@ -543,6 +591,20 @@ pub fn prepare(
                 "name the .mbox file to import, or the folder it is in".into(),
             ));
         }
+        (None, None) if from == Some(ImportSource::ClaudeCodeMemory) => {
+            let Some(location) = claude_memory::default_location(|name| std::env::var_os(name))
+            else {
+                return Err(ImportError::Unknown(
+                    "cannot tell where Claude Code keeps its memory: give the path of its \
+                     .claude folder"
+                        .into(),
+                ));
+            };
+            if !location.is_dir() {
+                return Err(ImportError::NotFound(location));
+            }
+            Input::ClaudeCodeMemory(location)
+        }
         (None, None) => match from.and_then(ImportSource::app) {
             Some(app @ (NoteApp::AppleNotes | NoteApp::Bear)) => {
                 let Some(location) = app.default_location() else {
@@ -579,6 +641,7 @@ pub fn prepare(
     Ok(Prepared {
         input,
         reader: None,
+        include_deleted: false,
     })
 }
 
@@ -640,6 +703,12 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
                 return not(&format!("a {format}"));
             }
             Input::Chat(format, p)
+        }
+        ImportSource::ClaudeCodeMemory if path.is_dir() => {
+            Input::ClaudeCodeMemory(claude_memory::projects_folder(path))
+        }
+        ImportSource::ClaudeCodeMemory => {
+            return not("Claude Code's .claude folder or the projects folder inside it");
         }
     })
 }
@@ -824,12 +893,19 @@ pub fn run(
             }
         }
         Input::MarkdownFolder(dir) => {
-            let report = knode_vault::import(space, dir, by).map_err(vault_error)?;
+            let options = knode_vault::ImportOptions {
+                include_deleted: what.include_deleted,
+            };
+            let report = knode_vault::import_with(space, dir, by, &options).map_err(vault_error)?;
+            let id = |file: &String| report.nodes.get(file).copied();
             for file in &report.created {
-                result.node(None, file.clone(), ImportOutcome::Created);
+                result.node(id(file), file.clone(), ImportOutcome::Created);
             }
             for file in &report.updated {
-                result.node(None, file.clone(), ImportOutcome::Updated);
+                result.node(id(file), file.clone(), ImportOutcome::Updated);
+            }
+            for file in &report.edited {
+                result.node(id(file), file.clone(), ImportOutcome::Edited);
             }
             result.unchanged += report.unchanged;
             result.attached = report.attached.len();
@@ -844,6 +920,17 @@ pub fn run(
                     if n == 1 { "is" } else { "are" }
                 ));
             }
+            if !report.deleted.is_empty() {
+                let n = report.deleted.len();
+                result.notes.push(format!(
+                    "{} deleted in Knode since {} imported {} not imported again: import with \
+                     --include-deleted to bring {} back.",
+                    plural(n, "note"),
+                    if n == 1 { "it was" } else { "they were" },
+                    if n == 1 { "was" } else { "were" },
+                    if n == 1 { "it" } else { "them" }
+                ));
+            }
             // A chat export among the notes is not imported with them: say how to.
             if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
                 result.notes.push(format!(
@@ -853,8 +940,12 @@ pub fn run(
                     inner.display()
                 ));
             }
+            result.report =
+                Some(knode_vault::migration::report(space, dir, &report).map_err(vault_error)?);
             if report.created.len() + report.updated.len() + report.unchanged == 0
+                && report.edited.is_empty()
                 && report.skipped.is_empty()
+                && report.deleted.is_empty()
             {
                 return Err(ImportError::Unknown(format!(
                     "{} has no Markdown (.md) files",
@@ -919,6 +1010,69 @@ pub fn run(
             &mut result,
         )?,
         Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
+        Input::ClaudeCodeMemory(path) => {
+            let report =
+                claude_memory::import_claude_code_memory(space, path, by).map_err(vault_error)?;
+            for n in &report.notes {
+                let outcome = match n.outcome {
+                    MemoryOutcome::Created => ImportOutcome::Created,
+                    MemoryOutcome::Updated => ImportOutcome::Updated,
+                    MemoryOutcome::Unchanged => ImportOutcome::Unchanged,
+                    MemoryOutcome::Kept => ImportOutcome::Edited,
+                };
+                result.node(Some(n.id), n.title.clone(), outcome);
+                result.nodes.last_mut().expect("just added").note = Some(match &n.project {
+                    Some(project) => format!("part of {project}"),
+                    None => format!("no project matches {}", n.folder),
+                });
+            }
+            for s in &report.skipped {
+                result.skip(s.path.clone(), s.reason.clone());
+            }
+            for (project, n) in &report.linked {
+                result
+                    .notes
+                    .push(format!("{} part of {project}", plural(*n, "note")));
+            }
+            if !report.unmatched.is_empty() {
+                result.notes.push(format!(
+                    "{} matched no project of the space and {} imported without one: {}",
+                    plural(report.unmatched.len(), "folder"),
+                    if report.unmatched.len() == 1 {
+                        "was"
+                    } else {
+                        "were"
+                    },
+                    report.unmatched.join(", ")
+                ));
+            }
+            let indexes = report
+                .left_out
+                .iter()
+                .filter(|l| l.reason == claude_memory::LEFT_OUT_INDEX)
+                .count();
+            if indexes > 0 {
+                result.notes.push(format!(
+                    "Left out {}: the index of the other memory files.",
+                    if indexes == 1 {
+                        "1 MEMORY.md".to_string()
+                    } else {
+                        format!("{indexes} MEMORY.md files")
+                    }
+                ));
+            }
+            for l in report
+                .left_out
+                .iter()
+                .filter(|l| l.reason != claude_memory::LEFT_OUT_INDEX)
+            {
+                result
+                    .notes
+                    .push(format!("Left out {}: {}.", l.path, l.reason));
+            }
+            result.linked = report.linked;
+            result.unmatched = report.unmatched;
+        }
     }
     Ok(result)
 }

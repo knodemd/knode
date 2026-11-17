@@ -191,4 +191,111 @@ import Testing
         #expect(ApplicationMover.replacementNote(existing: nil, this: nil)
             == "The copy of Knode already in Applications will be moved to the Trash and replaced by this one.")
     }
+
+    /// An installer whose `knode` is installed already (with Homebrew), so the first run asks
+    /// nothing and the command is ready at once.
+    @MainActor func installer(_ suite: String) throws -> (CommandLineToolInstaller, UserDefaults) {
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let fileSystem = MemoryFileSystem(executables: ["/opt/homebrew/bin/knode", Self.app])
+        return (CommandLineToolInstaller(tool: tool(fileSystem), defaults: defaults), defaults)
+    }
+
+    @MainActor @Test func readyOnTheFirstRunBeforeAnyoneAsksRunsOnceWhenAsked() throws {
+        let suite = "KnodeTests.firstRunReadyFirst.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        installer.offerOnFirstRun()
+
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 1)
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 1)
+    }
+
+    @MainActor @Test func askingBeforeTheCommandIsReadyRunsOnceItIs() throws {
+        let suite = "KnodeTests.firstRunAskFirst.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 0)
+
+        installer.offerOnFirstRun()
+        #expect(runs == 1)
+        installer.offerOnFirstRun()
+        installer.offerOnLaunch()
+        #expect(runs == 1)
+    }
+
+    @MainActor @Test func aLaterRunNeverGoesOnToConnectYourAgents() throws {
+        let suite = "KnodeTests.laterRun.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CommandLineToolInstaller.offeredKey)
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        installer.offerOnLaunch()
+        #expect(runs == 0)
+    }
+
+    // MARK: The environment knode connect runs in
+
+    @Test func knodeConnectGetsTheShellPathAndAgentFolders() {
+        let home = URL(filePath: "/Users/ada", directoryHint: .isDirectory)
+        let environment = KnodeCommand.withShellPath(
+            shell: ["PATH": "/Users/ada/.npm/bin:/usr/bin", "CLAUDE_CONFIG_DIR": "/Users/ada/.claude-work", "CODEX_HOME": "/Users/ada/.codex-work", "COPILOT_HOME": "", "EDITOR": "vim"],
+            process: ["PATH": "/usr/bin:/bin", "HOME": "/Users/ada", "CODEX_HOME": "/Users/ada/.codex"],
+            userHome: home
+        )
+        #expect(environment["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/Users/ada/.local/bin:/Users/ada/.cargo/bin:/Users/ada/.npm/bin:/usr/bin:/bin")
+        #expect(environment["CLAUDE_CONFIG_DIR"] == "/Users/ada/.claude-work")
+        // The shell's value wins: it is the folder the person's sessions read.
+        #expect(environment["CODEX_HOME"] == "/Users/ada/.codex-work")
+        // Empty is not set, and only the variables knode connect reads are taken.
+        #expect(environment["COPILOT_HOME"] == nil)
+        #expect(environment["EDITOR"] == nil)
+        #expect(environment["HOME"] == "/Users/ada")
+
+        let bare = KnodeCommand.withShellPath(shell: [:], process: ["PATH": "/usr/bin"], userHome: home)
+        #expect(bare["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/Users/ada/.local/bin:/Users/ada/.cargo/bin:/usr/bin")
+        #expect(bare["CLAUDE_CONFIG_DIR"] == nil)
+    }
+
+    /// A fake login shell: prints a greeting as startup files do, sets the variables, then runs
+    /// the command it is given.
+    func fakeShell(_ body: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "knode-shell-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let shell = folder.appending(path: "shell")
+        try "#!/bin/sh\n\(body)\n".write(to: shell, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shell.path(percentEncoded: false))
+        return shell
+    }
+
+    @Test func readsTheLoginShellsVariablesPastWhatItPrints() async throws {
+        let shell = try fakeShell("""
+        echo "Welcome back"
+        export CLAUDE_CONFIG_DIR=/Users/ada/.claude-work CODEX_HOME='/Users/ada/My Codex' PATH="/Users/ada/.npm/bin:$PATH" SECRET=no
+        [ "$1 $2 $3" = "-l -i -c" ] || exit 1
+        exec /bin/sh -c "$4"
+        """)
+        defer { try? FileManager.default.removeItem(at: shell.deletingLastPathComponent()) }
+        let values = await ShellEnvironment.read(shell: shell)
+        #expect(values["CLAUDE_CONFIG_DIR"] == "/Users/ada/.claude-work")
+        #expect(values["CODEX_HOME"] == "/Users/ada/My Codex")
+        #expect(values["PATH"]?.hasPrefix("/Users/ada/.npm/bin:") == true)
+        #expect(values["SECRET"] == nil)
+    }
+
+    @Test func aShellThatHangsOrFailsGivesNothing() async throws {
+        let hangs = try fakeShell("sleep 30")
+        defer { try? FileManager.default.removeItem(at: hangs.deletingLastPathComponent()) }
+        #expect(await ShellEnvironment.read(shell: hangs, timeout: .milliseconds(300)).isEmpty)
+        #expect(await ShellEnvironment.read(shell: URL(filePath: "/nonexistent/shell")).isEmpty)
+        #expect(ShellEnvironment.parse("no markers here").isEmpty)
+        #expect(ShellEnvironment.loginShell(environment: ["SHELL": "/opt/homebrew/bin/fish"]) == URL(filePath: "/opt/homebrew/bin/fish"))
+        #expect(ShellEnvironment.loginShell(environment: [:]) == URL(filePath: "/bin/zsh"))
+    }
 }
