@@ -30,7 +30,9 @@
 //! the thread links to them as `related`, with two limits, so that a newsletter or a mailing list
 //! does not fill the space with people: the recipients of a message sent to more than
 //! [`MAX_RECIPIENTS`] addresses do not become people (its sender does), and `Bcc` recipients
-//! become people only in mail that was sent, in a folder such as `Sent` or `Sent Messages`.
+//! become people only in mail that was sent: in a folder whose name is one mail programs give
+//! sent mail in English or another language, such as `Sent`, `Sent Messages`, `Enviados` or
+//! `Gesendet`.
 //! Every address is still listed in the thread; [`MailReport::people_left_out`] counts those
 //! that did not become people. A person is named by the first name a message gives
 //! them. A later import leaves a person node as it is, so names and notes added in Knode are

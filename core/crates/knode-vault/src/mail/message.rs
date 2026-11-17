@@ -32,8 +32,62 @@ const JUNK: &[&str] = &[
 /// can name tens of thousands.
 pub(crate) const MAX_PARENTS: usize = 100;
 
-/// Folders of mail that was sent, by the last part of their path, in lower case.
-const SENT: &[&str] = &["sent", "sent mail", "sent messages", "sent items"];
+/// Folders of mail that was sent, by the last part of their path, as [`fold`] writes it: the
+/// names Gmail, Apple Mail, Outlook and other mail programs give them, in English, Spanish,
+/// Portuguese, Catalan, French, German, Italian, Dutch and the Scandinavian languages.
+const SENT: &[&str] = &[
+    "sent",
+    "sent mail",
+    "sent messages",
+    "sent items",
+    "enviados",
+    "enviadas",
+    "correo enviado",
+    "mensajes enviados",
+    "elementos enviados",
+    "itens enviados",
+    "mensagens enviadas",
+    "enviats",
+    "envoyes",
+    "messages envoyes",
+    "elements envoyes",
+    "gesendet",
+    "gesendete objekte",
+    "gesendete elemente",
+    "gesendete nachrichten",
+    "inviati",
+    "posta inviata",
+    "elementi inviati",
+    "messaggi inviati",
+    "verzonden",
+    "verzonden items",
+    "verzonden berichten",
+    "skickat",
+    "skickade",
+    "skickade objekt",
+    "sendt",
+    "sendte",
+    "sendte elementer",
+    "sendte objekter",
+];
+
+/// A folder name as [`SENT`] lists it: lower case, accents taken off (composed or not, as
+/// file names on macOS can be).
+fn fold(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ä' | 'ã' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            c => c,
+        })
+        .collect()
+}
 
 /// The largest message Knode reads: a larger one (or a file whose `From ` lines are broken, read
 /// as one message) is skipped and listed. Above the 50 MB Gmail takes, so no mail Gmail delivered
@@ -160,11 +214,12 @@ impl Mail {
         }
     }
 
-    /// Whether it is in a folder of sent mail (`Sent`, `Sent Messages`, `[Gmail]/Sent Mail`).
+    /// Whether it is in a folder of sent mail: by the last part of its path, one of [`SENT`]
+    /// (`Sent`, `Sent Messages`, `[Gmail]/Sent Mail`, `Enviados`, `Gesendet`, `Envoyés`...).
     pub fn is_sent(&self) -> bool {
         self.folders.iter().any(|f| {
-            let f = f.to_lowercase();
-            SENT.contains(&f.rsplit('/').next().unwrap_or(&f))
+            let last = f.rsplit('/').next().unwrap_or(f);
+            SENT.contains(&fold(last).as_str())
         })
     }
 
@@ -748,6 +803,46 @@ In-Reply-To: <r4999@example.com>\r\n\r\nHi\r\n",
         assert_eq!(mail.root(), "r0@example.com");
         assert_eq!(mail.parents[1], "r4901@example.com");
         assert_eq!(mail.parents.last().unwrap(), "r4999@example.com");
+    }
+
+    #[test]
+    fn tells_sent_mail_by_its_folder_in_many_languages() {
+        let in_folder = |folder: &str| {
+            let mut mail = parse(
+                b"From: a@example.com\r\n\r\nHi\r\n",
+                origin(),
+                Some(folder),
+                1,
+            )
+            .unwrap();
+            mail.folders = BTreeSet::from([folder.to_string()]);
+            mail.is_sent()
+        };
+        for sent in [
+            "Sent",
+            "[Gmail]/Sent Mail",
+            "Sent Messages",
+            "Sent Items",
+            "Enviados",
+            "[Gmail]/Enviados",
+            "Elementos enviados",
+            "Envoyés",
+            "Envoye\u{301}s",
+            "Éléments envoyés",
+            "Gesendet",
+            "Gesendete Objekte",
+            "Inviati",
+            "Posta inviata",
+            "Verzonden",
+            "Verzonden items",
+            "Skickat",
+            "Sendt",
+        ] {
+            assert!(in_folder(sent), "{sent}");
+        }
+        for not_sent in ["Inbox", "Sent to me", "Archive/Sentinel", "Drafts"] {
+            assert!(!in_folder(not_sent), "{not_sent}");
+        }
     }
 
     #[test]
