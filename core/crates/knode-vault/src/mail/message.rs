@@ -1,7 +1,7 @@
 //! One message, read with `mail-parser`: its headers decoded (encoded words, charsets), its
 //! text as Markdown, and the files it carries.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset, Utc};
@@ -9,7 +9,7 @@ use mail_parser::{Address, HeaderName, HeaderValue, MessageParser, MimeHeaders, 
 use sha2::{Digest, Sha256};
 
 use super::MailOptions;
-use crate::reading::markdown::from_html;
+use crate::reading::markdown::{Images, from_html_with};
 
 /// Gmail's labels, in a Takeout `.mbox`.
 const GMAIL_LABELS: &str = "X-Gmail-Labels";
@@ -27,7 +27,81 @@ const JUNK: &[&str] = &[
     "deleted items",
 ];
 
-/// Where the bytes of a message are, to read its files again when they are attached.
+/// Whether `folder` (a path such as `[Gmail]/Spam`) is spam or trash, by its last part.
+pub(crate) fn is_junk_folder(folder: &str) -> bool {
+    let folder = folder.to_lowercase();
+    let last = folder.rsplit('/').next().unwrap_or(&folder);
+    JUNK.contains(&last)
+}
+
+/// How many of the ids a message names in `References` and `In-Reply-To` are kept: the first
+/// (the start of the thread) and the last ones, as mail clients do. A broken or crafted message
+/// can name tens of thousands.
+pub(crate) const MAX_PARENTS: usize = 100;
+
+/// Folders of mail that was sent, by the last part of their path, as [`fold`] writes it: the
+/// names Gmail, Apple Mail, Outlook and other mail programs give them, in English, Spanish,
+/// Portuguese, Catalan, French, German, Italian, Dutch and the Scandinavian languages.
+const SENT: &[&str] = &[
+    "sent",
+    "sent mail",
+    "sent messages",
+    "sent items",
+    "enviados",
+    "enviadas",
+    "correo enviado",
+    "mensajes enviados",
+    "elementos enviados",
+    "itens enviados",
+    "mensagens enviadas",
+    "enviats",
+    "envoyes",
+    "messages envoyes",
+    "elements envoyes",
+    "gesendet",
+    "gesendete objekte",
+    "gesendete elemente",
+    "gesendete nachrichten",
+    "inviati",
+    "posta inviata",
+    "elementi inviati",
+    "messaggi inviati",
+    "verzonden",
+    "verzonden items",
+    "verzonden berichten",
+    "skickat",
+    "skickade",
+    "skickade objekt",
+    "sendt",
+    "sendte",
+    "sendte elementer",
+    "sendte objekter",
+];
+
+/// A folder name as [`SENT`] lists it: lower case, accents taken off (composed or not, as
+/// file names on macOS can be).
+fn fold(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ä' | 'ã' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'ö' | 'õ' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            c => c,
+        })
+        .collect()
+}
+
+/// The largest message Knode reads: a larger one (or a file whose `From ` lines are broken, read
+/// as one message) is skipped and listed. Above the 50 MB Gmail takes, so no mail Gmail delivered
+/// is left out.
+pub(crate) const MAX_MESSAGE_SIZE: u64 = 64 * 1024 * 1024;
+
+/// Where the bytes of a message are, to read its text and files again when it is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// In an `mbox` file: the bytes after the `From ` line, still escaped.
@@ -38,8 +112,20 @@ pub(crate) enum Origin {
     },
     /// An `.emlx` file.
     Emlx(PathBuf),
-    /// Nowhere Knode reads files from: a `.partial.emlx`, whose files Apple Mail keeps apart.
+    /// Nowhere Knode reads files from: a `.partial.emlx`, whose files Apple Mail keeps apart, or
+    /// a message a connector gave as bytes.
     Elsewhere,
+}
+
+impl Origin {
+    /// The bytes of the message, read again.
+    pub fn read_again(&self) -> Option<Result<Vec<u8>, super::MailError>> {
+        match self {
+            Origin::Mbox { file, offset, len } => Some(super::mbox::read_at(file, *offset, *len)),
+            Origin::Emlx(path) => Some(super::apple::read_emlx(path)),
+            Origin::Elsewhere => None,
+        }
+    }
 }
 
 /// Someone a message is from or to.
@@ -69,7 +155,8 @@ pub(crate) struct Attached {
 pub(crate) struct Mail {
     /// The `Message-ID` without `<` and `>`, or `knode-<hash>` when the message has none.
     pub id: String,
-    /// The ids in `References`, then `In-Reply-To`, each once.
+    /// The ids in `References`, then `In-Reply-To`, each once: at most [`MAX_PARENTS`], the
+    /// first and the last ones.
     pub parents: Vec<String>,
     /// The subject, decoded.
     pub subject: String,
@@ -78,9 +165,13 @@ pub(crate) struct Mail {
     pub from: Vec<Person>,
     pub to: Vec<Person>,
     pub cc: Vec<Person>,
+    /// Kept apart from `cc`: who was sent a blind copy is never shown as someone who saw it.
+    pub bcc: Vec<Person>,
     pub date: Option<DateTime<FixedOffset>>,
-    /// The text, as Markdown.
-    pub body: String,
+    /// The text, as Markdown. `None` once [`Collector::add`] let it go, to be read again from
+    /// [`Origin`] when the message is written ([`Mail::read_body`]): the text of a whole
+    /// mailbox is never held at once.
+    pub body: Option<String>,
     pub attachments: Vec<Attached>,
     pub folders: BTreeSet<String>,
     pub origin: Origin,
@@ -110,9 +201,42 @@ impl Mail {
         self.date.map(|d| d.with_timezone(&Utc))
     }
 
+    /// Reads the text again from where the message is, when [`Collector::add`] let it go. The
+    /// message must be the same: else (the mailbox changed since it was read) this fails.
+    pub fn read_body(&mut self) -> Result<(), String> {
+        if self.body.is_some() {
+            return Ok(());
+        }
+        let raw = match self.origin.read_again() {
+            Some(Ok(raw)) => raw,
+            Some(Err(e)) => return Err(format!("its text could not be read again: {e}")),
+            None => return Err("its text could not be read again".into()),
+        };
+        match parse(&raw, self.origin.clone(), None, self.order) {
+            Some(again) if again.id == self.id => {
+                self.body = again.body;
+                Ok(())
+            }
+            _ => Err("the mailbox changed while it was imported: import it again".into()),
+        }
+    }
+
+    /// Whether it is in a folder of sent mail: by the last part of its path, one of [`SENT`]
+    /// (`Sent`, `Sent Messages`, `[Gmail]/Sent Mail`, `Enviados`, `Gesendet`, `Envoyés`...).
+    pub fn is_sent(&self) -> bool {
+        self.folders.iter().any(|f| {
+            let last = f.rsplit('/').next().unwrap_or(f);
+            SENT.contains(&fold(last).as_str())
+        })
+    }
+
     /// Everyone it is from or to.
     pub fn people(&self) -> impl Iterator<Item = &Person> {
-        self.from.iter().chain(&self.to).chain(&self.cc)
+        self.from
+            .iter()
+            .chain(&self.to)
+            .chain(&self.cc)
+            .chain(&self.bcc)
     }
 }
 
@@ -138,8 +262,8 @@ pub(crate) fn parse(
     let topic = clean_line(message.thread_name().unwrap_or_default());
     let from = people(message.from());
     let to = message.all_to().flat_map(|a| people(Some(a))).collect();
-    let mut cc: Vec<Person> = message.all_cc().flat_map(|a| people(Some(a))).collect();
-    cc.extend(message.all_bcc().flat_map(|a| people(Some(a))));
+    let cc = message.all_cc().flat_map(|a| people(Some(a))).collect();
+    let bcc = message.all_bcc().flat_map(|a| people(Some(a))).collect();
     let date = message.date().filter(|d| d.is_valid()).and_then(|d| {
         let seconds = (d.tz_hour as i32 * 3600 + d.tz_minute as i32 * 60)
             * if d.tz_before_gmt { -1 } else { 1 };
@@ -148,14 +272,11 @@ pub(crate) fn parse(
     });
     let body = body(&message);
 
-    let mut parents = Vec::new();
-    for value in [message.references(), message.in_reply_to()] {
-        for id in ids(value) {
-            if !parents.contains(&id) {
-                parents.push(id);
-            }
-        }
-    }
+    let parents = parents(
+        ids(message.references())
+            .into_iter()
+            .chain(ids(message.in_reply_to())),
+    );
     let mut folders = BTreeSet::new();
     match message.header(GMAIL_LABELS).and_then(HeaderValue::as_text) {
         Some(labels) => folders.extend(
@@ -212,8 +333,9 @@ pub(crate) fn parse(
         from,
         to,
         cc,
+        bcc,
         date,
-        body,
+        body: Some(body),
         attachments,
         folders,
         origin,
@@ -295,6 +417,19 @@ fn people(address: Option<&Address<'_>>) -> Vec<Person> {
         .collect()
 }
 
+/// The ids a message names, each once, at most [`MAX_PARENTS`]: the first, which names the
+/// start of the thread, and the last ones, nearest to the message.
+fn parents(named: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut parents: Vec<String> = named.filter(|id| seen.insert(id.clone())).collect();
+    if parents.len() > MAX_PARENTS {
+        let last = parents.split_off(parents.len() - (MAX_PARENTS - 1));
+        parents.truncate(1);
+        parents.extend(last);
+    }
+    parents
+}
+
 /// The message ids of a `References` or `In-Reply-To` header.
 fn ids(value: &HeaderValue<'_>) -> Vec<String> {
     let raw: Vec<String> = match value {
@@ -341,6 +476,8 @@ pub(crate) fn gmail_labels(text: &str) -> Vec<String> {
 }
 
 /// The text of a message as Markdown: its text parts, else its HTML parts turned into Markdown.
+/// Remote images never load by themselves: HTML images become links and tracking pixels are
+/// dropped ([`Images::Linked`]), and `![` in text is not an image.
 fn body(message: &mail_parser::Message<'_>) -> String {
     let texts: Vec<String> = message
         .text_bodies()
@@ -356,7 +493,7 @@ fn body(message: &mail_parser::Message<'_>) -> String {
     let htmls: Vec<String> = message
         .html_bodies()
         .filter_map(|part| match &part.body {
-            PartType::Html(html) => Some(shift_headings(&from_html(html))),
+            PartType::Html(html) => Some(shift_headings(&from_html_with(html, Images::Linked))),
             PartType::Text(text) => Some(plain_to_markdown(text)),
             _ => None,
         })
@@ -367,7 +504,8 @@ fn body(message: &mail_parser::Message<'_>) -> String {
 
 /// Plain text as Markdown that reads back as the same text: quotes (`>`) and lists stay what
 /// they are, but a line does not become a heading, a rule or a marker of a section, `[[` does
-/// not become a link and `<tag>` is not HTML.
+/// not become a link, `![` does not become an image (which a viewer would load) and `<tag>` is
+/// not HTML.
 pub(crate) fn plain_to_markdown(text: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     for line in text.replace("\r\n", "\n").replace('\r', "\n").lines() {
@@ -390,8 +528,8 @@ pub(crate) fn plain_to_markdown(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-/// Escapes `[[`, `]]` and `<` that does not open an autolink (`<ada@example.com>`,
-/// `<https://example.com>`).
+/// Escapes `[[`, `]]`, the `[` of `![` and `<` that does not open an autolink
+/// (`<ada@example.com>`, `<https://example.com>`).
 fn escape_inline(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let chars: Vec<char> = line.chars().collect();
@@ -399,6 +537,11 @@ fn escape_inline(line: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         match c {
+            '!' if chars.get(i + 1) == Some(&'[') => {
+                out.push_str("!\\[");
+                i += 2;
+                continue;
+            }
             '[' | ']' if chars.get(i + 1) == Some(&c) => {
                 out.push('\\');
                 out.push(c);
@@ -509,9 +652,7 @@ impl<'a> Collector<'a> {
     }
 
     fn is_junk(&self, folder: &str) -> bool {
-        let folder = folder.to_lowercase();
-        let last = folder.rsplit('/').next().unwrap_or(&folder);
-        JUNK.contains(&last) && !self.wanted(&folder)
+        is_junk_folder(folder) && !self.wanted(&folder.to_lowercase())
     }
 
     /// Adds a message read.
@@ -539,6 +680,11 @@ impl<'a> Collector<'a> {
             self.duplicates += 1;
             self.mails[at].folders.extend(mail.folders);
             return;
+        }
+        let mut mail = mail;
+        // Read again when it is written: memory holds the headers of a mailbox, not its text.
+        if mail.origin != Origin::Elsewhere {
+            mail.body = None;
         }
         self.index.insert(mail.id.clone(), self.mails.len());
         self.mails.push(mail);
@@ -589,7 +735,7 @@ See [[nothing]] <b>here</b> <bob@example.org>\r\n";
             "2026-03-03T09:15:00+00:00"
         );
         assert_eq!(
-            mail.body,
+            mail.body.unwrap(),
             "Café at ten?\n\\# not a heading\n\\--\nSee \\[\\[nothing\\]\\] \\<b>here\\</b> <bob@example.org>"
         );
     }
@@ -600,12 +746,15 @@ See [[nothing]] <b>here</b> <bob@example.org>\r\n";
 Content-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\n\
 Content-Type: text/plain\r\n\r\nThe text.\r\n--x\r\nContent-Type: text/html\r\n\r\n\
 <p>The <b>HTML</b>.</p>\r\n--x--\r\n";
-        assert_eq!(parse(both, origin(), None, 1).unwrap().body, "The text.");
+        assert_eq!(
+            parse(both, origin(), None, 1).unwrap().body.as_deref(),
+            Some("The text.")
+        );
 
         let html = b"Message-ID: <c@example.com>\r\nFrom: a@example.com\r\n\
 Content-Type: text/html; charset=windows-1252\r\nContent-Transfer-Encoding: base64\r\n\r\n\
 PGgxPkFnZW5kYTwvaDE+PHA+T25lIDxhIGhyZWY9Imh0dHBzOi8vZXhhbXBsZS5jb20iPmxpbms8L2E+IJY8L3A+\r\n";
-        let body = parse(html, origin(), None, 1).unwrap().body;
+        let body = parse(html, origin(), None, 1).unwrap().body.unwrap();
         assert!(body.starts_with("### Agenda"), "{body}");
         assert!(body.contains("[link](https://example.com)"), "{body}");
         assert!(body.contains('\u{2013}'), "windows-1252 en dash: {body}");
@@ -644,6 +793,61 @@ Content-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\naGk=
         assert_eq!(files[1], ("attachment-2.pdf".to_string(), b"hi".to_vec()));
         // The same message read again gets the same id.
         assert_eq!(parse(raw, origin(), None, 2).unwrap().id, mail.id);
+    }
+
+    #[test]
+    fn keeps_the_first_and_the_last_parents_once() {
+        let references: Vec<String> = (0..5_000).map(|i| format!("<r{i}@example.com>")).collect();
+        let raw = format!(
+            "Message-ID: <m@example.com>\r\nFrom: a@example.com\r\nReferences: {} <r1@example.com>\r\n\
+In-Reply-To: <r4999@example.com>\r\n\r\nHi\r\n",
+            references.join(" ")
+        );
+        let mail = parse(raw.as_bytes(), origin(), None, 1).unwrap();
+        assert_eq!(mail.parents.len(), MAX_PARENTS);
+        assert_eq!(mail.root(), "r0@example.com");
+        assert_eq!(mail.parents[1], "r4901@example.com");
+        assert_eq!(mail.parents.last().unwrap(), "r4999@example.com");
+    }
+
+    #[test]
+    fn tells_sent_mail_by_its_folder_in_many_languages() {
+        let in_folder = |folder: &str| {
+            let mut mail = parse(
+                b"From: a@example.com\r\n\r\nHi\r\n",
+                origin(),
+                Some(folder),
+                1,
+            )
+            .unwrap();
+            mail.folders = BTreeSet::from([folder.to_string()]);
+            mail.is_sent()
+        };
+        for sent in [
+            "Sent",
+            "[Gmail]/Sent Mail",
+            "Sent Messages",
+            "Sent Items",
+            "Enviados",
+            "[Gmail]/Enviados",
+            "Elementos enviados",
+            "Envoyés",
+            "Envoye\u{301}s",
+            "Éléments envoyés",
+            "Gesendet",
+            "Gesendete Objekte",
+            "Inviati",
+            "Posta inviata",
+            "Verzonden",
+            "Verzonden items",
+            "Skickat",
+            "Sendt",
+        ] {
+            assert!(in_folder(sent), "{sent}");
+        }
+        for not_sent in ["Inbox", "Sent to me", "Archive/Sentinel", "Drafts"] {
+            assert!(!in_folder(not_sent), "{not_sent}");
+        }
     }
 
     #[test]

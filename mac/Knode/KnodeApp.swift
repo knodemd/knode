@@ -52,6 +52,10 @@ struct KnodeApp: App {
                 .onOpenURL { url in
                     Task { await model.openSpace(at: url) }
                 }
+                // Back from the terminal or an agent: list the spaces made meanwhile.
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    model.refreshKnownSpaces()
+                }
                 .task {
                     guard model.spaces.isEmpty else { return }
                     // `-KnodeOpenSpace <path>` opens a space at launch; `-KnodeOpenExample YES`
