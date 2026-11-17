@@ -396,7 +396,7 @@ struct ConnectAgentsSheet: View {
             ConnectAgentsPanel()
             HStack {
                 Spacer()
-                KButton("Done", kind: .primary) { model.sheet = nil }
+                KButton("Done", icon: .done, kind: .primary) { model.sheet = nil }
                     .keyboardShortcut(.defaultAction)
             }
         }
