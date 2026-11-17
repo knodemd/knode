@@ -96,7 +96,10 @@ leave a link at the old place until nothing uses it.
 1. Create the space and make it the default: `knode init "<Name>"` and
    `knode spaces default "<Name>"`.
 2. Ask which projects they work on now, and where. For each: register its folder
-   (`knode --space "<Name>" folders add <folder> --kind project`), read its `README`, instruction
+   (`knode --space "<Name>" folders add <folder> --kind project`); if that does not report a
+   project node, create one by importing a folder holding a note named after the project whose
+   frontmatter has `kind: project` (a space with projects counts as set up, so agents stop being
+   asked to set it up); then read its `README`, instruction
    files and recent history (`git log --oneline -20`), and save one short context note for it:
    what it is, its goal, its current state, key decisions and the next step, marked as written by
    you from those sources. Ask the person to correct anything you could not verify.
