@@ -1018,6 +1018,13 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = lock_ignoring_poison(&space);
             to_value(space.projects()?)
         }
+        methods::SPACE_SET_UP => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            let set_up = knode_vault::onboarding::is_set_up(&space)?;
+            Ok(json!({ "set_up": set_up }))
+        }
         methods::PROJECT_NOTES => {
             let p: ProjectNotesParams = params(method, raw)?;
             let space = state.space(&p.space)?;

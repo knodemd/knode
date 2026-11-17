@@ -60,6 +60,9 @@ pub mod methods {
     pub const RECENT: &str = "recent";
     /// The projects of a space, with their parent and how much is in each.
     pub const PROJECTS: &str = "projects";
+    /// Whether a space has been set up: an onboarding receipt, a project or a few notes of a
+    /// person.
+    pub const SPACE_SET_UP: &str = "space.set_up";
     /// The nodes that are part of a project, most recently changed first.
     pub const PROJECT_NOTES: &str = "project.notes";
     /// Every version of a node.

@@ -603,6 +603,15 @@ impl Space {
         )
     }
 
+    /// The nodes created by a person, an agent or Knode itself, as `actor` says, newest first.
+    pub fn created_by(&self, actor: ActorKind, limit: usize) -> Result<Vec<NodeSummary>> {
+        self.query_summaries(
+            "JOIN provenance c ON c.id = n.created_by WHERE c.actor_kind = ?1 \
+             ORDER BY n.created_at DESC, n.seq DESC LIMIT ?2",
+            params![actor.as_str(), limit_param(limit)],
+        )
+    }
+
     /// Every version of a node, oldest first, including its deletion. Works for deleted nodes.
     ///
     /// Each version names the change it belongs to; see [`change`](Self::change).

@@ -8,6 +8,10 @@
 //! connects with its own key: Knode Service checks its grants on every call and records its
 //! writes under the agent's name, such as `claude-code`.
 //!
+//! When the space is not set up yet (see [`knode_vault::onboarding::is_set_up`]), the
+//! instructions the server sends ask the agent to set Knode up for the person with the
+//! `setup_guide` tool, so connecting an agent is enough to get started.
+//!
 //! ```no_run
 //! use knode_mcp::{DirectBackend, run_stdio};
 //!
@@ -23,7 +27,7 @@ mod service;
 pub mod tools;
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
@@ -58,6 +62,12 @@ link_nodes, with a kind from link_kinds that says how they relate. Search first 
 existing node instead of creating a duplicate. history shows who changed what; undo takes back a \
 change of your own. Use read_excerpt for bounded body ranges of long notes; its snapshot is for continuation, not a full-note rewrite. Read surrounding ranges when qualifications may be missing and read_node before rewriting a note.";
 
+/// What the server adds to [`INSTRUCTIONS`] when the space it serves is not set up yet.
+pub const SETUP_INSTRUCTIONS: &str = "This person has just connected Knode and their memory is \
+empty: Knode is not set up yet. Before other work, set Knode up for them now, without asking \
+whether to: call the setup_guide tool and follow it step by step, asking only what it says to \
+ask, in the person's language.";
+
 /// The version of this crate.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -67,12 +77,15 @@ pub fn version() -> &'static str {
 #[derive(Debug)]
 pub struct KnodeServer<B> {
     backend: Arc<B>,
+    /// Whether the space is set up, asked once, the first time the instructions are needed.
+    set_up: Arc<OnceLock<bool>>,
 }
 
 impl<B> Clone for KnodeServer<B> {
     fn clone(&self) -> Self {
         KnodeServer {
             backend: Arc::clone(&self.backend),
+            set_up: Arc::clone(&self.set_up),
         }
     }
 }
@@ -82,12 +95,27 @@ impl<B: Backend> KnodeServer<B> {
     pub fn new(backend: B) -> Self {
         KnodeServer {
             backend: Arc::new(backend),
+            set_up: Arc::default(),
         }
     }
 
     /// The backend.
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// What the server tells agents when they connect: [`INSTRUCTIONS`], and
+    /// [`SETUP_INSTRUCTIONS`] after them when the space is not set up yet. Whether it is set up
+    /// is asked of the backend once and kept; a space that cannot be asked counts as set up.
+    pub fn instructions(&self) -> String {
+        let set_up = *self
+            .set_up
+            .get_or_init(|| self.backend.is_set_up().unwrap_or(true));
+        if set_up {
+            INSTRUCTIONS.to_string()
+        } else {
+            format!("{INSTRUCTIONS}\n\n{SETUP_INSTRUCTIONS}")
+        }
     }
 }
 
@@ -121,7 +149,7 @@ impl<B: Backend> ServerHandler for KnodeServer<B> {
         server.website_url = Some("https://knode.md".into());
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server)
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(self.instructions())
     }
 
     async fn list_tools(
@@ -203,6 +231,51 @@ mod tests {
         assert_eq!(
             search.annotations.as_ref().unwrap().read_only_hint,
             Some(true)
+        );
+        let setup = tools.iter().find(|t| t.name == "setup_guide").unwrap();
+        let hints = setup.annotations.as_ref().unwrap();
+        assert_eq!(setup.title.as_deref(), Some("Set up Knode"));
+        assert_eq!(hints.read_only_hint, Some(true));
+        assert_eq!(hints.idempotent_hint, Some(true));
+        // Only the instructions for a space that is not set up nudge agents to it.
+        assert!(!INSTRUCTIONS.contains("setup_guide"));
+        assert!(SETUP_INSTRUCTIONS.contains("setup_guide"));
+    }
+
+    fn instructions_of(space: knode_format::Space) -> String {
+        KnodeServer::new(DirectBackend::from_space(space))
+            .get_info()
+            .instructions
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn asks_the_agent_to_set_up_a_space_that_is_not_set_up() {
+        use knode_format::{NewNode, Provenance, Space, kinds};
+        let dir = tempfile::tempdir().unwrap();
+
+        let fresh = Space::create(dir.path().join("Fresh.knode"), "Fresh").unwrap();
+        let text = instructions_of(fresh);
+        assert!(text.starts_with(INSTRUCTIONS));
+        assert!(text.ends_with(SETUP_INSTRUCTIONS), "{text}");
+
+        let mut with_project = Space::create(dir.path().join("Work.knode"), "Work").unwrap();
+        let mut project = NewNode::note("Web", "");
+        project.kind = kinds::PROJECT.into();
+        with_project
+            .create_node(project, &Provenance::person("Ada"))
+            .unwrap();
+        assert_eq!(instructions_of(with_project), INSTRUCTIONS);
+
+        let onboarded = Space::create(dir.path().join("Notes.knode"), "Notes").unwrap();
+        std::fs::write(onboarded.path().join("onboarding.json"), "{}").unwrap();
+        assert_eq!(instructions_of(onboarded), INSTRUCTIONS);
+
+        // A space that cannot be opened is not pushed to be set up.
+        let missing = KnodeServer::new(DirectBackend::unavailable("no space"));
+        assert_eq!(
+            missing.get_info().instructions.as_deref(),
+            Some(INSTRUCTIONS)
         );
     }
 }

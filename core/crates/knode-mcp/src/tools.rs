@@ -1,5 +1,6 @@
 //! The tools agents call: `search`, `read_node`, `write_node`, `link_nodes`, `recent`,
-//! `history`, `undo`, `link_kinds`, `read_canvas`, `attach_file` and `read_attachment`.
+//! `history`, `undo`, `link_kinds`, `read_canvas`, `attach_file`, `read_attachment`,
+//! `read_excerpt` and `setup_guide`.
 //!
 //! Each tool answers with Markdown for the model to read and the same data as structured
 //! content that follows the tool's output schema. This module does not depend on the MCP SDK,
@@ -83,7 +84,7 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 13] = [
+pub const TOOL_NAMES: [&str; 14] = [
     "search",
     "read_node",
     "write_node",
@@ -97,6 +98,7 @@ pub const TOOL_NAMES: [&str; 13] = [
     "attach_file",
     "read_attachment",
     "read_excerpt",
+    "setup_guide",
 ];
 
 /// Every tool, in the order they are listed.
@@ -467,6 +469,36 @@ pub fn definitions() -> Vec<ToolDefinition> {
     ];
     tools.extend(maps::definitions(node_ref, &provenance));
     tools.push(excerpt::definition());
+    tools.push(ToolDefinition {
+        name: "setup_guide",
+        title: "Set up Knode",
+        description: "Get the step-by-step guide to set Knode up for the user: bring their notes, \
+            their projects and the memory their agents keep into Knode, with the knode command on \
+            this machine. Use it when Knode's instructions say this space is not set up yet, or \
+            when the user asks to set Knode up or to bring their notes in. Follow the guide in \
+            order, ask the user only what it says to ask, in their language, and never change \
+            the folder their notes are in.",
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The folder the user's notes are in, absolute or starting with ~/, if they already said. Leave it out and the guide says to ask them."
+                }
+            }
+        }),
+        output_schema: json!({
+            "type": "object",
+            "properties": {
+                "source": { "type": ["string", "null"], "description": "The folder the guide is for, or null when the user has not said yet." },
+                "guide": { "type": "string", "description": "The guide, in Markdown." }
+            },
+            "required": ["source", "guide"]
+        }),
+        read_only: true,
+        idempotent: true,
+        destructive: false,
+    });
     tools
 }
 
@@ -493,6 +525,7 @@ pub fn call<B: Backend + ?Sized>(
         "read_canvas" => parse(arguments).and_then(|args| maps::read_canvas(backend, args)),
         "attach_file" => parse(arguments).and_then(|args| maps::attach_file(backend, args, &by)),
         "read_attachment" => parse(arguments).and_then(|args| maps::read_attachment(backend, args)),
+        "setup_guide" => parse(arguments).map(setup_guide),
         _ => return None,
     };
     Some(output.unwrap_or_else(|e| e))
@@ -826,6 +859,23 @@ fn link_nodes<B: Backend + ?Sized>(backend: &B, args: LinkArgs, by: &Provenance)
         link.from_title, known.label, link.to_title, link.kind
     );
     Ok(ToolOutput::ok(text, json!({ "link": link_json(&link) })))
+}
+
+#[derive(Deserialize)]
+struct SetupGuideArgs {
+    source: Option<String>,
+}
+
+/// The guide an agent follows to set Knode up, with the folder of the user's notes filled in.
+fn setup_guide(args: SetupGuideArgs) -> ToolOutput {
+    let source = non_empty(args.source)
+        .map(|s| crate::backend::resolve_folder(&s).unwrap_or_else(|| s.into()));
+    let guide = knode_vault::onboarding::agent_guide(source.as_deref());
+    let structured = json!({
+        "source": source.as_ref().map(|p| p.display().to_string()),
+        "guide": guide,
+    });
+    ToolOutput::ok(guide, structured)
 }
 
 #[derive(Deserialize)]
@@ -1784,5 +1834,36 @@ mod tests {
             "{}",
             out.text
         );
+    }
+
+    #[test]
+    fn setup_guide_fills_in_the_folder_of_the_notes() {
+        let (_dir, backend) = backend();
+        let out = run(
+            &backend,
+            "setup_guide",
+            json!({"source": "/Users/ada/Notes"}),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        check_schema("setup_guide", &out);
+        assert!(
+            out.text.contains("Source folder: /Users/ada/Notes"),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("{source}"));
+        let structured = out.structured.unwrap();
+        assert_eq!(structured["source"], "/Users/ada/Notes");
+        assert_eq!(structured["guide"], out.text.as_str());
+
+        // Without a folder, the guide says to ask for it.
+        let out = run(&backend, "setup_guide", json!({}));
+        check_schema("setup_guide", &out);
+        assert!(
+            out.text.contains("Ask the person which folder"),
+            "{}",
+            out.text
+        );
+        assert_eq!(out.structured.unwrap()["source"], Value::Null);
     }
 }

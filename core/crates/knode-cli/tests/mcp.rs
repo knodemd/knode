@@ -140,6 +140,14 @@ fn a_client_uses_every_tool() {
             .unwrap()
             .contains("write_node")
     );
+    // A new space is not set up yet, so the agent is asked to set Knode up.
+    assert!(
+        result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("call the setup_guide tool"),
+        "{init}"
+    );
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap().clone();
@@ -159,7 +167,8 @@ fn a_client_uses_every_tool() {
             "read_canvas",
             "attach_file",
             "read_attachment",
-            "read_excerpt"
+            "read_excerpt",
+            "setup_guide"
         ]
     );
     for tool in &tools {

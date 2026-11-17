@@ -213,6 +213,7 @@ fn access(method: &str) -> Access {
         | methods::SEARCH
         | methods::RECENT
         | methods::PROJECTS
+        | methods::SPACE_SET_UP
         | methods::PROJECT_NOTES
         | methods::HISTORY
         | methods::CHANGES

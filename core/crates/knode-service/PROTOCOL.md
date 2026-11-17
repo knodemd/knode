@@ -52,7 +52,7 @@ grant takes effect on the next call:
 - With `none` the space is **invisible**: a call that names it fails exactly as for a space that
   does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
   its changes are not sent to the agent.
-- With `read`, `space.open`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
+- With `read`, `space.open`, `space.set_up`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
   `markdown.folder.get`, `doc.open`, `doc.updates` and `subscribe` are allowed; writes fail with
   `forbidden`.
@@ -126,6 +126,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | --- | --- | --- |
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
+| `space.set_up` | `space` | `{ "set_up" }`: whether the space has been set up, so an agent should not offer to set Knode up on its own. `false` only when the space has no onboarding receipt (`onboarding.json`), no `project` node and fewer than 3 nodes created by a person, not counting `conversation` nodes and titles starting with `Example:`. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
 | `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. |
 | `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
