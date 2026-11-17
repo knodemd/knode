@@ -97,6 +97,10 @@ struct SourceCard: View {
             KExplanation(source.reads, size: 13)
             SourceFacts(source: source)
             SourceNotice(source: source, spaceName: spaceName)
+            if source.needsSignIn, let account = sources.account(of: source) {
+                KHairline()
+                SourceAccountRow(source: source, account: account)
+            }
             KHairline()
             if source.isConnected {
                 KSettingToggle("On in \(spaceName)",
@@ -191,7 +195,7 @@ private struct SourceNotice: View {
                     if source.needsFullDiskAccess {
                         KButton("Open Full Disk Access", icon: .settings, size: .small) { sources.openURL(SourceConnectFlow.fullDiskAccessURL) }
                     }
-                    if source.needsSignIn, sources.signIns.flow(for: source.id) != nil {
+                    if source.needsSignIn, sources.signIns.flow(for: source) != nil {
                         KButton("Sign in again", icon: .connect, size: .small) {
                             overlays?.connectingSource = sources.connectFlow(for: source, signInAgain: true)
                         }
@@ -271,6 +275,8 @@ struct ConnectSourceSheet: View {
             }
             switch flow.step {
             case .fullDiskAccess: FullDiskAccessStep(flow: flow)
+            case .checkingSignIn:
+                HStack(spacing: KSpace.x2) { KSpinner(); KExplanation("Checking whether \(flow.source.name) is signed in") }
             case .signIn(let step): SignInStepView(flow: flow, step: step)
             case .history: HistoryStep(flow: flow)
             case .containers: ContainersStep(flow: flow)
@@ -282,9 +288,15 @@ struct ConnectSourceSheet: View {
         }
         .task { await flow.begin() }
         .onChange(of: flow.isFinished) { _, finished in if finished { close() } }
+        .onDisappear { flow.cancel() }
     }
 
     /// Closing after connecting turns the source on, as Done does.
+    private func cancel() {
+        flow.cancel()
+        close()
+    }
+
     private func dismiss() {
         if flow.step == .containers {
             Task { await flow.finish() }
@@ -296,21 +308,25 @@ struct ConnectSourceSheet: View {
     @ViewBuilder private var footer: some View {
         HStack(spacing: KSpace.x2) {
             if case .signIn(let step) = flow.step, step.browserURL != nil {
-                KButton("Open in browser", icon: .web, kind: .ghost) { flow.openBrowser() }
+                KButton("Open the page again", icon: .web, kind: .ghost) { flow.openBrowser() }
             }
             Spacer()
             if flow.isBusy { KSpinner() }
             switch flow.step {
             case .fullDiskAccess:
-                KButton("Cancel", icon: .close, action: close)
+                KButton("Cancel", icon: .close, action: cancel)
                 primary("Continue", icon: .forward, disabled: flow.isBusy) { Task { await flow.continueFromFullDiskAccess() } }
+            case .checkingSignIn:
+                KButton("Cancel", icon: .close, action: cancel)
+            case .signIn(let step) where step.browserURL != nil:
+                KButton("Cancel", icon: .close, action: cancel)
             case .signIn(let step):
-                KButton("Cancel", icon: .close, action: close)
+                KButton("Cancel", icon: .close, action: cancel)
                 primary(step.continueTitle, icon: .forward, disabled: flow.isBusy || !step.isComplete(flow.values)) {
                     Task { await flow.submitSignIn() }
                 }
             case .history:
-                KButton("Cancel", icon: .close, action: close)
+                KButton("Cancel", icon: .close, action: cancel)
                 primary("Connect", icon: .connect, disabled: flow.isBusy) { Task { await flow.connect() } }
             case .containers:
                 primary(flow.isManaging ? "Done" : "Start", icon: flow.isManaging ? .done : .play, disabled: flow.isBusy) {
@@ -389,6 +405,12 @@ private struct SignInStepView: View {
             VStack(alignment: .leading, spacing: KSpace.x3) {
                 Text(step.title).font(KFont.ui(13, .semibold))
                 if let message = step.message { KExplanation(message) }
+                if step.browserURL != nil {
+                    HStack(spacing: KSpace.x2) {
+                        if flow.isWaitingForBrowser { KSpinner(size: 12) }
+                        KExplanation(flow.isWaitingForBrowser ? "Waiting for you to sign in in the browser" : "Open the page again to try once more.")
+                    }
+                }
                 ForEach(step.fields) { field in
                     VStack(alignment: .leading, spacing: KSpace.x1) {
                         Text(field.label).kLineStyle(10)
@@ -522,3 +544,98 @@ private struct ContainersStep: View {
         }
     }
 }
+
+/// The account a connector reads, on this Mac: who it is signed in as, with Sign out, or Sign in.
+private struct SourceAccountRow: View {
+    @Environment(SourcesModel.self) private var sources
+    @Environment(\.kOverlays) private var overlays
+    let source: SourceStatus
+    let account: SourceAccountState
+
+    var body: some View {
+        switch account {
+        case .signedIn(let name):
+            KSettingRow("Signed in", detail: name.isEmpty ? "The sign-in is kept in your Keychain." : "As \(name). The sign-in is kept in your Keychain.") {
+                KButton("Sign out", icon: .key, kind: .ghost, size: .small) { confirmSignOut() }
+                    .disabled(sources.isBusy)
+            }
+        default:
+            KSettingRow("Not signed in", detail: "\(source.name) reads nothing until you sign in.") {
+                if source.isConnected, sources.signIns.flow(for: source) != nil {
+                    KButton("Sign in", icon: .connect, size: .small) {
+                        overlays?.connectingSource = sources.connectFlow(for: source, signInAgain: true)
+                    }
+                    .disabled(sources.isBusy)
+                }
+            }
+        }
+    }
+
+    private func confirmSignOut() {
+        overlays?.confirmation = KConfirmation(
+            title: "Sign out of \(source.name)?",
+            message: "Knode ends its session and removes the sign-in from your Keychain. \(source.name) brings in nothing more, in any space, until you sign in again. What it brought in stays.",
+            confirmTitle: "Sign out",
+            isDestructive: true,
+            confirmIcon: .key
+        ) { [sources] in Task { await sources.signOut(source) } }
+    }
+}
+
+#if DEBUG
+/// A sources client for previews: answers at once, signs in after one step.
+private struct PreviewSourcesClient: SourcesClient {
+    var account: SourceAccountState
+
+    func list(in space: URL) async throws -> [SourceStatus] { [] }
+    func containers(of source: String, in space: URL) async throws -> [SourceContainer] {
+        [SourceContainer(id: "c1", name: "general"), SourceContainer(id: "c2", name: "random", excluded: true)]
+    }
+    func connect(_ source: String, history: SourceHistory, on: Bool, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func setOn(_ on: Bool, _ source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func exclude(_ container: SourceContainer, from source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func include(_ container: String, in source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func run(_ source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func disconnect(_ source: String, in space: URL) async throws {}
+    func account(of source: String) async throws -> SourceAccountState { account }
+    func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState {
+        if case .browser = step { try await Task.sleep(for: .seconds(3600)) }
+        return account
+    }
+    func signOut(_ source: String) async throws -> Bool { true }
+}
+
+enum SourcesPreviews {
+    static let slack = SourceStatus(id: "slack", name: "Slack", kind: "connector", reads: "The channels and messages you are in on Slack",
+                                    permissions: [.signIn, .network], container: "channel", state: .off)
+
+    @MainActor static func sheet(_ account: SourceAccountState) -> some View {
+        let client = PreviewSourcesClient(account: account)
+        let flow = SourceConnectFlow(source: slack, space: URL(filePath: "/tmp/Preview.knode"), client: client,
+                                     signIn: ServiceSourceSignIn(client: client), openURL: { _ in }, onChange: { _ in })
+        return ConnectSourceSheet(flow: flow) {}
+            .padding(KSpace.x6)
+            .frame(width: 560)
+            .knodeTheme(background: true)
+    }
+}
+
+#Preview("Slack, signed out: waiting for the browser") {
+    SourcesPreviews.sheet(.openBrowser(url: URL(string: "https://slack.com/oauth/v2/authorize")!))
+}
+
+#Preview("Slack, signed in: history") {
+    SourcesPreviews.sheet(.signedIn(account: "Ada at Example"))
+}
+
+#Preview("Telegram code") {
+    let client = PreviewSourcesClient(account: .codeSent(via: "the Telegram app"))
+    let telegram = SourceStatus(id: "telegram", name: "Telegram", kind: "connector", reads: "Your Telegram chats",
+                                permissions: [.signIn, .network], container: "chat", state: .off)
+    return ConnectSourceSheet(flow: SourceConnectFlow(source: telegram, space: URL(filePath: "/tmp/Preview.knode"), client: client,
+                                                      signIn: ServiceSourceSignIn(client: client), openURL: { _ in }, onChange: { _ in })) {}
+        .padding(KSpace.x6)
+        .frame(width: 560)
+        .knodeTheme(background: true)
+}
+#endif
