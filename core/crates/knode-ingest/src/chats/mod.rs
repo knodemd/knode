@@ -22,6 +22,7 @@
 //! pick; nothing is sent anywhere.
 
 mod files;
+pub mod imessage;
 mod model;
 mod render;
 mod slack;
@@ -50,7 +51,7 @@ pub use slack::person_keys;
 
 /// The properties of a chat's node.
 pub mod keys {
-    /// The app: `whatsapp`, `telegram` or `slack`.
+    /// The app: `whatsapp`, `telegram`, `slack` or `imessage`.
     pub const APP: &str = "chat.app";
     /// The chat's id in the app, or, for apps that have none, one made from its name.
     pub const ID: &str = "chat.id";
@@ -92,22 +93,26 @@ pub enum ChatFormat {
     Telegram,
     /// A Slack workspace export.
     Slack,
+    /// iMessage, read live from the Messages database of this Mac ([`imessage`]), not from an
+    /// export.
+    IMessage,
 }
 
 impl ChatFormat {
-    /// Every format.
+    /// Every export format.
     pub const ALL: [ChatFormat; 3] = [
         ChatFormat::WhatsApp,
         ChatFormat::Telegram,
         ChatFormat::Slack,
     ];
 
-    /// Its id: `whatsapp`, `telegram` or `slack`.
+    /// Its id: `whatsapp`, `telegram`, `slack` or `imessage`.
     pub fn id(self) -> &'static str {
         match self {
             ChatFormat::WhatsApp => "whatsapp",
             ChatFormat::Telegram => "telegram",
             ChatFormat::Slack => "slack",
+            ChatFormat::IMessage => imessage::APP,
         }
     }
 }
@@ -118,6 +123,7 @@ impl fmt::Display for ChatFormat {
             ChatFormat::WhatsApp => "WhatsApp export",
             ChatFormat::Telegram => "Telegram Desktop export",
             ChatFormat::Slack => "Slack export",
+            ChatFormat::IMessage => "iMessage database",
         })
     }
 }
@@ -335,6 +341,8 @@ fn media_folders(format: ChatFormat) -> &'static [&'static str] {
             "chats",
         ],
         ChatFormat::Slack => &["__uploads"],
+        // Not an export: Messages is read from its database.
+        ChatFormat::IMessage => &[],
     }
 }
 

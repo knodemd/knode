@@ -64,6 +64,16 @@ impl Files {
         })
     }
 
+    /// The files of a folder, opened by their path inside it, without listing them first: for
+    /// a folder as large as the one Messages keeps its attachments in.
+    pub fn unlisted(dir: &Path) -> Files {
+        Files {
+            source: Source::Dir(dir.to_path_buf()),
+            names: BTreeSet::new(),
+            single: None,
+        }
+    }
+
     /// A folder whose files are opened by their path without listing them first, such as an
     /// app's media folder with years of files: [`names`](Self::names) is empty.
     pub fn unlisted_folder(path: &Path) -> io::Result<Files> {

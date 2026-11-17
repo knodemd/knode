@@ -363,7 +363,10 @@ impl ChatWriter<'_> {
     fn shown_without_file(&mut self, media: &Media) -> Shown {
         if matches!(
             media,
-            Media::Missing { .. } | Media::Omitted { .. } | Media::NotOnDevice { .. }
+            Media::Missing { .. }
+                | Media::Omitted { .. }
+                | Media::NotAttached { .. }
+                | Media::NotOnDevice { .. }
         ) {
             self.report.missing += 1;
         }
@@ -380,6 +383,10 @@ fn shown(media: &Media) -> Shown {
         Media::Link { name, url } => Shown::Link {
             name: name.clone(),
             url: url.clone(),
+        },
+        Media::NotAttached { name, reason } => Shown::NotAttached {
+            name: name.clone(),
+            reason: reason.clone(),
         },
     }
 }

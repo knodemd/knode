@@ -62,6 +62,10 @@ pub const STATE_FILE: &str = "state.json";
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     #[allow(unused_mut)]
     let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
+        connectors.push(Arc::new(imessage));
+    }
     // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
     // in the spaces it is switched on in.
     #[cfg(target_os = "macos")]
