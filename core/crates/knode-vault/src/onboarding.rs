@@ -805,6 +805,7 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
     let input = stage(plan, staging.path())?;
     let staged = staging.path().join("Import.knode");
     let mut space = Space::create(&staged, name)?;
+    space.set_setting("capture.enabled", Some("false"), by)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -891,12 +892,35 @@ pub fn apply_into(plan: &Plan, space: &mut Space, by: &Provenance) -> Result<Rec
             by,
         )?;
         let count = usize::try_from(rehearsal.node_count()?).unwrap_or(usize::MAX);
-        rehearsal.recent(count)?
+        let mut rehearsed = Vec::new();
+        for node in rehearsal.recent(count)? {
+            let file = rehearsal.property(&node.id, crate::property_keys::PATH)?;
+            rehearsed.push((node, file));
+        }
+        rehearsed
     };
-    for node in &rehearsed {
-        if space.get_node(&node.id)?.is_some() {
+    // The importer writes over a node of this space when a note has its id, the id an earlier
+    // Knode recorded for it (`markdown.id`), or, without an id, its path (`markdown.path`). The
+    // rehearsal cannot see those matches, so refuse any of them here, before any write.
+    for (node, file) in &rehearsed {
+        let id = node.id.to_string();
+        let taken = space.get_node(&node.id)?.is_some()
+            || !space
+                .find_by_property(crate::property_keys::ID, &id)?
+                .is_empty();
+        if taken {
             return Err(invalid(format!(
                 "The note \"{}\" has the id of a note already in this space. Nothing was written; exclude it or repair its id before importing.",
+                node.title
+            )));
+        }
+        if let Some(file) = file
+            && !space
+                .find_by_property(crate::property_keys::PATH, file)?
+                .is_empty()
+        {
+            return Err(invalid(format!(
+                "The note \"{}\" ({file}) was already imported into this space from a file with the same path. Nothing was written; exclude it before importing.",
                 node.title
             )));
         }
@@ -911,6 +935,8 @@ pub fn apply_into(plan: &Plan, space: &mut Space, by: &Provenance) -> Result<Rec
         serde_json::to_vec_pretty(&receipt).map_err(|e| invalid(e.to_string()))?,
     )
     .map_err(io_error(&written))?;
+    // Only once the import succeeded: a failed one leaves the person's capture setting alone.
+    space.set_setting("capture.enabled", Some("false"), by)?;
     Ok(receipt)
 }
 
@@ -1025,7 +1051,6 @@ fn fill(
     before: &BTreeSet<knode_format::NodeId>,
     by: &Provenance,
 ) -> Result<Receipt> {
-    space.set_setting("capture.enabled", Some("false"), by)?;
     let mut import = crate::import(space, input, by)?;
     let attachment_links = attach_source_references(space, input, plan, &mut import, before, by)?;
     if !import.skipped.is_empty() {
@@ -1918,6 +1943,73 @@ mod tests {
         assert!(refused.to_string().contains("id of a note"), "{refused}");
         assert_eq!(space.node_count().unwrap(), 1);
         assert_eq!(space.get_node(&taken.id).unwrap().unwrap().body, "mine");
+        assert!(!space.path().join(RECEIPT).exists());
+        assert_eq!(space.setting("capture.enabled").unwrap(), None);
+    }
+
+    #[test]
+    fn applying_into_a_space_that_already_imported_the_same_file_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let person = Provenance::person("Ada");
+
+        // `Plan.md` was imported into the space before, by hand; the source has a `Plan.md`
+        // without an id, which the importer would match by its path and overwrite.
+        let earlier = dir.path().join("earlier");
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("Plan.md"), "the plan I kept").unwrap();
+        let mut space = Space::create(dir.path().join("Memory.knode"), "Memory").unwrap();
+        crate::import(&mut space, &earlier, &person).unwrap();
+        space
+            .set_setting("capture.enabled", Some("true"), &person)
+            .unwrap();
+        assert!(!is_set_up(&space).unwrap());
+        let kept = space
+            .find_by_property(crate::property_keys::PATH, "Plan.md")
+            .unwrap();
+        assert_eq!(kept.len(), 1);
+        let count = space.node_count().unwrap();
+
+        let root = dir.path().join("vault");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Plan.md"), "a newer plan").unwrap();
+        let plan = analyze(Some(&root), Mode::Project).unwrap();
+        let refused = apply_into(&plan, &mut space, &person).unwrap_err();
+        assert!(refused.to_string().contains("same path"), "{refused}");
+        assert_eq!(space.node_count().unwrap(), count);
+        assert_eq!(
+            space.get_node(&kept[0].id).unwrap().unwrap().body,
+            "the plan I kept"
+        );
+        assert!(!space.path().join(RECEIPT).exists());
+        assert_eq!(
+            space.setting("capture.enabled").unwrap().as_deref(),
+            Some("true")
+        );
+
+        // Nor a note carrying the id an earlier Knode recorded for a node (`markdown.id`).
+        let mut space = Space::create(dir.path().join("Legacy.knode"), "Legacy").unwrap();
+        let old = space
+            .create_node(NewNode::note("Old plan", "mine"), &person)
+            .unwrap();
+        let legacy = knode_format::NodeId::parse("01K83N6V4W5D2XQJ0Y7RZ9T1AB").unwrap();
+        space
+            .set_property(
+                &old.id,
+                crate::property_keys::ID,
+                &legacy.to_string(),
+                &person,
+            )
+            .unwrap();
+        fs::write(
+            root.join("Plan.md"),
+            format!("---\nid: {legacy}\ntitle: Plan\n---\nplan"),
+        )
+        .unwrap();
+        let plan = analyze(Some(&root), Mode::Project).unwrap();
+        let refused = apply_into(&plan, &mut space, &person).unwrap_err();
+        assert!(refused.to_string().contains("id of a note"), "{refused}");
+        assert_eq!(space.node_count().unwrap(), 1);
+        assert_eq!(space.get_node(&old.id).unwrap().unwrap().body, "mine");
         assert!(!space.path().join(RECEIPT).exists());
         assert_eq!(space.setting("capture.enabled").unwrap(), None);
     }
