@@ -47,6 +47,17 @@ belongs to, newest first.
   checked against a real export yet; Perplexity has no export of all threads, so it is not
   supported; Readwise is read from its exports, not its API. The Mac app has no import screen
   yet.
+- **Mail import**: `knode import --from mbox` reads Gmail through a Google Takeout `.mbox` (or any
+  other `mbox` file), and `knode import --from apple-mail` reads the Apple Mail store on the Mac,
+  which needs Full Disk Access (Knode says how to allow it when it is missing). Each thread
+  becomes one node with its messages in order, sender, recipients and date, the text part
+  preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
+  address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
+  folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
+  default). Importing again, or another date range, adds only the new messages, and never
+  overwrites what you changed or added to a thread in Knode. Knode never signs
+  in to a mail account: it reads only the files you point it at. Knode Service does the same with
+  `import.run`.
 - **Chat exports in `knode import`**: WhatsApp chat exports (the `.zip`, its folder or the
   chat's `.txt`, from iOS or Android, in the date formats WhatsApp writes in each language)
   become one `chat` node per

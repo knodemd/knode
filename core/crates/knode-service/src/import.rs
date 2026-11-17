@@ -10,6 +10,9 @@
 //!   an `http` or `https` URL the person gave, Kindle clippings or a Kindle notebook, and
 //!   Readwise CSV and Markdown exports;
 //! - notes from other apps, with [`knode_vault::apps`]: Apple Notes, Bear, Notion and Evernote;
+//! - mail, with [`knode_vault::mail`]: an `.mbox` file (Gmail through Google Takeout) or the
+//!   Apple Mail store, with the folder, date and attachment options of
+//!   [`MailOptions`](knode_vault::mail::MailOptions).
 //! - chat exports, with [`knode_ingest::import_chat_export`]: WhatsApp, Telegram Desktop and
 //!   Slack.
 
@@ -20,6 +23,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{NewNode, NodeId, NodeUpdate, Provenance, Space, kinds};
 use knode_ingest::{Agent, ChatFormat, SessionReader, to_markdown};
 use knode_vault::apps::{self, NoteApp};
+use knode_vault::mail::{self, MailOptions, MailSource};
 use knode_vault::reading::{self, Outcome, ReadingReport};
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +58,10 @@ pub enum ImportSource {
     Notion,
     /// Evernote: `.enex` files, or a folder of them.
     Evernote,
+    /// Mail in an `mbox` file: Gmail through Google Takeout, or a mailbox another app exported.
+    Mbox,
+    /// Apple Mail: its store on this Mac, or a folder of `.emlx` files.
+    AppleMail,
     /// A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt`.
     #[serde(rename = "whatsapp")]
     WhatsApp,
@@ -66,7 +74,7 @@ pub enum ImportSource {
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 15] = [
+    pub const ALL: [ImportSource; 17] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -79,13 +87,16 @@ impl ImportSource {
         ImportSource::Bear,
         ImportSource::Notion,
         ImportSource::Evernote,
+        ImportSource::Mbox,
+        ImportSource::AppleMail,
         ImportSource::WhatsApp,
         ImportSource::Telegram,
         ImportSource::Slack,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
-    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `whatsapp`, `telegram`, `slack`.
+    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `mbox`,
+    /// `apple-mail`, `whatsapp`, `telegram`, `slack`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -100,6 +111,8 @@ impl ImportSource {
             ImportSource::Bear => "bear",
             ImportSource::Notion => "notion",
             ImportSource::Evernote => "evernote",
+            ImportSource::Mbox => "mbox",
+            ImportSource::AppleMail => "apple-mail",
             ImportSource::WhatsApp => "whatsapp",
             ImportSource::Telegram => "telegram",
             ImportSource::Slack => "slack",
@@ -122,12 +135,27 @@ impl ImportSource {
         }
     }
 
+    fn mail(self) -> Option<MailSource> {
+        match self {
+            ImportSource::Mbox => Some(MailSource::Mbox),
+            ImportSource::AppleMail => Some(MailSource::AppleMail),
+            _ => None,
+        }
+    }
+
     fn chat(self) -> Option<ChatFormat> {
         match self {
             ImportSource::WhatsApp => Some(ChatFormat::WhatsApp),
             ImportSource::Telegram => Some(ChatFormat::Telegram),
             ImportSource::Slack => Some(ChatFormat::Slack),
             _ => None,
+        }
+    }
+
+    fn of_mail(source: MailSource) -> ImportSource {
+        match source {
+            MailSource::Mbox => ImportSource::Mbox,
+            _ => ImportSource::AppleMail,
         }
     }
 
@@ -306,6 +334,10 @@ pub(crate) struct ImportRunParams {
     /// reads its own. Never stored or logged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<Secret>,
+    /// For `mbox` and `apple-mail`: the folders and dates to import, and whether to attach
+    /// files. Left out: everything but spam and trash, without attachments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailOptions>,
 }
 
 /// A token: sent where it is needed, never printed.
@@ -323,7 +355,9 @@ impl std::fmt::Debug for Secret {
 pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of Markdown files, \
      a .md file, a Claude Code or Codex session (.jsonl), a PDF, a saved web page (.html), an \
      http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
-     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, a WhatsApp chat export, a Telegram Desktop export (JSON) or a Slack workspace export";
+     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, \
+     an .mbox file (Gmail through Google Takeout), Apple Mail's store, \
+     a WhatsApp chat export, a Telegram Desktop export (JSON) or a Slack workspace export";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +380,7 @@ enum Input {
     ReadwiseMarkdown(PathBuf),
     ReadwiseApi(Option<Secret>),
     App(NoteApp, PathBuf),
+    Mail(MailSource, PathBuf, MailOptions),
     Chat(ChatFormat, PathBuf),
 }
 
@@ -362,6 +397,7 @@ impl Prepared {
             Input::ReadwiseCsv(_) | Input::ReadwiseMarkdown(_) => ImportSource::Readwise,
             Input::ReadwiseApi(_) => ImportSource::ReadwiseApi,
             Input::App(app, _) => ImportSource::of_app(*app),
+            Input::Mail(source, ..) => ImportSource::of_mail(*source),
             Input::Chat(format, _) => ImportSource::of_chat(*format),
         }
     }
@@ -389,6 +425,10 @@ impl Prepared {
                 NoteApp::Notion => "Notion export".into(),
                 _ => "Evernote export".into(),
             },
+            Input::Mail(source, ..) => match source {
+                MailSource::Mbox => "mbox".into(),
+                _ => "Apple Mail".into(),
+            },
             Input::Chat(format, _) => format.to_string(),
         }
     }
@@ -402,6 +442,19 @@ impl Prepared {
     pub fn with_readwise_token(mut self, token: Option<String>) -> Self {
         if let Input::ReadwiseApi(slot) = &mut self.input {
             *slot = token.map(Secret);
+        }
+        self
+    }
+
+    /// Whether it reads mail, which takes [`MailOptions`].
+    pub fn is_mail(&self) -> bool {
+        matches!(self.input, Input::Mail(..))
+    }
+
+    /// Gives the options to read mail with; nothing otherwise.
+    pub fn with_mail_options(mut self, options: MailOptions) -> Self {
+        if let Input::Mail(_, _, slot) = &mut self.input {
+            *slot = options;
         }
         self
     }
@@ -422,6 +475,7 @@ impl Prepared {
             | Input::ReadwiseCsv(p)
             | Input::ReadwiseMarkdown(p)
             | Input::App(_, p)
+            | Input::Mail(_, p, _)
             | Input::Chat(_, p) => p.display().to_string(),
         }
     }
@@ -465,6 +519,21 @@ pub fn prepare(
             }
         }
         (None, None) if from == Some(ImportSource::ReadwiseApi) => Input::ReadwiseApi(None),
+        (None, None) if from == Some(ImportSource::AppleMail) => {
+            let Some(location) = mail::apple_mail_location() else {
+                return Err(ImportError::Unknown(
+                    "Knode reads Apple Mail on a Mac only: export the mailboxes from Apple Mail \
+                     and import the exported .mbox"
+                        .into(),
+                ));
+            };
+            Input::Mail(MailSource::AppleMail, location, MailOptions::default())
+        }
+        (None, None) if from == Some(ImportSource::Mbox) => {
+            return Err(ImportError::Unknown(
+                "name the .mbox file to import, or the folder it is in".into(),
+            ));
+        }
         (None, None) => match from.and_then(ImportSource::app) {
             Some(app @ (NoteApp::AppleNotes | NoteApp::Bear)) => {
                 let Some(location) = app.default_location() else {
@@ -547,6 +616,12 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         | ImportSource::Bear
         | ImportSource::Notion
         | ImportSource::Evernote => Input::App(source.app().expect("a note app"), p),
+        // Named as mail, a folder is read for the mail in it: an import that finds none says so.
+        ImportSource::Mbox | ImportSource::AppleMail => Input::Mail(
+            source.mail().expect("a mail source"),
+            p,
+            MailOptions::default(),
+        ),
         ImportSource::WhatsApp | ImportSource::Telegram | ImportSource::Slack => {
             let format = source.chat().expect("a chat app");
             if knode_ingest::detect_chat_export(path) != Some(format) {
@@ -572,6 +647,14 @@ fn detect(path: &Path) -> Result<Input, ImportError> {
                 });
             }
             Some("jsonl") => return Ok(Input::Session(p)),
+            Some("mbox") => return Ok(Input::Mail(MailSource::Mbox, p, MailOptions::default())),
+            Some("emlx") => {
+                return Ok(Input::Mail(
+                    MailSource::AppleMail,
+                    p,
+                    MailOptions::default(),
+                ));
+            }
             Some("csv") if is_readwise_csv(path) => return Ok(Input::ReadwiseCsv(p)),
             Some("txt") if is_kindle_clippings(path) => return Ok(Input::KindleClippings(p)),
             Some("md" | "markdown") => {
@@ -586,6 +669,9 @@ fn detect(path: &Path) -> Result<Input, ImportError> {
     }
     if knode_ingest::detect_export(path).is_ok() {
         return Ok(Input::Export(p));
+    }
+    if let Some(source) = mail::detect(path) {
+        return Ok(Input::Mail(source, p, MailOptions::default()));
     }
     if let Some(format) = knode_ingest::detect_chat_export(path) {
         return Ok(Input::Chat(format, p));
@@ -804,9 +890,79 @@ pub fn run(
             }
             result.notes.extend(report.limits.iter().cloned());
         }
+        Input::Mail(source, path, options) => mail_result(
+            mail::import_mail(space, *source, path, options, by),
+            &mut result,
+        )?,
         Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
     }
     Ok(result)
+}
+
+fn mail_result(
+    report: Result<mail::MailReport, mail::MailError>,
+    result: &mut ImportResult,
+) -> Result<(), ImportError> {
+    let report = report.map_err(mail_error)?;
+    for t in &report.created {
+        result.node(Some(t.node_id), t.title.clone(), ImportOutcome::Created);
+    }
+    for t in &report.updated {
+        result.node(Some(t.node_id), t.title.clone(), ImportOutcome::Updated);
+    }
+    result.unchanged += report.unchanged;
+    result.attached = report.attached;
+    for s in &report.skipped {
+        result.skip(s.path.clone(), s.reason.clone());
+    }
+    result.notes.push(format!(
+        "{} in {}",
+        plural(report.messages, "message"),
+        plural(report.read_threads(), "thread")
+    ));
+    if report.people > 0 {
+        result.notes.push(format!(
+            "{} added",
+            if report.people == 1 {
+                "1 person".to_string()
+            } else {
+                format!("{} people", report.people)
+            }
+        ));
+    }
+    if report.filtered > 0 {
+        result.notes.push(format!(
+            "{} left out by the folder and date filters",
+            plural(report.filtered, "message")
+        ));
+    }
+    if report.junk > 0 {
+        result.notes.push(format!(
+            "{} in spam or trash left out; name the folder to import {}",
+            plural(report.junk, "message"),
+            if report.junk == 1 { "it" } else { "them" }
+        ));
+    }
+    if report.duplicates > 0 {
+        result.notes.push(format!(
+            "{} found in more than one folder, imported once",
+            plural(report.duplicates, "message")
+        ));
+    }
+    result.notes.extend(report.limits.iter().cloned());
+    Ok(())
+}
+
+fn mail_error(error: mail::MailError) -> ImportError {
+    match error {
+        mail::MailError::Space(error) => ImportError::Space(error),
+        mail::MailError::NotFound(path) => ImportError::NotFound(path),
+        e @ mail::MailError::NoAccess { .. } => ImportError::NoAccess(e.to_string()),
+        e @ (mail::MailError::NotRecognized { .. } | mail::MailError::Invalid(_)) => {
+            ImportError::Unknown(e.to_string())
+        }
+        other => ImportError::Unreadable(other.to_string()),
+    }
 }
 
 /// Imports a chat export: one node per chat, given only its new messages when imported again.

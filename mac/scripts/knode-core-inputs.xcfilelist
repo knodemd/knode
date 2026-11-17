@@ -128,6 +128,12 @@ $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
 $(SRCROOT)/../core/crates/knode-vault/src/import.rs
 $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
 $(SRCROOT)/../core/crates/knode-vault/src/live.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/apple.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/mbox.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/message.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/mod.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/thread.rs
+$(SRCROOT)/../core/crates/knode-vault/src/mail/write.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
 $(SRCROOT)/../core/crates/knode-vault/src/onboarding.rs
