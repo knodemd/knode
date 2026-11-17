@@ -9,6 +9,9 @@ final class CommandLineToolInstaller {
     static let installedLinkKey = "KnodeCommandLineToolLink"
     /// Set once the app has offered to install the command.
     static let offeredKey = "KnodeCommandLineToolOffered"
+    /// The other copy of Knode the person chose to keep the command pointing at, so the app asks
+    /// again only when the link points at a different one.
+    static let keptStaleLinkKey = "KnodeCommandLineToolKeptStaleLink"
 
     let tool: CommandLineTool
     private let defaults: UserDefaults
@@ -28,6 +31,38 @@ final class CommandLineToolInstaller {
     }
 
     // MARK: First run
+
+    /// On every launch: when `knode` runs another copy of Knode, offers to point it at this one;
+    /// otherwise, on the first run, offers to install it.
+    func offerOnLaunch() {
+        if case .staleLink(let link) = tool.status() {
+            offerToRelink(link)
+        } else {
+            offerOnFirstRun()
+        }
+    }
+
+    /// The command is a link into another copy of Knode, gone or elsewhere: agents and the
+    /// terminal would keep running that copy's version. Asked once per other copy.
+    private func offerToRelink(_ link: URL) {
+        defaults.set(true, forKey: Self.offeredKey)
+        let destination = tool.staleLinkDestination(link)
+        let other = destination.flatMap(CommandLineTool.app(containing:))?.path(percentEncoded: false)
+        let key = other ?? destination?.path(percentEncoded: false) ?? link.path(percentEncoded: false)
+        guard defaults.string(forKey: Self.keptStaleLinkKey) != key else { return }
+        let alert = NSAlert()
+        alert.messageText = "Use this copy of Knode for the knode command?"
+        let elsewhere = other.map { "another copy of Knode, at \($0)" } ?? "a copy of Knode that is no longer there"
+        alert.informativeText = "\(link.path(percentEncoded: false)) runs the knode command inside \(elsewhere). "
+            + "Claude Code, Codex and your terminal use that one until it points to this copy."
+        alert.addButton(withTitle: "Use This Copy")
+        alert.addButton(withTitle: "Keep It")
+        if alert.runModal() == .alertFirstButtonReturn {
+            install()
+        } else {
+            defaults.set(key, forKey: Self.keptStaleLinkKey)
+        }
+    }
 
     /// What to do once the command is installed on the first run: Connect your agents.
     private var onReadyOnFirstRun: (@MainActor () -> Void)?
@@ -200,5 +235,79 @@ extension CommandLineTool {
                 userHome: FileManager.default.homeDirectoryForCurrentUser
             )
         )
+    }
+}
+
+/// Offers to move Knode to the Applications folder when it runs from its disk image, Downloads or
+/// any other folder, as `ApplicationLocation` decides, and opens the moved copy.
+@MainActor
+final class ApplicationMover {
+    /// The folder the person chose to keep Knode in, so the app does not ask again for it.
+    static let keptLocationKey = "KnodeKeptApplicationLocation"
+
+    private let defaults: UserDefaults
+    private let manager = FileManager.default
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    /// Asks, and moves the app if the person agrees. Returns true when the moved copy is opening
+    /// and this one is about to quit.
+    func offerToMove(bundle: URL = Bundle.main.bundleURL) -> Bool {
+        let location = ApplicationLocation(bundle: bundle, home: manager.homeDirectoryForCurrentUser)
+        let path = bundle.path(percentEncoded: false)
+        guard location.shouldOfferMove, defaults.string(forKey: Self.keptLocationKey) != path else { return false }
+        let destination = URL(filePath: "/Applications").appending(path: bundle.lastPathComponent)
+        let replaces = manager.fileExists(atPath: destination.path(percentEncoded: false))
+        let alert = NSAlert()
+        alert.messageText = "Move Knode to the Applications folder?"
+        alert.informativeText = location == .diskImage || location == .translocated
+            ? "Knode is running from its disk image. In Applications it stays when the image is ejected, "
+                + "and the knode command your agents use keeps working."
+            : "Knode is running from \(bundle.deletingLastPathComponent().path(percentEncoded: false)). "
+                + "In Applications it stays put, and the knode command your agents use keeps working."
+        if replaces {
+            alert.informativeText += "\n\n" + Self.replacementNote(existing: Self.version(of: destination), this: Self.version(of: bundle))
+        }
+        alert.addButton(withTitle: "Move to Applications")
+        alert.addButton(withTitle: "Do Not Move")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            defaults.set(path, forKey: Self.keptLocationKey)
+            return false
+        }
+        do {
+            if manager.fileExists(atPath: destination.path(percentEncoded: false)) {
+                try manager.trashItem(at: destination, resultingItemURL: nil)
+            }
+            if location.removesOriginal {
+                try manager.moveItem(at: bundle, to: destination)
+            } else {
+                try manager.copyItem(at: bundle, to: destination)
+            }
+        } catch {
+            let failed = NSAlert()
+            failed.messageText = "Knode could not be moved"
+            failed.informativeText = "\(error.localizedDescription)\n\nDrag Knode to the Applications folder in Finder, then open it from there."
+            failed.runModal()
+            return false
+        }
+        NSWorkspace.shared.openApplication(at: destination, configuration: NSWorkspace.OpenConfiguration()) { _, _ in
+            Task { @MainActor in NSApp.terminate(nil) }
+        }
+        return true
+    }
+
+    /// The version an app bundle declares, if it can be read.
+    private static func version(of app: URL) -> String? {
+        Bundle(url: app)?.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    /// What the alert says when a copy of Knode in Applications is about to go to the Trash.
+    nonisolated static func replacementNote(existing: String?, this: String?) -> String {
+        let copy = existing.map { "The copy of Knode already in Applications (version \($0))" }
+            ?? "The copy of Knode already in Applications"
+        let replacement = this.map { " and replaced by this one (version \($0))" } ?? " and replaced by this one"
+        return copy + " will be moved to the Trash" + replacement + "."
     }
 }

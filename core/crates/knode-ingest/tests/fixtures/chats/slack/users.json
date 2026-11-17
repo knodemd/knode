@@ -1,0 +1,4 @@
+[
+ {"id": "U01", "team_id": "T01", "name": "ada", "real_name": "Ada", "profile": {"real_name": "Ada", "display_name": "ada"}},
+ {"id": "U02", "team_id": "T01", "name": "grace", "real_name": "Grace", "profile": {"real_name": "Grace", "display_name": "grace"}}
+]
