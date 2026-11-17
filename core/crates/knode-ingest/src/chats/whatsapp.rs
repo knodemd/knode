@@ -604,7 +604,7 @@ fn after_whatsapp(name: &str) -> Option<String> {
 }
 
 /// A name a title can hold: no `[`, `]` or `|`, spaces collapsed.
-fn clean_title(name: &str) -> String {
+pub(crate) fn clean_title(name: &str) -> String {
     without_bidi(name)
         .replace(['[', ']', '|'], " ")
         .split_whitespace()

@@ -25,9 +25,25 @@ struct Mark {
 }
 
 impl ChatWriter<'_> {
-    /// The node of a chat imported before.
+    /// The node of a chat imported before: the one with its JID, when it has one, else the one
+    /// with its id that has no other JID (a chat from an export, which carries none).
     pub fn find(&self, chat: &Chat) -> Result<Option<NodeId>, ChatImportError> {
-        self.find_id(chat.app, &chat.id)
+        let Some(jid) = &chat.jid else {
+            return self.find_id(chat.app, &chat.id);
+        };
+        for summary in self.space.find_by_property(keys::JID, jid)? {
+            if self.space.property(&summary.id, keys::APP)?.as_deref() == Some(chat.app.id()) {
+                return Ok(Some(summary.id));
+            }
+        }
+        for summary in self.space.find_by_property(keys::ID, &chat.id)? {
+            if self.space.property(&summary.id, keys::APP)?.as_deref() == Some(chat.app.id())
+                && self.space.property(&summary.id, keys::JID)?.is_none()
+            {
+                return Ok(Some(summary.id));
+            }
+        }
+        Ok(None)
     }
 
     /// The node of the chat `id` of `app` imported before.
@@ -58,7 +74,10 @@ impl ChatWriter<'_> {
             .filter(|m| match &mark {
                 None => true,
                 Some(mark) => {
-                    m.mark > mark.last || (m.mark == mark.last && !mark.keys.contains(&m.key))
+                    m.mark > mark.last
+                        || (m.mark == mark.last
+                            && !mark.keys.contains(&m.key)
+                            && !m.export_key.as_ref().is_some_and(|k| mark.keys.contains(k)))
                 }
             })
             .collect();
@@ -98,6 +117,11 @@ impl ChatWriter<'_> {
             );
         }
         if new.is_empty() {
+            if let Some(jid) = &chat.jid
+                && self.space.property(&id, keys::JID)?.as_deref() != Some(jid.as_str())
+            {
+                self.space.set_property(&id, keys::JID, jid, &self.by)?;
+            }
             for (key, value) in &chat.properties {
                 if self.space.property(&id, key)?.as_deref() != Some(value.as_str()) {
                     self.space.set_property(&id, key, value, &self.by)?;
@@ -126,7 +150,21 @@ impl ChatWriter<'_> {
         )?;
         let total = imported_before + new.len();
         let started = self.space.property(&id, keys::STARTED_AT)?;
-        let props = properties(chat, &new, mark.as_ref(), total, started);
+        let mut props = properties(chat, &new, mark.as_ref(), total, started);
+        // Who wrote before stays: a connector hands over only the messages that are new.
+        if let Some(before) = self.space.property(&id, keys::PARTICIPANTS)? {
+            let mut everyone: Vec<String> = before
+                .split(", ")
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect();
+            for p in &chat.participants {
+                if !everyone.contains(p) {
+                    everyone.push(p.clone());
+                }
+            }
+            props.insert(keys::PARTICIPANTS.into(), everyone.join(", "));
+        }
         self.space.set_properties(&id, &props, &self.by)?;
         self.report.messages += new.len();
         self.report.chats.push(imported(id, ChangeOp::Update));
@@ -276,7 +314,10 @@ impl ChatWriter<'_> {
 impl ChatWriter<'_> {
     /// How a file that is not in the export is shown; one missing or left out is counted.
     fn shown_without_file(&mut self, media: &Media) -> Shown {
-        if matches!(media, Media::Missing { .. } | Media::Omitted { .. }) {
+        if matches!(
+            media,
+            Media::Missing { .. } | Media::Omitted { .. } | Media::NotOnDevice { .. }
+        ) {
             self.report.missing += 1;
         }
         shown(media)
@@ -288,6 +329,7 @@ fn shown(media: &Media) -> Shown {
         Media::File { name, .. } => Shown::Attached(name.clone()),
         Media::Missing { name } => Shown::Missing(name.clone()),
         Media::Omitted { what } => Shown::Omitted(what.clone()),
+        Media::NotOnDevice { name } => Shown::NotOnDevice(name.clone()),
     }
 }
 
@@ -344,6 +386,9 @@ fn properties(
     let mut props = Properties::new();
     props.insert(keys::APP.into(), chat.app.id().into());
     props.insert(keys::ID.into(), chat.id.clone());
+    if let Some(jid) = &chat.jid {
+        props.insert(keys::JID.into(), jid.clone());
+    }
     if !chat.kind.is_empty() {
         props.insert(keys::TYPE.into(), chat.kind.clone());
     }
@@ -360,7 +405,7 @@ fn properties(
         let mut at_last: BTreeSet<String> = new
             .iter()
             .filter(|m| m.mark == last.mark)
-            .map(|m| m.key.clone())
+            .flat_map(|m| std::iter::once(m.key.clone()).chain(m.export_key.clone()))
             .collect();
         if let Some(previous) = previous
             && previous.last == last.mark

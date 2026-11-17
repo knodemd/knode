@@ -17,6 +17,7 @@ mod files;
 mod model;
 mod render;
 mod whatsapp;
+pub mod whatsapp_mac;
 mod write;
 
 use std::fmt;
@@ -38,6 +39,10 @@ pub mod keys {
     pub const APP: &str = "chat.app";
     /// The chat's id in the app, or, for apps that have none, one made from its name.
     pub const ID: &str = "chat.id";
+    /// The chat's own id in the app, when Knode read it from the app itself: a WhatsApp JID
+    /// (`<number>@s.whatsapp.net`, `<id>@g.us`). Exports carry none; a chat is found by its JID
+    /// first and by [`ID`] when no node has it, and the JID is then stored on that node.
+    pub const JID: &str = "chat.jid";
     /// What the chat is: `personal` or `group`.
     pub const TYPE: &str = "chat.type";
     /// Who wrote in it, separated by `, `.
@@ -182,7 +187,7 @@ pub struct ChatImportReport {
 }
 
 impl ChatImportReport {
-    fn new(format: ChatFormat) -> Self {
+    pub(crate) fn new(format: ChatFormat) -> Self {
         ChatImportReport {
             format,
             chats: Vec::new(),

@@ -19,6 +19,8 @@ pub(crate) enum Shown {
     Missing(String),
     /// Left out of the export: what it was.
     Omitted(String),
+    /// Not on this device, read from an app's own database: its name or what it was.
+    NotOnDevice(String),
 }
 
 /// The heading of a day section, without `## `.
@@ -123,6 +125,7 @@ fn shown_markdown(shown: &Shown) -> String {
         }
         Shown::Missing(name) => format!("*[missing from the export: {}]*", escape_name(name)),
         Shown::Omitted(what) => format!("*[{} left out of the export]*", escape_name(what)),
+        Shown::NotOnDevice(name) => format!("*[not on this Mac: {}]*", escape_name(name)),
     }
 }
 
