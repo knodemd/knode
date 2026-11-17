@@ -410,6 +410,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Release notes
+        shell: bash
         run: |
           # The section of CHANGELOG.md for this version, without its heading.
           if [ -f CHANGELOG.md ]; then
@@ -425,20 +426,23 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
               --jq .body > dist/CHANGES.md
           fi
-          {
-            if [ "$MACOS_RESULT" != success ]; then
+          # The warning is kept apart: a re-run puts it on the notes of the existing draft.
+          : > dist/WARNING.md
+          if [ "$MACOS_RESULT" != success ]; then
+            {
               echo "> [!WARNING]"
               echo "> This draft has the Linux builds only: the macOS job did not pass. Do not publish it."
               echo "> Set the Mac signing secrets and re-run the failed jobs of the release workflow; the"
               echo "> Mac builds are then added to this draft and this warning goes away."
               echo
-            fi
-            cat dist/CHANGES.md
-          } > dist/NOTES.md
+            } > dist/WARNING.md
+          fi
+          cat dist/WARNING.md dist/CHANGES.md > dist/NOTES.md
           rm dist/CHANGES.md
 
       - name: Create or update the draft release
         working-directory: dist
+        shell: bash
         run: |
           shopt -s nullglob
           title="Knode ${VERSION}"
@@ -461,9 +465,33 @@ jobs:
           if [ "$existing" = true ]; then
             # A re-run of this workflow: fill the draft it made before, never a published release.
             if [ "$draft" != true ]; then
-              echo "::error::Release $GITHUB_REF_NAME is already published, it is not changed"
+              echo "::error::Release $GITHUB_REF_NAME is already published, it is not changed. If it was published without the Mac builds, turn it back into a draft (gh release edit $GITHUB_REF_NAME --draft=true), re-run the failed jobs of this run with the Mac signing secrets set, and publish it again; or release a new patch version."
               exit 1
             fi
+            # Keep the notes of the draft, edited by hand or not: only the Linux-only warning
+            # this workflow wrote is replaced, by the one for this run (none if the Mac job passed).
+            # A failed read stops the step: the notes are never replaced by empty ones.
+            body="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+            # Our warning block is dropped wherever it is in the notes, with the blank line after it,
+            # so it is never doubled; any other block is kept as it is.
+            printf '%s\n' "$body" |
+              awk '
+                function flush() {
+                  if (ours) skipblank = 1
+                  else { printf "%s%s", blanks, block; blanks = "" }
+                  block = ""; inblock = 0; ours = 0
+                }
+                inblock && /^>/ { block = block $0 "\n"; if (/Linux builds only/) ours = 1; next }
+                inblock { flush() }
+                /^> \[!WARNING\]\r?$/ { inblock = 1; block = $0 "\n"; next }
+                skipblank && /^\r?$/ { skipblank = 0; next }
+                { skipblank = 0 }
+                # Blank lines at the end are dropped, so they do not pile up run after run.
+                /^\r?$/ { blanks = blanks $0 "\n"; next }
+                { printf "%s", blanks; blanks = ""; print }
+                END { if (inblock) { flush(); } }
+              ' > BODY.md
+            cat WARNING.md BODY.md > NOTES.md
             if [ "$MACOS_RESULT" != success ]; then
               # Mac files from an earlier attempt are not covered by this SHA256SUMS.
               gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
