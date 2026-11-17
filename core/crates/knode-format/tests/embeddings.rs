@@ -4,7 +4,7 @@
 
 use knode_format::{
     ChunkVector, EmbeddingModelSpec, Error, NewNode, NodeId, NodeUpdate, Provenance, SearchMode,
-    Space, StaleNode, actions, embedding_text, setting_keys,
+    Space, StaleNode, TRANSCRIPT_KINDS, actions, embedding_text, setting_keys,
 };
 use tempfile::TempDir;
 
@@ -667,9 +667,9 @@ fn embeddings_survive_reopening() {
     assert_eq!(hits[0].node.id, ids[2]);
 }
 
-/// A long agent conversation, one section per turn, where one turn mentions `words` in passing
-/// among many unrelated ones (#269).
-fn conversation(space: &mut Space, title: &str, words: &str) -> NodeId {
+/// A long transcript of `kind` (an agent conversation, a chat or a mail thread), one section per
+/// turn, where one turn mentions `words` in passing among many unrelated ones (#269).
+fn transcript(space: &mut Space, kind: &str, title: &str, words: &str) -> NodeId {
     let turn = "## User\n\nCan you check the build again and run the tests?\n\n## Assistant\n\n\
                 The tests pass and the build is green; the release notes are next.\n\n";
     let body = format!(
@@ -679,18 +679,15 @@ fn conversation(space: &mut Space, title: &str, words: &str) -> NodeId {
         turn.repeat(20)
     );
     space
-        .create_node(
-            NewNode::note(title, body).with_kind(knode_format::kinds::CONVERSATION),
-            &ada(),
-        )
+        .create_node(NewNode::note(title, body).with_kind(kind), &ada())
         .unwrap()
         .id
 }
 
 #[test]
 fn long_conversations_do_not_outrank_the_short_note_that_answers() {
-    // A short note answers the query; four long conversations mention its words in passing
-    // (#269). By words the note is first: BM25 weighs its title and its length. By meaning a
+    // A short note answers the query; four long transcripts, conversations, a chat and a mail
+    // thread, mention its words in passing (#269). By words the note is first: BM25 weighs its title and its length. By meaning a
     // node is as near as its nearest chunk, so a conversation of many chunks has many chances
     // to have one near the query: here each has one chunk nearer than the note.
     let (_dir, mut space) = new_space();
@@ -701,11 +698,15 @@ fn long_conversations_do_not_outrank_the_short_note_that_answers() {
         "The Cloudflare account of laaabs: the account id is 7f3e9a, owned by Ada. Wrangler \
          reads it from wrangler.toml.",
     );
-    let talks: Vec<NodeId> = (0..4)
-        .map(|i| conversation(&mut space, &format!("Session {i}"), query))
+    assert_eq!(TRANSCRIPT_KINDS, ["conversation", "chat", "email"]);
+    let kinds = ["conversation", "chat", "email", "conversation"];
+    let talks: Vec<NodeId> = kinds
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| transcript(&mut space, kind, &format!("Session {i}"), query))
         .collect();
     let model = space.add_embedding_model(&spec(3), &indexer()).unwrap();
-    // The query is [1, 0, 0]. The note is at 0.2 from it; the chunk of each conversation that
+    // The query is [1, 0, 0]. The note is at 0.2 from it; the chunk of each transcript that
     // mentions the words nearer, its other chunks far away.
     for node in space.stale_nodes(model.id, 10).unwrap() {
         let talk = talks.iter().position(|id| *id == node.id);
@@ -747,11 +748,11 @@ fn long_conversations_do_not_outrank_the_short_note_that_answers() {
     let hybrid = space
         .hybrid_search(query, Some(&vector), SearchMode::Hybrid, 20)
         .unwrap();
-    // Plain fusion put the note third, at (1, 5) 0.03178, after two conversations at (2, 1)
+    // Plain fusion put the note third, at (1, 5) 0.03178, after two transcripts at (2, 1)
     // 0.03252 and (3, 2) 0.03200. A transcript counts half, so the note is first.
     assert_eq!(hybrid.hits[0].node.id, answer);
     assert!((hybrid.hits[0].score - (1.0 / 61.0 + 1.0 / 65.0)).abs() < 1e-12);
-    // The conversations are still found, after it, in their own order.
+    // The transcripts are still found, after it, in their own order.
     assert_eq!(hybrid.hits.len(), 5);
     let rest: Vec<NodeId> = hybrid.hits[1..].iter().map(|hit| hit.node.id).collect();
     assert_eq!(rest, talks);

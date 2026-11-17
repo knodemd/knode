@@ -104,10 +104,10 @@ belongs to, newest first.
 
 #### Fixed
 
-- **Long conversations no longer bury short notes in search**: agent conversations and imported
-  chats are long transcripts that match a query's words and meaning in passing, and could come
-  before the short note that answers it. Hybrid search now counts a transcript half, so it comes
-  first only when it matches clearly better; `--words` and `--meaning` rank as before.
+- **Long conversations no longer bury short notes in search**: agent conversations, imported chats
+  and imported mail threads are long transcripts that match a query's words and meaning in passing,
+  and could come before the short note that answers it. Hybrid search now counts a transcript half,
+  so it comes first only when it matches clearly better; `--words` and `--meaning` rank as before.
 - **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
   skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
   the command line.

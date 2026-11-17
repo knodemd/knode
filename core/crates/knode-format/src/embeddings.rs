@@ -26,11 +26,11 @@ pub const HYBRID_LIST_SIZE: usize = 50;
 pub const NEAREST_CHUNKS: usize = 100;
 /// The number of results of a hybrid search when none is given (19.6).
 pub const DEFAULT_HYBRID_RESULTS: usize = 20;
-/// The kinds of nodes that hold transcripts: an agent conversation (`conversation`) and an
-/// imported chat (`chat`). They are long and touch many topics in passing, so they match the
-/// words of a query and have a chunk near its meaning more often than the short note that
-/// answers it.
-pub const TRANSCRIPT_KINDS: &[&str] = &[crate::kinds::CONVERSATION, "chat"];
+/// The kinds of nodes that hold transcripts: an agent conversation (`conversation`), an
+/// imported chat (`chat`) and an imported mail thread (`email`). They are long and touch many
+/// topics in passing, so they match the words of a query and have a chunk near its meaning more
+/// often than the short note that answers it.
+pub const TRANSCRIPT_KINDS: &[&str] = &[crate::kinds::CONVERSATION, "chat", "email"];
 /// What the fusion score of a transcript is multiplied by in a hybrid search (#269): found
 /// first by both words and meaning, it scores as a note found first one way only, so a
 /// transcript wins by matching well, not by being long. Searches by words or by meaning alone
