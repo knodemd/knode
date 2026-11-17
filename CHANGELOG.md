@@ -75,6 +75,13 @@ belongs to, newest first.
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
+- **Installing the Mac app**: opened from its disk image, Downloads or any other folder, Knode offers
+  to move itself to Applications. When the `knode` command points to another copy of Knode, the app
+  names it and offers to point the command to itself, so agents do not keep running an old copy.
+- **Guided import of a vault that holds its repositories**: documents tracked by git in those
+  repositories (`README`, `CHANGELOG`, `AGENTS.md` and the like) are proposed unchecked, since they
+  live with their code and a copy would not follow their changes. Your own notes, including
+  untracked ones inside a repository, stay checked, and you can check any document again.
 
 #### Fixed
 
@@ -129,9 +136,11 @@ belongs to, newest first.
   with every note, for Obsidian, git or anything else (in v0.3 it also reads edits back).
 - **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
   OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
-  it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
-  Windsurf chats; Windsurf's Cascade conversations are not captured yet, and the Windsurf, Cline
-  and Roo Code formats have not been checked against real sessions.
+  it gets instructions instead. Capture also reads Cursor conversations (chats and agent
+  sessions, in the layouts of current and older Cursor versions), Cline tasks (from the VS Code
+  family extension, and the sessions of the Cline CLI and of Cline's SDK in `~/.cline/data`) and
+  Roo Code tasks. Windsurf's Cascade conversations are not captured: Windsurf keeps them
+  encrypted, with no export to read them from.
 
 #### Changed
 
