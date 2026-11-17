@@ -7,11 +7,12 @@ use anyhow::{Result, anyhow, bail};
 use knode_format::{Provenance, Space};
 use knode_service::import::{self, ImportResult, ImportSource};
 use knode_service::{ImportOutcome, ImportedNode};
+use knode_vault::mail::MailOptions;
 
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 12] = [
+pub const FROM: [&str; 14] = [
     "export",
     "markdown",
     "session",
@@ -24,6 +25,8 @@ pub const FROM: [&str; 12] = [
     "bear",
     "notion",
     "evernote",
+    "mbox",
+    "apple-mail",
 ];
 
 /// How many nodes the summary lists one by one.
@@ -31,7 +34,8 @@ const LISTED: usize = 20;
 
 /// What `knode import` was asked for.
 pub struct Request<'a> {
-    /// A path, or an http(s) URL; none for `--from apple-notes` or `--from bear`.
+    /// A path, or an http(s) URL; none for `--from apple-notes`, `--from bear` or
+    /// `--from apple-mail`.
     pub target: Option<&'a str>,
     /// The kind named with `--from`.
     pub from: Option<&'a str>,
@@ -41,6 +45,28 @@ pub struct Request<'a> {
     pub json: bool,
     /// The Knode home, where the credential store keeps the Readwise token.
     pub home: &'a Path,
+    /// `--folder`, `--since`, `--until` and `--attachments`, for mail.
+    pub mail: MailOptions,
+}
+
+/// The mail options of `knode import`.
+pub fn mail_options(
+    folders: Vec<String>,
+    since: Option<&str>,
+    until: Option<&str>,
+    attachments: bool,
+) -> Result<MailOptions> {
+    let day = |text: Option<&str>| {
+        text.map(knode_vault::mail::parse_day)
+            .transpose()
+            .map_err(|e| anyhow!("{e}"))
+    };
+    Ok(MailOptions {
+        folders,
+        since: day(since)?,
+        until: day(until)?,
+        attachments,
+    })
 }
 
 /// Imports what `request` names into the space at `space`.
@@ -65,6 +91,12 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
     }
     // Checked here first, without the space: a wrong kind or a missing file fails at once.
     let mut what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    let mail = !request.mail.is_default();
+    if mail && !what.is_mail() {
+        bail!(
+            "--folder, --since, --until and --attachments are for mail: --from mbox or apple-mail"
+        );
+    }
     // The token of this machine; without one, Knode Service reads its own.
     let token = if what.needs_readwise_token() {
         knode_service::readwise::token(request.home)?
@@ -79,6 +111,9 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             } else {
                 match url {
                     Some(url) => client.import_url(space, url, by),
+                    None if mail => {
+                        client.import_mail(space, path.as_deref(), from, &request.mail, by)
+                    }
                     None => client.import_path(space, path.as_deref(), from, by),
                 }
             };
@@ -89,7 +124,9 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
         }
         None => {
             let mut space = Space::open(space)?;
-            what = what.with_readwise_token(token);
+            what = what
+                .with_readwise_token(token)
+                .with_mail_options(request.mail.clone());
             import::run(&mut space, &what, by).map_err(|e| anyhow!("{e}"))?
         }
     };
