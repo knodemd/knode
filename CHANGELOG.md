@@ -121,9 +121,11 @@ belongs to, newest first.
   with every note, for Obsidian, git or anything else (in v0.3 it also reads edits back).
 - **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
   OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
-  it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
-  Windsurf chats; Windsurf's Cascade conversations are not captured yet, and the Windsurf, Cline
-  and Roo Code formats have not been checked against real sessions.
+  it gets instructions instead. Capture also reads Cursor conversations (chats and agent
+  sessions, in the layouts of current and older Cursor versions), Cline tasks (from the VS Code
+  family extension, and the sessions of the Cline CLI and of Cline's SDK in `~/.cline/data`) and
+  Roo Code tasks. Windsurf's Cascade conversations are not captured: Windsurf keeps them
+  encrypted, with no export to read them from.
 
 #### Changed
 
