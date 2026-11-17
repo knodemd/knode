@@ -446,7 +446,19 @@ jobs:
             title="$title (Linux only, do not publish)"
           fi
           assets=(knode-*.tar.gz knode-*.tar.gz.sha256 Knode-*.dmg Knode-*.dmg.sha256 SHA256SUMS)
-          if draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)"; then
+          # Only "release not found" means there is none yet: any other error (the API, the
+          # network, the token) stops here, so a second draft is never made for the same tag.
+          view_err="$RUNNER_TEMP/release-view.err"
+          if draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> "$view_err")"; then
+            existing=true
+          elif grep -qi 'release not found' "$view_err"; then
+            existing=false
+          else
+            cat "$view_err" >&2
+            echo "::error::Could not check whether release $GITHUB_REF_NAME exists; nothing was created or changed"
+            exit 1
+          fi
+          if [ "$existing" = true ]; then
             # A re-run of this workflow: fill the draft it made before, never a published release.
             if [ "$draft" != true ]; then
               echo "::error::Release $GITHUB_REF_NAME is already published, it is not changed"
