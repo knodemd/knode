@@ -200,3 +200,19 @@ fn remembers_and_forgets_spaces_in_the_config() {
     let text = std::fs::read_to_string(paths.config_file()).unwrap();
     assert!(text.contains("capture = false"), "{text}");
 }
+
+#[test]
+fn names_the_project_a_folder_adds() {
+    use crate::spaces::folder_project_title;
+    assert_eq!(
+        folder_project_title("/Volumes/Work/site [old]".into()).as_deref(),
+        Some("site (old)")
+    );
+    assert_eq!(
+        folder_project_title("/Volumes/Cafe\u{301}/".into()).as_deref(),
+        Some("Caf\u{e9}")
+    );
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(folder_project_title(home), None);
+    assert_eq!(folder_project_title("/".into()), None);
+}

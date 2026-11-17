@@ -3,11 +3,23 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::space::{SUMMARY_COLUMNS, SUMMARY_PATH, summary};
+use unicode_normalization::UnicodeNormalization;
+
+use crate::access::write_folder;
+use crate::space::{SUMMARY_COLUMNS, SUMMARY_PATH, summary, write_new_node};
 use crate::{
-    Folder, FolderSpec, NewNode, NodeId, NodeSummary, Provenance, Result, Space, folder_kinds,
-    kinds, link_kinds,
+    Error, Folder, FolderSpec, NewNode, NodeId, NodeSummary, Properties, Provenance, Result, Space,
+    Timestamp, folder_kinds, kinds, link_kinds,
 };
+
+/// A new, empty `project` node with this title.
+fn project_node(title: &str) -> NewNode {
+    NewNode {
+        kind: kinds::PROJECT.into(),
+        title: title.into(),
+        ..Default::default()
+    }
+}
 
 /// A project of the space, with where it sits and how much is in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,56 +58,64 @@ pub struct AddedFolder {
     pub project: Option<FolderProject>,
 }
 
-/// The name of the project a project folder holds, from its recorded path (format section 15.3):
-/// its last part, such as `knode` for `~/Developer/knode`. `None` for the home folder (`~`), the
-/// root of a disk and other paths with no name of their own.
-pub fn folder_project_name(path: &str) -> Option<&str> {
+/// The title of the project a project folder holds, from its recorded path (format section
+/// 15.3): its last part, such as `knode` for `~/Developer/knode`, in Unicode NFC, with `[` and `]`
+/// written `(` and `)` and `|` written `-`, since titles cannot hold them (`[[links]]` use them).
+/// `None` for the home folder (`~`), the root of a disk and other paths with no name of their own.
+pub fn folder_project_name(path: &str) -> Option<String> {
     let last = path.trim().trim_end_matches('/').rsplit('/').next()?.trim();
     let drive = last.len() == 2 && last.ends_with(':');
-    (!last.is_empty() && last != "~" && last != "." && last != ".." && !drive).then_some(last)
+    if last.is_empty() || last == "~" || last == "." || last == ".." || drive {
+        return None;
+    }
+    let title: String = last
+        .nfc()
+        .map(|c| match c {
+            '[' => '(',
+            ']' => ')',
+            '|' => '-',
+            c => c,
+        })
+        .collect();
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty()).then_some(title)
+}
+
+/// How project names are compared: as [`title_key`](knode_md::title_key) does, after Unicode NFC,
+/// so `Café` typed and `Café` from a file system that decomposes it are the same project.
+fn project_key(name: &str) -> String {
+    knode_md::title_key(&name.nfc().collect::<String>())
 }
 
 impl Space {
-    /// The `project` node with this name, compared without regard to case or extra spaces (as
-    /// [`find_by_title`](Space::find_by_title) does), or `None`. With several, the oldest.
+    /// The `project` node with this name, compared without regard to case, extra spaces or
+    /// Unicode normalization, or `None`. With several (such as one made on each of two devices
+    /// before they synced), always the oldest.
     pub fn project_named(&self, name: &str) -> Result<Option<NodeSummary>> {
+        let key = project_key(name);
         Ok(self
             .query_summaries(
-                "WHERE n.title_key = ?1 AND n.kind = ?2 ORDER BY n.seq LIMIT 1",
-                rusqlite::params![knode_md::title_key(name), kinds::PROJECT],
+                "WHERE n.kind = ?1 ORDER BY n.seq",
+                rusqlite::params![kinds::PROJECT],
             )?
-            .pop())
+            .into_iter()
+            .find(|node| project_key(&node.title) == key))
     }
 
     /// The `project` node with this name, created when the space has none (see
-    /// [`project_named`](Space::project_named)), so a name never gets a second project. A note
-    /// or other node with the same title is not a project and is left as it is.
+    /// [`project_named`](Space::project_named)). The name is used as it is, in NFC; a name a
+    /// title cannot hold is refused. A note or other node with the same title is not a project
+    /// and is left as it is.
     pub fn find_or_create_project(&mut self, name: &str, by: &Provenance) -> Result<FolderProject> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(crate::Error::Invalid("a project needs a name".into()));
-        }
-        if let Some(node) = self.project_named(name)? {
+        let name: String = name.trim().nfc().collect();
+        if let Some(node) = self.project_named(&name)? {
             return Ok(FolderProject {
                 node,
                 created: false,
             });
         }
-        let node = self.create_node(
-            NewNode {
-                kind: kinds::PROJECT.into(),
-                title: name.into(),
-                ..Default::default()
-            },
-            by,
-        )?;
-        let node = self
-            .project_named(&node.title)?
-            .ok_or_else(|| crate::Error::Invalid("the project could not be read back".into()))?;
-        Ok(FolderProject {
-            node,
-            created: true,
-        })
+        let node = self.create_node(project_node(&name), by)?;
+        self.created_project(&node.id)
     }
 
     /// The `project` node a folder holds the files of: the one named after a project folder, if
@@ -106,25 +126,62 @@ impl Space {
             return Ok(None);
         }
         match folder_project_name(&folder.path) {
-            Some(name) => self.project_named(name),
+            Some(name) => self.project_named(&name),
             None => Ok(None),
         }
     }
 
     /// Adds a folder as [`set_folder`](Space::set_folder) does and, for a project folder, creates
-    /// the `project` node named after it or finds the one the space already has (format section
-    /// 15.2), never a second one. Adding the same folder again changes nothing and finds the same
-    /// node. Every client adds folders through this, so a folder and its project always match.
-    /// Removing the folder later keeps the node and everything part of it.
+    /// the `project` node named after it ([`folder_project_name`]) or finds the one the space
+    /// already has (format section 15.2), in one transaction: either both are written or
+    /// neither. Adding the same folder again changes nothing and finds the same node. Every
+    /// client adds folders through this, so a folder and its project match. Removing the folder
+    /// later keeps the node and everything part of it.
     pub fn add_folder(&mut self, spec: &FolderSpec, by: &Provenance) -> Result<AddedFolder> {
-        let folder = self.set_folder(spec, by)?;
-        let project = match folder_project_name(&folder.path) {
-            Some(name) if folder.kind == folder_kinds::PROJECT => {
-                Some(self.find_or_create_project(name, by)?)
-            }
+        let write = self.prepare_folder(spec, by)?;
+        let name = folder_project_name(&write.path).filter(|_| write.kind == folder_kinds::PROJECT);
+        let found = match &name {
+            Some(name) => self.project_named(name)?,
+            None => None,
+        };
+        let new_node = match (&name, &found) {
+            (Some(name), None) => Some(self.prepare_node(project_node(name), &Properties::new())?),
             _ => None,
         };
+        let now = Timestamp::now();
+        let tx = self.conn.transaction()?;
+        write_folder(&tx, &write, by, now)?;
+        let created = match new_node {
+            Some((id, content)) => {
+                write_new_node(&tx, &id, content, &Properties::new(), by, now)?;
+                Some(id)
+            }
+            None => None,
+        };
+        tx.commit()?;
+        let folder = self
+            .folder(&write.id)?
+            .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))?;
+        let project = match (created, found) {
+            (Some(id), _) => Some(self.created_project(&id)?),
+            (None, Some(node)) => Some(FolderProject {
+                node,
+                created: false,
+            }),
+            (None, None) => None,
+        };
         Ok(AddedFolder { folder, project })
+    }
+
+    fn created_project(&self, id: &NodeId) -> Result<FolderProject> {
+        let node = self
+            .query_summaries("WHERE n.id = ?1", [id.to_string()])?
+            .pop()
+            .ok_or_else(|| Error::Invalid("the project could not be read back".into()))?;
+        Ok(FolderProject {
+            node,
+            created: true,
+        })
     }
 
     /// Every project of the space, by title.
@@ -193,13 +250,77 @@ mod tests {
 
     #[test]
     fn a_project_folder_is_named_after_its_last_part() {
-        assert_eq!(folder_project_name("~/Developer/knode"), Some("knode"));
-        assert_eq!(folder_project_name("/Volumes/Work/site/"), Some("site"));
-        assert_eq!(folder_project_name("C:/Users/ada/My App"), Some("My App"));
-        assert_eq!(folder_project_name("knode"), Some("knode"));
+        let name = |path: &str| folder_project_name(path);
+        assert_eq!(name("~/Developer/knode").as_deref(), Some("knode"));
+        assert_eq!(name("/Volumes/Work/site/").as_deref(), Some("site"));
+        assert_eq!(name("C:/Users/ada/My App").as_deref(), Some("My App"));
+        assert_eq!(name("knode").as_deref(), Some("knode"));
+        // Characters a title cannot hold are replaced, and the name is in NFC.
+        assert_eq!(
+            name("~/Developer/site [old]").as_deref(),
+            Some("site (old)")
+        );
+        assert_eq!(name("~/a|b").as_deref(), Some("a-b"));
+        assert_eq!(name("~/Cafe\u{301}").as_deref(), Some("Caf\u{e9}"));
         for nameless in ["~", "/", "", "C:", "C:/", "  "] {
-            assert_eq!(folder_project_name(nameless), None, "{nameless:?}");
+            assert_eq!(name(nameless), None, "{nameless:?}");
         }
+    }
+
+    #[test]
+    fn a_folder_with_brackets_still_gets_its_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        let spec = folder(folder_kinds::PROJECT, "~/Developer/site [old]");
+        let added = space.add_folder(&spec, &by).unwrap();
+        let project = added.project.unwrap();
+        assert!(project.created);
+        assert_eq!(project.node.title, "site (old)");
+        // Adding it again finds the same project.
+        let again = space.add_folder(&spec, &by).unwrap();
+        assert_eq!(again.project.unwrap().node.id, project.node.id);
+        assert_eq!(space.folders().unwrap().len(), 1);
+        assert_eq!(space.projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn decomposed_and_composed_names_are_one_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        // A project written by another app, decomposed (NFD).
+        let nfd = space
+            .create_node(
+                NewNode {
+                    kind: kinds::PROJECT.into(),
+                    title: "Cafe\u{301}".into(),
+                    ..Default::default()
+                },
+                &by,
+            )
+            .unwrap()
+            .id;
+        let added = space
+            .add_folder(&folder(folder_kinds::PROJECT, "~/Caf\u{e9}"), &by)
+            .unwrap();
+        assert_eq!(added.project.unwrap().node.id, nfd);
+        let other = space
+            .add_folder(
+                &folder(folder_kinds::PROJECT, "/Volumes/X/CAFE\u{301}"),
+                &by,
+            )
+            .unwrap();
+        assert_eq!(other.project.unwrap().node.id, nfd);
+        assert_eq!(space.projects().unwrap().len(), 1);
+        assert_eq!(
+            space
+                .find_or_create_project("caf\u{e9}", &by)
+                .unwrap()
+                .node
+                .id,
+            nfd
+        );
     }
 
     #[test]
@@ -249,14 +370,16 @@ mod tests {
         assert_eq!(home.project, None);
         assert_eq!(space.projects().unwrap().len(), 1);
 
-        // Only a person adds folders, so nothing is created for anyone else.
+        // Only a person adds folders, so nothing is written for anyone else: no folder, no node.
         let agent = Provenance::agent("claude-code");
+        let folders = space.folders().unwrap().len();
         assert!(
             space
                 .add_folder(&folder(folder_kinds::PROJECT, "~/Developer/other"), &agent)
                 .is_err()
         );
         assert!(space.project_named("other").unwrap().is_none());
+        assert_eq!(space.folders().unwrap().len(), folders);
     }
 
     #[test]

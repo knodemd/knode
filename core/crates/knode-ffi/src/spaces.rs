@@ -87,6 +87,15 @@ pub struct CaptureAgent {
     pub name: String,
 }
 
+/// The title of the project a project folder at `path` (absolute) holds, as adding it names the
+/// project: the folder's name in NFC, with `[`, `]` and `|` replaced. `None` for the home folder
+/// and the root of a disk, which add no project.
+#[uniffi::export]
+pub fn folder_project_title(path: String) -> Option<String> {
+    let recorded = knode_service::markdown::record_path(Path::new(path.trim()));
+    knode_format::folder_project_name(&recorded)
+}
+
 /// The agents capture reads, in the order Knode lists them.
 #[uniffi::export]
 pub fn capture_agents() -> Vec<CaptureAgent> {
