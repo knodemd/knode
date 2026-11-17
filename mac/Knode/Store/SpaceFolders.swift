@@ -23,7 +23,7 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
     public var localURL: URL?
     /// The folder does not exist on this machine: it is kept and skipped.
     public var isMissing: Bool
-    /// For a project folder, the project of the same name it holds the files of (section 15.2).
+    /// For a project folder, the project named after it that it holds the files of.
     /// `nil` for other folders, and for a project folder added before Knode made these.
     public var project: Project?
 
@@ -33,11 +33,24 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         public var title: String
         /// Adding the folder just created it, rather than finding the one the space had.
         public var created: Bool
+        /// The folder had been added before and already held this project.
+        public var alreadyHeld: Bool
+        /// When adding the folder made a project named after its parent folder too, such as
+        /// "api (b)", the project of its own name that another folder holds.
+        public var passedOver: String?
+        /// The folders, as recorded, that hold the files of `passedOver`.
+        public var passedOverFolders: [String]
+        /// The other folders, as recorded, that hold the files of this project too.
+        public var sharedWith: [String]
 
-        public init(id: Node.ID, title: String, created: Bool = false) {
+        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], sharedWith: [String] = []) {
             self.id = id
             self.title = title
             self.created = created
+            self.alreadyHeld = alreadyHeld
+            self.passedOver = passedOver
+            self.passedOverFolders = passedOverFolders
+            self.sharedWith = sharedWith
         }
     }
 

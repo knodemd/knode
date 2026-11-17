@@ -94,9 +94,21 @@ final class SpaceFoldersModel {
 
     /// What adding a project folder did, in one sentence.
     static func notice(for project: SpaceFolder.Project) -> String {
-        project.created
-            ? "Added the project \u{201C}\(project.title)\u{201D}. Removing the folder later keeps the project and its notes."
-            : "This folder holds the files of \u{201C}\(project.title)\u{201D}, the project this space already had."
+        let title = "\u{201C}\(project.title)\u{201D}"
+        var notice: String
+        if let other = project.passedOver {
+            notice = "Added the project \(title), named after its parent folder too: \u{201C}\(other)\u{201D} already holds the files of \(project.passedOverFolders.joined(separator: ", ")). Removing the folder later keeps the project and its notes."
+        } else if project.created {
+            notice = "Added the project \(title). Removing the folder later keeps the project and its notes."
+        } else if project.alreadyHeld {
+            notice = "This folder already holds the files of \(title)."
+        } else {
+            notice = "This folder holds the files of \(title), the project this space already had."
+        }
+        if !project.sharedWith.isEmpty {
+            notice += " \(title) also holds the files of \(project.sharedWith.joined(separator: ", "))."
+        }
+        return notice
     }
 
     /// Makes a change, then reads the folders again.

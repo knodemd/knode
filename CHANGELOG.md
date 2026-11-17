@@ -84,9 +84,11 @@ belongs to, newest first.
 - **A project folder adds its project**: adding a project folder, in the Mac app or with
   `knode folders add`, adds the project of the same name to the space, or uses the one of that
   name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
-  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
-  removing the folder keeps the project and its notes. A folder added before this gets its
-  project when it is added again.
+  folder's name become `(`, `)` and `-`. Two different folders of the same name are kept apart:
+  when another folder already holds the project of that name, the new folder gets its own, named
+  after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
+  `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
+  added before this gets its project when it is added again.
 
 #### Changed
 
