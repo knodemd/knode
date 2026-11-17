@@ -411,6 +411,12 @@ pub fn is_archived_space(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether capture routes conversations over the folders of a known space: it exists and is not
+/// an archived copy.
+pub fn is_routed_space(path: &Path) -> bool {
+    path.exists() && !is_archived_space(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +607,17 @@ mod tests {
         assert!(!super::is_archived_space(Path::new(
             "/k/Work-archive-.knode"
         )));
+    }
+
+    #[test]
+    fn capture_routes_over_existing_spaces_that_are_not_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("Work.knode");
+        let archived = dir.path().join("Work-archive-1794871951073089000.knode");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&archived).unwrap();
+        assert!(super::is_routed_space(&work));
+        assert!(!super::is_routed_space(&archived));
+        assert!(!super::is_routed_space(&dir.path().join("Gone.knode")));
     }
 }

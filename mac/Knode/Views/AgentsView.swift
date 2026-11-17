@@ -38,7 +38,7 @@ struct AgentsSettingsView: View {
                     if agent.kind != agent.name { KChip(agent.kind) }
                 } content: {
                     AgentDetails(agent: agent, onConnect: { overlays?.connecting = $0 })
-                    if let connectable = Self.checkable(agent) {
+                    if let connectable = ConnectableAgent.checkable(agent) {
                         KHairline()
                         AgentCheckSection(agent: connectable, checks: checks)
                     }
@@ -63,17 +63,11 @@ struct AgentsSettingsView: View {
             }
         }
         .task { await agents.load() }
-        .task(id: agents.agents.compactMap(Self.checkable).map(\.rawValue)) {
-            for agent in agents.agents.compactMap(Self.checkable) where checks.results[agent.rawValue] == nil {
+        .task(id: agents.agents.compactMap(ConnectableAgent.checkable).map(\.rawValue)) {
+            for agent in agents.agents.compactMap(ConnectableAgent.checkable) where checks.results[agent.rawValue] == nil {
                 await checks.check(agent.rawValue)
             }
         }
-    }
-
-    /// The agent `knode connect --check` can check, when it has a key.
-    private static func checkable(_ agent: AgentInfo) -> ConnectableAgent? {
-        guard agent.validKey != nil else { return nil }
-        return ConnectableAgent(agent: agent.name) ?? ConnectableAgent(agent: agent.kind)
     }
 
     private func confirmRevoke(_ agent: AgentInfo) {

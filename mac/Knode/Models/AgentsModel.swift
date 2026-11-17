@@ -29,6 +29,13 @@ enum ConnectableAgent: String, CaseIterable, Identifiable {
         guard let match = Self.allCases.first(where: { $0.agentName == agent || $0.rawValue == agent }) else { return nil }
         self = match
     }
+
+    /// The agent `knode connect --check` checks for `agent`, when it has a key: by its own name,
+    /// never by its kind, which would show the check of another agent of that kind.
+    static func checkable(_ agent: AgentInfo) -> ConnectableAgent? {
+        guard agent.validKey != nil else { return nil }
+        return ConnectableAgent(agent: agent.name)
+    }
 }
 
 /// The agents of this machine and what each may do in each space, managed through Knode Service

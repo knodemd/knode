@@ -349,6 +349,18 @@ import Testing
         #expect(AgentCheck.commands(in: "No command here, `not knode` either.").isEmpty)
     }
 
+    @Test func anAgentIsCheckedByItsOwnNameOnly() {
+        func agent(_ name: String, kind: String, revoked: Bool = false) -> AgentInfo {
+            AgentInfo(id: name, name: name, kind: kind, createdAt: 0,
+                      keys: [.init(fingerprint: "sha256:00", createdAt: 0, revokedAt: revoked ? 1 : nil)], spaces: [])
+        }
+        #expect(ConnectableAgent.checkable(agent("claude-code", kind: "claude-code")) == .claudeCode)
+        #expect(ConnectableAgent.checkable(agent("gemini-cli", kind: "gemini-cli")) == .gemini)
+        // Another agent of the same kind would show the check of the agent named claude-code.
+        #expect(ConnectableAgent.checkable(agent("work-claude", kind: "claude-code")) == nil)
+        #expect(ConnectableAgent.checkable(agent("codex", kind: "codex", revoked: true)) == nil)
+    }
+
     @Test func checksAgainstTheChosenSpaceOrProjectOnly() {
         let work = URL(filePath: "/tmp/Work.knode", directoryHint: .isDirectory)
         let home = URL(filePath: "/tmp/Home.knode", directoryHint: .isDirectory)
