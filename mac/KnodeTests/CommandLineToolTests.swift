@@ -153,4 +153,42 @@ import Testing
         #expect(KnodeHome.resolve(environment: ["KNODE_HOME": "/tmp/kh"], userHome: home).socketURL.path == "/tmp/kh/service.sock")
         #expect(KnodeHome.resolve(environment: [:], userHome: home).socketURL.path == "/Users/ada/Library/Application Support/Knode/service.sock")
     }
+
+    @Test func namesTheOtherCopyAStaleLinkRuns() {
+        let link = URL(filePath: "/usr/local/bin/knode")
+        let other = "/Users/ada/Downloads/Knode.app/Contents/Helpers/knode"
+        let fileSystem = MemoryFileSystem(executables: [Self.app], links: [link.path: other])
+        #expect(tool(fileSystem).staleLinkDestination(link) == URL(filePath: other))
+        #expect(CommandLineTool.app(containing: URL(filePath: other)) == URL(filePath: "/Users/ada/Downloads/Knode.app"))
+        #expect(CommandLineTool.app(containing: URL(filePath: "/opt/homebrew/bin/knode")) == nil)
+    }
+
+    @Test func offersToMoveTheAppUnlessItIsInApplications() {
+        let home = URL(filePath: "/Users/ada", directoryHint: .isDirectory)
+        func location(_ path: String) -> ApplicationLocation {
+            ApplicationLocation(bundle: URL(filePath: path, directoryHint: .isDirectory), home: home)
+        }
+        #expect(location("/Applications/Knode.app") == .installed)
+        #expect(location("/Users/ada/Applications/Knode.app") == .installed)
+        #expect(location("/Volumes/Knode/Knode.app") == .diskImage)
+        #expect(location("/private/var/folders/x/AppTranslocation/1234/d/Knode.app") == .translocated)
+        #expect(location("/Users/ada/Downloads/Knode.app") == .elsewhere)
+        #expect(location("/Users/ada/Projects/knode/mac/build/Release/Knode.app") == .elsewhere)
+        // A folder whose name only starts like Applications is not Applications.
+        #expect(location("/Applications Old/Knode.app") == .elsewhere)
+        #expect(!location("/Applications/Knode.app").shouldOfferMove)
+        #expect(location("/Volumes/Knode/Knode.app").shouldOfferMove)
+        // A disk image and a translocated copy are copied, never removed.
+        #expect(location("/Users/ada/Downloads/Knode.app").removesOriginal)
+        #expect(!location("/Volumes/Knode/Knode.app").removesOriginal)
+        #expect(!location("/private/var/folders/x/AppTranslocation/1234/d/Knode.app").removesOriginal)
+    }
+
+    @Test func replacingACopyInApplicationsSaysSoWithBothVersions() {
+        #expect(ApplicationMover.replacementNote(existing: "0.2.0", this: "0.1.0")
+            == "The copy of Knode already in Applications (version 0.2.0) will be moved to the Trash "
+            + "and replaced by this one (version 0.1.0).")
+        #expect(ApplicationMover.replacementNote(existing: nil, this: nil)
+            == "The copy of Knode already in Applications will be moved to the Trash and replaced by this one.")
+    }
 }

@@ -61,20 +61,75 @@ belongs to, newest first.
   checked against a real export yet; Perplexity has no export of all threads, so it is not
   supported; Readwise is read from its exports, not its API. The Mac app has no import screen
   yet.
+- **Mail import**: `knode import --from mbox` reads Gmail through a Google Takeout `.mbox` (or any
+  other `mbox` file), and `knode import --from apple-mail` reads the Apple Mail store on the Mac,
+  which needs Full Disk Access (Knode says how to allow it when it is missing). Each thread
+  becomes one node with its messages in order, sender, recipients and date, the text part
+  preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
+  address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
+  folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
+  default). Importing again, or another date range, adds only the new messages, and never
+  overwrites what you changed or added to a thread in Knode. Knode never signs
+  in to a mail account: it reads only the files you point it at. Knode Service does the same with
+  `import.run`.
+- **Chat exports in `knode import`**: WhatsApp chat exports (the `.zip`, its folder or the
+  chat's `.txt`, from iOS or Android, in the date formats WhatsApp writes in each language)
+  become one `chat` node per
+  chat, with the messages grouped by day, the sender and time of each, and the photos, voice
+  notes and documents of the export attached. Media the export left out or does not have are
+  marked in the text. Importing the same chat again, or a newer export of it, adds only the new
+  messages. When a chat's dates could be day or month first, the summary says how they were
+  read, and later imports of the chat read them the same way. Telegram Desktop exports in JSON
+  (one chat, or the whole account with every chat in it) are read the same way, with bold,
+  italic, code, links and quotes kept as Markdown and replies naming the message they answer.
+  Slack workspace exports become one node per channel and direct message, each thread its own
+  node linked to its channel, and the members who wrote or were mentioned `person` nodes that
+  mentions link to; files are kept as links, or attached when the export includes them.
+  `--from whatsapp`, `--from telegram` or `--from slack` says what it is; Knode Service imports
+  them through `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
   never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+- **A project folder adds its project**: adding a project folder, in the Mac app or with
+  `knode folders add`, adds the project of the same name to the space, or uses the one of that
+  name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
+  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
+  removing the folder keeps the project and its notes. A folder added before this gets its
+  project when it is added again.
 
 #### Changed
 
+- **Guided import report**: links to documents you left out in review are counted apart as
+  expected, instead of listed with the links that found nothing.
+- **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
+  "Imported memory" for every import; the name stays editable.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
+- **Installing the Mac app**: opened from its disk image, Downloads or any other folder, Knode offers
+  to move itself to Applications. When the `knode` command points to another copy of Knode, the app
+  names it and offers to point the command to itself, so agents do not keep running an old copy.
+- **Guided import of a vault that holds its repositories**: documents tracked by git in those
+  repositories (`README`, `CHANGELOG`, `AGENTS.md` and the like) are proposed unchecked, since they
+  live with their code and a copy would not follow their changes. Your own notes, including
+  untracked ones inside a repository, stay checked, and you can check any document again.
 
 #### Fixed
 
+- **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
+  skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
+  the command line.
+- **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
+  including the default space, now appear in the sidebar the next time the app opens, unless you
+  took them off the list.
+- **Obsidian links with a relative path**: `[[../Research/Insights]]` and `[[./Glossary]]`, as Obsidian
+  writes them with "relative path to file", now link to the file they name, even when it is
+  imported after the note.
+- **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
+  label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
+  written that way finds its attachment on import.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
@@ -117,13 +172,19 @@ belongs to, newest first.
   with every note, for Obsidian, git or anything else (in v0.3 it also reads edits back).
 - **More agents**: `knode connect` adds Knode to Cursor, Windsurf, Cline, Roo Code, Copilot CLI,
   OpenCode, Amp, VS Code and Zed (`knode connect --list` shows them); Aider has no MCP support, so
-  it gets instructions instead. Capture also reads Cursor, Cline and Roo Code conversations and
-  Windsurf chats; Windsurf's Cascade conversations are not captured yet, and the Windsurf, Cline
-  and Roo Code formats have not been checked against real sessions.
+  it gets instructions instead. Capture also reads Cursor conversations (chats and agent
+  sessions, in the layouts of current and older Cursor versions), Cline tasks (from the VS Code
+  family extension, and the sessions of the Cline CLI and of Cline's SDK in `~/.cline/data`) and
+  Roo Code tasks. Windsurf's Cascade conversations are not captured: Windsurf keeps them
+  encrypted, with no export to read them from.
 
 #### Changed
 
 - `knode spaces` shows each space's icon, which one is the default and where capture is off.
+- **The install script** takes `--prefix <dir>` to put `knode` in `<dir>/bin` instead of
+  `~/.local/bin` (`curl -fsSL https://knode.md/install.sh | sh -s -- --prefix /opt/knode`), on
+  a Mac it says that Homebrew and the Mac app also install `knode`, and it says plainly when no
+  release is published yet.
 
 ### v0.1 - You use it
 
