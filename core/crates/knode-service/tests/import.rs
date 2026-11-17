@@ -179,6 +179,10 @@ fn every_source_is_told_from_its_path_and_content() {
         s(&fx::ingest("chats/telegram-account/result.json")),
         ImportSource::Telegram
     );
+    assert_eq!(
+        found(&fx::ingest("chats/slack")),
+        (ImportSource::Slack, "Slack export".into())
+    );
 
     // `from` names it.
     let named = |path: &Path, from| prepare(Some(path), None, Some(from)).map(|p| p.source());
@@ -257,6 +261,7 @@ fn every_source_imports_once_through_the_service() {
             ImportSource::Telegram,
             3,
         ),
+        (fx::ingest("chats/slack"), ImportSource::Slack, 2),
     ];
     let mut first = true;
     for (path, source, at_least) in cases {

@@ -280,6 +280,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `evernote` | An `.enex` file, or a folder of them |
 | `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
+| `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
