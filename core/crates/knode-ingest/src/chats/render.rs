@@ -63,7 +63,7 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     let time = message.time.format("%H:%M");
     let mut lines: Vec<String> = escape_blocks(&message.text)
         .lines()
-        .map(str::to_string)
+        .map(|l| l.trim_end().to_string())
         .collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
@@ -150,7 +150,7 @@ fn escape_blocks(text: &str) -> String {
             fence = Some("```");
         } else if trimmed.starts_with("~~~") {
             fence = Some("~~~");
-        } else if trimmed.starts_with('#')
+        } else if is_heading(trimmed)
             || (!trimmed.is_empty() && trimmed.chars().all(|c| matches!(c, '=' | '-' | ' ')))
         {
             out.push('\\');
@@ -159,6 +159,16 @@ fn escape_blocks(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Whether a line is an ATX heading: one to six `#`, then a space or nothing.
+fn is_heading(line: &str) -> bool {
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes)
+        && line[hashes..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace)
 }
 
 #[cfg(test)]
@@ -223,5 +233,10 @@ mod tests {
             "**Ada\\_1** (09:05): \\## not a day\nline\n\\---\n```\n# code\n```"
         );
         assert_eq!(escape_text("see [[Plan]]"), "see \\[\\[Plan\\]\\]");
+        let m = message(4, 9, Some("Ada"), "a\n#tag stays\n#\n###### six");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05): a\n#tag stays\n\\#\n\\###### six"
+        );
     }
 }

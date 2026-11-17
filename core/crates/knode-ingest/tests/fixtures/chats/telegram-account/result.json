@@ -1,0 +1,136 @@
+{
+ "about": "Here is the data you requested. Remember: Telegram is ad free, it doesn't use your data for ad targeting and doesn't sell it to others. Telegram only keeps the information it needs to function as a feature-rich cloud service; for more details see https://telegram.org/privacy.",
+ "personal_information": {
+  "user_id": 101,
+  "first_name": "Ada",
+  "last_name": "",
+  "phone_number": "+00 000 000 000",
+  "username": "@ada",
+  "bio": ""
+ },
+ "chats": {
+  "about": "This page lists all chats from this export.",
+  "list": [
+   {
+    "name": "Grace",
+    "type": "personal_chat",
+    "id": 102,
+    "messages": [
+     {
+      "id": 10,
+      "type": "message",
+      "date": "2026-03-04T08:00:00",
+      "date_unixtime": "1772611200",
+      "from": "Grace",
+      "from_id": "user102",
+      "text": "Morning",
+      "text_entities": [
+       {
+        "type": "plain",
+        "text": "Morning"
+       }
+      ]
+     },
+     {
+      "id": 11,
+      "type": "message",
+      "date": "2026-03-04T08:01:00",
+      "date_unixtime": "1772611260",
+      "from": "Ada",
+      "from_id": "user101",
+      "text": [
+       {
+        "type": "strikethrough",
+        "text": "Tea"
+       },
+       " Coffee?"
+      ],
+      "text_entities": [
+       {
+        "type": "strikethrough",
+        "text": "Tea"
+       },
+       {
+        "type": "plain",
+        "text": " Coffee?"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Garden News",
+    "type": "public_channel",
+    "id": 1000000002,
+    "messages": [
+     {
+      "id": 1,
+      "type": "message",
+      "date": "2026-03-06T12:00:00",
+      "date_unixtime": "1772798400",
+      "from": "Garden News",
+      "from_id": "channel1000000002",
+      "text": [
+       {
+        "type": "hashtag",
+        "text": "#tomatoes"
+       },
+       " go in ",
+       {
+        "type": "link",
+        "text": "https://example.com/plot"
+       }
+      ],
+      "text_entities": [
+       {
+        "type": "hashtag",
+        "text": "#tomatoes"
+       },
+       {
+        "type": "plain",
+        "text": " go in "
+       },
+       {
+        "type": "link",
+        "text": "https://example.com/plot"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Empty",
+    "type": "personal_chat",
+    "id": 104,
+    "messages": []
+   }
+  ]
+ },
+ "left_chats": {
+  "about": "This page lists all supergroups and channels from this export that you've left.",
+  "list": [
+   {
+    "name": "Old Team",
+    "type": "private_supergroup",
+    "id": 1000000003,
+    "messages": [
+     {
+      "id": 5,
+      "type": "message",
+      "date": "2026-01-02T10:00:00",
+      "date_unixtime": "1767348000",
+      "from": "Mira",
+      "from_id": "user105",
+      "text": "Bye all",
+      "text_entities": [
+       {
+        "type": "plain",
+        "text": "Bye all"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}
