@@ -108,9 +108,10 @@ pub struct SourcesOptions {
     pub max_backoff: Duration,
     /// How long files a connector watches must be quiet before it runs.
     pub quiet: Duration,
-    /// The longest time between two runs of a connector that watches files, whatever its own
-    /// `every` says: macOS reports writes to a file another app keeps open late, so the
-    /// events alone do not bring things in quickly. A minute by default.
+    /// How often a connector that watches files is looked at, whatever its own `every` says:
+    /// macOS reports writes to a file another app keeps open late, so the events alone do not
+    /// bring things in quickly. It runs then only when its files changed, or its last run did
+    /// not read everything. A minute by default.
     pub watch_every: Duration,
     /// The most items a connector is asked for in one batch.
     pub max_items: usize,
@@ -701,6 +702,10 @@ impl StateFile {
         self.sources.get(key)
     }
 
+    pub(crate) fn get_mut(&mut self, key: &str) -> Option<&mut RunState> {
+        self.sources.get_mut(key)
+    }
+
     pub(crate) fn entry(&mut self, key: &str) -> &mut RunState {
         self.sources.entry(key.to_string()).or_default()
     }
@@ -1032,6 +1037,47 @@ pub fn forget_state(home: &Path, space_id: &str, id: &str) -> io::Result<()> {
     states.save(home)
 }
 
+/// Signs the connector `id` out of its account, removing its sign-in from the keychain, when
+/// no space in `config.toml` of the Knode home `home` still has it connected. For a disconnect
+/// made while Knode Service is not running; the service does it itself after
+/// `sources.disconnect`, also counting the spaces it has open. Call it with no space open.
+/// Returns whether it signed out.
+pub fn sign_out_if_unused(home: &Path, id: &str) -> bool {
+    sign_out_if_unused_with(home, &builtin_connectors(), id)
+}
+
+fn sign_out_if_unused_with(home: &Path, connectors: &[Arc<dyn Connector>], id: &str) -> bool {
+    let Some(connector) = connectors.iter().find(|c| c.info().id == id) else {
+        return false;
+    };
+    if !connector.info().permissions.contains(&Permission::SignIn) {
+        return false;
+    }
+    let spaces: Vec<PathBuf> =
+        knode_config::Config::load_from(&home.join(knode_config::CONFIG_FILE))
+            .map(|c| c.known_spaces())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.is_absolute() && p.exists())
+            .collect();
+    // A space that cannot be read counts as still having it: its sign-in is kept rather than
+    // removed too early.
+    let still = spaces.iter().any(|path| match Space::open(path) {
+        Ok(space) => source_settings(&space).map_or(true, |s| s.contains_key(id)),
+        Err(_) => true,
+    });
+    if still {
+        return false;
+    }
+    match connector.sign_out(&SourceSecrets::new(home, id)) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("{id} could not sign out: {e}");
+            false
+        }
+    }
+}
+
 /// Every source of the space as the Knode home `home` has it, without the service: the
 /// built-in connectors, those the space has connected, and the importers. Connected
 /// connectors show as [`SourceState::Stopped`] since nothing runs them.
@@ -1129,6 +1175,73 @@ mod tests {
         assert!(source_key_store(dir.path()).describe().contains("a file"));
         // Agent keys keep their fallback.
         assert!(default_key_store(dir.path()).describe().contains("a file"));
+    }
+
+    /// A connector with an account, counting its sign-outs.
+    struct Account(std::sync::atomic::AtomicUsize);
+
+    impl Connector for Account {
+        fn info(&self) -> SourceInfo {
+            SourceInfo::connector("fake", "Fake", "Synthetic").needing([Permission::SignIn])
+        }
+
+        fn fetch(&self, _: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
+            Ok(Fetched::nothing(Cursor::new("0")))
+        }
+
+        fn sign_out(&self, _: &dyn Secrets) -> Result<bool, SourceError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn without_the_service_the_sign_in_goes_with_the_last_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let me = Provenance::person("me");
+        let known = vec!["fake".to_string()];
+        let account = Arc::new(Account(Default::default()));
+        let connectors: Vec<Arc<dyn Connector>> = vec![account.clone()];
+        let sign_outs = || account.0.load(std::sync::atomic::Ordering::SeqCst);
+        let mut paths = Vec::new();
+        for name in ["Personal", "Work"] {
+            let path = dir.path().join(format!("{name}.knode"));
+            let mut space = Space::create(&path, name).unwrap();
+            connect(&mut space, &known, "fake", None, &me).unwrap();
+            paths.push(fs::canonicalize(path).unwrap());
+        }
+        // A folder in config.toml that is not a space (yet) cannot be read.
+        let broken = dir.path().join("Broken.knode");
+        fs::create_dir(&broken).unwrap();
+        let config = format!(
+            "default_space = {:?}\nspaces = [{:?}, {:?}]\n",
+            paths[0].to_str().unwrap(),
+            paths[1].to_str().unwrap(),
+            broken.to_str().unwrap()
+        );
+        fs::write(home.join(knode_config::CONFIG_FILE), config).unwrap();
+        let disconnect_from = |path: &Path| {
+            let mut space = Space::open(path).unwrap();
+            assert!(disconnect(&mut space, "fake", &me).unwrap());
+        };
+
+        disconnect_from(&paths[0]);
+        assert!(!sign_out_if_unused_with(&home, &connectors, "fake"));
+        assert_eq!(sign_outs(), 0, "still connected to Work");
+        disconnect_from(&paths[1]);
+        assert!(!sign_out_if_unused_with(&home, &connectors, "fake"));
+        assert_eq!(
+            sign_outs(),
+            0,
+            "a space that cannot be read keeps the sign-in"
+        );
+        fs::remove_dir(&broken).unwrap();
+        assert!(sign_out_if_unused_with(&home, &connectors, "fake"));
+        assert_eq!(sign_outs(), 1);
+        // A connector with no account, or none at all, signs nothing out.
+        assert!(!sign_out_if_unused_with(&home, &connectors, "nope"));
     }
 
     #[test]

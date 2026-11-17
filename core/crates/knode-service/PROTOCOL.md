@@ -504,7 +504,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
-| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected |
+| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected (a space it cannot read counts as having it) |
 | `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
 | `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
 | `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
@@ -543,10 +543,16 @@ A connector runs when the files it watches change (a local database and its `-wa
 interval, and when `sources.run` asks. A file event runs it only when the size or modification
 time of the files or their `-wal` changed since its last run, so its own reads of them (which
 macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
-open late, so a connector that watches files also runs at least once a minute. Connectors that
-read another app's database read a copy of it, never the live file: a copy made while the app
-wrote the database or its `-wal` is made again, and one that fails SQLite's `quick_check` is
-not read (the run fails and is tried again later). They check its tables and columns first. Their writes are made with
+open late, so a connector that watches files is also looked at once a minute, and runs then
+when those files changed, or when its last run did not read everything (it ran long enough, it
+failed, or it waits for a file the app has not written yet). A pause, an exclusion or a
+disconnect made while a connector runs counts from its next batch: a batch read before it is
+not written, and nothing of a source disconnected meanwhile is saved. Connectors that read
+another app's database read a copy of it, never the live file: a copy made while the app wrote
+the database or its `-wal` is made again, and that copy is checked with SQLite's `quick_check`
+and not read when it fails (the run fails and is tried again later). Only a file that is not a
+database this SQLite reads is reported as `needs-update`; other errors opening the copy fail
+the run, which is tried again. They check its tables and columns first. Their writes are made with
 the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
 in the system credential store (the Keychain on macOS, the Secret Service on Linux), never in a
 space, a settings file or a log. Where Linux has no Secret Service, a connector that needs a

@@ -47,6 +47,10 @@ struct Store {
     reads: Option<PathBuf>,
     /// How long listing the containers takes, as over the network.
     slow_containers: Duration,
+    /// How long each fetch takes, as over the network or a big database.
+    slow_fetch: Duration,
+    /// Whether it waits for something its watched files do not show.
+    waiting: bool,
 }
 
 #[derive(Clone)]
@@ -99,14 +103,23 @@ impl Connector for Fake {
         ])
     }
 
+    fn waiting(&self, _cursor: &Cursor) -> bool {
+        self.store().waiting
+    }
+
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
+        let slow = {
+            let mut store = self.store();
+            store.fetches += 1;
+            store.times.push(Instant::now());
+            store.requests.push((
+                request.cursor.map(|c| c.as_str().to_string()),
+                request.excluded.iter().map(|c| c.id.clone()).collect(),
+            ));
+            store.slow_fetch
+        };
+        thread::sleep(slow);
         let mut store = self.store();
-        store.fetches += 1;
-        store.times.push(Instant::now());
-        store.requests.push((
-            request.cursor.map(|c| c.as_str().to_string()),
-            request.excluded.iter().map(|c| c.id.clone()).collect(),
-        ));
         if let Some(db) = &store.reads {
             read_like_macos(db);
         }
@@ -638,21 +651,28 @@ fn a_connectors_own_read_of_its_files_does_not_run_it_again() {
 #[test]
 fn a_watching_connector_runs_at_its_interval_when_events_come_late() {
     let dir = tempfile::tempdir().unwrap();
-    let (db, _app) = synthetic_db(dir.path());
+    let (db, app) = synthetic_db(dir.path());
     let f = Fixture::with_options(
         Trigger::Watch {
             paths: vec![db],
             // Longer than the service allows: it runs at least every `watch_every`.
             every: Duration::from_secs(3600),
         },
-        |o| o.watch_every = Duration::from_millis(300),
+        |o| {
+            o.watch_every = Duration::from_millis(300);
+            // File events never run it here: only the interval does.
+            o.quiet = Duration::from_secs(3600);
+        },
     );
     f.client()
         .sources_connect(f.space(), ID, None, &me())
         .unwrap();
     f.wait_until("the first run", |f| f.status().last_success.is_some());
-    // Something new, and no file event at all.
+    // Something new, written by the app to the database it keeps open; its events are
+    // left out.
     f.fake.add("work", Timestamp::now(), "Hello");
+    app.execute("INSERT INTO message (text) VALUES ('Hello')", [])
+        .unwrap();
     f.wait_until("a run at the interval", |f| f.written().len() == 1);
     let times = f.fake.store().times.clone();
     assert!(times.len() >= 2);
@@ -716,4 +736,147 @@ fn listing_containers_slowly_does_not_hold_up_the_space() {
         started.elapsed()
     );
     assert_eq!(listing.join().unwrap().len(), 2);
+}
+
+/// A connector whose every fetch takes 150 ms, with 30 messages to read three at a time, and
+/// connected with everything: a run of ten batches.
+fn slow_run(chat_of: fn(u64) -> &'static str) -> Fixture {
+    let f = Fixture::with_options(Trigger::Interval(Duration::from_secs(3600)), |o| {
+        o.max_batches = 100;
+    });
+    f.fake.store().slow_fetch = Duration::from_millis(150);
+    for i in 1..=30 {
+        f.fake.add(chat_of(i), Timestamp::now(), "Hello");
+    }
+    f.client()
+        .sources_connect(f.space(), ID, Some(History::Everything), &me())
+        .unwrap();
+    f.wait_until("the first fetch", |f| f.fake.store().fetches >= 1);
+    f
+}
+
+#[test]
+fn a_pause_and_an_exclusion_reach_a_run_in_progress() {
+    let f = slow_run(|_| "family");
+    f.client()
+        .sources_set_on(f.space(), ID, false, &me())
+        .unwrap();
+    f.client()
+        .sources_exclude(f.space(), ID, "family", Some("Family"), &me())
+        .unwrap();
+    let at_pause = f.fake.store().fetches;
+    thread::sleep(Duration::from_millis(1200));
+    let after = f.fake.store().fetches;
+    let written = f.written().len();
+    assert_eq!(at_pause, 1);
+    assert_eq!(after, at_pause, "fetches after the pause");
+    assert!(written <= 3, "written after the pause: {written}");
+    assert_eq!(f.status().state, SourceState::Paused);
+}
+
+#[test]
+fn an_exclusion_counts_from_the_next_batch_of_a_run() {
+    let f = slow_run(|i| if i % 2 == 0 { "family" } else { "work" });
+    f.client()
+        .sources_exclude(f.space(), ID, "family", Some("Family"), &me())
+        .unwrap();
+    f.wait_until("the run", |f| {
+        f.status().last_success.is_some() && f.status().state != SourceState::Running
+    });
+    let requests = f.fake.store().requests.clone();
+    assert!(
+        requests[1..]
+            .iter()
+            .all(|(_, excluded)| excluded == &vec!["family".to_string()]),
+        "{requests:?}"
+    );
+    // The batch fetched before the exclusion was fetched again without the chat.
+    assert!(
+        f.written().iter().all(|t| t.starts_with("work")),
+        "{:?}",
+        f.written()
+    );
+    assert_eq!(f.written().len(), 15);
+}
+
+#[test]
+fn a_disconnect_during_a_run_does_not_bring_the_source_back() {
+    let f = slow_run(|_| "family");
+    assert!(f.client().sources_disconnect(f.space(), ID, &me()).unwrap());
+    let at_disconnect = f.fake.store().fetches;
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(f.fake.store().fetches, at_disconnect);
+    assert!(f.written().len() <= 3, "{:?}", f.written());
+    let status = f.status();
+    assert_eq!(status.state, SourceState::Off);
+    assert_eq!(status.items, 0);
+    assert!(status.last_run.is_none());
+    // Nothing of it is saved again.
+    let state = fs::read_to_string(f.home().join("sources/state.json")).unwrap_or_default();
+    assert!(!state.contains(ID), "{state}");
+}
+
+#[test]
+fn connecting_and_pausing_at_once_reads_nothing() {
+    let f = Fixture::new();
+    f.fake.store().slow_fetch = Duration::from_millis(150);
+    for i in 1..=6 {
+        f.fake
+            .add("family", Timestamp::now(), &format!("Message {i}"));
+    }
+    let client = f.client();
+    client
+        .sources_connect(f.space(), ID, Some(History::Everything), &me())
+        .unwrap();
+    client.sources_set_on(f.space(), ID, false, &me()).unwrap();
+    client
+        .sources_exclude(f.space(), ID, "family", Some("Family"), &me())
+        .unwrap();
+    thread::sleep(Duration::from_millis(600));
+    // A fetch already under way when the pause came is not written.
+    assert!(f.written().is_empty(), "{:?}", f.written());
+    assert!(f.fake.store().fetches <= 1);
+}
+
+#[test]
+fn a_watching_connector_copies_nothing_at_its_interval_when_its_files_did_not_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, app) = synthetic_db(dir.path());
+    let f = Fixture::with_options(
+        Trigger::Watch {
+            paths: vec![db.clone()],
+            every: Duration::from_secs(3600),
+        },
+        |o| {
+            o.watch_every = Duration::from_millis(200);
+            // File events never run it here: only the interval does.
+            o.quiet = Duration::from_secs(3600);
+        },
+    );
+    f.fake.store().reads = Some(db);
+    f.client()
+        .sources_connect(f.space(), ID, None, &me())
+        .unwrap();
+    f.wait_until("the first run", |f| f.status().last_success.is_some());
+    // Many intervals, and the files did not change: no run, no copy.
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(f.fake.store().fetches, 1);
+    // Asked to, it runs anyway.
+    f.client().sources_run(f.space(), ID).unwrap();
+    f.wait_until("the run asked for", |f| f.fake.store().fetches == 2);
+    // While it waits for something its files do not show, it runs at every interval.
+    f.fake.store().waiting = true;
+    f.client().sources_run(f.space(), ID).unwrap();
+    f.wait_until("runs at the interval", |f| f.fake.store().fetches >= 5);
+    f.fake.store().waiting = false;
+    f.wait_until("a run that waits for nothing", |f| {
+        let fetches = f.fake.store().fetches;
+        thread::sleep(Duration::from_millis(600));
+        f.fake.store().fetches == fetches
+    });
+    // The app writes: the next interval runs it.
+    f.fake.add("work", Timestamp::now(), "Hello");
+    app.execute("INSERT INTO message (text) VALUES ('Hello')", [])
+        .unwrap();
+    f.wait_until("a run after the write", |f| f.written().len() == 1);
 }
