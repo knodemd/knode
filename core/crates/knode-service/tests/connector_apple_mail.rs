@@ -293,6 +293,18 @@ fn run(
     history: History,
     excluded: &[Container],
 ) -> Result<Written, SourceError> {
+    run_by(connector, space, cursor, history, excluded, 2)
+}
+
+/// The same, with batches of at most `max_items`.
+fn run_by(
+    connector: &AppleMailConnector,
+    space: &mut Space,
+    cursor: &mut Option<Cursor>,
+    history: History,
+    excluded: &[Container],
+    max_items: usize,
+) -> Result<Written, SourceError> {
     connector.check()?;
     let mut written = Written::default();
     loop {
@@ -302,7 +314,7 @@ fn run(
             history,
             since: start_of_today(),
             excluded,
-            max_items: 2,
+            max_items,
             secrets: &NoSecrets,
         };
         let fetched = connector.fetch(&request)?;
@@ -319,7 +331,7 @@ fn run(
 /// The thread nodes of the space: title and message count.
 fn threads(space: &Space) -> BTreeMap<String, usize> {
     space
-        .recent(1000)
+        .recent(100_000)
         .unwrap()
         .into_iter()
         .filter(|n| n.kind == kinds::THREAD)
@@ -648,6 +660,150 @@ fn a_message_mail_is_still_writing_comes_in_on_a_later_run() {
     );
     let written = run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
     assert_eq!(written.items, 1);
+}
+
+#[test]
+fn the_first_sync_of_an_account_waits_for_every_message_and_drops_none() {
+    let mut store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let connector = store.connector();
+    let mut cursor = None;
+    // A new Gmail account: Mail lists 1200 messages in All Mail before it downloads them.
+    let listed: Vec<i64> = (0..1200)
+        .map(|_| store.list(&all_mail(), now(), "ada@gmail.example.com"))
+        .collect();
+    let written = run_by(
+        &connector,
+        &mut space,
+        &mut cursor,
+        History::FromToday,
+        &[],
+        500,
+    )
+    .unwrap();
+    assert_eq!(written.items, 0);
+    // Kept as one range of numbers, not one entry each.
+    let text = cursor.as_ref().unwrap().as_str().to_string();
+    assert!(
+        text.contains(&format!("[[{},{},", listed[0], listed[1199])),
+        "{text}"
+    );
+    assert!(text.len() < 200, "{text}");
+    // Mail that arrives meanwhile still comes in.
+    store.add(
+        &inbox(ICLOUD),
+        now(),
+        &message("new@x", CLEO, "Meanwhile", now(), ""),
+    );
+    let written = run_by(
+        &connector,
+        &mut space,
+        &mut cursor,
+        History::FromToday,
+        &[],
+        500,
+    )
+    .unwrap();
+    assert_eq!(written.items, 1);
+    assert!(connector.notice(cursor.as_ref().unwrap()).is_none());
+
+    // Mail downloads them: every one comes in.
+    for (i, rowid) in listed.iter().enumerate() {
+        store.write(
+            &all_mail(),
+            *rowid,
+            &message(&format!("all{i}@x"), ADA, &format!("Synced {i}"), now(), ""),
+        );
+    }
+    let written = run_by(
+        &connector,
+        &mut space,
+        &mut cursor,
+        History::FromToday,
+        &[],
+        500,
+    )
+    .unwrap();
+    assert_eq!(written.items, 1200);
+    assert_eq!(threads(&space).len(), 1201);
+    assert!(!cursor.as_ref().unwrap().as_str().contains("waiting"));
+}
+
+#[test]
+fn messages_without_a_file_after_a_day_are_reported_and_still_read() {
+    let mut store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let connector = store.connector();
+    let a = store.list(&inbox(GMAIL), now(), "ada@gmail.example.com");
+    let b = store.list(&inbox(GMAIL), now(), "ada@gmail.example.com");
+    // Waited for since two days ago.
+    let two_days_ago = Timestamp::now().0 - 2 * DAY * 1000;
+    let mut cursor = Some(Cursor::new(format!(
+        r#"{{"store":"V10","rowid":{b},"waiting":[[{a},{b},{two_days_ago}]]}}"#
+    )));
+    let notice = connector.notice(cursor.as_ref().unwrap()).unwrap();
+    assert!(notice.starts_with("2 messages Mail lists"), "{notice}");
+    run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    assert!(
+        connector
+            .notice(cursor.as_ref().unwrap())
+            .unwrap()
+            .starts_with("2 messages")
+    );
+    // One arrives at last: it comes in, and the notice counts the other.
+    store.write(
+        &inbox(GMAIL),
+        a,
+        &message("late@x", ADA, "At last", now(), ""),
+    );
+    let written = run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    assert_eq!(written.items, 1);
+    let notice = connector.notice(cursor.as_ref().unwrap()).unwrap();
+    assert!(notice.starts_with("1 message Mail lists has"), "{notice}");
+    // Deleted in Mail: no longer waited for.
+    store.set_deleted(b);
+    run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    assert!(connector.notice(cursor.as_ref().unwrap()).is_none());
+}
+
+#[test]
+fn a_mailbox_with_messages_waiting_is_not_read_again_every_run() {
+    let mut store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let connector = store.connector();
+    let mut cursor = None;
+    // A large All Mail: 2500 messages there, and 1500 more listed but not written yet.
+    for i in 0..2500 {
+        let rowid = store.list(&all_mail(), long_ago(), "ada@gmail.example.com");
+        store.write(
+            &all_mail(),
+            rowid,
+            &message(&format!("o{i}@x"), ADA, "Old", long_ago(), ""),
+        );
+    }
+    let waiting: Vec<i64> = (0..1500)
+        .map(|_| store.list(&all_mail(), now(), "ada@gmail.example.com"))
+        .collect();
+    run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    let first = connector.listings_read();
+    // Only the `Messages` folders the waiting numbers fall in were read: 2500 to 3999.
+    assert!(first <= 2, "{first} listings");
+    for _ in 0..3 {
+        run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    }
+    assert_eq!(connector.listings_read(), first);
+    // One arrives: only its folder is read again.
+    store.write(
+        &all_mail(),
+        waiting[0],
+        &message("w0@x", ADA, "Arrived", now(), ""),
+    );
+    let written = run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    assert_eq!(written.items, 1);
+    assert_eq!(connector.listings_read(), first + 1);
 }
 
 #[test]

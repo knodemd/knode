@@ -13,10 +13,16 @@
 //!   read.
 //! - The cursor is the number (`ROWID`) of the last message of the index read, with the store
 //!   it belongs to. Messages the index lists but whose file Mail has not written yet (a mail
-//!   still downloading when the copy was taken) are kept in the cursor and read on a later
-//!   run, for up to a day. When Mail rebuilds its index or moves to a new `V<n>`, the numbers
-//!   start again and so does the cursor: what was read before is found again by its
-//!   `Message-ID` and added nothing twice.
+//!   still downloading when the copy was taken, or the first sync of an account) are kept in
+//!   the cursor as ranges of numbers, as many as there are, and read on a later run once their
+//!   file is there. None is dropped: those still waiting after a day are counted in the
+//!   connector's [notice](Connector::notice). When Mail rebuilds its index or moves to a new
+//!   `V<n>`, the numbers start again and so does the cursor: what was read before is found
+//!   again by its `Message-ID` and added nothing twice.
+//! - A message's file is found where Mail puts it,
+//!   `<mailbox>.mbox/<id>/Data/<digits>/Messages/<ROWID>.emlx`, through a listing of that
+//!   `Messages` folder, kept between runs and read again only when the folder changed: a
+//!   mailbox is never walked.
 //! - The containers are the mailboxes, by their URL in the index (`imap://<account>/INBOX`):
 //!   every mailbox of every account comes in, new ones too, except the ones excluded and spam
 //!   and trash (`Junk`, `Spam`, `Trash`, `Bin`, `Deleted Messages`, `Deleted Items`), which are
@@ -35,6 +41,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
+
+use knode_ingest::sources::FileStamp;
 
 use knode_format::{Provenance, Space, Timestamp};
 use knode_ingest::sources::sqlite::{DatabaseCopy, check_schema, open_copy};
@@ -63,11 +71,12 @@ pub const SCHEMA: &[(&str, &[&str])] = &[
 /// clone, so a run that finds nothing new is quick.
 const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(60);
 
-/// How long a message the index lists is waited for when its file is not there yet.
-const WAIT_FOR_FILE_MS: i64 = 24 * 3600 * 1000;
+/// After how long a message the index lists whose file is still not there is reported in the
+/// connector's notice. It is still waited for.
+const LATE_AFTER_MS: i64 = 24 * 3600 * 1000;
 
-/// The most messages waited for at once.
-const MAX_WAITING: usize = 1000;
+/// The most `Messages` folder listings kept between runs.
+const MAX_LISTINGS: usize = 20_000;
 
 /// What a person reads when macOS keeps Knode from reading the Mail store.
 const NO_ACCESS: &str = "macOS keeps Knode from reading Apple Mail's mail in ~/Library/Mail. \
@@ -84,21 +93,70 @@ pub struct AppleMailConnector {
     seen: Arc<Mutex<Seen>>,
 }
 
-/// What the connector remembers of the index between runs, so that a run while the index has
-/// not changed copies nothing: the index as it was when last checked, and, by request, as it
-/// was when a fetch found nothing new and waited for no file.
+/// What the connector remembers between runs: by request, the index as it was when a fetch
+/// found nothing new and waited for no file, so that a run while it has not changed copies
+/// nothing; and the listings of the `Messages` folders it looked in.
 #[derive(Debug, Default)]
 struct Seen {
-    checked: Option<Fingerprint>,
-    idle: HashMap<String, Fingerprint>,
+    idle: HashMap<String, FileStamp>,
+    listings: HashMap<PathBuf, Listing>,
+    /// How many listings were read from disk, for tests.
+    listings_read: u64,
 }
 
-/// The size and the time of the last change of the index and its `-wal`, read without opening
-/// them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Fingerprint {
-    store: PathBuf,
-    files: Vec<Option<(u64, SystemTime)>>,
+/// The message files of a `Messages` folder by number, and when the folder last changed.
+#[derive(Debug)]
+struct Listing {
+    modified: Option<SystemTime>,
+    files: HashMap<i64, PathBuf>,
+}
+
+impl Seen {
+    /// The message files of `dir`, read again only when it changed since the last time.
+    fn listing(&mut self, dir: &Path) -> &HashMap<i64, PathBuf> {
+        let modified = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
+        let fresh = modified.is_some()
+            && self
+                .listings
+                .get(dir)
+                .is_some_and(|l| l.modified == modified);
+        if !fresh {
+            if self.listings.len() >= MAX_LISTINGS {
+                self.listings.clear();
+            }
+            let files = if modified.is_some() {
+                self.listings_read += 1;
+                message_files(dir)
+            } else {
+                HashMap::new()
+            };
+            self.listings
+                .insert(dir.to_path_buf(), Listing { modified, files });
+        }
+        &self.listings[dir].files
+    }
+}
+
+/// The message files directly in a `Messages` folder, by number: `<n>.emlx`, or
+/// `<n>.partial.emlx` when there is no whole one.
+fn message_files(dir: &Path) -> HashMap<i64, PathBuf> {
+    let mut found = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(n) = name.strip_suffix(".partial.emlx") {
+            if let Ok(n) = n.parse::<i64>() {
+                found.entry(n).or_insert_with(|| entry.path());
+            }
+        } else if let Some(n) = name.strip_suffix(".emlx")
+            && let Ok(n) = n.parse::<i64>()
+        {
+            found.insert(n, entry.path());
+        }
+    }
+    found
 }
 
 impl AppleMailConnector {
@@ -143,20 +201,16 @@ impl AppleMailConnector {
         self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The index as it is now, or `None` when it cannot be told.
-    fn fingerprint(&self) -> Option<Fingerprint> {
+    /// The index and its `-wal` as they are now, or `None` when it cannot be told.
+    fn stamp(&self) -> Option<FileStamp> {
         let store = self.store().ok()?;
-        let index = Self::index_path(&store);
-        let files = [index.clone(), wal_path(&index)]
-            .iter()
-            .map(|path| match std::fs::metadata(path) {
-                Ok(meta) => Ok(Some((meta.len(), meta.modified()?))),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(e),
-            })
-            .collect::<io::Result<Vec<_>>>()
-            .ok()?;
-        files[0].is_some().then_some(Fingerprint { store, files })
+        FileStamp::of(&[Self::index_path(&store)])
+    }
+
+    /// How many listings of `Messages` folders the connector read from disk so far.
+    #[doc(hidden)]
+    pub fn listings_read(&self) -> u64 {
+        self.seen().listings_read
     }
 
     fn read_error(&self, error: io::Error) -> SourceError {
@@ -243,15 +297,31 @@ impl Connector for AppleMailConnector {
     }
 
     fn check(&self) -> Result<(), SourceError> {
-        // Copying the index makes macOS report a change of it, which wakes the connector
-        // again: an index that did not change since it was checked is not copied again.
-        let now = self.fingerprint();
-        if now.is_some() && self.seen().checked == now {
-            return Ok(());
+        self.snapshot().map(|_| ())
+    }
+
+    fn notice(&self, cursor: &Cursor) -> Option<String> {
+        let late_since = Timestamp::now().0 - LATE_AFTER_MS;
+        let late: i64 = State::read(Some(cursor))
+            .waiting
+            .iter()
+            .filter(|w| w.2 < late_since)
+            .map(|w| w.1 - w.0 + 1)
+            .sum();
+        match late {
+            0 => None,
+            1 => Some(
+                "1 message Mail lists has had no file on this Mac for more than a day, so it is \
+                 not in the space yet: Mail keeps it only on the server. It comes in once Mail \
+                 downloads it, for example when you open it in Mail."
+                    .into(),
+            ),
+            n => Some(format!(
+                "{n} messages Mail lists have had no file on this Mac for more than a day, so \
+                 they are not in the space yet: Mail keeps them only on the server. They come in \
+                 once Mail downloads them, for example when you open them in Mail."
+            )),
         }
-        let result = self.snapshot().map(|_| ());
-        self.seen().checked = if result.is_ok() { now } else { None };
-        result
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
@@ -267,8 +337,8 @@ impl Connector for AppleMailConnector {
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
-        let unchanged = self.fingerprint();
-        if let (Some(now), Some(cursor)) = (&unchanged, request.cursor) {
+        let stamp = self.stamp();
+        if let (Some(now), Some(cursor)) = (&stamp, request.cursor) {
             let key = request_key(request, cursor.as_str());
             if self.seen().idle.get(&key) == Some(now) {
                 return Ok(Fetched::nothing(cursor.clone()));
@@ -299,6 +369,7 @@ impl Connector for AppleMailConnector {
             mailboxes
                 .get(&mailbox)
                 .filter(|m| !m.is_junk() && !request.is_excluded(&m.url))
+                .map(|m| (mailbox, m))
         };
         let from = match request.history {
             History::Everything => i64::MIN,
@@ -306,47 +377,57 @@ impl Connector for AppleMailConnector {
         };
         let now = Timestamp::now();
         let max = request.max_items.max(1);
-        let mut finder = Finder::default();
+        let mut seen = self.seen();
+        let mut finder = Finder::new(&snapshot.store);
         let mut files: Vec<PathBuf> = Vec::new();
-        let mut waiting: Vec<(i64, i64)> = Vec::new();
+        let mut waiting: Vec<Waiting> = Vec::new();
+        let mut more = false;
 
-        // The messages waited for, first.
+        // The messages waited for, first. One that left the index, was deleted or is in a
+        // mailbox now excluded is not waited for any more.
         {
             let mut stmt = conn
-                .prepare("SELECT mailbox, deleted FROM messages WHERE ROWID = ?1")
+                .prepare(
+                    "SELECT ROWID, mailbox, deleted FROM messages \
+                     WHERE ROWID BETWEEN ?1 AND ?2 ORDER BY ROWID",
+                )
                 .map_err(failed)?;
-            for (rowid, first_seen) in std::mem::take(&mut state.waiting) {
-                let row: Option<(i64, Option<i64>)> = stmt
-                    .query_row([rowid], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .map(Some)
-                    .or_else(|e| match e {
-                        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                        e => Err(e),
-                    })
-                    .map_err(failed)?;
-                let Some((mailbox, deleted)) = row else {
+            for range in std::mem::take(&mut state.waiting) {
+                if files.len() >= max {
+                    add_waiting(&mut waiting, range);
+                    more = true;
                     continue;
-                };
-                let Some(mailbox) = wanted(mailbox).filter(|_| deleted.unwrap_or(0) == 0) else {
-                    continue;
-                };
-                match finder.find(&snapshot.store, mailbox, rowid) {
-                    Some(file) => files.push(file),
-                    None if now.0 - first_seen < WAIT_FOR_FILE_MS => {
-                        waiting.push((rowid, first_seen))
+                }
+                let mut rows = stmt.query([range.0, range.1]).map_err(failed)?;
+                while let Some(row) = rows.next().map_err(failed)? {
+                    let rowid: i64 = row.get(0).map_err(failed)?;
+                    if files.len() >= max {
+                        add_waiting(&mut waiting, Waiting(rowid, range.1, range.2));
+                        more = true;
+                        break;
                     }
-                    None => {}
+                    let mailbox: i64 = row.get(1).map_err(failed)?;
+                    let deleted: Option<i64> = row.get(2).map_err(failed)?;
+                    if deleted.unwrap_or(0) != 0 {
+                        continue;
+                    }
+                    let Some(mailbox) = wanted(mailbox) else {
+                        continue;
+                    };
+                    match finder.find(&mut seen, mailbox, rowid) {
+                        Some(file) => files.push(file),
+                        None => add_waiting(&mut waiting, Waiting(rowid, rowid, range.2)),
+                    }
                 }
             }
         }
 
         // Then what is new after the cursor.
         let mut last = state.rowid;
-        let mut more = false;
-        {
+        if !more {
             let mut stmt = conn
                 .prepare(
-                    "SELECT ROWID, mailbox, date_received FROM messages \
+                    "SELECT ROWID, mailbox FROM messages \
                      WHERE ROWID > ?1 AND IFNULL(deleted, 0) = 0 \
                      AND IFNULL(date_received, 0) >= ?2 ORDER BY ROWID",
                 )
@@ -359,39 +440,32 @@ impl Connector for AppleMailConnector {
                 }
                 let rowid: i64 = row.get(0).map_err(failed)?;
                 let mailbox: i64 = row.get(1).map_err(failed)?;
-                let received: Option<i64> = row.get(2).map_err(failed)?;
                 last = rowid;
                 let Some(mailbox) = wanted(mailbox) else {
                     continue;
                 };
-                match finder.find(&snapshot.store, mailbox, rowid) {
+                match finder.find(&mut seen, mailbox, rowid) {
                     Some(file) => files.push(file),
-                    // Mail lists it, but is still writing it: read it on a later run.
-                    None if waiting.len() < MAX_WAITING
-                        && received.unwrap_or(0).saturating_mul(1000)
-                            >= now.0 - WAIT_FOR_FILE_MS =>
-                    {
-                        waiting.push((rowid, now.0));
-                    }
-                    // An older message Mail keeps only on the server.
-                    None => {}
+                    // Mail lists it, but has not written it yet: read it on a later run.
+                    None => add_waiting(&mut waiting, Waiting(rowid, rowid, now.0)),
                 }
             }
-        }
-        if !more {
-            last = last.max(newest);
+            if !more {
+                last = last.max(newest);
+            }
         }
         state.rowid = last;
         state.waiting = waiting;
         let idle = files.is_empty() && state.waiting.is_empty() && !more;
         let cursor = state.write();
-        if idle && let Some(now) = unchanged {
-            let mut seen = self.seen();
+        if idle && let Some(stamp) = stamp {
             if seen.idle.len() >= 64 {
                 seen.idle.clear();
             }
-            seen.idle.insert(request_key(request, cursor.as_str()), now);
+            seen.idle
+                .insert(request_key(request, cursor.as_str()), stamp);
         }
+        drop(seen);
         if files.is_empty() {
             return Ok(Fetched::nothing(cursor).with_more(more));
         }
@@ -403,14 +477,31 @@ impl Connector for AppleMailConnector {
     }
 }
 
-/// The cursor: the store, the last message of its index read, and the messages waited for
-/// (their number and when they were first seen, in milliseconds since 1970).
+/// Messages waited for: the numbers `.0` to `.1` of the index, first seen at `.2`
+/// (milliseconds since 1970).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Waiting(i64, i64, i64);
+
+/// Adds messages to wait for, after the ones already there, joining them to the last range
+/// when they follow it and were first seen at the same time.
+fn add_waiting(waiting: &mut Vec<Waiting>, range: Waiting) {
+    if let Some(last) = waiting.last_mut()
+        && last.1.checked_add(1) == Some(range.0)
+        && last.2 == range.2
+    {
+        last.1 = range.1;
+        return;
+    }
+    waiting.push(range);
+}
+
+/// The cursor: the store, the last message of its index read, and the messages waited for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct State {
     store: String,
     rowid: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    waiting: Vec<(i64, i64)>,
+    waiting: Vec<Waiting>,
 }
 
 impl State {
@@ -586,19 +677,33 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Finds the `.emlx` file of a message of the index in the store.
-#[derive(Default)]
-struct Finder {
-    /// By mailbox folder: its message folders (`<id>/Data`, `Data`).
-    data: HashMap<PathBuf, Vec<PathBuf>>,
-    /// By mailbox folder: every message file in it by number, once it was walked.
-    walked: HashMap<PathBuf, HashMap<i64, PathBuf>>,
+/// Finds the `.emlx` file of a message of the index in the store, for one run.
+struct Finder<'a> {
+    store: &'a Path,
+    /// By mailbox number: its folder and its message folders (`<id>/Data`, `Data`).
+    folders: HashMap<i64, Option<(PathBuf, Vec<PathBuf>)>>,
 }
 
-impl Finder {
-    fn find(&mut self, store: &Path, mailbox: &Mailbox, rowid: i64) -> Option<PathBuf> {
-        let folder = mailbox_folder(store, mailbox)?;
-        let names = [format!("{rowid}.emlx"), format!("{rowid}.partial.emlx")];
+impl<'a> Finder<'a> {
+    fn new(store: &'a Path) -> Self {
+        Finder {
+            store,
+            folders: HashMap::new(),
+        }
+    }
+
+    fn find(&mut self, seen: &mut Seen, mailbox: (i64, &Mailbox), rowid: i64) -> Option<PathBuf> {
+        let store = self.store;
+        let (root, data) = self
+            .folders
+            .entry(mailbox.0)
+            .or_insert_with(|| {
+                mailbox_folder(store, mailbox.1).map(|root| {
+                    let data = data_folders(&root);
+                    (root, data)
+                })
+            })
+            .as_ref()?;
         // Mail files a message under `Data/<digits of rowid / 1000, last first>/Messages`.
         let mut digits = PathBuf::new();
         if rowid >= 1000 {
@@ -606,30 +711,16 @@ impl Finder {
                 digits.push(d.to_string());
             }
         }
-        let data = self
-            .data
-            .entry(folder.clone())
-            .or_insert_with(|| data_folders(&folder));
-        for base in data.iter() {
-            for name in &names {
-                let file = base.join(&digits).join("Messages").join(name);
-                if file.is_file() {
-                    return Some(file);
-                }
+        let dirs = data
+            .iter()
+            .map(|base| base.join(&digits).join("Messages"))
+            .chain(std::iter::once(root.join("Messages")));
+        for dir in dirs {
+            if let Some(file) = seen.listing(&dir).get(&rowid) {
+                return Some(file.clone());
             }
         }
-        for name in &names {
-            let file = folder.join("Messages").join(name);
-            if file.is_file() {
-                return Some(file);
-            }
-        }
-        // Laid out some other way: look for it once in the whole mailbox.
-        self.walked
-            .entry(folder.clone())
-            .or_insert_with(|| walk(&folder))
-            .get(&rowid)
-            .cloned()
+        None
     }
 }
 
@@ -678,38 +769,6 @@ fn is_mailbox_dir(path: &Path) -> bool {
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     name.ends_with(".mbox") || name.ends_with(".imapmbox")
-}
-
-/// Every message file of a mailbox folder, by number, leaving out the mailboxes in it.
-fn walk(folder: &Path) -> HashMap<i64, PathBuf> {
-    let mut found = HashMap::new();
-    let mut stack = vec![folder.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            let path = entry.path();
-            if kind.is_dir() {
-                if !is_mailbox_dir(&path) {
-                    stack.push(path);
-                }
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let number = name
-                .strip_suffix(".partial.emlx")
-                .or_else(|| name.strip_suffix(".emlx"))
-                .and_then(|n| n.parse::<i64>().ok());
-            if let Some(number) = number {
-                found.entry(number).or_insert(path);
-            }
-        }
-    }
-    found
 }
 
 /// New messages of Apple Mail, written by the mail importer.
@@ -772,10 +831,28 @@ mod tests {
         let state = State {
             store: "V10".into(),
             rowid: 42,
-            waiting: vec![(43, 1000)],
+            waiting: vec![Waiting(43, 50, 1000)],
         };
         assert_eq!(State::read(Some(&state.write())), state);
         assert_eq!(State::read(Some(&Cursor::new("junk"))), State::default());
         assert_eq!(State::read(None), State::default());
+    }
+
+    #[test]
+    fn waiting_messages_join_into_ranges() {
+        let mut waiting = Vec::new();
+        for rowid in 1..=5000 {
+            add_waiting(&mut waiting, Waiting(rowid, rowid, 7));
+        }
+        add_waiting(&mut waiting, Waiting(5001, 5001, 8));
+        add_waiting(&mut waiting, Waiting(6000, 6010, 8));
+        assert_eq!(
+            waiting,
+            [
+                Waiting(1, 5000, 7),
+                Waiting(5001, 5001, 8),
+                Waiting(6000, 6010, 8)
+            ]
+        );
     }
 }
