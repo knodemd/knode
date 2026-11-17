@@ -268,22 +268,26 @@ pub(crate) fn note_redacted(report: &mut ChatImportReport, n: usize) {
 
 /// Finds the export in `files`. Told from the files alone (`format` is `None`), an export is
 /// only one when it is what the person gave: its files at the top, or in the one folder at the
-/// top, and no Markdown notes beside them. A folder of notes that holds a chat export somewhere
-/// inside is a folder of notes, not that chat. Named, the format is looked for at any depth,
-/// the shallowest first.
+/// top, and no Markdown notes anywhere in it outside the export's own media folders. A folder of
+/// notes that holds a chat export, wherever it is, is a folder of notes, not that chat. Named,
+/// the format is looked for at any depth, the shallowest first.
 fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
-    let wanted = |f: ChatFormat| format.is_none_or(|w| w == f);
     let root = match format {
         Some(_) => None,
-        None => {
-            let root = files.root();
-            if files.single.is_none() && has_notes(files, &root) {
-                return None;
-            }
-            Some(root)
-        }
+        None => Some(files.root()),
     };
-    let root = root.as_deref();
+    let located = locate_in(files, format, root.as_deref())?;
+    if let Some(root) = &root
+        && files.single.is_none()
+        && has_notes(files, root, located.format())
+    {
+        return None;
+    }
+    Some(located)
+}
+
+fn locate_in(files: &mut Files, format: Option<ChatFormat>, root: Option<&str>) -> Option<Located> {
+    let wanted = |f: ChatFormat| format.is_none_or(|w| w == f);
     if wanted(ChatFormat::WhatsApp)
         && let Some(file) = whatsapp::locate(files, root)
     {
@@ -302,11 +306,68 @@ fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
     None
 }
 
-/// Whether Markdown notes sit in `root`, which no chat export writes there.
-fn has_notes(files: &Files, root: &str) -> bool {
+/// The folders, in an export's own folder, where it keeps the files sent in its chats: a
+/// Markdown file there was sent in a chat, it is not a note.
+fn media_folders(format: ChatFormat) -> &'static [&'static str] {
+    match format {
+        // Media sit beside the chat's text.
+        ChatFormat::WhatsApp => &[],
+        ChatFormat::Telegram => &[
+            "files",
+            "photos",
+            "video_files",
+            "voice_messages",
+            "round_video_messages",
+            "audio_files",
+            "stickers",
+            "animations",
+            "contacts",
+            // An account export keeps each chat's media in `chats/chat_<n>/`.
+            "chats",
+        ],
+        ChatFormat::Slack => &["__uploads"],
+    }
+}
+
+/// Whether Markdown notes are anywhere in the files, outside the media folders an export of
+/// `format` keeps in `root`.
+fn has_notes(files: &Files, root: &str, format: ChatFormat) -> bool {
+    let media: Vec<String> = media_folders(format)
+        .iter()
+        .map(|dir| format!("{}/", files::join(root, dir)))
+        .collect();
     files.names().iter().any(|n| {
         let lower = file_name(n).to_ascii_lowercase();
-        files::parent(n) == root && (lower.ends_with(".md") || lower.ends_with(".markdown"))
+        (lower.ends_with(".md") || lower.ends_with(".markdown"))
+            && !media.iter().any(|dir| n.starts_with(dir.as_str()))
+    })
+}
+
+/// A chat export somewhere in the folder or `.zip` at `path` that [`detect_chat_export`] does
+/// not take as what `path` is, such as one inside a folder of notes: its format, and the path
+/// to give [`import_chat_export`] with that format to import it (the `.zip` itself for one
+/// inside a `.zip`).
+pub fn chat_export_inside(path: impl AsRef<Path>) -> Option<(ChatFormat, PathBuf)> {
+    let path = path.as_ref();
+    let mut files = Files::open(path).ok()?;
+    if files.single.is_some() {
+        return None;
+    }
+    let located = ChatFormat::ALL
+        .into_iter()
+        .find_map(|format| locate_in(&mut files, Some(format), None))?;
+    if !path.is_dir() {
+        return Some((located.format(), path.to_path_buf()));
+    }
+    let inner = |name: &str| {
+        let mut out = path.to_path_buf();
+        out.extend(name.split('/').filter(|part| !part.is_empty()));
+        out
+    };
+    Some(match located {
+        Located::WhatsApp(file) => (ChatFormat::WhatsApp, inner(&file)),
+        Located::Telegram(file) => (ChatFormat::Telegram, inner(files::parent(&file))),
+        Located::Slack(dir) => (ChatFormat::Slack, inner(&dir)),
     })
 }
 
@@ -318,7 +379,8 @@ fn in_root(name: &str, root: Option<&str>) -> bool {
 
 /// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one:
 /// told from its files at the top (or in the one folder at the top). A folder with Markdown
-/// notes at the top is not a chat export, nor one that only holds an export further down.
+/// notes in it is not a chat export, nor one that only holds an export further down: see
+/// [`chat_export_inside`] for those.
 pub fn detect_chat_export(path: impl AsRef<Path>) -> Option<ChatFormat> {
     let mut files = Files::open(path.as_ref()).ok()?;
     locate(&mut files, None).map(|located| located.format())

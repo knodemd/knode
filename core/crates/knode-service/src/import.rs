@@ -832,6 +832,15 @@ pub fn run(
                     if n == 1 { "is" } else { "are" }
                 ));
             }
+            // A chat export among the notes is not imported with them: say how to.
+            if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
+                result.notes.push(format!(
+                    "A {format} is in this folder and was not imported with the notes: import \
+                     it with knode import --from {} \"{}\".",
+                    format.id(),
+                    inner.display()
+                ));
+            }
             if report.created.len() + report.updated.len() + report.unchanged == 0
                 && report.skipped.is_empty()
             {

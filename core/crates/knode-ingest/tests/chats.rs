@@ -1169,3 +1169,63 @@ fn slack_day_files_and_uploads_are_found_by_their_folder() {
     let other = chat_node(&space, "slack", "C02");
     assert!(other.body.contains(": two"), "{}", other.body);
 }
+
+#[test]
+fn markdown_anywhere_makes_a_folder_of_notes() {
+    let chat = "[04/03/2026, 09:15:02] Ada: one\n[04/03/2026, 09:16:00] Grace: two\n";
+    // WhatsApp's text at the top, the notes in a folder.
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("Vault");
+    write_file(&vault, "WhatsApp Chat with Ada.txt", chat);
+    assert_eq!(detect_chat_export(&vault), Some(ChatFormat::WhatsApp));
+    write_file(&vault, "Notes/Plan.md", "# Plan\n");
+    assert_eq!(detect_chat_export(&vault), None);
+    let (format, inner) = knode_ingest::chat_export_inside(&vault).unwrap();
+    assert_eq!(format, ChatFormat::WhatsApp);
+    assert_eq!(inner, vault.join("WhatsApp Chat with Ada.txt"));
+
+    // Slack's lists at the top, a note further down.
+    let slack = dir.path().join("Projects");
+    write_file(&slack, "channels.json", SLACK_CHANNELS);
+    write_file(&slack, "users.json", SLACK_USERS);
+    assert_eq!(detect_chat_export(&slack), Some(ChatFormat::Slack));
+    write_file(&slack, "docs/deep/Readme.md", "# Readme\n");
+    assert_eq!(detect_chat_export(&slack), None);
+    assert_eq!(
+        knode_ingest::chat_export_inside(&slack),
+        Some((ChatFormat::Slack, slack.clone()))
+    );
+
+    // One folder at the top, as a folder and as a zip, with notes deeper inside it.
+    let outer = dir.path().join("Outer");
+    write_file(&outer, "WhatsApp Chat - Ada/_chat.txt", chat);
+    assert_eq!(detect_chat_export(&outer), Some(ChatFormat::WhatsApp));
+    write_file(&outer, "WhatsApp Chat - Ada/Notes/a.md", "# A\n");
+    assert_eq!(detect_chat_export(&outer), None);
+    let zipped = dir.path().join("wrapped.zip");
+    zip(
+        &zipped,
+        &[
+            ("Wrapper/_chat.txt", chat.as_bytes()),
+            ("Wrapper/Notes/a.md", b"# A\n"),
+        ],
+    );
+    assert_eq!(detect_chat_export(&zipped), None);
+    assert_eq!(
+        knode_ingest::chat_export_inside(&zipped),
+        Some((ChatFormat::WhatsApp, zipped.clone()))
+    );
+
+    // A Markdown file sent in a chat, in the export's own media folder, is not a note.
+    let telegram = dir.path().join("ChatExport");
+    write_file(&telegram, "result.json", TELEGRAM_CHAT);
+    write_file(&telegram, "files/notes.md", "# sent\n");
+    assert_eq!(detect_chat_export(&telegram), Some(ChatFormat::Telegram));
+    write_file(&slack, "__uploads/F01/notes.md", "# sent\n");
+    fs::remove_dir_all(slack.join("docs")).unwrap();
+    assert_eq!(detect_chat_export(&slack), Some(ChatFormat::Slack));
+    // A folder of notes alone holds no export.
+    let notes = dir.path().join("Notes");
+    vault(&notes);
+    assert_eq!(knode_ingest::chat_export_inside(&notes), None);
+}

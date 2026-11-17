@@ -337,6 +337,15 @@ fn a_folder_of_notes_holding_a_chat_export_imports_the_notes() {
         "{out}"
     );
     assert!(out.contains(": 5 new"), "{out}");
+    let inner = vault.join("Notes/Archive/WhatsApp Chat with Ada.txt");
+    assert!(
+        out.contains(&format!(
+            "A WhatsApp export is in this folder and was not imported with the notes: import it \
+             with knode import --from whatsapp \"{}\".",
+            inner.display()
+        )),
+        "{out}"
+    );
     let space = knode_format::Space::open(sb.space("work")).unwrap();
     assert!(space.find_by_title("WhatsApp - Ada").unwrap().is_empty());
     assert_eq!(space.find_by_title("Note 3").unwrap().len(), 1);
