@@ -29,9 +29,12 @@ belongs to, newest first.
   permission it needs, whether it is on, when it last ran, how many items it brought in and its
   last error, and a clear **Needs an update** when another app's database changed. **Connect**
   goes step by step: Full Disk Access with a button to its pane of System Settings, the
-  connector's own sign-in, the history (**From today** or **Everything**) and every chat, channel
-  or folder with a switch to leave it out, paused until you start it. A switch pauses and resumes
-  it, **Run now** runs it at once, and **Disconnect** asks first and keeps what it brought in.
+  sign-in (Telegram's phone number, code and password; Gmail and Slack in the browser, waiting
+  until it comes back; an IMAP address, server and app password), the history (**From today**
+  or **Everything**) and every chat, channel or folder with a switch to leave it out: it is
+  connected paused and reads nothing until you start it. A switch pauses and resumes it, **Run
+  now** runs it at once, **Sign out** ends its session, and **Disconnect** asks first and keeps
+  what it brought in.
 - **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
   as threads with their people, like a mail import. **Gmail** signs in with Google in your
   browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
