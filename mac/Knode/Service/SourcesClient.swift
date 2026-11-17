@@ -80,6 +80,66 @@ public struct SourceContainer: Identifiable, Sendable, Hashable, Decodable {
     }
 }
 
+/// Where signing in to the account a connector reads is, on this Mac: `sources.account` and
+/// each `sources.sign_in` answer it.
+public enum SourceAccountState: Sendable, Hashable, Decodable {
+    /// Not signed in: send `start`.
+    case signedOut
+    /// The service sent a code (Telegram): send `code`. `via` says where, for people.
+    case codeSent(via: String?)
+    /// The account has a password, or a mail account needs its app password: send `password`.
+    case passwordNeeded(hint: String?)
+    /// The person signs in in the browser, on this page (Google, Slack): then send `browser`.
+    case openBrowser(url: URL)
+    /// Signed in, as `account`; the session is in the Keychain.
+    case signedIn(account: String)
+
+    enum CodingKeys: String, CodingKey { case state, via, hint, url, account }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .state) {
+        case "signed-out": self = .signedOut
+        case "code-sent": self = .codeSent(via: try c.decodeIfPresent(String.self, forKey: .via))
+        case "password-needed": self = .passwordNeeded(hint: try c.decodeIfPresent(String.self, forKey: .hint))
+        case "open-browser":
+            let text = try c.decode(String.self, forKey: .url)
+            guard let url = URL(string: text) else {
+                throw DecodingError.dataCorruptedError(forKey: .url, in: c, debugDescription: "not a URL: \(text)")
+            }
+            self = .openBrowser(url: url)
+        case "signed-in": self = .signedIn(account: try c.decodeIfPresent(String.self, forKey: .account) ?? "")
+        case let other:
+            throw DecodingError.dataCorruptedError(forKey: .state, in: c, debugDescription: "unknown sign-in state \(other)")
+        }
+    }
+
+    public var isSignedIn: Bool {
+        if case .signedIn = self { return true }
+        return false
+    }
+}
+
+/// One step of signing in, sent by the person: `sources.sign_in`'s `step`. Never logged.
+public enum SourceSignInRequest: Sendable, Hashable {
+    /// The account: a phone number, or a mail address with its server; empty when it is chosen on
+    /// the service's page (Slack, Gmail).
+    case start(account: String)
+    case code(String)
+    case password(String)
+    /// The person finished signing in on the page `openBrowser` gave.
+    case browser
+
+    var json: JSONValue {
+        switch self {
+        case .start(let account): ["step": "start", "account": .string(account)]
+        case .code(let code): ["step": "code", "code": .string(code)]
+        case .password(let password): ["step": "password", "password": .string(password)]
+        case .browser: ["step": "browser"]
+        }
+    }
+}
+
 /// A source of a space and what it did on this Mac, as `sources.list` returns it.
 public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     /// The person's settings of a connected connector, kept in the space.
@@ -200,8 +260,9 @@ public protocol SourcesClient: Sendable {
     func list(in space: URL) async throws -> [SourceStatus]
     /// `sources.containers`: the chats, channels or folders a connected connector has now.
     func containers(of source: String, in space: URL) async throws -> [SourceContainer]
-    /// `sources.connect`: connects it with a history and turns it on.
-    func connect(_ source: String, history: SourceHistory, in space: URL) async throws -> SourceStatus
+    /// `sources.connect`: connects it with a history, turned on, or with `on` false paused, so
+    /// what it leaves out can be chosen before it reads anything.
+    func connect(_ source: String, history: SourceHistory, on: Bool, in space: URL) async throws -> SourceStatus
     /// `sources.pause` (`on` false) or `sources.resume`.
     func setOn(_ on: Bool, _ source: String, in space: URL) async throws -> SourceStatus
     /// `sources.exclude`: the container is never read again; what came from it stays.
@@ -212,6 +273,12 @@ public protocol SourcesClient: Sendable {
     func run(_ source: String, in space: URL) async throws -> SourceStatus
     /// `sources.disconnect`: removes its settings and secrets; what it brought in stays.
     func disconnect(_ source: String, in space: URL) async throws
+    /// `sources.account`: whether the connector is signed in to its account on this Mac.
+    func account(of source: String) async throws -> SourceAccountState
+    /// `sources.sign_in`: one step of signing in, and where it leads.
+    func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState
+    /// `sources.sign_out`: ends the session and forgets it. Whether it was signed in.
+    @discardableResult func signOut(_ source: String) async throws -> Bool
 }
 
 /// The `SourcesClient` of Knode Service, over its socket as the person.
@@ -240,8 +307,9 @@ public struct ServiceSourcesClient: SourcesClient {
         try await call("sources.containers", params(space, source), as: [SourceContainer].self)
     }
 
-    public func connect(_ source: String, history: SourceHistory, in space: URL) async throws -> SourceStatus {
-        try await call("sources.connect", params(space, source, ["history": .string(history.rawValue)], by: true), as: SourceStatus.self)
+    public func connect(_ source: String, history: SourceHistory, on: Bool, in space: URL) async throws -> SourceStatus {
+        let extra: [String: JSONValue] = ["history": .string(history.rawValue), "on": .bool(on)]
+        return try await call("sources.connect", params(space, source, extra, by: true), as: SourceStatus.self)
     }
 
     public func setOn(_ on: Bool, _ source: String, in space: URL) async throws -> SourceStatus {
@@ -263,6 +331,18 @@ public struct ServiceSourcesClient: SourcesClient {
 
     public func disconnect(_ source: String, in space: URL) async throws {
         _ = try await call("sources.disconnect", params(space, source, by: true), as: Bool.self)
+    }
+
+    public func account(of source: String) async throws -> SourceAccountState {
+        try await call("sources.account", ["source": .string(source)], as: SourceAccountState.self)
+    }
+
+    public func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState {
+        try await call("sources.sign_in", ["source": .string(source), "step": step.json], as: SourceAccountState.self)
+    }
+
+    @discardableResult public func signOut(_ source: String) async throws -> Bool {
+        try await call("sources.sign_out", ["source": .string(source)], as: Bool.self)
     }
 
     /// One short connection per call, like the Agents settings.
