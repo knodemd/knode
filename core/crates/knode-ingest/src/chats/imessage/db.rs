@@ -233,6 +233,24 @@ impl Snapshot {
         Ok(messages)
     }
 
+    /// The guid of message number `rowid`, if there is one.
+    pub(crate) fn guid_at(&self, rowid: i64) -> rusqlite::Result<Option<String>> {
+        self.conn()
+            .query_row("SELECT guid FROM message WHERE ROWID = ?1", [rowid], |r| {
+                r.get(0)
+            })
+            .optional()
+    }
+
+    /// The number of the message with this guid, if there is one.
+    pub(crate) fn rowid_of(&self, guid: &str) -> rusqlite::Result<Option<i64>> {
+        self.conn()
+            .query_row("SELECT ROWID FROM message WHERE guid = ?1", [guid], |r| {
+                r.get(0)
+            })
+            .optional()
+    }
+
     /// The message with this guid, if any: who sent it, when, and its text.
     pub(crate) fn message_by_guid(&self, guid: &str) -> rusqlite::Result<Option<MessageRow>> {
         let row = self

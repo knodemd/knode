@@ -123,6 +123,16 @@ impl Messages {
         IMessageConnector::new(self.dir.path()).with_offset(FixedOffset::east_opt(0).unwrap())
     }
 
+    /// Numbers the next message after `n`, as a rebuilt or migrated database may.
+    fn number_from(&self, n: i64) {
+        self.conn
+            .execute(
+                "INSERT INTO sqlite_sequence (name, seq) VALUES ('message', ?1)",
+                [n],
+            )
+            .unwrap();
+    }
+
     fn handle(&self, id: &str) -> i64 {
         self.conn
             .query_row("SELECT ROWID FROM handle WHERE id = ?1", [id], |r| r.get(0))
@@ -314,6 +324,11 @@ fn sync(m: &Messages, space: &mut Space, cursor: Option<Cursor>) -> (Cursor, Wri
     run(&m.connector(), space, cursor, &Setting::default()).unwrap()
 }
 
+/// The message number a cursor holds.
+fn number(cursor: &Cursor) -> i64 {
+    cursor.as_str().split(' ').next().unwrap().parse().unwrap()
+}
+
 fn chat_node(space: &Space, guid: &str) -> Node {
     let found = space.find_by_property(chat_keys::ID, guid).unwrap();
     assert_eq!(found.len(), 1, "one chat {guid}");
@@ -460,7 +475,7 @@ fn brings_each_conversation_into_a_chat_node() {
     let (cursor, written) = sync(&m, &mut space, None);
     assert_eq!(written.items, 9);
     assert_eq!(written.created, 2);
-    assert_eq!(cursor, Cursor::new("12"));
+    assert_eq!(number(&cursor), 12);
 
     let ada = chat_node(&space, ADA_CHAT);
     assert_eq!(ada.kind, CHAT_KIND);
@@ -596,7 +611,7 @@ fn running_again_adds_only_new_messages() {
     let (next, written) = sync(&m, &mut space, Some(first.clone()));
     assert_eq!(written.items, 2);
     assert_eq!(written.updated, 1);
-    assert_eq!(next, Cursor::new("4"));
+    assert_eq!(number(&next), 4);
     let ada = chat_node(&space, ADA_CHAT);
     assert_eq!(
         ada.body,
@@ -638,7 +653,7 @@ fn reads_in_batches_without_losing_or_repeating_a_message() {
     };
     let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
     assert_eq!(written.items, 7);
-    assert_eq!(cursor, Cursor::new("7"));
+    assert_eq!(number(&cursor), 7);
     let ada = chat_node(&space, ADA_CHAT).body;
     let trip = chat_node(&space, TRIP_CHAT).body;
     for i in 0..7 {
@@ -723,7 +738,7 @@ fn from_today_brings_only_what_is_sent_from_the_day_it_was_connected() {
     let mut space = space(&dir);
     let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
     assert_eq!(written.items, 1);
-    assert_eq!(cursor, Cursor::new("3"));
+    assert_eq!(number(&cursor), 3);
     assert_eq!(chat_count(&space), 1);
     assert_eq!(
         chat_node(&space, ADA_CHAT).body,
@@ -749,7 +764,7 @@ fn with_nothing_new_the_cursor_moves_past_what_was_left_out() {
     let mut space = space(&dir);
     let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
     assert_eq!(written, Written::default());
-    assert_eq!(cursor, Cursor::new("1"));
+    assert_eq!(number(&cursor), 1);
     assert_eq!(chat_count(&space), 0);
 }
 
@@ -871,4 +886,142 @@ fn long_attributed_bodies_are_read() {
     let mut space = space(&dir);
     sync(&m, &mut space, None);
     assert!(chat_node(&space, ADA_CHAT).body.contains(text.trim()));
+}
+
+const GRACE_CHAT: &str = "iMessage;-;grace@example.com";
+
+fn three_conversations() -> Messages {
+    let m = two_conversations();
+    m.chat(GRACE_CHAT, 45, "", &[GRACE]);
+    m
+}
+
+fn with_guid(guid: &str) -> [(&'static str, rusqlite::types::Value); 1] {
+    [("guid", guid.to_string().into())]
+}
+
+#[test]
+fn a_database_numbered_again_with_fewer_messages_writes_nothing_twice() {
+    let old = three_conversations();
+    old.number_from(100);
+    old.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "One");
+    old.message(ADA_CHAT, None, "2026-03-04T09:16", "Two");
+    old.message(GRACE_CHAT, Some(GRACE), "2026-03-04T09:17", "Hello Grace");
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let (cursor, _) = sync(&old, &mut space, None);
+    assert_eq!(number(&cursor), 103);
+
+    // The same conversations on a rebuilt database, numbered from 1, with one new message;
+    // Grace's conversation has none any more.
+    let new = three_conversations();
+    new.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "One");
+    new.message(ADA_CHAT, None, "2026-03-04T09:16", "Two");
+    new.insert(
+        ADA_CHAT,
+        Some(ADA),
+        "2026-03-04T09:20",
+        Some("Three"),
+        None,
+        &with_guid("new-3"),
+    );
+    let (cursor, written) = sync(&new, &mut space, Some(cursor));
+    assert_eq!(written.items, 1);
+    assert_eq!(number(&cursor), 3);
+    assert_eq!(
+        chat_node(&space, ADA_CHAT).body,
+        "## 2026-03-04\n\n\
+         **+15550100** (09:15): One\n\n\
+         **Me** (09:16): Two\n\n\
+         **+15550100** (09:20): Three\n"
+    );
+
+    // What comes later is added, in Grace's conversation too.
+    new.insert(
+        GRACE_CHAT,
+        Some(GRACE),
+        "2026-03-04T10:00",
+        Some("Again"),
+        None,
+        &with_guid("new-4"),
+    );
+    let (_, written) = sync(&new, &mut space, Some(cursor.clone()));
+    assert_eq!(written.items, 1);
+    assert!(chat_node(&space, GRACE_CHAT).body.contains("Again"));
+    let (_, written) = sync(&new, &mut space, Some(cursor));
+    assert_eq!(written.items, 0);
+    assert_eq!(chat_count(&space), 2);
+}
+
+#[test]
+fn a_database_numbered_again_further_on_is_noticed_by_the_last_message() {
+    let old = three_conversations();
+    old.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "One");
+    old.message(ADA_CHAT, None, "2026-03-04T09:16", "Two");
+    old.message(TRIP_CHAT, Some(GRACE), "2026-03-04T09:17", "Three");
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let (cursor, _) = sync(&old, &mut space, None);
+    assert_eq!(number(&cursor), 3);
+
+    // Numbered from 11: the cursor's number is free, its message is at 13.
+    let new = three_conversations();
+    new.number_from(10);
+    new.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "One");
+    new.message(ADA_CHAT, None, "2026-03-04T09:16", "Two");
+    new.message(TRIP_CHAT, Some(GRACE), "2026-03-04T09:17", "Three");
+    new.insert(
+        ADA_CHAT,
+        Some(ADA),
+        "2026-03-04T09:30",
+        Some("Four"),
+        None,
+        &with_guid("new-4"),
+    );
+    let (cursor, written) = sync(&new, &mut space, Some(cursor));
+    assert_eq!(written.items, 1);
+    assert_eq!(number(&cursor), 14);
+    assert_eq!(chat_node(&space, ADA_CHAT).body.matches("One").count(), 1);
+    assert!(chat_node(&space, ADA_CHAT).body.contains("Four"));
+    assert_eq!(
+        chat_node(&space, TRIP_CHAT).body.matches("Three").count(),
+        1
+    );
+
+    new.insert(
+        TRIP_CHAT,
+        Some(LINUS),
+        "2026-03-04T09:40",
+        Some("Five"),
+        None,
+        &with_guid("new-5"),
+    );
+    let (_, written) = sync(&new, &mut space, Some(cursor));
+    assert_eq!(written.items, 1);
+    assert!(chat_node(&space, TRIP_CHAT).body.contains("Five"));
+}
+
+#[test]
+fn a_deleted_last_message_is_not_taken_for_a_renumbering() {
+    let m = two_conversations();
+    m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "One");
+    m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:16", "Two");
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let (cursor, _) = sync(&m, &mut space, None);
+    m.conn
+        .execute("DELETE FROM message WHERE ROWID = 2", [])
+        .unwrap();
+    m.insert(
+        ADA_CHAT,
+        Some(ADA),
+        "2026-03-04T09:17",
+        Some("Three"),
+        None,
+        &with_guid("new-3"),
+    );
+    let (cursor, written) = sync(&m, &mut space, Some(cursor));
+    assert_eq!(written.items, 1);
+    assert_eq!(number(&cursor), 3);
+    assert_eq!(chat_node(&space, ADA_CHAT).body.matches("Two").count(), 1);
 }

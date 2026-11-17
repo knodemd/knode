@@ -21,10 +21,14 @@
 //!   reads Contacts).
 //! - Reactions (tapbacks) are left out: they are not messages, and a reaction taken back would
 //!   otherwise stay in the node. Edited messages show their last text, marked edited; messages
-//!   taken back show that one was.
+//!   taken back show that one was. A message edited or taken back after it was brought in keeps
+//!   the text it had then: messages already in a node are never read again.
 //! - The cursor is the number (`ROWID`) of the last message read. Conversations excluded by
 //!   guid are never read. With [`History::FromToday`], nothing sent before the day the
-//!   connector was connected is read.
+//!   connector was connected is read. The cursor also names that message's guid: when Messages
+//!   numbered its messages again (a rebuilt database, or one moved from another Mac), every
+//!   message is read once more and each node takes only those after the last one it has, found
+//!   by its guid.
 
 mod db;
 mod typedstream;
@@ -42,7 +46,7 @@ use super::files::Files;
 use super::model::{Chat, ChatMessage, Media};
 use super::render::{escape_name, escape_text};
 use super::write::ChatWriter;
-use super::{ChatFormat, ChatImportError, ChatImportReport};
+use super::{ChatFormat, ChatImportError, ChatImportReport, keys};
 use crate::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
     SourceInfo, Trigger, Written,
@@ -185,8 +189,11 @@ impl Connector for IMessageConnector {
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
         let snapshot = Snapshot::take(&self.database())?;
-        let after = rowid(request.cursor);
-        let newest = snapshot.last_rowid().map_err(failed)?.max(after);
+        let (mut after, seen) = parse_cursor(request.cursor);
+        let reset = renumbered(&snapshot, after, seen.as_deref())?;
+        if reset {
+            after = 0;
+        }
         let from = match request.history {
             History::Everything => None,
             History::FromToday => Some(apple_time(request.since)),
@@ -199,7 +206,13 @@ impl Connector for IMessageConnector {
             .map(|c| (c.rowid, c))
             .collect();
         let ids: Vec<i64> = chats.keys().copied().collect();
-        let limit = request.max_items.max(1);
+        // After a renumbering everything is read in one batch, so every conversation's node is
+        // matched against all of its messages at once.
+        let limit = if reset {
+            usize::MAX - 1
+        } else {
+            request.max_items.max(1)
+        };
         // One more than asked for says whether there is more.
         let mut rows = snapshot
             .messages(&ids, after, from, limit + 1)
@@ -210,11 +223,16 @@ impl Connector for IMessageConnector {
             let last = rows[limit - 1].1.rowid;
             rows.retain(|(_, m)| m.rowid <= last);
         }
-        let cursor = if more {
+        let newest = snapshot.last_rowid().map_err(failed)?;
+        let stop = if more {
             rows.last().map_or(newest, |(_, m)| m.rowid)
         } else {
-            newest
+            newest.max(after)
         };
+        let cursor = Cursor::new(match snapshot.guid_at(stop).map_err(failed)? {
+            Some(guid) => format!("{stop} {guid}"),
+            None => stop.to_string(),
+        });
 
         let mut by_chat: BTreeMap<i64, Chat> = BTreeMap::new();
         let mut items = 0;
@@ -244,24 +262,56 @@ impl Connector for IMessageConnector {
             chat.messages.push(m);
             items += 1;
         }
-        let cursor = Cursor::new(cursor.to_string());
-        if by_chat.is_empty() {
+        if by_chat.is_empty() && !reset {
             return Ok(Fetched::nothing(cursor).with_more(more));
         }
         let batch = IMessageBatch {
             chats: by_chat.into_values().collect(),
             dir: self.dir.clone(),
             items,
+            reset,
         };
         Ok(Fetched::batch(batch, cursor).with_more(more))
     }
 }
 
-/// The message number a cursor holds: 0 for none.
-fn rowid(cursor: Option<&Cursor>) -> i64 {
-    cursor
-        .and_then(|c| c.as_str().trim().parse().ok())
-        .unwrap_or(0)
+/// What a cursor holds: the number of the last message read (0 for none) and, when it was
+/// recorded, that message's guid: `<rowid> <guid>`.
+fn parse_cursor(cursor: Option<&Cursor>) -> (i64, Option<String>) {
+    let Some(text) = cursor.map(|c| c.as_str().trim()) else {
+        return (0, None);
+    };
+    let (number, guid) = match text.split_once(' ') {
+        Some((number, guid)) => (number, Some(guid.trim().to_string())),
+        None => (text, None),
+    };
+    match number.parse() {
+        Ok(rowid) => (rowid, guid.filter(|g| !g.is_empty())),
+        Err(_) => (0, None),
+    }
+}
+
+/// Whether Messages numbered its messages again since the cursor was recorded (its database
+/// was rebuilt, or comes from another Mac): there are fewer messages than the cursor says, or
+/// the message the cursor names is now at another number.
+fn renumbered(snapshot: &Snapshot, after: i64, seen: Option<&str>) -> Result<bool, SourceError> {
+    if after == 0 {
+        return Ok(false);
+    }
+    if snapshot.last_rowid().map_err(failed)? < after {
+        return Ok(true);
+    }
+    let Some(seen) = seen else {
+        return Ok(false);
+    };
+    if let Some(guid) = snapshot.guid_at(after).map_err(failed)? {
+        return Ok(guid != seen);
+    }
+    // No message at that number: deleted, or moved.
+    Ok(snapshot
+        .rowid_of(seen)
+        .map_err(failed)?
+        .is_some_and(|rowid| rowid != after))
 }
 
 /// A time in milliseconds since 1970 as an Apple time.
@@ -278,11 +328,16 @@ struct IMessageBatch {
     /// The Messages folder, where the files sent are.
     dir: PathBuf,
     items: usize,
+    /// Messages numbered its messages again: these are all the messages it has, and the
+    /// nodes written before are matched against them by message guid.
+    reset: bool,
 }
 
 impl Batch for IMessageBatch {
     fn len(&self) -> usize {
-        self.items
+        // A batch after a renumbering is written even with no new message, to move the nodes'
+        // positions to the new numbers.
+        self.items.max(usize::from(self.reset))
     }
 
     fn write(self: Box<Self>, space: &mut Space, by: &Provenance) -> Result<Written, SourceError> {
@@ -292,11 +347,20 @@ impl Batch for IMessageBatch {
             by: by.clone(),
             report: ChatImportReport::new(ChatFormat::IMessage),
         };
+        let to_source = |e: ChatImportError| match e {
+            ChatImportError::Space(e) => SourceError::Space(e),
+            other => SourceError::Failed(other.to_string()),
+        };
+        if self.reset {
+            rebase_untouched(writer.space, &self.chats, by)?;
+        }
         for chat in &self.chats {
-            writer.write(chat, &mut files).map_err(|e| match e {
-                ChatImportError::Space(e) => SourceError::Space(e),
-                other => SourceError::Failed(other.to_string()),
-            })?;
+            if self.reset {
+                let unseen = rebase(&mut writer, chat).map_err(to_source)?;
+                writer.write(&unseen, &mut files).map_err(to_source)?;
+            } else {
+                writer.write(chat, &mut files).map_err(to_source)?;
+            }
         }
         let report = writer.report;
         Ok(Written {
@@ -313,6 +377,65 @@ impl Batch for IMessageBatch {
                 .count(),
         })
     }
+}
+
+/// The position no message is before.
+fn first_mark() -> String {
+    format!("{:020}", 0)
+}
+
+/// After Messages numbered its messages again, the nodes of conversations that have no
+/// message now start again from the first number, so what comes later is added.
+fn rebase_untouched(space: &mut Space, chats: &[Chat], by: &Provenance) -> Result<(), SourceError> {
+    for summary in space.find_by_property(keys::APP, APP)? {
+        let id = space.property(&summary.id, keys::ID)?.unwrap_or_default();
+        if chats.iter().any(|c| c.id == id) {
+            continue;
+        }
+        space.set_property(&summary.id, keys::LAST, &first_mark(), by)?;
+        space.set_property(&summary.id, keys::LAST_KEYS, "", by)?;
+    }
+    Ok(())
+}
+
+/// After Messages numbered its messages again, the messages of `chat` the node does not have
+/// yet: those after the last one it has, found by its guid (or, when Messages no longer has
+/// it, by its time). The node's position is moved to the new number of that message, so the
+/// next runs go on from it.
+fn rebase(writer: &mut ChatWriter<'_>, chat: &Chat) -> Result<Chat, ChatImportError> {
+    let mut unseen = chat.clone();
+    let Some(id) = writer.find(chat)? else {
+        return Ok(unseen);
+    };
+    let space = &mut *writer.space;
+    let last_keys: Vec<String> = space
+        .property(&id, keys::LAST_KEYS)?
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let ended = space.property(&id, keys::ENDED_AT)?.unwrap_or_default();
+    let time = |m: &ChatMessage| m.time.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let had = chat
+        .messages
+        .iter()
+        .rposition(|m| last_keys.contains(&m.key))
+        .or_else(|| {
+            chat.messages
+                .iter()
+                .rposition(|m| !ended.is_empty() && time(m) <= ended)
+        });
+    let (mark, keys_at) = match had {
+        Some(i) => (chat.messages[i].mark.clone(), chat.messages[i].key.clone()),
+        None => (first_mark(), String::new()),
+    };
+    space.set_property(&id, keys::LAST, &mark, &writer.by)?;
+    space.set_property(&id, keys::LAST_KEYS, &keys_at, &writer.by)?;
+    unseen.messages = match had {
+        Some(i) => chat.messages[i + 1..].to_vec(),
+        None => chat.messages.clone(),
+    };
+    Ok(unseen)
 }
 
 /// An Apple time as a time of day in `offset` (the Mac's when `None`).
@@ -584,9 +707,13 @@ mod tests {
 
     #[test]
     fn cursors_are_message_numbers() {
-        assert_eq!(rowid(None), 0);
-        assert_eq!(rowid(Some(&Cursor::new("42"))), 42);
-        assert_eq!(rowid(Some(&Cursor::new("not a number"))), 0);
+        assert_eq!(parse_cursor(None), (0, None));
+        assert_eq!(parse_cursor(Some(&Cursor::new("42"))), (42, None));
+        assert_eq!(
+            parse_cursor(Some(&Cursor::new("42 A-B-C"))),
+            (42, Some("A-B-C".to_string()))
+        );
+        assert_eq!(parse_cursor(Some(&Cursor::new("not a number"))), (0, None));
     }
 
     #[test]
