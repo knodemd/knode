@@ -33,7 +33,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
 
 use knode_format::{Provenance, Space, Timestamp};
 use knode_ingest::sources::sqlite::{DatabaseCopy, check_schema, open_copy};
@@ -49,12 +50,18 @@ pub const ID: &str = "apple-mail";
 
 /// The tables and columns of the Envelope Index the connector reads.
 pub const SCHEMA: &[(&str, &[&str])] = &[
-    ("messages", &["ROWID", "mailbox", "date_received", "deleted"]),
+    (
+        "messages",
+        &["ROWID", "mailbox", "date_received", "deleted"],
+    ),
     ("mailboxes", &["ROWID", "url"]),
 ];
 
-/// The longest time between two runs when no change of the index was seen.
-const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(120);
+/// The longest time between two runs when no change of the index was seen. macOS reports the
+/// changes of a file that is kept open late, and Mail keeps its index open, so the connector
+/// also runs every minute: new mail is in within a minute. On APFS the copy of the index is a
+/// clone, so a run that finds nothing new is quick.
+const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(60);
 
 /// How long a message the index lists is waited for when its file is not there yet.
 const WAIT_FOR_FILE_MS: i64 = 24 * 3600 * 1000;
@@ -73,6 +80,25 @@ const NO_ACCESS: &str = "macOS keeps Knode from reading Apple Mail's mail in ~/L
 pub struct AppleMailConnector {
     /// `~/Library/Mail`, with the `V<n>` folders in it.
     mail_dir: PathBuf,
+    /// The index as it was when it was last read.
+    seen: Arc<Mutex<Seen>>,
+}
+
+/// What the connector remembers of the index between runs, so that a run while the index has
+/// not changed copies nothing: the index as it was when last checked, and, by request, as it
+/// was when a fetch found nothing new and waited for no file.
+#[derive(Debug, Default)]
+struct Seen {
+    checked: Option<Fingerprint>,
+    idle: HashMap<String, Fingerprint>,
+}
+
+/// The size and the time of the last change of the index and its `-wal`, read without opening
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    store: PathBuf,
+    files: Vec<Option<(u64, SystemTime)>>,
 }
 
 impl AppleMailConnector {
@@ -85,6 +111,7 @@ impl AppleMailConnector {
     pub fn new(mail_dir: impl Into<PathBuf>) -> AppleMailConnector {
         AppleMailConnector {
             mail_dir: mail_dir.into(),
+            seen: Arc::default(),
         }
     }
 
@@ -110,6 +137,26 @@ impl AppleMailConnector {
     /// The Envelope Index of a store.
     pub fn index_path(store: &Path) -> PathBuf {
         store.join("MailData").join("Envelope Index")
+    }
+
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The index as it is now, or `None` when it cannot be told.
+    fn fingerprint(&self) -> Option<Fingerprint> {
+        let store = self.store().ok()?;
+        let index = Self::index_path(&store);
+        let files = [index.clone(), wal_path(&index)]
+            .iter()
+            .map(|path| match std::fs::metadata(path) {
+                Ok(meta) => Ok(Some((meta.len(), meta.modified()?))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            })
+            .collect::<io::Result<Vec<_>>>()
+            .ok()?;
+        files[0].is_some().then_some(Fingerprint { store, files })
     }
 
     fn read_error(&self, error: io::Error) -> SourceError {
@@ -141,6 +188,24 @@ impl AppleMailConnector {
     }
 }
 
+fn wal_path(index: &Path) -> PathBuf {
+    let mut wal = index.as_os_str().to_os_string();
+    wal.push("-wal");
+    PathBuf::from(wal)
+}
+
+/// What a fetch depends on besides the index.
+fn request_key(request: &FetchRequest<'_>, cursor: &str) -> String {
+    let excluded: Vec<&str> = request.excluded.iter().map(|c| c.id.as_str()).collect();
+    format!(
+        "{}\n{cursor}\n{}\n{}\n{}",
+        request.space_id,
+        request.history.id(),
+        request.since.0,
+        excluded.join("\n")
+    )
+}
+
 fn no_access() -> SourceError {
     SourceError::Permission(Permission::FullDiskAccess, NO_ACCESS.into())
 }
@@ -165,9 +230,8 @@ impl Connector for AppleMailConnector {
         let paths = match self.store() {
             Ok(store) => {
                 let index = Self::index_path(&store);
-                let mut wal = index.clone().into_os_string();
-                wal.push("-wal");
-                vec![index, PathBuf::from(wal)]
+                let wal = wal_path(&index);
+                vec![index, wal]
             }
             // Watched until a store appears or access is given.
             Err(_) => vec![self.mail_dir.clone()],
@@ -179,7 +243,15 @@ impl Connector for AppleMailConnector {
     }
 
     fn check(&self) -> Result<(), SourceError> {
-        self.snapshot().map(|_| ())
+        // Copying the index makes macOS report a change of it, which wakes the connector
+        // again: an index that did not change since it was checked is not copied again.
+        let now = self.fingerprint();
+        if now.is_some() && self.seen().checked == now {
+            return Ok(());
+        }
+        let result = self.snapshot().map(|_| ());
+        self.seen().checked = if result.is_ok() { now } else { None };
+        result
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
@@ -195,6 +267,13 @@ impl Connector for AppleMailConnector {
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
+        let unchanged = self.fingerprint();
+        if let (Some(now), Some(cursor)) = (&unchanged, request.cursor) {
+            let key = request_key(request, cursor.as_str());
+            if self.seen().idle.get(&key) == Some(now) {
+                return Ok(Fetched::nothing(cursor.clone()));
+            }
+        }
         let snapshot = self.snapshot()?;
         let conn = snapshot.copy.conn();
         let store_name = snapshot
@@ -304,7 +383,15 @@ impl Connector for AppleMailConnector {
         }
         state.rowid = last;
         state.waiting = waiting;
+        let idle = files.is_empty() && state.waiting.is_empty() && !more;
         let cursor = state.write();
+        if idle && let Some(now) = unchanged {
+            let mut seen = self.seen();
+            if seen.idle.len() >= 64 {
+                seen.idle.clear();
+            }
+            seen.idle.insert(request_key(request, cursor.as_str()), now);
+        }
         if files.is_empty() {
             return Ok(Fetched::nothing(cursor).with_more(more));
         }
@@ -372,7 +459,9 @@ impl Snapshot {
             .prepare("SELECT ROWID, url FROM mailboxes")
             .map_err(failed)?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+            })
             .map_err(failed)?;
         let mut mailboxes = BTreeMap::new();
         for row in rows {
@@ -643,18 +732,13 @@ impl Batch for AppleMailBatch {
     }
 
     fn write(self: Box<Self>, space: &mut Space, by: &Provenance) -> Result<Written, SourceError> {
-        let report = import_apple_mail_files(
-            space,
-            &self.store,
-            &self.files,
-            &MailOptions::default(),
-            by,
-        )
-        .map_err(|e| match e {
-            MailError::NoAccess { .. } => no_access(),
-            MailError::Space(e) => SourceError::Space(e),
-            e => SourceError::Failed(e.to_string()),
-        })?;
+        let report =
+            import_apple_mail_files(space, &self.store, &self.files, &MailOptions::default(), by)
+                .map_err(|e| match e {
+                MailError::NoAccess { .. } => no_access(),
+                MailError::Space(e) => SourceError::Space(e),
+                e => SourceError::Failed(e.to_string()),
+            })?;
         Ok(Written {
             items: report.added,
             created: report.created.len() + report.people,
