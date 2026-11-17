@@ -32,6 +32,7 @@ use crate::{Error, Result, paths};
 
 mod import;
 mod maps;
+mod sources;
 
 /// How long [`connect_or_spawn`] waits for a new service to listen.
 pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -585,6 +586,37 @@ impl Client {
             space: space_path(space.as_ref())?,
         };
         self.request(methods::PROJECTS, params)
+    }
+
+    /// Whether a space has been set up: it has an onboarding receipt, a project or a few notes
+    /// of a person. See `knode_vault::onboarding::is_set_up`.
+    pub fn space_set_up(&self, space: impl AsRef<Path>) -> Result<bool> {
+        #[derive(serde::Deserialize)]
+        struct SetUp {
+            set_up: bool,
+        }
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        let answer: SetUp = self.request(methods::SPACE_SET_UP, params)?;
+        Ok(answer.set_up)
+    }
+
+    /// Applies a reviewed onboarding plan into `space`, which must not be set up yet: its
+    /// documents, a node for each project and the receipt, while what the space holds stays.
+    /// See `knode_vault::onboarding::apply_into`. People only.
+    pub fn onboarding_apply_into(
+        &self,
+        space: impl AsRef<Path>,
+        plan: &knode_vault::onboarding::Plan,
+        by: &Provenance,
+    ) -> Result<knode_vault::onboarding::Receipt> {
+        let params = OnboardingApplyIntoParams {
+            space: space_path(space.as_ref())?,
+            plan: plan.clone(),
+            by: by.clone(),
+        };
+        self.request(methods::ONBOARDING_APPLY_INTO, params)
     }
 
     /// The nodes that are part of a project, most recently changed first.

@@ -60,6 +60,11 @@ pub mod methods {
     pub const RECENT: &str = "recent";
     /// The projects of a space, with their parent and how much is in each.
     pub const PROJECTS: &str = "projects";
+    /// Whether a space has been set up: an onboarding receipt, a project or a few notes of a
+    /// person.
+    pub const SPACE_SET_UP: &str = "space.set_up";
+    /// Applies a reviewed onboarding plan into a space that is not set up yet. People only.
+    pub const ONBOARDING_APPLY_INTO: &str = "onboarding.apply_into";
     /// The nodes that are part of a project, most recently changed first.
     pub const PROJECT_NOTES: &str = "project.notes";
     /// Every version of a node.
@@ -180,6 +185,37 @@ pub mod methods {
     /// Imports what is at a path on this machine, or a web page at an `http(s)` URL: a data
     /// export, Markdown, a session, reading or another app's notes. People only.
     pub const IMPORT_RUN: &str = "import.run";
+
+    // Sources: importers and connectors, people only.
+
+    /// What every `sources.*` method starts with.
+    pub const SOURCES_PREFIX: &str = "sources.";
+    /// Every source of a space, importers and connectors, with its status.
+    pub const SOURCES_LIST: &str = "sources.list";
+    /// The connectors connected to one space, or to every space the service knows.
+    pub const SOURCES_STATUS: &str = "sources.status";
+    /// Connects a connector to a space, with the history chosen.
+    pub const SOURCES_CONNECT: &str = "sources.connect";
+    /// Pauses a connector in a space.
+    pub const SOURCES_PAUSE: &str = "sources.pause";
+    /// Resumes a paused connector.
+    pub const SOURCES_RESUME: &str = "sources.resume";
+    /// Excludes a chat, channel or folder of a connector.
+    pub const SOURCES_EXCLUDE: &str = "sources.exclude";
+    /// Includes again a chat, channel or folder excluded before.
+    pub const SOURCES_INCLUDE: &str = "sources.include";
+    /// The chats, channels or folders of a connector, the excluded ones marked.
+    pub const SOURCES_CONTAINERS: &str = "sources.containers";
+    /// Runs a connector now.
+    pub const SOURCES_RUN: &str = "sources.run";
+    /// Disconnects a connector from a space; what it brought in stays.
+    pub const SOURCES_DISCONNECT: &str = "sources.disconnect";
+    /// Whether a connector is signed in to the account it reads, on this machine.
+    pub const SOURCES_ACCOUNT: &str = "sources.account";
+    /// Takes one step of signing a connector in: the account, the code, the password.
+    pub const SOURCES_SIGN_IN: &str = "sources.sign_in";
+    /// Signs a connector out and forgets its session.
+    pub const SOURCES_SIGN_OUT: &str = "sources.sign_out";
 }
 
 /// The JSON-RPC error codes the service answers with.
@@ -686,6 +722,13 @@ pub(crate) struct RestoreParams {
 pub(crate) struct VaultExportParams {
     pub space: PathBuf,
     pub dir: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct OnboardingApplyIntoParams {
+    pub space: PathBuf,
+    pub plan: knode_vault::onboarding::Plan,
+    pub by: Provenance,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

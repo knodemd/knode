@@ -16,16 +16,25 @@
 //! one message joins two threads written before, it goes to the older node, each message stays
 //! in the one node it is in, and the two nodes are linked as `related`. The body has
 //! one section per message, in the order they were sent: a `##` heading with the sender and the
-//! date, the sender and the recipients, then the text. The text part is preferred; HTML is
-//! turned into Markdown when a message has no text part. Every section starts with a
-//! `<!-- mail <message-id> <date> <lines> <digest> -->` line, which is how the next import finds
-//! it and tells whether it was changed in Knode.
+//! time it was sent, in the sender's time with its offset from UTC (`2026-03-03 09:00 +01:00`),
+//! the sender and the recipients (`From`, `To`, `Cc` and, on its own line, `Bcc`), then the
+//! text. The text part is preferred; HTML is turned into Markdown when a message has no text
+//! part. Every section starts with a `<!-- mail <message-id> <date> <lines> <digest> -->` line,
+//! which is how the next import finds it and tells whether it was changed in Knode; the heading
+//! is not read back, so sections written before the offset was shown are found as well.
 //!
 //! # People
 //!
 //! Everyone who sent or received a message of a thread becomes one node of kind
 //! [`kinds::PERSON`], found again by their address ([`keys::PERSON_EMAIL`], in lower case), and
-//! the thread links to them as `related`. A person is named by the first name a message gives
+//! the thread links to them as `related`, with two limits, so that a newsletter or a mailing list
+//! does not fill the space with people: the recipients of a message sent to more than
+//! [`MAX_RECIPIENTS`] addresses do not become people (its sender does), and `Bcc` recipients
+//! become people only in mail that was sent: in a folder whose name is one mail programs give
+//! sent mail in English or another language, such as `Sent`, `Sent Messages`, `Enviados` or
+//! `Gesendet`.
+//! Every address is still listed in the thread; [`MailReport::people_left_out`] counts those
+//! that did not become people. A person is named by the first name a message gives
 //! them. A later import leaves a person node as it is, so names and notes added in Knode are
 //! kept; only a title that is the bare address becomes the name once a message gives one.
 //!
@@ -34,7 +43,10 @@
 //! [`MailOptions`] keeps the import to some folders (Gmail labels or Apple Mail mailboxes) and
 //! dates, and turns on attachments, which are off by default. Spam and trash (Gmail's `Spam` and
 //! `Trash` labels, mailboxes named `Junk`, `Spam`, `Trash`, `Bin` or `Deleted Messages`) are left
-//! out unless a folder filter names them.
+//! out unless a folder filter names them. A message larger than 64 MB (or an `mbox` whose `From `
+//! lines are broken, which reads as one message) is skipped and listed in
+//! [`MailReport::skipped`]. The text of the messages is read again thread by thread as they are
+//! written, so an import holds the headers of a mailbox in memory, not its mail.
 //!
 //! # Importing again
 //!
@@ -48,6 +60,7 @@
 mod apple;
 mod mbox;
 mod message;
+mod raw;
 mod thread;
 mod write;
 
@@ -59,6 +72,11 @@ use knode_format::{NodeId, Provenance, Space};
 use serde::{Deserialize, Serialize};
 
 pub use crate::Skipped;
+pub use raw::{RawMail, import_raw_mail};
+
+/// The most recipients (`To`, `Cc` and, in sent mail, `Bcc`) a message can have for them to
+/// become people: a message to more is a newsletter or a list, and only its sender does.
+pub const MAX_RECIPIENTS: usize = 20;
 
 /// The kinds of node the mail importer writes.
 pub mod kinds {
@@ -100,14 +118,20 @@ pub enum MailSource {
     Mbox,
     /// The Apple Mail store on the Mac, or a folder of `.emlx` files.
     AppleMail,
+    /// A mail account read over IMAP, live ([`import_raw_mail`]).
+    Imap,
+    /// Gmail read through the Gmail API, live ([`import_raw_mail`]).
+    Gmail,
 }
 
 impl MailSource {
-    /// The id kept in [`keys::SOURCE`]: `mbox` or `apple-mail`.
+    /// The id kept in [`keys::SOURCE`]: `mbox`, `apple-mail`, `imap` or `gmail`.
     pub fn id(self) -> &'static str {
         match self {
             MailSource::Mbox => "mbox",
             MailSource::AppleMail => "apple-mail",
+            MailSource::Imap => "imap",
+            MailSource::Gmail => "gmail",
         }
     }
 }
@@ -117,6 +141,8 @@ impl fmt::Display for MailSource {
         f.write_str(match self {
             MailSource::Mbox => "mbox",
             MailSource::AppleMail => "Apple Mail",
+            MailSource::Imap => "IMAP",
+            MailSource::Gmail => "Gmail",
         })
     }
 }
@@ -159,19 +185,15 @@ pub fn parse_day(text: &str) -> Result<NaiveDate, MailError> {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MailError {
-    /// macOS keeps Knode from reading Apple Mail's store: the app running Knode needs Full Disk
-    /// Access.
-    #[error(
-        "macOS does not let Knode read {} (Apple Mail keeps its mail there): only apps with Full \
-         Disk Access can. Open System Settings > Privacy & Security > Full Disk Access, turn it \
-         on for the app that runs Knode (Knode, or your terminal), then quit and reopen that \
-         app. Or export the mailboxes from Apple Mail (Mailbox > Export Mailbox) and import the \
-         exported .mbox.",
-        path.display()
-    )]
+    /// macOS keeps Knode from reading Apple Mail's store: the program that read it needs Full
+    /// Disk Access. The message names it when it is known ([`MailError::read_by`]).
+    #[error("{}", no_access(path, program.as_deref()))]
     NoAccess {
         /// The folder or file that could not be read.
         path: PathBuf,
+        /// The program that tried to read it, when it is not one people started themselves:
+        /// Knode Service, which macOS asks about by its own path.
+        program: Option<PathBuf>,
     },
     /// Nothing at the path.
     #[error("{} does not exist", .0.display())]
@@ -200,6 +222,42 @@ pub enum MailError {
     Space(#[from] knode_format::Error),
 }
 
+impl MailError {
+    /// Names `program` as the one that read the mail: Knode Service, when the import ran in it.
+    /// macOS gives Full Disk Access to a program by its path, so it is the one to allow, not the
+    /// terminal or app that asked for the import. Other errors are left as they are.
+    pub fn read_by(self, program: impl Into<PathBuf>) -> Self {
+        match self {
+            MailError::NoAccess { path, .. } => MailError::NoAccess {
+                path,
+                program: Some(program.into()),
+            },
+            other => other,
+        }
+    }
+}
+
+/// What [`MailError::NoAccess`] says: what to allow, and the way round it.
+fn no_access(path: &Path, program: Option<&Path>) -> String {
+    let allow = match program {
+        Some(program) => format!(
+            "Knode Service read it: open System Settings > Privacy & Security > Full Disk \
+             Access, click +, add {} (press Command-Shift-G to type the path) and turn it on, \
+             then restart Knode Service (knode service stop, then knode service start)",
+            program.display()
+        ),
+        None => "Open System Settings > Privacy & Security > Full Disk Access, turn it on for the \
+                 app that runs Knode (Knode, or your terminal), then quit and reopen that app"
+            .to_string(),
+    };
+    format!(
+        "macOS does not let Knode read {} (Apple Mail keeps its mail there): only apps with Full \
+         Disk Access can. {allow}. Or export the mailboxes from Apple Mail (Mailbox > Export \
+         Mailbox) and import the exported .mbox.",
+        path.display()
+    )
+}
+
 /// Turns a failure to read `path` into [`MailError::NoAccess`] when macOS refused it, else into
 /// [`MailError::Io`].
 pub(crate) fn read_error(path: &Path) -> impl FnOnce(std::io::Error) -> MailError + '_ {
@@ -207,6 +265,7 @@ pub(crate) fn read_error(path: &Path) -> impl FnOnce(std::io::Error) -> MailErro
         if source.kind() == std::io::ErrorKind::PermissionDenied {
             MailError::NoAccess {
                 path: path.to_path_buf(),
+                program: None,
             }
         } else {
             MailError::Io {
@@ -243,8 +302,16 @@ pub struct MailReport {
     pub unchanged: usize,
     /// How many messages were read into threads.
     pub messages: usize,
+    /// How many of them were not in the space before: the rest were there already, from this
+    /// import or another one of the same messages (found by their `Message-ID`).
+    #[serde(default)]
+    pub added: usize,
     /// How many person nodes were created.
     pub people: usize,
+    /// How many addresses did not become people: recipients of messages sent to more than
+    /// [`MAX_RECIPIENTS`] addresses, and `Bcc` recipients of mail that was not sent.
+    #[serde(default)]
+    pub people_left_out: usize,
     /// How many files were attached.
     pub attached: usize,
     /// How many messages the folder and date filters left out.
@@ -269,7 +336,9 @@ impl MailReport {
             updated: Vec::new(),
             unchanged: 0,
             messages: 0,
+            added: 0,
             people: 0,
+            people_left_out: 0,
             attached: 0,
             filtered: 0,
             junk: 0,
@@ -298,6 +367,13 @@ impl MailReport {
             self.limits.push(text);
         }
     }
+}
+
+/// Whether mail in `folder` (a Gmail label or an Apple Mail mailbox, such as `[Gmail]/Spam`
+/// or `Junk`) is spam or trash, left out unless a folder filter names it: its last part is
+/// `Spam`, `Junk`, `Trash`, `Bin`, `Deleted Messages` or `Deleted Items`, in any case.
+pub fn is_junk_folder(folder: &str) -> bool {
+    message::is_junk_folder(folder)
 }
 
 /// Where Apple Mail keeps its mail on this Mac, `~/Library/Mail`; `None` off macOS. Nothing is
@@ -406,6 +482,11 @@ pub fn import_mail(
     match source {
         MailSource::Mbox => mbox::read(path, &mut collected, &mut report)?,
         MailSource::AppleMail => apple::read(path, options, &mut collected, &mut report)?,
+        MailSource::Imap | MailSource::Gmail => {
+            return Err(MailError::Invalid(format!(
+                "{source} is read live by its connector, not from a file: import an .mbox instead"
+            )));
+        }
     }
     report.filtered = collected.filtered;
     report.junk = collected.junk;
@@ -413,4 +494,57 @@ pub fn import_mail(
     let threads = thread::group(collected.into_mails());
     write::write(space, source, threads, options, &by, &mut report)?;
     Ok(report)
+}
+
+/// Imports some `.emlx` files of Apple Mail's store into `space`, written by `by`: the
+/// messages a connector found new. `root` is the store's `V<n>` folder; each file's mailbox
+/// is the path of `.mbox` folders between it and the file, as [`import_mail`] names it, so
+/// both find the same threads. Messages already in the space, from any import of the same
+/// mail (an Apple Mail store or export, a Gmail Takeout `.mbox`), are found by their
+/// `Message-ID` and added only once; [`MailReport::added`] counts the new ones.
+pub fn import_apple_mail_files(
+    space: &mut Space,
+    root: impl AsRef<Path>,
+    files: &[PathBuf],
+    options: &MailOptions,
+    by: &Provenance,
+) -> Result<MailReport, MailError> {
+    let root = root.as_ref();
+    let source = MailSource::AppleMail;
+    let mut report = MailReport::new(source);
+    let mut collected = message::Collector::new(options);
+    apple::read_some(root, files, options, &mut collected, &mut report)?;
+    report.filtered = collected.filtered;
+    report.junk = collected.junk;
+    report.duplicates = collected.duplicates;
+    let threads = thread::group(collected.into_mails());
+    write::write(space, source, threads, options, by, &mut report)?;
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_access_names_the_program_that_read_the_store() {
+        let path = PathBuf::from("/Users/example/Library/Mail");
+        let error = MailError::NoAccess {
+            path: path.clone(),
+            program: None,
+        };
+        assert!(
+            error.to_string().contains("(Knode, or your terminal)"),
+            "{error}"
+        );
+        let error = error.read_by("/opt/knode/bin/knode");
+        let text = error.to_string();
+        assert!(text.contains("Knode Service read it"), "{text}");
+        assert!(text.contains("add /opt/knode/bin/knode"), "{text}");
+        assert!(!text.contains("your terminal"), "{text}");
+        assert!(text.contains("/Users/example/Library/Mail"), "{text}");
+        // Other errors are left as they are.
+        let other = MailError::NotFound(path).read_by("/opt/knode/bin/knode");
+        assert!(matches!(other, MailError::NotFound(_)));
+    }
 }

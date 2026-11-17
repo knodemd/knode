@@ -29,7 +29,7 @@ knode-config = { path = "../knode-config" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
-sha2 = "=0.11.0"
+sha2 = "=0.11.1"
 thiserror = "=2.0.21"
 tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls"], optional = true }

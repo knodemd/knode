@@ -278,4 +278,18 @@ fn says_when_full_disk_access_is_missing() {
         "{}",
         error.message
     );
+    // The service read the store, so it names itself, by its path, as the program to allow:
+    // not the terminal or the app that asked for the import.
+    let program = std::env::current_exe().unwrap();
+    assert!(
+        error.message.contains("Knode Service read it")
+            && error.message.contains(&program.display().to_string()),
+        "{}",
+        error.message
+    );
+    assert!(
+        !error.message.contains("your terminal"),
+        "{}",
+        error.message
+    );
 }
