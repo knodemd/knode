@@ -493,14 +493,22 @@ fn entity_markdown(e: &Entity) -> String {
         "italic" => wrap("*"),
         "strikethrough" => wrap("~~"),
         "code" => {
-            let fence = if text.contains('`') { "``" } else { "`" };
-            let pad = if text.contains('`') { " " } else { "" };
+            // A span ends at the first run of as many backticks as opened it: one more than
+            // the longest run in the code cannot be in it. Markdown takes one space off each
+            // end, so the code keeps its own when it starts or ends with a backtick or a space.
+            let fence = "`".repeat(longest_backticks(text) + 1);
+            let pad = if text.contains('`')
+                || (text.starts_with(' ') && text.ends_with(' ') && !text.trim().is_empty())
+            {
+                " "
+            } else {
+                ""
+            };
             format!("{fence}{pad}{text}{pad}{fence}")
         }
         "pre" => {
             // A fence longer than any run of backticks in the code, so the code cannot end it.
-            let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-            let fence = "`".repeat((longest + 1).max(3));
+            let fence = "`".repeat((longest_backticks(text) + 1).max(3));
             let language = e.language.as_deref().unwrap_or("").replace(['`', '\n'], "");
             format!(
                 "\n{fence}{language}\n{}\n{fence}\n",
@@ -527,6 +535,11 @@ fn entity_markdown(e: &Entity) -> String {
     }
 }
 
+/// The longest run of backticks in `text`.
+fn longest_backticks(text: &str) -> usize {
+    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +558,10 @@ mod tests {
         assert_eq!(entity_markdown(&entity("bold", " big ")), " **big** ");
         assert_eq!(entity_markdown(&entity("italic", "")), "");
         assert_eq!(entity_markdown(&entity("code", "a`b")), "`` a`b ``");
+        assert_eq!(entity_markdown(&entity("code", "a``b")), "``` a``b ```");
+        assert_eq!(entity_markdown(&entity("code", "`x")), "`` `x ``");
+        assert_eq!(entity_markdown(&entity("code", " x ")), "`  x  `");
+        assert_eq!(entity_markdown(&entity("code", "plain")), "`plain`");
         assert_eq!(entity_markdown(&entity("plain", "[[x]]")), "\\[\\[x\\]\\]");
         assert_eq!(
             entity_markdown(&entity("blockquote", "one\ntwo")),
