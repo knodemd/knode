@@ -647,3 +647,213 @@ fn says_when_full_disk_access_is_missing() {
     );
     assert!(error.to_string().contains("Full Disk Access"), "{error}");
 }
+
+mod connector {
+    use super::*;
+    use knode_format::Timestamp;
+    use knode_ingest::sources::{
+        Connector, Container, Cursor as SourceCursor, FetchRequest, History as SourceHistory,
+        NoSecrets, Permission, SourceError, Trigger, provenance,
+    };
+    use knode_ingest::whatsapp_mac::WhatsAppMacConnector;
+
+    fn request<'a>(
+        cursor: Option<&'a SourceCursor>,
+        history: SourceHistory,
+        since: Timestamp,
+        excluded: &'a [Container],
+        max_items: usize,
+    ) -> FetchRequest<'a> {
+        FetchRequest {
+            space_id: "space",
+            cursor,
+            history,
+            since,
+            excluded,
+            max_items,
+            secrets: &NoSecrets,
+        }
+    }
+
+    fn start_of_today_ms() -> Timestamp {
+        let midnight = at(Local::now().date_naive(), 0, 0);
+        Timestamp(
+            Local
+                .from_local_datetime(&midnight)
+                .earliest()
+                .unwrap()
+                .timestamp_millis(),
+        )
+    }
+
+    #[test]
+    fn describes_itself() {
+        let fake = Fake::new();
+        let connector = WhatsAppMacConnector::new(fake.app(), "Me");
+        let info = connector.info();
+        assert_eq!(info.id, "whatsapp");
+        assert_eq!(info.permissions, [Permission::FullDiskAccess]);
+        assert_eq!(info.container.as_deref(), Some("chat"));
+        match connector.trigger() {
+            Trigger::Watch { paths, every } => {
+                assert!(paths[0].ends_with("ChatStorage.sqlite"));
+                assert!(paths[1].ends_with("ChatStorage.sqlite-wal"));
+                assert!(every <= std::time::Duration::from_secs(60));
+            }
+            other => panic!("{other:?}"),
+        }
+        connector.check().unwrap();
+    }
+
+    #[test]
+    fn fetches_in_batches_and_writes_once() {
+        let mut fake = Fake::new();
+        fake.chat(1, ADA, "Ada Lovelace", false);
+        fake.chat(2, GRACE, "Grace Hopper", false);
+        let day = yesterday();
+        for m in 0..5 {
+            fake.text(1, false, at(day, 10, m), &format!("Ada {m}"));
+        }
+        fake.text(2, false, at(day, 11, 0), "Grace, excluded");
+        let connector = WhatsAppMacConnector::new(fake.app(), "Me");
+        let excluded = [Container::new(GRACE, "Grace Hopper")];
+        let containers = connector
+            .containers(&request(
+                None,
+                SourceHistory::Everything,
+                Timestamp(0),
+                &[],
+                10,
+            ))
+            .unwrap();
+        assert_eq!(containers.len(), 2);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = space(&dir);
+        let by = provenance("whatsapp");
+        let mut cursor: Option<SourceCursor> = None;
+        let mut items = 0;
+        let mut runs = 0;
+        loop {
+            let fetched = connector
+                .fetch(&request(
+                    cursor.as_ref(),
+                    SourceHistory::Everything,
+                    Timestamp(0),
+                    &excluded,
+                    2,
+                ))
+                .unwrap();
+            runs += 1;
+            if let Some(batch) = fetched.batch {
+                assert!(batch.len() <= 2);
+                // A run cut short before its cursor is saved writes the batch again: nothing
+                // is added twice.
+                items += batch.write(&mut space, &by).unwrap().items;
+            }
+            cursor = Some(fetched.cursor);
+            if !fetched.more {
+                break;
+            }
+        }
+        assert_eq!(items, 5);
+        assert_eq!(runs, 3);
+        assert_eq!(cursor.as_ref().unwrap().as_str(), "6");
+        let body = node_with_jid(&space, ADA).body;
+        for m in 0..5 {
+            assert_eq!(body.matches(&format!("Ada {m}")).count(), 1, "{body}");
+        }
+        assert!(
+            space
+                .find_by_property(chat_keys::JID, GRACE)
+                .unwrap()
+                .is_empty()
+        );
+
+        // Read again from the start: the importer adds nothing.
+        let again = connector
+            .fetch(&request(
+                None,
+                SourceHistory::Everything,
+                Timestamp(0),
+                &excluded,
+                100,
+            ))
+            .unwrap();
+        let written = again.batch.unwrap().write(&mut space, &by).unwrap();
+        assert_eq!(written.items, 0);
+    }
+
+    #[test]
+    fn from_today_never_reads_older_messages() {
+        let mut fake = Fake::new();
+        fake.chat(1, ADA, "Ada Lovelace", false);
+        let today = Local::now().date_naive();
+        let now = (Local::now().naive_local() - Duration::minutes(1)).max(at(today, 0, 0));
+        fake.text(1, false, now, "Today");
+        let connector = WhatsAppMacConnector::new(fake.app(), "Me");
+        let since = start_of_today_ms();
+        let first = connector
+            .fetch(&request(None, SourceHistory::FromToday, since, &[], 100))
+            .unwrap();
+        assert_eq!(first.batch.as_ref().map(|b| b.len()), Some(1));
+        fake.text(
+            1,
+            false,
+            at(today - Duration::days(3), 9, 0),
+            "Restored, older",
+        );
+        let second = connector
+            .fetch(&request(
+                Some(&first.cursor),
+                SourceHistory::FromToday,
+                since,
+                &[],
+                100,
+            ))
+            .unwrap();
+        assert!(second.batch.is_none());
+        assert_eq!(second.cursor.as_str(), "2");
+    }
+
+    #[test]
+    fn reports_errors_as_the_service_shows_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let connector = WhatsAppMacConnector::new(WhatsAppMac::for_home(dir.path()), "Me");
+        let error = connector.check().unwrap_err();
+        assert!(matches!(error, SourceError::Unavailable(_)), "{error:?}");
+        assert!(error.needs_person());
+
+        let schema = SCHEMA.replace("ZMESSAGETYPE INTEGER, ", "");
+        let fake = Fake::with_schema(&schema);
+        let connector = WhatsAppMacConnector::new(fake.app(), "Me");
+        let error = connector
+            .fetch(&request(
+                None,
+                SourceHistory::Everything,
+                Timestamp(0),
+                &[],
+                10,
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind(), "needs-update");
+        assert!(
+            error.to_string().contains("ZWAMESSAGE.ZMESSAGETYPE"),
+            "{error}"
+        );
+
+        let fake = Fake::new();
+        let connector = WhatsAppMacConnector::new(fake.app(), "Me");
+        let bad = SourceCursor::new("not a number");
+        let error = connector
+            .fetch(&request(
+                Some(&bad),
+                SourceHistory::Everything,
+                Timestamp(0),
+                &[],
+                10,
+            ))
+            .unwrap_err();
+        assert_eq!(error.kind(), "failed");
+    }
+}

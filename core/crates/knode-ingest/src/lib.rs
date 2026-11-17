@@ -36,7 +36,8 @@
 //! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 //!
 //! Chats between people come from the exports of the apps they were held in:
-//! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat.
+//! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat, and
+//! [`whatsapp_mac`] brings in the chats of WhatsApp for Mac as they arrive, as the same nodes.
 //!
 //! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
 //! runs them.

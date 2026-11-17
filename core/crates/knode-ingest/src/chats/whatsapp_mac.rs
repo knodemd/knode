@@ -25,6 +25,10 @@
 //! imported from an export first, which has no JID, is found by its name and given the JID, so
 //! an export and the connector write to the same node, either one first.
 //!
+//! [`WhatsAppMac::sync`] reads and writes in one go; [`WhatsAppMacConnector`] is the same as a
+//! [`Connector`](crate::sources::Connector) of Knode Service, which keeps the cursor, the history
+//! and the exclusions of each space and runs it when the database changes.
+//!
 //! Only what the phone synced to the Mac is there, and disappearing messages are gone. Reading
 //! the database needs Full Disk Access for the process that reads it.
 
@@ -154,6 +158,13 @@ pub struct Options {
     pub excluded: BTreeSet<String>,
     /// The name the person's own messages are shown with.
     pub me: String,
+    /// With [`History::FromToday`], the start of the day the connector was connected, in
+    /// milliseconds since 1970: nothing older is ever read. `None`: the start of today, for
+    /// the first sync only.
+    pub connected: Option<i64>,
+    /// The most messages one read takes; the rest waits for the next ([`Pending::more`]).
+    /// `None`: no limit.
+    pub max_messages: Option<usize>,
 }
 
 impl Default for Options {
@@ -162,6 +173,8 @@ impl Default for Options {
             history: History::FromToday,
             excluded: BTreeSet::new(),
             me: "Me".into(),
+            connected: None,
+            max_messages: None,
         }
     }
 }
@@ -186,6 +199,73 @@ pub struct SyncReport {
     pub read: usize,
     /// Where to start next time: keep it for the space.
     pub cursor: Cursor,
+}
+
+/// Messages read and not written yet: [`WhatsAppMac::read`], then [`Pending::write`].
+#[derive(Debug, Clone)]
+pub struct Pending {
+    chats: Vec<Chat>,
+    message_dir: PathBuf,
+    source: String,
+    read: usize,
+    cursor: Cursor,
+    more: bool,
+}
+
+impl Pending {
+    /// The messages read from the database.
+    pub fn messages(&self) -> usize {
+        self.read
+    }
+
+    /// Where to start next time, once this is written.
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    /// Whether there are more messages to read now ([`Options::max_messages`]).
+    pub fn more(&self) -> bool {
+        self.more
+    }
+
+    /// Writes the messages into `space` as `by`, through the WhatsApp importer, which adds
+    /// nothing it wrote before: writing the same messages twice changes nothing.
+    pub fn write(
+        self,
+        space: &mut Space,
+        by: &Provenance,
+    ) -> Result<ChatImportReport, ChatImportError> {
+        let mut writer = ChatWriter {
+            space,
+            by: by.clone().with_source(self.source),
+            report: ChatImportReport::new(ChatFormat::WhatsApp),
+        };
+        if self.chats.is_empty() {
+            return Ok(writer.report);
+        }
+        // Files are opened by their path in the Message folder; when it is gone, every one is
+        // reported as not attached.
+        let mut files = Files::unlisted_folder(&self.message_dir)
+            .or_else(|_| Files::unlisted_folder(&std::env::temp_dir()))?;
+        for chat in &self.chats {
+            writer.write(chat, &mut files)?;
+        }
+        Ok(writer.report)
+    }
+}
+
+/// Numbers the export keys that repeat within a minute (`-1`, `-2`...), as an export does.
+fn number_export_keys(messages: &mut [ChatMessage]) {
+    let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for message in messages {
+        if let Some(base) = message.export_key.take() {
+            let n = seen
+                .entry((message.mark.clone(), base.clone()))
+                .or_insert(0);
+            message.export_key = Some(if *n == 0 { base } else { format!("{base}-{n}") });
+            *n += 1;
+        }
+    }
 }
 
 /// Why WhatsApp for Mac could not be read.
@@ -338,8 +418,8 @@ impl WhatsAppMac {
     }
 
     /// Brings the messages after `cursor` into `space`, written by `by`, and says where to
-    /// start next time. Nothing is written when the database cannot be read or its schema is
-    /// not the one expected.
+    /// start next time: [`read`](Self::read), then [`Pending::write`]. Nothing is written when
+    /// the database cannot be read or its schema is not the one expected.
     pub fn sync(
         &self,
         space: &mut Space,
@@ -347,30 +427,40 @@ impl WhatsAppMac {
         options: &Options,
         by: &Provenance,
     ) -> Result<SyncReport, WhatsAppMacError> {
+        let pending = self.read(cursor, options)?;
+        let read = pending.messages();
+        let cursor = pending.cursor();
+        let import = pending.write(space, by)?;
+        Ok(SyncReport {
+            import,
+            read,
+            cursor,
+        })
+    }
+
+    /// Reads the messages after `cursor`, ready to be written, without touching a space. The
+    /// copy of the database is gone when this returns.
+    pub fn read(&self, cursor: Cursor, options: &Options) -> Result<Pending, WhatsAppMacError> {
         let copy = self.copy()?;
         let connection = &copy.connection;
         let names = Names::read(connection)?;
 
         let newest: Option<i64> =
             connection.query_row("SELECT MAX(Z_PK) FROM ZWAMESSAGE", [], |row| row.get(0))?;
-        let next = Cursor {
-            last_message: match (cursor.last_message, newest) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (a, b) => a.or(b).or(Some(0)),
-            },
-        };
-
         let included: Vec<i64> = names
             .sessions
             .values()
             .filter(|s| !options.excluded.contains(&s.jid))
             .map(|s| s.pk)
             .collect();
-        let since = match (cursor.last_message, options.history) {
-            (None, History::FromToday) => Some(start_of_today()),
-            _ => None,
+        let since = match (options.history, options.connected, cursor.last_message) {
+            (History::Everything, _, _) => None,
+            (History::FromToday, Some(ms), _) => Some((ms.div_euclid(1000) - APPLE_EPOCH) as f64),
+            (History::FromToday, None, None) => Some(start_of_today()),
+            (History::FromToday, None, Some(_)) => None,
         };
-        let rows = if included.is_empty() {
+        let limit = options.max_messages.map(|n| n.max(1));
+        let mut rows = if included.is_empty() {
             Vec::new()
         } else {
             read_rows(
@@ -378,18 +468,31 @@ impl WhatsAppMac {
                 cursor.last_message.unwrap_or(i64::MIN),
                 since,
                 &included,
+                limit.map(|n| n + 1),
             )?
+        };
+        let more = limit.is_some_and(|n| rows.len() > n);
+        if let Some(n) = limit {
+            rows.truncate(n);
+        }
+        // Past the last message read when there is more; else past every message there is,
+        // those of excluded chats too.
+        let last = if more {
+            rows.last().map(|r| r.pk)
+        } else {
+            newest
+        };
+        let next = Cursor {
+            last_message: match (cursor.last_message, last) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b).or(Some(0)),
+            },
         };
         let read = rows.len();
 
         let message_dir = self.container.join(MESSAGE_FOLDER);
-        let mut files = if message_dir.is_dir() {
-            Files::unlisted_folder(&message_dir)?
-        } else {
-            Files::unlisted_folder(copy.dir.path())?
-        };
         let mut chats: BTreeMap<i64, Chat> = BTreeMap::new();
-        let mut seen: BTreeMap<(i64, String, String), usize> = BTreeMap::new();
+        let mut order: BTreeMap<i64, Vec<(NaiveDateTime, i64)>> = BTreeMap::new();
         let mut replies = Replies::new(connection)?;
         for row in rows {
             let Some(session) = names.sessions.get(&row.session) else {
@@ -411,32 +514,33 @@ impl WhatsAppMac {
                 chat.kind = if session.group { "group" } else { "personal" }.into();
                 chat
             });
-            let mut message = message;
-            if let Some(base) = message.export_key.take() {
-                let n = seen
-                    .entry((session.pk, message.mark.clone(), base.clone()))
-                    .or_insert(0);
-                message.export_key = Some(if *n == 0 { base } else { format!("{base}-{n}") });
-                *n += 1;
-            }
+            order
+                .entry(session.pk)
+                .or_default()
+                .push((message.time, row.pk));
             chat.messages.push(message);
         }
-
-        let mut writer = ChatWriter {
-            space,
-            by: by
-                .clone()
-                .with_source(self.database().to_string_lossy().into_owned()),
-            report: ChatImportReport::new(ChatFormat::WhatsApp),
-        };
-        for chat in chats.values_mut() {
-            chat.collect_participants();
-            writer.write(chat, &mut files)?;
-        }
-        Ok(SyncReport {
-            import: writer.report,
+        let mut chats: Vec<Chat> = chats
+            .into_iter()
+            .map(|(pk, mut chat)| {
+                // Oldest first, as the importer takes them.
+                let keys = order.remove(&pk).unwrap_or_default();
+                let mut paired: Vec<_> = keys.into_iter().zip(chat.messages).collect();
+                paired.sort_by_key(|(key, _)| *key);
+                chat.messages = paired.into_iter().map(|(_, m)| m).collect();
+                number_export_keys(&mut chat.messages);
+                chat.collect_participants();
+                chat
+            })
+            .collect();
+        chats.sort_by(|a, b| a.title.cmp(&b.title));
+        Ok(Pending {
+            chats,
+            message_dir,
+            source: self.database().to_string_lossy().into_owned(),
             read,
             cursor: next,
+            more,
         })
     }
 
@@ -501,7 +605,10 @@ impl WhatsAppMac {
         drop(source);
         connection.execute_batch("PRAGMA query_only = ON")?;
         check_schema(&connection)?;
-        Ok(DbCopy { connection, dir })
+        Ok(DbCopy {
+            connection,
+            _dir: dir,
+        })
     }
 }
 
@@ -509,7 +616,7 @@ impl WhatsAppMac {
 struct DbCopy {
     // Closed before the folder is removed: fields drop in order.
     connection: Connection,
-    dir: TempDir,
+    _dir: TempDir,
 }
 
 /// A folder only this user may open, removed with what is in it when dropped.
@@ -688,6 +795,7 @@ fn is_number(name: &str) -> bool {
 
 /// One message as the database holds it.
 struct Stored {
+    pk: i64,
     session: i64,
     from_me: bool,
     date: f64,
@@ -705,6 +813,7 @@ fn read_rows(
     after: i64,
     since: Option<f64>,
     sessions: &[i64],
+    limit: Option<usize>,
 ) -> Result<Vec<Stored>, WhatsAppMacError> {
     // The chat keys are integers from the database itself.
     let list = sessions
@@ -712,6 +821,8 @@ fn read_rows(
         .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    // -1 is no limit.
+    let limit = limit.map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX));
     let sql = format!(
         "SELECT m.Z_PK, m.ZCHATSESSION, m.ZISFROMME, m.ZMESSAGEDATE, m.ZTEXT, m.ZMESSAGETYPE, \
                 g.ZMEMBERJID, m.ZSTANZAID, \
@@ -724,13 +835,14 @@ fn read_rows(
          FROM ZWAMESSAGE m LEFT JOIN ZWAGROUPMEMBER g ON m.ZGROUPMEMBER = g.Z_PK \
          WHERE m.Z_PK > ?1 AND m.ZMESSAGEDATE IS NOT NULL AND m.ZMESSAGEDATE >= ?2 \
            AND m.ZCHATSESSION IN ({list}) \
-         ORDER BY m.ZMESSAGEDATE, m.Z_PK"
+         ORDER BY m.Z_PK LIMIT {limit}"
     );
     let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(rusqlite::params![after, since.unwrap_or(f64::MIN)])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(Stored {
+            pk: row.get(0)?,
             session: row.get(1)?,
             from_me: row.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0,
             date: row.get(3)?,
@@ -986,6 +1098,141 @@ fn text(row: &Row<'_>, index: usize) -> Option<String> {
     match row.get_ref(index).ok()? {
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => String::from_utf8(bytes.to_vec()).ok(),
         _ => None,
+    }
+}
+
+/// The id of the source: `whatsapp`.
+pub const SOURCE_ID: &str = "whatsapp";
+
+/// WhatsApp for Mac as a [`Connector`](crate::sources::Connector) of Knode Service: it runs
+/// when the database or its write-ahead log changes, and at least every minute.
+#[derive(Debug, Clone)]
+pub struct WhatsAppMacConnector {
+    app: WhatsAppMac,
+    me: String,
+}
+
+impl WhatsAppMacConnector {
+    /// The connector for the app in `app`, showing the person's own messages as `me`.
+    pub fn new(app: WhatsAppMac, me: impl Into<String>) -> Self {
+        WhatsAppMacConnector { app, me: me.into() }
+    }
+
+    /// The app it reads.
+    pub fn app(&self) -> &WhatsAppMac {
+        &self.app
+    }
+}
+
+impl From<WhatsAppMacError> for crate::sources::SourceError {
+    fn from(error: WhatsAppMacError) -> Self {
+        use crate::sources::{Permission, SourceError};
+        let said = error.to_string();
+        match error {
+            WhatsAppMacError::NotInstalled(_) => SourceError::Unavailable(said),
+            WhatsAppMacError::NoFullDiskAccess(_) => {
+                SourceError::Permission(Permission::FullDiskAccess, said)
+            }
+            WhatsAppMacError::NeedsUpdate { .. } => SourceError::NeedsUpdate(said),
+            WhatsAppMacError::Import(ChatImportError::Space(error)) => SourceError::Space(error),
+            _ => SourceError::Failed(said),
+        }
+    }
+}
+
+impl crate::sources::Connector for WhatsAppMacConnector {
+    fn info(&self) -> crate::sources::SourceInfo {
+        use crate::sources::{Permission, SourceInfo};
+        SourceInfo::connector(SOURCE_ID, "WhatsApp", "The chats of WhatsApp for Mac")
+            .needing([Permission::FullDiskAccess])
+            .excluding("chat")
+    }
+
+    fn trigger(&self) -> crate::sources::Trigger {
+        crate::sources::Trigger::Watch {
+            paths: self.app.watched_files(),
+            every: Duration::from_secs(60),
+        }
+    }
+
+    fn check(&self) -> Result<(), crate::sources::SourceError> {
+        Ok(self.app.check()?)
+    }
+
+    fn containers(
+        &self,
+        _request: &crate::sources::FetchRequest<'_>,
+    ) -> Result<Vec<crate::sources::Container>, crate::sources::SourceError> {
+        Ok(self
+            .app
+            .chats()?
+            .into_iter()
+            .map(|chat| crate::sources::Container::new(chat.jid, chat.name))
+            .collect())
+    }
+
+    fn fetch(
+        &self,
+        request: &crate::sources::FetchRequest<'_>,
+    ) -> Result<crate::sources::Fetched, crate::sources::SourceError> {
+        use crate::sources::{Fetched, SourceError};
+        let cursor = match request.cursor {
+            None => Cursor::default(),
+            Some(saved) => saved.as_str().parse().map_err(|_| {
+                SourceError::Failed(format!(
+                    "the saved place of the WhatsApp connector, {:?}, is not one it wrote",
+                    saved.as_str()
+                ))
+            })?,
+        };
+        let options = Options {
+            history: match request.history {
+                crate::sources::History::FromToday => History::FromToday,
+                crate::sources::History::Everything => History::Everything,
+            },
+            excluded: request.excluded.iter().map(|c| c.id.clone()).collect(),
+            me: self.me.clone(),
+            connected: Some(request.since.0),
+            max_messages: Some(request.max_items),
+        };
+        let pending = self.app.read(cursor, &options)?;
+        let next = crate::sources::Cursor::new(pending.cursor().to_string());
+        let more = pending.more();
+        if pending.messages() == 0 {
+            return Ok(Fetched::nothing(next).with_more(more));
+        }
+        Ok(Fetched::batch(Batch(pending), next).with_more(more))
+    }
+}
+
+/// Messages read by the connector, written by the WhatsApp importer.
+struct Batch(Pending);
+
+impl crate::sources::Batch for Batch {
+    fn len(&self) -> usize {
+        self.0.messages()
+    }
+
+    fn write(
+        self: Box<Self>,
+        space: &mut Space,
+        by: &Provenance,
+    ) -> Result<crate::sources::Written, crate::sources::SourceError> {
+        let report = self
+            .0
+            .write(space, by)
+            .map_err(|e| crate::sources::SourceError::from(WhatsAppMacError::Import(e)))?;
+        let mut written = crate::sources::Written {
+            items: report.messages,
+            ..Default::default()
+        };
+        for chat in &report.chats {
+            match chat.op {
+                knode_format::ChangeOp::Create => written.created += 1,
+                _ => written.updated += 1,
+            }
+        }
+        Ok(written)
     }
 }
 
