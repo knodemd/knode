@@ -654,6 +654,36 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
     plan.warnings = notices;
     Ok(plan)
 }
+
+/// The step-by-step guide an agent follows to bring a person's notes into Knode: `knode onboard
+/// guide`. Agents decide what needs judgment (which notes are the person's, which projects keep
+/// their files); the deterministic parts stay in [`analyze`] and [`apply`].
+pub fn agent_guide(source: Option<&Path>) -> String {
+    let guide = include_str!("onboarding_guide.md");
+    match source {
+        Some(path) => guide.replace("{source}", &path.display().to_string()),
+        None => guide
+            .replace(
+                "Source folder: {source}",
+                "Source folder: not given yet. Ask the person which folder their notes are in, and use it where the commands below say `<source>`.",
+            )
+            .replace("{source}", "<source>"),
+    }
+}
+
+/// The short prompt a person pastes into an agent to start: it points the agent at the guide.
+pub fn agent_prompt(source: Option<&Path>) -> String {
+    // A folder chosen in a panel can end with `/`; the commands read better without it.
+    let source = source.map(|p| p.components().collect::<std::path::PathBuf>());
+    match source.as_deref() {
+        Some(path) => format!(
+            "Bring my notes from {0} into Knode, the local memory my agents share. Run `knode onboard guide --source \"{0}\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.",
+            path.display()
+        ),
+        None => "Bring my notes into Knode, the local memory my agents share. Ask me which folder they are in, then run `knode onboard guide --source \"<that folder>\"` and follow it step by step. Ask me only what the guide says to ask, and answer in my language.".to_owned(),
+    }
+}
+
 /// A path or link target as compared with left-out documents: lowercase, without `.md`, a
 /// leading `./` or `../` steps, or a `#heading`.
 fn link_key(target: &str) -> String {
@@ -1521,6 +1551,27 @@ mod tests {
         // A single project brings its own documentation, tracked or not.
         let project = analyze(Some(&alpha), Mode::Project).unwrap();
         assert!(project.documents.iter().all(|d| d.include));
+    }
+
+    #[test]
+    fn the_agent_guide_and_prompt_name_the_source() {
+        let source = Path::new("/Users/ada/Notes");
+        let guide = agent_guide(Some(source));
+        assert!(guide.contains("Source folder: /Users/ada/Notes"));
+        assert!(guide.contains("knode onboard analyze --mode vault --source \"/Users/ada/Notes\""));
+        assert!(!guide.contains("{source}"));
+        let prompt = agent_prompt(Some(source));
+        assert!(prompt.contains("knode onboard guide --source \"/Users/ada/Notes\""));
+        assert!(agent_prompt(None).contains("Ask me which folder"));
+        assert!(
+            agent_prompt(Some(Path::new("/Users/ada/Notes/")))
+                .contains("--source \"/Users/ada/Notes\"")
+        );
+        let unknown = agent_guide(None);
+        assert!(
+            unknown.contains("Ask the person which folder")
+                && unknown.contains("--source \"<source>\"")
+        );
     }
 
     #[test]

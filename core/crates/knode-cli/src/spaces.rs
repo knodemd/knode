@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use knode_config::{Config, Paths};
-use knode_format::{Manifest, Provenance, Space, setting_keys};
+use knode_format::{FolderProject, Manifest, Provenance, Space, setting_keys};
 use knode_service::spaces::{FolderOverlap, SpaceFolders};
 use knode_service::{Client, FolderInfo, FolderInput, spaces};
 
@@ -418,12 +418,12 @@ pub fn folders(paths: &Paths, space: &Path, action: FoldersAction) -> Result<()>
             println!("{} is fed by:", name_of(space));
             print_folder(&info);
             if let Some(project) = &info.project {
-                if project.created {
-                    println!("Added the project {}.", project.node.title);
-                } else {
-                    println!(
-                        "It holds the files of the project {}, which the space already had.",
-                        project.node.title
+                println!("{}", project_message(project));
+                if !project.shared_with.is_empty() {
+                    eprintln!(
+                        "warning: the project {} also holds the files of {}",
+                        project.node.title,
+                        project.shared_with.join(", ")
                     );
                 }
             }
@@ -575,6 +575,28 @@ fn list_folders(client: Option<&Client>, space: &Path) -> Result<Vec<FolderInfo>
         Some(client) => client.folders(space)?,
         None => spaces::folders(&Space::open(space)?)?,
     })
+}
+
+/// What adding a project folder did to the projects of the space, in one sentence.
+fn project_message(project: &FolderProject) -> String {
+    let title = &project.node.title;
+    match (&project.passed_over, project.created, project.already_held) {
+        (Some(other), true, _) => format!(
+            "Added the project {title}, named after its parent folder too: the project {} already holds the files of {}.",
+            other.title,
+            other.folders.join(", ")
+        ),
+        (Some(other), false, _) => format!(
+            "It holds the files of the project {title}, which the space already had: the project {} already holds the files of {}.",
+            other.title,
+            other.folders.join(", ")
+        ),
+        (None, true, _) => format!("Added the project {title}."),
+        (None, false, true) => format!("It already holds the files of the project {title}."),
+        (None, false, false) => {
+            format!("It holds the files of the project {title}, which the space already had.")
+        }
+    }
 }
 
 fn print_folder(info: &FolderInfo) {

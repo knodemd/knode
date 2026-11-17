@@ -239,8 +239,63 @@ fn text_without_tags(html: &str) -> String {
         .join("\n\n")
 }
 
-/// The Markdown of an HTML document or fragment.
+/// How [`from_html_with`] writes the images of the HTML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Images {
+    /// As Markdown images (`![alt](url)`), which a viewer loads: for web pages.
+    Shown,
+    /// As links a viewer loads only when they are followed (`[image: alt](url)`, or the host
+    /// when there is no alt text), and tracking pixels (1x1 or hidden) dropped: for mail, where
+    /// loading a remote image tells the sender the mail was opened, and by whom.
+    Linked,
+}
+
+thread_local! {
+    static IMAGES: std::cell::Cell<Images> = const { std::cell::Cell::new(Images::Shown) };
+    /// How many links the walk is inside: an image there is written as text, not as a link in
+    /// a link.
+    static IN_LINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Sets how images are written while it lives.
+struct WithImages(Images);
+
+impl WithImages {
+    fn set(images: Images) -> Self {
+        WithImages(IMAGES.with(|i| i.replace(images)))
+    }
+}
+
+impl Drop for WithImages {
+    fn drop(&mut self) {
+        IMAGES.with(|i| i.set(self.0));
+    }
+}
+
+/// Counts one link deeper while it lives.
+struct InLink;
+
+impl InLink {
+    fn enter() -> Self {
+        IN_LINK.with(|l| l.set(l.get() + 1));
+        InLink
+    }
+}
+
+impl Drop for InLink {
+    fn drop(&mut self) {
+        IN_LINK.with(|l| l.set(l.get() - 1));
+    }
+}
+
+/// The Markdown of an HTML document or fragment, its images as [`Images::Shown`].
 pub(crate) fn from_html(html: &str) -> String {
+    from_html_with(html, Images::Shown)
+}
+
+/// The Markdown of an HTML document or fragment, its images written as `images` says.
+pub(crate) fn from_html_with(html: &str, images: Images) -> String {
+    let _images = WithImages::set(images);
     if nesting(html, MAX_PARSED_DEPTH) > MAX_PARSED_DEPTH {
         return text_without_tags(html);
     }
@@ -501,7 +556,10 @@ fn inline(node: &NodeRef<'_>) -> String {
             format!("{fence}{text}{fence}")
         }
         "a" => {
-            let text = inline_children(node);
+            let text = {
+                let _link = InLink::enter();
+                inline_children(node)
+            };
             match node.attr("href").and_then(|h| safe_url(&h)) {
                 Some(url) if text.trim().is_empty() => {
                     format!("<{}>", url.trim_matches(['<', '>']))
@@ -528,13 +586,72 @@ fn inline(node: &NodeRef<'_>) -> String {
                 .attr("alt")
                 .map(|a| escape_inline(a.trim()))
                 .unwrap_or_default();
-            match node.attr("src").and_then(|s| safe_url(&s)) {
-                Some(url) if !url.starts_with("mailto:") => format!("![{alt}]({url})"),
-                _ => alt,
+            let src = node.attr("src").map(|s| s.trim().to_string());
+            let url = src
+                .as_deref()
+                .and_then(safe_url)
+                .filter(|u| !u.starts_with("mailto:"));
+            match (url, IMAGES.with(|i| i.get())) {
+                (Some(url), Images::Shown) => format!("![{alt}]({url})"),
+                (Some(_), Images::Linked) if is_tracking_pixel(node) => String::new(),
+                (Some(url), Images::Linked) => {
+                    let label = if alt.is_empty() {
+                        escape_inline(&host(src.as_deref().unwrap_or_default()))
+                    } else {
+                        alt
+                    };
+                    if IN_LINK.with(|l| l.get()) > 0 {
+                        format!("image: {label}")
+                    } else {
+                        format!("[image: {label}]({url})")
+                    }
+                }
+                (None, _) => alt,
             }
         }
         _ => inline_children(node),
     }
+}
+
+/// Whether an image is there only to tell the sender the mail was opened: 1x1 or smaller, or
+/// hidden.
+fn is_tracking_pixel(node: &NodeRef<'_>) -> bool {
+    let tiny = |value: &str| {
+        let digits: String = value
+            .trim()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        !digits.is_empty() && digits.parse::<u64>().is_ok_and(|n| n <= 1)
+    };
+    if ["width", "height"]
+        .iter()
+        .any(|a| node.attr(a).is_some_and(|v| tiny(&v)))
+    {
+        return true;
+    }
+    let style: String = node
+        .attr("style")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    style.split(';').any(|rule| match rule.split_once(':') {
+        Some(("display", "none")) | Some(("visibility", "hidden")) => true,
+        Some(("width" | "height" | "max-width" | "max-height", value)) => tiny(value),
+        _ => false,
+    })
+}
+
+/// The host of a URL: what is between `://` and the path, without a user name.
+fn host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -576,6 +693,34 @@ mod tests {
         assert_eq!(
             nesting("<div><p>a<br><img src=x/><div>b</div></div>", 10),
             2
+        );
+    }
+
+    #[test]
+    fn mail_images_are_links_and_tracking_pixels_are_dropped() {
+        let html = r#"<p>Deals this week</p>
+            <img src="https://tracker.shop.example/open.gif?u=42&amp;t=abc" width="1" height="1">
+            <img src="https://t.example/p.gif" style="display: none">
+            <img src="https://t.example/q.gif" style="width:0px;height:0px">
+            <p><img src="https://cdn.shop.example/banner.png" width="600"></p>
+            <p><img src="https://user@cdn.shop.example:8080/logo.png?x=1" alt="Shop logo"></p>
+            <p><a href="https://shop.example/buy"><img src="https://cdn.shop.example/b.png" alt="Buy"></a></p>
+            <p><img src="cid:part1@shop.example" alt="Inline"></p>"#;
+        let md = from_html_with(html, Images::Linked);
+        assert_eq!(
+            md,
+            "Deals this week\n\n\
+             [image: cdn.shop.example](https://cdn.shop.example/banner.png)\n\n\
+             [image: Shop logo](https://user@cdn.shop.example:8080/logo.png?x=1)\n\n\
+             [image: Buy](https://shop.example/buy)\n\n\
+             Inline"
+        );
+        assert!(!md.contains("!["), "{md}");
+        assert!(!md.contains("tracker") && !md.contains("t.example"), "{md}");
+        // Web pages keep their images, and the mode does not leak into the next call.
+        assert_eq!(
+            from_html(r#"<img src="https://example.com/a.png" alt="A">"#),
+            "![A](https://example.com/a.png)"
         );
     }
 
