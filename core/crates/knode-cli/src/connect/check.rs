@@ -682,6 +682,7 @@ mod tests {
             folder: "f".into(),
             path: "~/code/site".into(),
             capture: true,
+            space_capture: true,
         }
     }
 

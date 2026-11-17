@@ -360,6 +360,9 @@ pub struct SpaceFolders {
     pub name: String,
     /// Its folders, as the space records them.
     pub folders: Vec<Folder>,
+    /// Whether captured conversations are written to it: its
+    /// [`capture.enabled`](setting_keys::CAPTURE_ENABLED) setting.
+    pub capture: bool,
 }
 
 impl SpaceFolders {
@@ -369,6 +372,7 @@ impl SpaceFolders {
             space: space.path().to_path_buf(),
             name: space.manifest().name.clone(),
             folders: space.folders()?,
+            capture: capture_enabled(space)?,
         })
     }
 }
@@ -386,6 +390,14 @@ pub struct MappedFolder {
     pub path: String,
     /// Whether its conversations are captured.
     pub capture: bool,
+    /// Whether its space keeps captured conversations: with this or [`capture`](Self::capture)
+    /// off, the folder's conversations are captured nowhere.
+    #[serde(default = "yes")]
+    pub space_capture: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl MappedFolder {
@@ -396,6 +408,24 @@ impl MappedFolder {
             folder: folder.id.clone(),
             path: folder.path.clone(),
             capture: folder.capture,
+            space_capture: space.capture,
+        }
+    }
+
+    /// Whether conversations held in the folder are written to its space.
+    fn captures(&self) -> bool {
+        self.capture && self.space_capture
+    }
+
+    /// Why its conversations are not captured, for a message: its own capture or its space's.
+    fn off(&self) -> String {
+        if self.capture {
+            format!("capture is off in \"{}\"", self.space_name)
+        } else {
+            format!(
+                "capture is off for {} in \"{}\"",
+                self.path, self.space_name
+            )
         }
     }
 }
@@ -446,11 +476,28 @@ pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
                 if a.space == b.space {
                     continue; // A space keeps one folder per kind and path.
                 }
+                let what = match (a.captures(), b.captures()) {
+                    (true, true) => "its conversations are captured into both".to_string(),
+                    (true, false) => format!(
+                        "its conversations are captured into \"{}\" only ({})",
+                        a.space_name,
+                        b.off()
+                    ),
+                    (false, true) => format!(
+                        "its conversations are captured into \"{}\" only ({})",
+                        b.space_name,
+                        a.off()
+                    ),
+                    (false, false) => format!(
+                        "its conversations are captured into neither ({}; {})",
+                        a.off(),
+                        b.off()
+                    ),
+                };
                 overlaps.push(FolderOverlap {
                     kind: OverlapKind::Same,
                     message: format!(
-                        "{} is a project folder of both \"{}\" and \"{}\": its conversations are \
-                         captured into both.",
+                        "{} is a project folder of both \"{}\" and \"{}\": {what}.",
                         a.path, a.space_name, b.space_name
                     ),
                     outer: a.clone(),
@@ -471,7 +518,7 @@ pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
                      project, not to the one around it.",
                     inner.path, outer.path, inner.space_name
                 )
-            } else {
+            } else if inner.captures() {
                 format!(
                     "{} (\"{}\") is inside {} (\"{}\"): conversations held in it are captured \
                      into \"{}\" only, not into \"{}\".",
@@ -480,6 +527,17 @@ pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
                     outer.path,
                     outer.space_name,
                     inner.space_name,
+                    outer.space_name
+                )
+            } else {
+                format!(
+                    "{} (\"{}\") is inside {} (\"{}\"): conversations held in it are not \
+                     captured, since {}, and do not go to \"{}\" either.",
+                    inner.path,
+                    inner.space_name,
+                    outer.path,
+                    outer.space_name,
+                    inner.off(),
                     outer.space_name
                 )
             };
@@ -639,6 +697,7 @@ mod tests {
             space: PathBuf::from(format!("/k/{name}.knode")),
             name: name.into(),
             folders,
+            capture: true,
         }
     }
 
@@ -688,6 +747,70 @@ mod tests {
         assert!(found[0].message.contains("both in \"Work\""));
         assert!(folder_overlaps(&spaces[1..]).len() == 1);
         assert!(folder_overlaps(&[]).is_empty());
+    }
+
+    #[test]
+    fn overlap_messages_say_captured_only_where_capture_is_on() {
+        let off = |mut f: Folder| {
+            f.capture = false;
+            f
+        };
+        let same = |work: Folder, personal: Folder, personal_on: bool| {
+            let mut spaces = [space("Work", vec![work]), space("Personal", vec![personal])];
+            spaces[1].capture = personal_on;
+            folder_overlaps(&spaces).remove(0).message
+        };
+        let site = |id: &str| folder(id, folder_kinds::PROJECT, "/code/site");
+
+        let both = same(site("w"), site("p"), true);
+        assert!(both.contains("captured into both"), "{both}");
+        let folder_off = same(site("w"), off(site("p")), true);
+        assert!(!folder_off.contains("captured into both"), "{folder_off}");
+        assert!(
+            folder_off.contains(
+                "captured into \"Work\" only (capture is off for /code/site in \"Personal\")"
+            ),
+            "{folder_off}"
+        );
+        let space_off = same(site("w"), site("p"), false);
+        assert!(
+            space_off.contains("captured into \"Work\" only (capture is off in \"Personal\")"),
+            "{space_off}"
+        );
+        let neither = same(off(site("w")), site("p"), false);
+        assert!(neither.contains("captured into neither"), "{neither}");
+
+        // Nested in another space: the inner folder takes them, captured or not.
+        let nested = |inner: Folder, inner_on: bool| {
+            let mut spaces = [
+                space("Work", vec![site("w")]),
+                space(
+                    "Personal",
+                    vec![folder(&inner.id, folder_kinds::PROJECT, "/code/site/blog")]
+                        .into_iter()
+                        .map(|mut f| {
+                            f.capture = inner.capture;
+                            f
+                        })
+                        .collect(),
+                ),
+            ];
+            spaces[1].capture = inner_on;
+            folder_overlaps(&spaces).remove(0).message
+        };
+        let on = nested(site("p"), true);
+        assert!(on.contains("captured into \"Personal\" only"), "{on}");
+        let inner_off = nested(off(site("p")), true);
+        assert!(!inner_off.contains("captured into"), "{inner_off}");
+        assert!(
+            inner_off.contains("are not captured, since capture is off for /code/site/blog"),
+            "{inner_off}"
+        );
+        let inner_space_off = nested(site("p"), false);
+        assert!(
+            inner_space_off.contains("since capture is off in \"Personal\""),
+            "{inner_space_off}"
+        );
     }
 
     #[test]

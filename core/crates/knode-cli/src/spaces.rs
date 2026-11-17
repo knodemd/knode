@@ -525,6 +525,11 @@ pub fn routed_spaces(
                         .into_iter()
                         .map(|info| info.folder)
                         .collect(),
+                    // Absent means on, anything but `on` off, as capture reads it.
+                    capture: client
+                        .settings(&path)?
+                        .get(setting_keys::CAPTURE_ENABLED)
+                        .is_none_or(|value| value == "on"),
                     space: path.clone(),
                 },
                 None => SpaceFolders {
