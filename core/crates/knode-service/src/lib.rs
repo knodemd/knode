@@ -14,8 +14,8 @@
 //!   background for search by meaning (the `semantic` feature, on by default).
 //! - [`import`] tells what is at a path or URL (a data export, Markdown, a session, a PDF, a
 //!   web page, Kindle or Readwise highlights, the notes of Apple Notes, Bear, Notion or
-//!   Evernote, or a WhatsApp, Telegram Desktop or Slack chat export) and imports it:
-//!   `import.run`.
+//!   Evernote, mail from an `.mbox` file or Apple Mail, or a WhatsApp, Telegram Desktop or
+//!   Slack chat export) and imports it: `import.run`.
 //! - [`sources`] lists the importers and connectors of a space, keeps the settings of each
 //!   connector in the space and what it did on this machine, and runs the connectors switched
 //!   on (see [`SourcesOptions`]): `sources.*`.
