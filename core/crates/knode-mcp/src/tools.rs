@@ -525,7 +525,7 @@ pub fn call<B: Backend + ?Sized>(
         "read_canvas" => parse(arguments).and_then(|args| maps::read_canvas(backend, args)),
         "attach_file" => parse(arguments).and_then(|args| maps::attach_file(backend, args, &by)),
         "read_attachment" => parse(arguments).and_then(|args| maps::read_attachment(backend, args)),
-        "setup_guide" => parse(arguments).map(setup_guide),
+        "setup_guide" => parse(arguments).map(|args| setup_guide(backend, args)),
         _ => return None,
     };
     Some(output.unwrap_or_else(|e| e))
@@ -866,11 +866,22 @@ struct SetupGuideArgs {
     source: Option<String>,
 }
 
-/// The guide an agent follows to set Knode up, with the folder of the user's notes filled in.
-fn setup_guide(args: SetupGuideArgs) -> ToolOutput {
+/// The guide an agent follows to set Knode up, with the folder of the user's notes filled in and
+/// the space the agent is connected to, which is the one to set up.
+fn setup_guide<B: Backend + ?Sized>(backend: &B, args: SetupGuideArgs) -> ToolOutput {
     let source = non_empty(args.source)
         .map(|s| crate::backend::resolve_folder(&s).unwrap_or_else(|| s.into()));
-    let guide = knode_vault::onboarding::agent_guide(source.as_deref());
+    let mut guide = knode_vault::onboarding::agent_guide(source.as_deref());
+    if let Some(space) = backend.space_path() {
+        guide = guide.replacen(
+            "\nSource folder:",
+            &format!(
+                "\nConnected space: {} (the space you are connected to; set up this one rather than creating another)\nSource folder:",
+                space.display()
+            ),
+            1,
+        );
+    }
     let structured = json!({
         "source": source.as_ref().map(|p| p.display().to_string()),
         "guide": guide,
@@ -1852,6 +1863,14 @@ mod tests {
             out.text
         );
         assert!(!out.text.contains("{source}"));
+        // It names the space the agent is connected to, the one to set up.
+        let space = backend.space_path().unwrap();
+        assert!(
+            out.text
+                .contains(&format!("Connected space: {}", space.display())),
+            "{}",
+            out.text
+        );
         let structured = out.structured.unwrap();
         assert_eq!(structured["source"], "/Users/ada/Notes");
         assert_eq!(structured["guide"], out.text.as_str());

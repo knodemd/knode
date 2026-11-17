@@ -70,10 +70,11 @@ belongs to, newest first.
   any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
   asks you only what needs your judgment, imports a copy, connects itself and moves your
   instruction files to Knode. `knode onboard prompt` prints the prompt.
-- **Your agent sets Knode up on its own**: when the space an agent connects to is not set up yet
-  (no import, no project and almost no notes of yours), the MCP server asks the agent to set
-  Knode up for you right away, with the new `setup_guide` tool, which returns the same guide.
-  Knode Service answers `space.set_up`.
+- **Your agent offers to set Knode up**: when the space an agent connects to is not set up yet
+  (no import, no project and almost no notes of yours), the MCP server asks an agent that runs
+  commands (Claude Code, Codex) to offer to set Knode up for you in that space, with the new
+  `setup_guide` tool, which returns the same guide. Other agents, such as Claude Desktop, are
+  asked to point you to Get started in the Knode app. Knode Service answers `space.set_up`.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
