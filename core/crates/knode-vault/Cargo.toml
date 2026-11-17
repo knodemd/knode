@@ -17,7 +17,7 @@ fetch = ["dep:ureq"]
 
 [dependencies]
 base64 = "=0.22.1"
-chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 csv = "=1.4.0"
 dom_query = "=0.28.0"
 dom_smoothie = "=0.18.2"
@@ -26,6 +26,7 @@ knode-format = { path = "../knode-format", version = "=0.0.0" }
 knode-md = { path = "../knode-md", version = "=0.0.0" }
 knode-sync = { path = "../knode-sync", version = "=0.0.0" }
 lopdf = { version = "=0.42.0", default-features = false }
+mail-parser = { version = "=0.11.9", features = ["full_encoding"] }
 md5 = "=0.7.0"
 notify = "=8.2.0"
 pdf-extract = "=0.12.1"

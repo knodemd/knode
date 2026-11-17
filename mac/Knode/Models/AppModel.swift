@@ -238,6 +238,9 @@ final class AppModel {
                     library.add(url)
                 }
                 library.markSaved()
+            } else {
+                // Spaces made since outside the app: from the command line, by an agent or an import.
+                library.addKnown([defaultSpaceURL].compactMap { $0 } + settings.knownSpaces())
             }
             self.library = library.entries
         }
@@ -950,7 +953,11 @@ final class AppModel {
     func foldersModel(at url: URL) async -> SpaceFoldersModel? {
         do {
             let space = try await openedSpace(at: url)
-            return SpaceFoldersModel(space: space, store: store(for: space.id))
+            let folders = SpaceFoldersModel(space: space, store: store(for: space.id))
+            folders.projectsChanged = { [weak self] in
+                if self?.selectedSpaceID == space.id { await self?.reload() }
+            }
+            return folders
         } catch {
             errorMessage = error.localizedDescription
             return nil

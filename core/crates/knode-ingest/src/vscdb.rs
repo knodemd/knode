@@ -125,6 +125,15 @@ pub(crate) fn bytes(row: &Row<'_>, index: usize) -> Vec<u8> {
     }
 }
 
+/// A column stored as UTF-8 text or as a blob holding UTF-8 text, as a string; `None` for
+/// anything else, so one odd row can be skipped instead of failing a whole read.
+pub(crate) fn text(row: &Row<'_>, index: usize) -> Option<String> {
+    match row.get_ref(index) {
+        Ok(ValueRef::Text(bytes) | ValueRef::Blob(bytes)) => String::from_utf8(bytes.to_vec()).ok(),
+        _ => None,
+    }
+}
+
 /// A 64-bit FNV-1a hash, used as the version of a stored value.
 pub(crate) fn hash(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
