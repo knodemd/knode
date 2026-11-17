@@ -893,7 +893,8 @@ const TELEGRAM_CHAT: &str = r#"{"name":"x","type":"personal_chat","id":1,"messag
 
 #[test]
 fn a_folder_of_notes_with_a_chat_export_inside_is_not_that_chat() {
-    let cases: [(&str, &[(&str, &str)], ChatFormat); 3] = [
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], ChatFormat);
+    let cases: [Case; 3] = [
         (
             "whatsapp",
             &[(
