@@ -96,7 +96,7 @@ import Testing
         let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
         let suite = "md.knode.tests.\(UUID().uuidString)"
         let preferences = try #require(UserDefaults(suiteName: suite))
-        defer { preferences.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.removeTestSuite(suite) }
         let model = AppModel(store: store, preferences: preferences, searchDelay: .zero, saveDelay: .seconds(60))
         #expect(model.searchMode == .hybrid)
         await model.openSpace(at: url)

@@ -15,7 +15,7 @@ mod chatgpt;
 mod claude_ai;
 mod gemini;
 mod html;
-mod source;
+pub(crate) mod source;
 
 use std::collections::BTreeMap;
 use std::fmt;
