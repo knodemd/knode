@@ -66,6 +66,16 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
         connectors.push(Arc::new(imessage));
     }
+    // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
+    // in the spaces it is switched on in.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        use knode_ingest::whatsapp_mac::{WhatsAppMac, WhatsAppMacConnector};
+        connectors.push(Arc::new(WhatsAppMacConnector::new(
+            WhatsAppMac::for_home(home),
+            "Me",
+        )));
+    }
     connectors
 }
 
@@ -214,12 +224,6 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
-        ImportSource::Mbox => ("Mail (mbox)", "An .mbox file, such as a Gmail Takeout", &[]),
-        ImportSource::AppleMail => (
-            "Apple Mail",
-            "The mail of Apple Mail on this Mac",
-            &[FullDiskAccess],
-        ),
     };
     SourceInfo {
         id: source.id().to_string(),
@@ -997,6 +1001,21 @@ pub fn list_offline(home: &Path, space: &Space) -> knode_format::Result<Vec<Sour
 mod tests {
     use super::*;
     use crate::keys::MemoryKeyStore;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn whatsapp_for_mac_is_built_in() {
+        let connectors = builtin_connectors();
+        let ids: Vec<String> = connectors.iter().map(|c| c.info().id).collect();
+        assert!(ids.iter().any(|id| id == "whatsapp-mac"), "{ids:?}");
+        // No two sources share an id.
+        let mut all: Vec<String> = importers().into_iter().map(|s| s.id).collect();
+        all.extend(ids);
+        let count = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), count);
+    }
 
     #[test]
     fn importers_are_sources_of_kind_importer() {

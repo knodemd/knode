@@ -14,6 +14,9 @@ pub(crate) struct Chat {
     /// An id for the chat that stays the same from one export to the next, unique within the
     /// app.
     pub id: String,
+    /// The chat's own id in the app, when the source has one (a WhatsApp JID). A chat is found
+    /// by it first, and by [`id`](Self::id) when no node has it.
+    pub jid: Option<String>,
     /// The title of its node.
     pub title: String,
     /// What it is: `personal`, `group`, `channel`, `thread`...
@@ -32,6 +35,7 @@ impl Chat {
         Chat {
             app,
             id: id.into(),
+            jid: None,
             title: title.into(),
             kind: String::new(),
             participants: Vec::new(),
@@ -58,6 +62,13 @@ pub(crate) struct ChatMessage {
     /// Tells the message apart from every other one in the chat, the same in every export:
     /// the app's message id, or a hash of what the message says when the app has none.
     pub key: String,
+    /// The key an export of the chat gives the same message, when it is read from somewhere
+    /// else (an app's database): a message an export already brought in is not added again.
+    pub export_key: Option<String>,
+    /// Where the message arrived in the app, when the app numbers them in that order (WhatsApp
+    /// for Mac's `Z_PK`): a message with a higher number is new even when it was sent before
+    /// the last one written, and it goes into its own day.
+    pub seq: Option<i64>,
     /// Where the message is in the chat: text that sorts the way the messages do, such as the
     /// time. Importing again adds only the messages after the last one imported.
     pub mark: String,
@@ -87,6 +98,8 @@ impl ChatMessage {
     ) -> Self {
         ChatMessage {
             key: key.into(),
+            export_key: None,
+            seq: None,
             mark: mark.into(),
             time,
             sender,
@@ -125,6 +138,12 @@ pub(crate) enum Media {
     Omitted {
         /// What it was, as the export says: "image", "media"...
         what: String,
+    },
+    /// Read from an app on this device, which does not have the file: never downloaded, or
+    /// removed to save space.
+    NotOnDevice {
+        /// Its file name, or what it was ("photo").
+        name: String,
     },
     /// Only a link to it is in the export, such as a file on Slack.
     Link {
