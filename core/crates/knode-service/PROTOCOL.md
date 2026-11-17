@@ -511,7 +511,9 @@ source's id (`whatsapp`, `apple-mail`...).
   `running`, `idle`, `failing` (its last run failed; it tries again later, waiting twice as long
   after each error in a row, up to an hour), `needs-update` (the other app's database changed:
   nothing is written until Knode is updated) or `needs-attention` (a permission or a sign-in is
-  missing). `last_error` is `{ "kind", "message", "at" }`.
+  missing). `last_error` is `{ "kind", "message", "at" }`. `notice`, when there is one, is
+  what the connector said after its last run that went well, such as what it could not bring
+  in yet.
 - Times are milliseconds since 1970. With `from-today`, nothing older than `since`, the start of
   the day it was connected, is brought in.
 

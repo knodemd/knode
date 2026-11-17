@@ -641,6 +641,14 @@ pub trait Connector: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// What the person should know after a run that went well, shown with the source's status
+    /// until a later run says otherwise: what the connector could not bring in yet, and why.
+    /// `cursor` is where the run stopped. Nothing unless the connector says otherwise.
+    fn notice(&self, cursor: &Cursor) -> Option<String> {
+        let _ = cursor;
+        None
+    }
+
     /// Reads what is new after `request.cursor`, at most about `request.max_items` items,
     /// leaving out excluded containers and what is older than the history chosen.
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError>;

@@ -292,6 +292,10 @@ pub struct MailReport {
     pub unchanged: usize,
     /// How many messages were read into threads.
     pub messages: usize,
+    /// How many of them were not in the space before: the rest were there already, from this
+    /// import or another one of the same messages (found by their `Message-ID`).
+    #[serde(default)]
+    pub added: usize,
     /// How many person nodes were created.
     pub people: usize,
     /// How many addresses did not become people: recipients of messages sent to more than
@@ -322,6 +326,7 @@ impl MailReport {
             updated: Vec::new(),
             unchanged: 0,
             messages: 0,
+            added: 0,
             people: 0,
             people_left_out: 0,
             attached: 0,
@@ -352,6 +357,13 @@ impl MailReport {
             self.limits.push(text);
         }
     }
+}
+
+/// Whether mail in `folder` (a Gmail label or an Apple Mail mailbox, such as `[Gmail]/Spam`
+/// or `Junk`) is spam or trash, left out unless a folder filter names it: its last part is
+/// `Spam`, `Junk`, `Trash`, `Bin`, `Deleted Messages` or `Deleted Items`, in any case.
+pub fn is_junk_folder(folder: &str) -> bool {
+    message::is_junk_folder(folder)
 }
 
 /// Where Apple Mail keeps its mail on this Mac, `~/Library/Mail`; `None` off macOS. Nothing is
@@ -466,6 +478,32 @@ pub fn import_mail(
     report.duplicates = collected.duplicates;
     let threads = thread::group(collected.into_mails());
     write::write(space, source, threads, options, &by, &mut report)?;
+    Ok(report)
+}
+
+/// Imports some `.emlx` files of Apple Mail's store into `space`, written by `by`: the
+/// messages a connector found new. `root` is the store's `V<n>` folder; each file's mailbox
+/// is the path of `.mbox` folders between it and the file, as [`import_mail`] names it, so
+/// both find the same threads. Messages already in the space, from any import of the same
+/// mail (an Apple Mail store or export, a Gmail Takeout `.mbox`), are found by their
+/// `Message-ID` and added only once; [`MailReport::added`] counts the new ones.
+pub fn import_apple_mail_files(
+    space: &mut Space,
+    root: impl AsRef<Path>,
+    files: &[PathBuf],
+    options: &MailOptions,
+    by: &Provenance,
+) -> Result<MailReport, MailError> {
+    let root = root.as_ref();
+    let source = MailSource::AppleMail;
+    let mut report = MailReport::new(source);
+    let mut collected = message::Collector::new(options);
+    apple::read_some(root, files, options, &mut collected, &mut report)?;
+    report.filtered = collected.filtered;
+    report.junk = collected.junk;
+    report.duplicates = collected.duplicates;
+    let threads = thread::group(collected.into_mails());
+    write::write(space, source, threads, options, by, &mut report)?;
     Ok(report)
 }
 

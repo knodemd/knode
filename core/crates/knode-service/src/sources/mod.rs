@@ -26,6 +26,7 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod apple_mail;
 pub(crate) mod runtime;
 pub mod telegram;
 
@@ -61,7 +62,27 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    vec![Arc::new(telegram::connector())]
+    let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
+        connectors.push(Arc::new(apple_mail));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
+        connectors.push(Arc::new(imessage));
+    }
+    // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
+    // in the spaces it is switched on in.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        use knode_ingest::whatsapp_mac::{WhatsAppMac, WhatsAppMacConnector};
+        connectors.push(Arc::new(WhatsAppMacConnector::new(
+            WhatsAppMac::for_home(home),
+            "Me",
+        )));
+    }
+    connectors.push(Arc::new(telegram::connector()));
+    connectors
 }
 
 /// How Knode Service runs connectors.
@@ -209,12 +230,6 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
-        ImportSource::Mbox => ("Mail (mbox)", "An .mbox file, such as a Gmail Takeout", &[]),
-        ImportSource::AppleMail => (
-            "Apple Mail",
-            "The mail of Apple Mail on this Mac",
-            &[FullDiskAccess],
-        ),
     };
     SourceInfo {
         id: source.id().to_string(),
@@ -266,6 +281,9 @@ pub struct RunState {
     /// The error of its last run, if it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// How many runs in a row failed.
     #[serde(default)]
     pub failures: u32,
@@ -339,6 +357,10 @@ pub struct SourceStatus {
     /// The error of its last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well, such
+    /// as what it could not bring in yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// When it runs next, at the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<Timestamp>,
@@ -484,6 +506,7 @@ impl Registry {
             last_items: 0,
             items: 0,
             last_error: None,
+            notice: None,
             next_run: None,
         }));
         Ok(out)
@@ -539,6 +562,7 @@ impl Registry {
             last_items: run.last_items,
             items: run.items,
             last_error: run.last_error,
+            notice: run.notice,
             next_run: run.next_run,
         }
     }
@@ -1005,6 +1029,22 @@ pub fn list_offline(home: &Path, space: &Space) -> knode_format::Result<Vec<Sour
 mod tests {
     use super::*;
     use crate::keys::MemoryKeyStore;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn whatsapp_for_mac_is_built_in() {
+        let connectors = builtin_connectors();
+        let ids: Vec<String> = connectors.iter().map(|c| c.info().id).collect();
+        assert!(ids.iter().any(|id| id == "whatsapp-mac"), "{ids:?}");
+        // No two connectors share an id, and WhatsApp for Mac's is not the export importer's
+        // (a connector may share its id only with the importer of the same source, as
+        // `apple-mail` does).
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
+        assert!(importers().iter().all(|s| s.id != "whatsapp-mac"));
+    }
 
     #[test]
     fn importers_are_sources_of_kind_importer() {
