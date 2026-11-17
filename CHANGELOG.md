@@ -48,11 +48,14 @@ belongs to, newest first.
   supported; Readwise is read from its exports, not its API. The Mac app has no import screen
   yet.
 - **Chat exports in `knode import`**: WhatsApp chat exports (the `.zip`, its folder or the
-  chat's `.txt`, from iOS or Android in any language and date format) become one `chat` node per
+  chat's `.txt`, from iOS or Android, in the date formats WhatsApp writes in each language)
+  become one `chat` node per
   chat, with the messages grouped by day, the sender and time of each, and the photos, voice
   notes and documents of the export attached. Media the export left out or does not have are
   marked in the text. Importing the same chat again, or a newer export of it, adds only the new
-  messages. `--from whatsapp` says what it is; Knode Service imports it through `import.run`.
+  messages. When a chat's dates could be day or month first, the summary says how they were
+  read, and later imports of the chat read them the same way. `--from whatsapp` says what it is;
+  Knode Service imports it through `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
