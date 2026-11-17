@@ -38,6 +38,10 @@ belongs to, newest first.
 
 #### Added
 
+- **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
+  any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
+  asks you only what needs your judgment, imports a copy, connects itself and moves your
+  instruction files to Knode. `knode onboard prompt` prints the prompt.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -71,6 +75,17 @@ belongs to, newest first.
   checked against a real export yet; Perplexity has no export of all threads, so it is not
   supported; Readwise is read from its exports, not its API. The Mac app has no import screen
   yet.
+- **Mail import**: `knode import --from mbox` reads Gmail through a Google Takeout `.mbox` (or any
+  other `mbox` file), and `knode import --from apple-mail` reads the Apple Mail store on the Mac,
+  which needs Full Disk Access (Knode says how to allow it when it is missing). Each thread
+  becomes one node with its messages in order, sender, recipients and date, the text part
+  preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
+  address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
+  folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
+  default). Importing again, or another date range, adds only the new messages, and never
+  overwrites what you changed or added to a thread in Knode. Knode never signs
+  in to a mail account: it reads only the files you point it at. Knode Service does the same with
+  `import.run`.
 - **Chat exports in `knode import`**: WhatsApp chat exports (the `.zip`, its folder or the
   chat's `.txt`, from iOS or Android, in the date formats WhatsApp writes in each language)
   become one `chat` node per
@@ -90,9 +105,17 @@ belongs to, newest first.
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
   never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+- **A project folder adds its project**: adding a project folder, in the Mac app or with
+  `knode folders add`, adds the project of the same name to the space, or uses the one of that
+  name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
+  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
+  removing the folder keeps the project and its notes. A folder added before this gets its
+  project when it is added again.
 
 #### Changed
 
+- **Guided import report**: links to documents you left out in review are counted apart as
+  expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
   "Imported memory" for every import; the name stays editable.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
@@ -109,6 +132,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
+  skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
+  the command line.
 - **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
   including the default space, now appear in the sidebar the next time the app opens, unless you
   took them off the list.
@@ -169,6 +195,10 @@ belongs to, newest first.
 #### Changed
 
 - `knode spaces` shows each space's icon, which one is the default and where capture is off.
+- **The install script** takes `--prefix <dir>` to put `knode` in `<dir>/bin` instead of
+  `~/.local/bin` (`curl -fsSL https://knode.md/install.sh | sh -s -- --prefix /opt/knode`), on
+  a Mac it says that Homebrew and the Mac app also install `knode`, and it says plainly when no
+  release is published yet.
 
 ### v0.1 - You use it
 

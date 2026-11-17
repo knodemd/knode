@@ -923,6 +923,9 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let mut space = lock_ignoring_poison(&space);
             let mark = last_change(&space)?;
             let folder = spaces::set_folder(&mut space, &p.folder, &p.by)?;
+            if let Some(project) = folder.project.as_ref().filter(|p| p.created) {
+                state.notify(&space, project.node.id, ChangeKind::Create);
+            }
             if last_change(&space)? != mark {
                 state.notify_space(&space, SpaceEventKind::Folders, |e| {
                     e.folder = Some(folder.folder.id.clone());

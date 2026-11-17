@@ -386,6 +386,18 @@ pub fn resolve_space_from_env(flag: Option<&Path>, config: &Config) -> Result<Re
     resolve_space(flag, env.as_deref(), config)
 }
 
+/// Whether `path` is a space put aside by onboarding's archive: `<name>-archive-<digits>.knode`.
+/// Listings show such spaces as archived and leave them out of names and sidebars.
+pub fn is_archived_space(path: &Path) -> bool {
+    path.file_stem()
+        .map(|s| s.to_string_lossy())
+        .and_then(|stem| {
+            stem.rsplit_once("-archive-")
+                .map(|(_, stamp)| !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,5 +566,20 @@ mod tests {
             paths.spaces_in_dir().unwrap(),
             vec![paths.space_path("A"), paths.space_path("B")]
         );
+    }
+
+    #[test]
+    fn archived_spaces_are_recognised_by_name() {
+        use std::path::Path;
+        assert!(super::is_archived_space(Path::new(
+            "/k/Work-archive-1794871951073089000.knode"
+        )));
+        assert!(!super::is_archived_space(Path::new("/k/Work.knode")));
+        assert!(!super::is_archived_space(Path::new(
+            "/k/Work-archive-notes.knode"
+        )));
+        assert!(!super::is_archived_space(Path::new(
+            "/k/Work-archive-.knode"
+        )));
     }
 }
