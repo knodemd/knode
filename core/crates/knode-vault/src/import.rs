@@ -63,6 +63,19 @@ pub struct ImportReport {
     /// then: the node was left as it is, and the file's changes were not brought in.
     #[serde(default)]
     pub edited: Vec<String>,
+    /// The files imported before whose node was deleted in Knode since then, with the node
+    /// that was deleted: not imported again, unless
+    /// [`include_deleted`](ImportOptions::include_deleted) is set.
+    #[serde(default)]
+    pub deleted: BTreeMap<String, NodeId>,
+}
+
+/// How [`import_with`] imports a folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportOptions {
+    /// Import again the files whose node was deleted in Knode since they were imported, as new
+    /// nodes. Left out, they are listed in [`deleted`](ImportReport::deleted) and not imported.
+    pub include_deleted: bool,
 }
 
 /// Reads every `.md` file under `dir` into `space`, written by `by`.
@@ -114,12 +127,31 @@ pub struct ImportReport {
 ///   ([`edited`](ImportReport::edited)), for a person to merge by hand.
 ///
 /// A node imported by an earlier version of Knode, which did not remember this, takes the file.
+///
+/// A note deleted in Knode stays deleted: a file imported before whose node is gone is not
+/// imported again, and is listed in [`deleted`](ImportReport::deleted). A file with an `id` is
+/// known by the history of that id; a file without one, by the setting
+/// [`markdown.import.paths`](crate::setting_keys::IMPORTED_PATHS), where the import keeps the
+/// node of each such file (written only when `by` is a person, who alone may change settings).
+/// [`import_with`] and [`include_deleted`](ImportOptions::include_deleted) bring them back.
 /// Notes are written one at a time, so an import that stops halfway leaves the notes it wrote;
 /// running it again finds them and writes the rest, and makes the typed links only made at the
 /// end. A file renamed or moved in the folder without an `id` in its frontmatter is a new note:
 /// the node of its old path stays.
 pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Result<ImportReport> {
+    import_with(space, dir, by, &ImportOptions::default())
+}
+
+/// [`import`], with `options`.
+pub fn import_with(
+    space: &mut Space,
+    dir: impl AsRef<Path>,
+    by: &Provenance,
+    options: &ImportOptions,
+) -> Result<ImportReport> {
     let dir = dir.as_ref();
+    let mut paths = imported_paths(space)?;
+    let recorded = paths.clone();
     let mut notes = Vec::new();
     let mut report = ImportReport::default();
     walk(dir, "", &mut notes, &mut report.attachments)?;
@@ -139,10 +171,65 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
         };
         let mut note = parse(&rel, &text);
         note.file_times = file_times(&full);
-        batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
+        if !options.include_deleted
+            && let Some(gone) = deleted_in_knode(space, &paths, &rel, &note)?
+        {
+            report.deleted.insert(rel, gone);
+            continue;
+        }
+        let has_id = note.id.is_some();
+        if let Some((id, _)) = batch.note(space, &rel, note, by, &mut report, &mut no_hook)? {
+            if has_id {
+                paths.remove(&rel);
+            } else {
+                paths.insert(rel, id);
+            }
+        }
     }
     batch.finish(space, by, &mut report)?;
+    if paths != recorded && by.kind == ActorKind::Person {
+        let value = serde_json::to_string(&paths)
+            .map_err(|e| knode_format::Error::Invalid(e.to_string()))?;
+        space.set_setting(crate::setting_keys::IMPORTED_PATHS, Some(&value), by)?;
+    }
     Ok(report)
+}
+
+/// The node of each file without an `id` that [`import`] read, by path: the setting
+/// [`markdown.import.paths`](crate::setting_keys::IMPORTED_PATHS). Empty when it is not set or
+/// cannot be read.
+fn imported_paths(space: &Space) -> Result<BTreeMap<String, NodeId>> {
+    Ok(space
+        .setting(crate::setting_keys::IMPORTED_PATHS)?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+/// The node deleted in Knode that the file `rel` was imported as, if it was: a file with an `id`
+/// whose node is gone but has a history, or a file without one recorded in `paths` whose node is
+/// gone, when no other node has its path.
+fn deleted_in_knode(
+    space: &Space,
+    paths: &BTreeMap<String, NodeId>,
+    rel: &str,
+    note: &Note,
+) -> Result<Option<NodeId>> {
+    if let Some(id) = note.id {
+        let gone = find(space, &id.to_string())?.is_none() && !space.history(&id)?.is_empty();
+        return Ok(gone.then_some(id));
+    }
+    let Some(id) = paths.get(rel) else {
+        return Ok(None);
+    };
+    if space.get_node(id)?.is_some() {
+        return Ok(None);
+    }
+    for s in space.find_by_property(keys::PATH, rel)? {
+        if space.property(&s.id, keys::FILE)?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(*id))
 }
 
 /// Imports one Markdown file as [`import`] would if it were alone in its folder: its frontmatter,

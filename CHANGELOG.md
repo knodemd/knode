@@ -157,7 +157,9 @@ belongs to, newest first.
 - **Importing a Markdown folder again keeps your edits in Knode**: a note edited in Knode since
   it was imported is left as it is; when its file changed too, the import says so (`edited`) for
   you to merge by hand, instead of overwriting the note with the file. Notes imported before this
-  version take the file once, as before, and keep Knode's version in their history.
+  version take the file once, as before, and keep Knode's version in their history. A note you
+  deleted in Knode stays deleted: the import and its report say it was not imported again, and
+  `knode import <folder> --include-deleted` brings such notes back.
 - **`knode instructions --apply`** also says when the agent reads the file and what it reads with
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your

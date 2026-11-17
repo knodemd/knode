@@ -8,7 +8,7 @@ use knode_format::{Provenance, Space};
 use knode_service::import::{self, ImportResult, ImportSource};
 use knode_service::{ImportOutcome, ImportedNode};
 use knode_vault::mail::MailOptions;
-use knode_vault::migration::{FileStatus, MigrationReport};
+use knode_vault::migration::{DELETED_REASON, FileStatus, MigrationReport};
 
 use crate::service;
 
@@ -53,6 +53,8 @@ pub struct Request<'a> {
     pub mail: MailOptions,
     /// `--report`: the file to write the migration report of a Markdown folder to.
     pub report: Option<&'a Path>,
+    /// `--include-deleted`: import again the notes of a Markdown folder deleted in Knode.
+    pub include_deleted: bool,
 }
 
 /// The mail options of `knode import`.
@@ -101,6 +103,9 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
     }
     // Checked here first, without the space: a wrong kind or a missing file fails at once.
     let mut what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    if request.include_deleted && !what.is_markdown_folder() {
+        bail!("--include-deleted is for a folder of Markdown files, such as an Obsidian vault");
+    }
     let mail = !request.mail.is_default();
     if mail && !what.is_mail() {
         bail!(
@@ -121,6 +126,13 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             } else {
                 match url {
                     Some(url) => client.import_url(space, url, by),
+                    None if request.include_deleted => client.import_folder(
+                        space,
+                        path.as_deref().expect("a Markdown folder has a path"),
+                        from,
+                        true,
+                        by,
+                    ),
                     None if mail => {
                         client.import_mail(space, path.as_deref(), from, &request.mail, by)
                     }
@@ -136,7 +148,8 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             let mut space = Space::open(space)?;
             what = what
                 .with_readwise_token(token)
-                .with_mail_options(request.mail.clone());
+                .with_mail_options(request.mail.clone())
+                .with_include_deleted(request.include_deleted);
             import::run(&mut space, &what, by).map_err(|e| anyhow!("{e}"))?
         }
     };
@@ -234,6 +247,10 @@ fn print_report(report: &MigrationReport, file: Option<&Path>) {
         let label = match f.status {
             FileStatus::Edited => "edited in both, Knode's kept",
             FileStatus::Failed => "failed",
+            FileStatus::Skipped if f.reason.as_deref() == Some(DELETED_REASON) => {
+                lines.push(format!("deleted in Knode, not imported again: {}", f.path));
+                continue;
+            }
             _ => continue,
         };
         lines.push(format!(

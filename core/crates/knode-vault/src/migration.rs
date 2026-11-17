@@ -49,7 +49,7 @@ pub struct FileEntry {
     pub path: String,
     /// What happened to it.
     pub status: FileStatus,
-    /// The node of a note.
+    /// The node of a note (for a note deleted in Knode, the node that was deleted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<NodeId>,
     /// Why, when it was not simply imported.
@@ -76,6 +76,10 @@ pub struct Counts {
     pub skipped: usize,
     /// Files that could not be imported.
     pub failed: usize,
+    /// Of `skipped`, the notes imported before whose node was deleted in Knode: not imported
+    /// again.
+    #[serde(default)]
+    pub deleted: usize,
 }
 
 /// A `[[link]]` in a note that names no note of the space.
@@ -138,6 +142,10 @@ pub struct MigrationReport {
     pub limits: Vec<String>,
 }
 
+/// The reason of a note imported before whose node was deleted in Knode.
+pub const DELETED_REASON: &str =
+    "deleted in Knode, not imported again: import with --include-deleted to bring it back";
+
 const LIMITS: &[&str] = &[
     "Obsidian settings, plugins, themes, workspaces and canvases are not migrated; plugin queries stay as text.",
     "Only files next to the note that names them are attached; shared attachment folders are listed as missing attachments.",
@@ -177,6 +185,14 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
             reason,
         });
     }
+    for (path, id) in &import.deleted {
+        files.push(FileEntry {
+            path: path.clone(),
+            status: FileStatus::Skipped,
+            node: Some(*id),
+            reason: Some(DELETED_REASON.into()),
+        });
+    }
     for path in &import.attached {
         files.push(FileEntry {
             path: path.clone(),
@@ -213,6 +229,7 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
 
     let mut counts = Counts {
         kept: import.kept.len(),
+        deleted: import.deleted.len(),
         ..Counts::default()
     };
     for file in &files {

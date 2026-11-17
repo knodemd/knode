@@ -9,8 +9,10 @@ use std::path::Path;
 
 use common::put;
 use knode_format::{NodeId, NodeUpdate, Provenance, Space};
-use knode_vault::migration::{FileStatus, report};
-use knode_vault::{Difference, compare, export, import, property_keys};
+use knode_vault::migration::{DELETED_REASON, FileStatus, report};
+use knode_vault::{
+    Difference, ImportOptions, compare, export, import, import_with, property_keys, setting_keys,
+};
 
 fn me() -> Provenance {
     Provenance::person("Ada")
@@ -268,6 +270,77 @@ fn an_import_that_stopped_halfway_finishes_when_run_again() {
     assert_eq!(third.unchanged, 3);
     assert!(third.skipped.is_empty());
     assert_eq!(third.links, 1, "the typed link already exists");
+    assert_eq!(space.node_count().unwrap(), 4);
+}
+
+#[test]
+fn a_note_deleted_in_knode_is_not_imported_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Vault");
+    put(&dir, "Keep.md", "Kept.\n");
+    put(&dir, "Gone.md", "Deleted in Knode.\n");
+    put(
+        &dir,
+        "With id.md",
+        "---\nid: 01JB7Q9W8K3M2N4P5R6S7T8V9X\n---\nAn exported note.\n",
+    );
+    let mut space = Space::create(tmp.path().join("V.knode"), "V").unwrap();
+    let first = import(&mut space, &dir, &me()).unwrap();
+    assert_eq!(first.created.len(), 3);
+    assert!(
+        space
+            .setting(setting_keys::IMPORTED_PATHS)
+            .unwrap()
+            .unwrap()
+            .contains("Gone.md")
+    );
+    let gone = node(&space, "Gone.md");
+    let with_id = node(&space, "With id.md");
+    space.delete_node(&gone, &me()).unwrap();
+    space.delete_node(&with_id, &me()).unwrap();
+
+    // Imported again: both stay deleted, and the report says so.
+    let again = import(&mut space, &dir, &me()).unwrap();
+    assert!(again.created.is_empty(), "{again:?}");
+    assert_eq!(again.unchanged, 1);
+    assert_eq!(again.deleted.len(), 2);
+    assert_eq!(again.deleted["Gone.md"], gone);
+    assert_eq!(again.deleted["With id.md"], with_id);
+    assert_eq!(space.node_count().unwrap(), 1);
+    let r = report(&space, &dir, &again).unwrap();
+    let entry = r.files.iter().find(|f| f.path == "Gone.md").unwrap();
+    assert_eq!(entry.status, FileStatus::Skipped);
+    assert_eq!(entry.reason.as_deref(), Some(DELETED_REASON));
+    assert_eq!(entry.node, Some(gone));
+    assert_eq!(r.counts.deleted, 2);
+
+    // Still so when the file changed since.
+    put(&dir, "Gone.md", "Changed in the vault.\n");
+    let third = import(&mut space, &dir, &me()).unwrap();
+    assert_eq!(third.deleted.len(), 2);
+    assert_eq!(space.node_count().unwrap(), 1);
+
+    // A new file is imported as always.
+    put(&dir, "New.md", "New.\n");
+    let fourth = import(&mut space, &dir, &me()).unwrap();
+    assert_eq!(fourth.created, ["New.md"]);
+
+    // Asked for, they come back as notes, once.
+    let options = ImportOptions {
+        include_deleted: true,
+    };
+    let back = import_with(&mut space, &dir, &me(), &options).unwrap();
+    let mut created = back.created.clone();
+    created.sort();
+    assert_eq!(created, ["Gone.md", "With id.md"]);
+    assert!(back.deleted.is_empty());
+    assert_eq!(space.node_count().unwrap(), 4);
+    assert_eq!(body(&space, "Gone.md"), "Changed in the vault.\n");
+    let after = import(&mut space, &dir, &me()).unwrap();
+    assert!(
+        after.created.is_empty() && after.deleted.is_empty(),
+        "{after:?}"
+    );
     assert_eq!(space.node_count().unwrap(), 4);
 }
 

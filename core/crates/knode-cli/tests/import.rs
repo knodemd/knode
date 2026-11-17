@@ -378,6 +378,44 @@ fn a_vault_import_writes_a_report_and_an_export_compares_with_the_vault() {
 }
 
 #[test]
+fn a_note_deleted_in_knode_stays_deleted_unless_asked_for() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let vault = sb.path("Vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("Keep.md"), "Kept.\n").unwrap();
+    fs::write(vault.join("Gone.md"), "Deleted in Knode.\n").unwrap();
+    sb.ok(&["import", s(&vault)]);
+    {
+        let mut space = knode_format::Space::open(sb.space("work")).unwrap();
+        let gone = space.find_by_title("Gone").unwrap()[0].id;
+        space
+            .delete_node(&gone, &knode_format::Provenance::person("Ada"))
+            .unwrap();
+    }
+
+    let out = sb.ok(&["import", s(&vault)]);
+    assert!(out.contains("0 new"), "{out}");
+    assert!(
+        out.contains("deleted in Knode, not imported again: Gone.md"),
+        "{out}"
+    );
+    assert!(out.contains("--include-deleted"), "{out}");
+    let json: Value = serde_json::from_str(&sb.ok(&["import", s(&vault), "--json"])).unwrap();
+    assert_eq!(json["report"]["counts"]["deleted"], 1);
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert!(space.find_by_title("Gone").unwrap().is_empty());
+    drop(space);
+
+    let err = sb.fails(&["import", s(&vault.join("Keep.md")), "--include-deleted"]);
+    assert!(err.contains("--include-deleted is for a folder"), "{err}");
+    let out = sb.ok(&["import", s(&vault), "--include-deleted"]);
+    assert!(out.contains("1 new"), "{out}");
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert_eq!(space.find_by_title("Gone").unwrap().len(), 1);
+}
+
+#[test]
 fn a_folder_of_notes_holding_a_chat_export_imports_the_notes() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);

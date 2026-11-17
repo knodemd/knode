@@ -111,6 +111,10 @@ enum Command {
         /// come through).
         #[arg(long, value_name = "FILE", conflicts_with = "preview")]
         report: Option<PathBuf>,
+        /// Folder of Markdown files: import again, as new notes, the notes deleted in Knode since
+        /// they were imported. Without it they stay deleted.
+        #[arg(long, conflicts_with = "preview")]
+        include_deleted: bool,
         /// Mail: only this folder, a Gmail label or an Apple Mail mailbox. Repeat for more.
         #[arg(long, value_name = "NAME", visible_aliases = ["label", "mailbox"])]
         folder: Vec<String>,
@@ -335,6 +339,7 @@ fn run(cli: Cli) -> Result<()> {
             json,
             preview,
             report,
+            include_deleted,
             folder,
             since,
             until,
@@ -354,6 +359,7 @@ fn run(cli: Cli) -> Result<()> {
                 home: &paths.home,
                 mail,
                 report: report.as_deref(),
+                include_deleted,
             };
             import::run(&space, request, &person())
         }
