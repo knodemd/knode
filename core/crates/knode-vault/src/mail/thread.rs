@@ -273,6 +273,7 @@ mod tests {
             body: Some(String::new()),
             attachments: Vec::new(),
             folders: BTreeSet::new(),
+            list: false,
             origin: Origin::Elsewhere,
             order: date.len() + id.len(),
         }

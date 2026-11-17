@@ -1110,8 +1110,8 @@ fn mail_result(
     }
     if report.people_left_out > 0 {
         result.notes.push(format!(
-            "{} not added as people: recipients of messages sent to more than {}, and Bcc of \
-             mail that was not sent",
+            "{} not added as people: from mailing lists or bulk mail, recipients of messages \
+             sent to more than {}, and Bcc of mail that was not sent",
             if report.people_left_out == 1 {
                 "1 address".to_string()
             } else {
