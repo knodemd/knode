@@ -644,3 +644,35 @@ fn a_watching_connector_runs_at_its_interval_when_events_come_late() {
     assert!(times.len() >= 2);
     assert!(times[1] - times[0] >= Duration::from_millis(250));
 }
+
+#[test]
+fn a_source_connected_paused_reads_nothing_until_resumed() {
+    let f = Fixture::new();
+    f.fake.add("family", Timestamp::now(), "Private");
+    f.fake.add("work", Timestamp::now(), "Hello");
+    let connected = f
+        .client()
+        .sources_connect_paused(f.space(), ID, Some(History::Everything), &me())
+        .unwrap();
+    assert_eq!(connected.state, SourceState::Paused);
+    let setting = connected.setting.unwrap();
+    assert!(!setting.on);
+    assert_eq!(setting.history, History::Everything);
+    // The containers can be listed and excluded before anything is read.
+    let containers = f.client().sources_containers(f.space(), ID).unwrap();
+    assert_eq!(containers.len(), 2);
+    f.client()
+        .sources_exclude(f.space(), ID, "family", Some("Family"), &me())
+        .unwrap();
+    thread::sleep(Duration::from_millis(400));
+    assert_eq!(f.fake.store().fetches, 0);
+    assert!(f.written().is_empty());
+
+    f.client()
+        .sources_set_on(f.space(), ID, true, &me())
+        .unwrap();
+    f.wait_until("the message", |f| f.written().len() == 1);
+    assert_eq!(f.written(), vec!["work 2"]);
+    // The first fetch already left the excluded chat out.
+    assert_eq!(f.fake.store().requests[0].1, vec!["family".to_string()]);
+}

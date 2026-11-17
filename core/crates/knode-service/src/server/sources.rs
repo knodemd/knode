@@ -79,7 +79,7 @@ fn change(
                 .iter()
                 .map(|c| c.info().id)
                 .collect();
-            sources::connect(space, &known, id, p.history, by)?;
+            sources::connect_with(space, &known, id, p.history, p.on.unwrap_or(true), by)?;
         }
         methods::SOURCES_PAUSE => {
             sources::set_on(space, id, false, by)?;

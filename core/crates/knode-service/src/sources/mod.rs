@@ -360,6 +360,9 @@ pub(crate) struct SourceParams {
     /// The history, for `sources.connect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
+    /// Whether `sources.connect` turns the source on (the default) or connects it paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<bool>,
     /// The id of a chat, channel or folder, for `sources.exclude` and `sources.include`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -781,6 +784,21 @@ pub fn connect(
     history: Option<History>,
     by: &Provenance,
 ) -> knode_format::Result<SourceSetting> {
+    connect_with(space, known, id, history, true, by)
+}
+
+/// As [`connect`], but on only when `on` is true. With `on` false the source is connected
+/// paused: its history and the day it was connected are fixed and its containers can be
+/// listed, so the person can exclude some before anything is read, and nothing runs until it
+/// is resumed ([`set_on`]). Connecting paused one that is already connected pauses it.
+pub fn connect_with(
+    space: &mut Space,
+    known: &[String],
+    id: &str,
+    history: Option<History>,
+    on: bool,
+    by: &Provenance,
+) -> knode_format::Result<SourceSetting> {
     person(by)?;
     changeable(known, id)?;
     if let Some(mut setting) = source_setting(space, id)? {
@@ -792,12 +810,12 @@ pub fn connect(
                 history.id()
             )));
         }
-        setting.on = true;
+        setting.on = on;
         write_setting(space, id, Some(&setting), by)?;
         return Ok(setting);
     }
     let setting = SourceSetting {
-        on: true,
+        on,
         history: history.unwrap_or_default(),
         connected_at: Timestamp::now(),
         since: start_of_today(),
@@ -937,6 +955,11 @@ mod tests {
         let again = connect(&mut space, &known, "fake", None, &me).unwrap();
         assert!(again.on);
         assert_eq!(again.history, History::Everything);
+        let paused = connect_with(&mut space, &known, "fake", None, false, &me).unwrap();
+        assert!(!paused.on);
+        assert_eq!(paused.exclude, again.exclude);
+        assert_eq!(paused.connected_at, again.connected_at);
+        assert!(connect(&mut space, &known, "fake", None, &me).unwrap().on);
         assert!(include(&mut space, "fake", "c2", &me).is_err());
         assert!(
             include(&mut space, "fake", "c1", &me)
@@ -947,5 +970,9 @@ mod tests {
         assert!(disconnect(&mut space, "fake", &me).unwrap());
         assert!(!disconnect(&mut space, "fake", &me).unwrap());
         assert!(source_settings(&space).unwrap().is_empty());
+        let paused = connect_with(&mut space, &known, "fake", None, false, &me).unwrap();
+        assert!(!paused.on);
+        assert_eq!(paused.history, History::FromToday);
+        assert!(connect_with(&mut space, &known, "pdf", None, false, &me).is_err());
     }
 }

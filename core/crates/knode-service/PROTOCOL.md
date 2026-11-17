@@ -469,7 +469,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | --- | --- | --- |
 | `sources.list` | `space` | Every source of the space, connectors then importers, as below |
 | `sources.status` | `space`?, `source`? | `[{ "space", "name", "sources": [...] }]`: the connectors connected to the space, or with no `space` to every space the service knows that has one |
-| `sources.connect` | `space`, `source`, `history`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. The history is chosen once: asking for another one for a connected source fails with `invalid` |
+| `sources.connect` | `space`, `source`, `history`?, `on`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. With `on` `false` it is connected paused: its history and the day it was connected are fixed and `sources.containers` and `sources.exclude` work, but nothing is read until `sources.resume`, so what to leave out can be chosen first (connecting paused a source already connected pauses it). The history is chosen once: asking for another one for a connected source fails with `invalid` |
 | `sources.pause` / `sources.resume` | `space`, `source`, `by` | The source, off or on again |
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |

@@ -56,6 +56,28 @@ impl Client {
         )
     }
 
+    /// Connects the connector `source` to the space paused: its history is chosen and its
+    /// chats, channels or folders can be listed and excluded, and nothing is read until
+    /// [`sources_set_on`](Self::sources_set_on) resumes it. Pauses one already connected.
+    pub fn sources_connect_paused(
+        &self,
+        space: impl AsRef<Path>,
+        source: &str,
+        history: Option<History>,
+        by: &Provenance,
+    ) -> Result<SourceStatus> {
+        self.sources_call(
+            methods::SOURCES_CONNECT,
+            Some(space.as_ref()),
+            Some(source),
+            |p| {
+                p.history = history;
+                p.on = Some(false);
+                p.by = Some(by.clone());
+            },
+        )
+    }
+
     /// Pauses a connector in the space (`on` false), or resumes it.
     pub fn sources_set_on(
         &self,
