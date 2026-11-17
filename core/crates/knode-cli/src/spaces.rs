@@ -461,8 +461,13 @@ fn list_folders(client: Option<&Client>, space: &Path) -> Result<Vec<FolderInfo>
 fn project_message(project: &FolderProject) -> String {
     let title = &project.node.title;
     match (&project.passed_over, project.created, project.already_held) {
-        (Some(other), _, _) => format!(
+        (Some(other), true, _) => format!(
             "Added the project {title}, named after its parent folder too: the project {} already holds the files of {}.",
+            other.title,
+            other.folders.join(", ")
+        ),
+        (Some(other), false, _) => format!(
+            "It holds the files of the project {title}, which the space already had: the project {} already holds the files of {}.",
             other.title,
             other.folders.join(", ")
         ),

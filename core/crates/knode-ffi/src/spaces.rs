@@ -45,7 +45,7 @@ pub struct SpaceFolder {
     /// Whether the folder had been added before and already held that project. Always `false`
     /// in a list of folders.
     pub project_already_held: bool,
-    /// When adding the folder created a project named after its parent folders too, such as
+    /// When adding the folder gave it a project named after its parent folders too, such as
     /// `api (b)`, the title of the project of its own name that another folder holds.
     pub project_passed_over: Option<String>,
     /// The folders, as recorded, that hold the files of that passed-over project.
