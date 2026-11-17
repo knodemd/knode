@@ -94,6 +94,11 @@ fn folders_are_added_listed_and_removed() {
     ]);
     assert!(out.contains("project  ~/Developer/site"), "{out}");
     assert!(out.contains("exclude node_modules/**"), "{out}");
+    assert!(out.contains("project site"), "{out}");
+    assert!(out.contains("Added the project site."), "{out}");
+    // The same folder again keeps its project: no second one.
+    let out = sb.ok(&["folders", "add", project.to_str().unwrap()]);
+    assert!(out.contains("which the space already had"), "{out}");
     // Capture off for a project of another space, named by its name.
     let secret = sb.home().join("Developer/secret");
     let out = sb.ok(&[
@@ -131,10 +136,17 @@ fn folders_are_added_listed_and_removed() {
     assert_eq!(list.as_array().unwrap().len(), 2, "{out}");
     assert_eq!(list[0]["path"], "~/Developer/site");
     assert_eq!(list[0]["capture"], true);
+    assert_eq!(list[0]["project"]["node"]["title"], "site", "{out}");
+    assert_eq!(list[0]["project"]["node"]["kind"], "project", "{out}");
+    assert!(list[1].get("project").is_none(), "{out}");
 
     let out = sb.ok(&["folders", "remove", project.to_str().unwrap()]);
     assert!(
         out.contains("Removed the project folder ~/Developer/site"),
+        "{out}"
+    );
+    assert!(
+        out.contains("The project site and its notes stay."),
         "{out}"
     );
     let out = sb.ok(&["folders", "list"]);

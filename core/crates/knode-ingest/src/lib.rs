@@ -34,10 +34,15 @@
 //! Conversations held on the web come from the data export of each service instead:
 //! [`import_export`] reads a claude.ai export, a ChatGPT export or Gemini Apps activity from
 //! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
+//!
+//! Chats between people come from the exports of the apps they were held in:
+//! [`import_chat_export`] reads a WhatsApp chat export, a Telegram Desktop export or a Slack
+//! workspace export into one `chat` node per chat.
 
 mod aider;
 mod amp;
 mod capture;
+mod chats;
 pub mod claude_code;
 mod cline;
 pub mod codex;
@@ -59,6 +64,10 @@ mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
+pub use chats::{
+    CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, PERSON_KIND, detect_chat_export,
+    import_chat_export, keys as chat_keys, person_keys,
+};
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,
     SessionFile, WINDSURF_ROOT_VARIABLE, default_root, default_roots, discover, discover_all,

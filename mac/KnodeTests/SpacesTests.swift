@@ -17,7 +17,7 @@ import Testing
 
     deinit {
         try? FileManager.default.removeItem(at: folder)
-        UserDefaults().removePersistentDomain(forName: suite)
+        UserDefaults.removeTestSuite(suite)
     }
 
     func makeModel(settings: MemoryKnodeSettings = MemoryKnodeSettings()) -> AppModel {
@@ -190,6 +190,26 @@ import Testing
         #expect(SpaceLibrary.isArchive(archive) && !SpaceLibrary.isArchive(work))
     }
 
+    @Test func spacesMadeOutsideTheAppAppearOnTheNextLaunch() throws {
+        // The first launch saves an empty list: no space exists yet.
+        #expect(makeModel().sidebarSpaces.isEmpty)
+        // Then the command line makes a space and sets it as the default.
+        let memory = folder.appending(path: "Memoria.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: memory, withIntermediateDirectories: true)
+        try Data(#"{"format":0,"id":"01K83N6V4W5D2XQJ0Y7RZ9T1AC","name":"Memoria"}"#.utf8).write(to: memory.appending(path: "manifest.json"))
+        let settings = MemoryKnodeSettings(defaultSpace: memory)
+        let model = makeModel(settings: settings)
+        #expect(model.sidebarSpaces.map(\.name) == ["Memoria"])
+        #expect(model.sidebarSpaces.first?.isDefault == true)
+        // Taken off the list, it stays off, until the person opens it again.
+        SpaceLibrary(defaults: defaults).remove(memory)
+        #expect(makeModel(settings: settings).sidebarSpaces.isEmpty)
+        SpaceLibrary(defaults: defaults).add(memory)
+        SpaceLibrary(defaults: defaults).remove(memory)
+        SpaceLibrary(defaults: defaults).add(memory)
+        #expect(makeModel(settings: settings).sidebarSpaces.map(\.name) == ["Memoria"])
+    }
+
     @Test func theFirstLaunchListsTheSpacesKnodeKnows() throws {
         let home = folder.appending(path: "Home.knode", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -310,4 +330,30 @@ import Testing
         #expect(history.conflict != nil)
         #expect(model.editor?.body == "Typed, not saved yet")
     }
+}
+
+extension UserDefaults {
+    /// Removes a test suite's keys and the empty file macOS leaves for it in
+    /// `~/Library/Preferences`, which `removePersistentDomain` alone keeps.
+    static func removeTestSuite(_ suite: String) {
+        UserDefaults().removePersistentDomain(forName: suite)
+        // Write the now empty domain first, so the file is not written again after it is removed.
+        CFPreferencesAppSynchronize(suite as CFString)
+        let file = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Preferences/\(suite).plist")
+        try? FileManager.default.removeItem(at: file)
+        _ = leftoversRemoved
+    }
+
+    /// macOS can write a suite's empty file after the test process ends, out of the test's reach.
+    /// Once per run, remove those left by earlier runs (older than a minute), so they never pile up.
+    private static let leftoversRemoved: Void = {
+        let folder = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Preferences")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? []
+        let cutoff = Date().addingTimeInterval(-60)
+        for name in names where (name.hasPrefix("KnodeTests-") || name.hasPrefix("md.knode.tests.")) && name.hasSuffix(".plist") {
+            let file = folder.appending(path: name)
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff { try? FileManager.default.removeItem(at: file) }
+        }
+    }()
 }

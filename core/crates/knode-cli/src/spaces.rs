@@ -61,6 +61,8 @@ pub enum FoldersAction {
     },
     /// Add a folder to the space, or change it: a project whose agent conversations are
     /// captured into it, a folder of notes, or a folder where an agent keeps its sessions.
+    /// A project folder also adds the project named after it, or uses the one of that name
+    /// the space already has.
     Add {
         /// The folder.
         path: PathBuf,
@@ -79,7 +81,8 @@ pub enum FoldersAction {
         #[arg(long, value_name = "AGENT")]
         agent: Option<String>,
     },
-    /// Remove a folder from the space, by its path or id. Nothing captured from it is removed.
+    /// Remove a folder from the space, by its path or id. Nothing captured from it is removed,
+    /// and a project folder's project stays with its notes.
     Remove {
         /// The folder's path, or its id from `knode folders list`.
         folder: String,
@@ -398,6 +401,16 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             };
             println!("{} is fed by:", name_of(space));
             print_folder(&info);
+            if let Some(project) = &info.project {
+                if project.created {
+                    println!("Added the project {}.", project.node.title);
+                } else {
+                    println!(
+                        "It holds the files of the project {}, which the space already had.",
+                        project.node.title
+                    );
+                }
+            }
             if info.missing {
                 eprintln!("warning: {} does not exist on this machine", path.display());
             }
@@ -429,6 +442,9 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
                 info.folder.path,
                 name_of(space)
             );
+            if let Some(project) = &info.project {
+                println!("The project {} and its notes stay.", project.node.title);
+            }
             Ok(())
         }
     }
@@ -454,6 +470,9 @@ fn print_folder(info: &FolderInfo) {
     let exclude = knode_service::spaces::rule_patterns(&folder.rules, "exclude");
     if !exclude.is_empty() {
         notes.push(format!("exclude {}", exclude.join(" ")));
+    }
+    if let Some(project) = &info.project {
+        notes.push(format!("project {}", project.node.title));
     }
     if info.missing {
         notes.push("missing here".into());
