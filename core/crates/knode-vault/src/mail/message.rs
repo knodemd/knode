@@ -174,6 +174,9 @@ pub(crate) struct Mail {
     pub body: Option<String>,
     pub attachments: Vec<Attached>,
     pub folders: BTreeSet<String>,
+    /// Whether it came through a mailing list or is bulk mail: it has `List-Id`,
+    /// `List-Unsubscribe` or `Precedence: bulk` or `list`.
+    pub list: bool,
     pub origin: Origin,
     /// The order it was read in.
     pub order: usize,
@@ -271,6 +274,12 @@ pub(crate) fn parse(
         DateTime::from_timestamp(d.to_timestamp(), 0).map(|t| t.with_timezone(&offset))
     });
     let body = body(&message);
+    let list = message.header("List-Id").is_some()
+        || message.header("List-Unsubscribe").is_some()
+        || message.header_raw("Precedence").is_some_and(|p| {
+            let p = p.trim();
+            p.eq_ignore_ascii_case("bulk") || p.eq_ignore_ascii_case("list")
+        });
 
     let parents = parents(
         ids(message.references())
@@ -338,6 +347,7 @@ pub(crate) fn parse(
         body: Some(body),
         attachments,
         folders,
+        list,
         origin,
         order,
     })
