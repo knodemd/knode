@@ -1,7 +1,7 @@
 //! `knode export` and `knode markdown folder`: Markdown in and out of a
 //! space, through Knode Service or the space opened directly.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use knode_format::{Provenance, Space};
@@ -32,6 +32,24 @@ pub fn export(space: &Path, dir: &Path, compare: Option<&Path>, json: bool) -> R
             dir.display()
         );
     }
+    if let Some(source) = &source {
+        let (out, vault) = (resolved(&dir), resolved(source));
+        if out.starts_with(&vault) || vault.starts_with(&out) {
+            bail!(
+                "{} is {} the folder to compare with, {}: export to a folder apart from it, so the \
+                 export never writes into it",
+                dir.display(),
+                if out == vault {
+                    "the same folder as"
+                } else if out.starts_with(&vault) {
+                    "inside"
+                } else {
+                    "a folder that contains"
+                },
+                source.display()
+            );
+        }
+    }
     let report: ExportReport = match service::client() {
         Some(client) => client.export_markdown(space, &dir)?,
         None => knode_vault::export(&Space::open(space)?, &dir)?,
@@ -56,6 +74,25 @@ pub fn export(space: &Path, dir: &Path, compare: Option<&Path>, json: bool) -> R
         print_comparison(&comparison);
     }
     Ok(())
+}
+
+/// `path` with its symbolic links resolved, as far as it exists: the folders it does not have
+/// yet are kept as written.
+fn resolved(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return missing.iter().rev().fold(real, |p, name| p.join(name));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// Prints what differs between the imported folder and the export.

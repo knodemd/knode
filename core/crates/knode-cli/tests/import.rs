@@ -375,6 +375,23 @@ fn a_vault_import_writes_a_report_and_an_export_compares_with_the_vault() {
         serde_json::from_str(&sb.ok(&["export", s(&out_dir), "--compare", s(&vault), "--json"]))
             .unwrap();
     assert_eq!(json["counts"]["metadata"], 2);
+
+    // Never into the vault, inside it or around it: the vault is left as it was.
+    let before = fs::read_to_string(vault.join("Welcome.md")).unwrap();
+    for (out_dir, says) in [
+        (vault.clone(), "the same folder as"),
+        (vault.join("Export"), "inside"),
+        (sb.path(""), "a folder that contains"),
+    ] {
+        let err = sb.fails(&["export", s(&out_dir), "--compare", s(&vault)]);
+        assert!(err.contains(says), "{err}");
+        assert!(err.contains("export to a folder apart from it"), "{err}");
+    }
+    assert!(!vault.join("Export").exists());
+    assert_eq!(
+        fs::read_to_string(vault.join("Welcome.md")).unwrap(),
+        before
+    );
 }
 
 #[test]
