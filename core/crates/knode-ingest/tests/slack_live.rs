@@ -1158,6 +1158,25 @@ fn from_today_leaves_older_messages_out() {
 }
 
 #[test]
+fn no_token_in_a_message_reaches_a_node() {
+    // Made up for the test, and put together from parts so the source holds no whole token.
+    let token = concat!("xox", "b-1234567890-", "abcdefghijklmnop");
+    let (mut setup, connector) = setup(Limits::Marketplace);
+    setup.slack.post_message(
+        "C01",
+        msg("U01", &format!("the bot token is {token}"), &ts(5000, 1)),
+    );
+    setup.sync(&connector, 3);
+    let general = setup.chat("C01").unwrap();
+    assert!(!general.body.contains("xoxb-"), "{}", general.body);
+    assert!(
+        general.body.contains("the bot token is [redacted]"),
+        "{}",
+        general.body
+    );
+}
+
+#[test]
 fn excluded_channels_are_never_read_and_new_ones_come_in() {
     let (mut setup, connector) = setup(Limits::Marketplace);
     setup.sync(&connector, 3);
