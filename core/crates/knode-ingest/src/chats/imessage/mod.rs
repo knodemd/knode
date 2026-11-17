@@ -1,12 +1,12 @@
-//! iMessage, read live from the Messages database of this Mac: [`sync`].
+//! iMessage, read live from the Messages database of this Mac: [`IMessageConnector`].
 //!
 //! Messages keeps every conversation in `~/Library/Messages/chat.db`, a SQLite database, and
 //! the files sent in them in `~/Library/Messages/Attachments`. Reading them needs Full Disk
 //! Access. The database is never opened where it is: it is copied, with its write-ahead log,
-//! into a private temporary folder, the copy is backed up into a snapshot, and only the
-//! snapshot is read ([`db`]). Before anything is read, the snapshot is checked for every table
-//! and column Knode reads; when one is missing, nothing is written and the error says the
-//! connector needs an update.
+//! into a private temporary folder and only the copy is read
+//! ([`sqlite::open_copy`](crate::sources::sqlite::open_copy)). Before anything is read, the
+//! copy is checked for every table and column Knode reads; when one is missing, nothing is
+//! written and the error says the connector needs an update.
 //!
 //! Every conversation becomes one node of kind [`CHAT_KIND`](super::CHAT_KIND), the same as a
 //! chat export: its messages grouped by day under `## YYYY-MM-DD`, each `**Sender** (HH:MM):
@@ -16,37 +16,40 @@
 //! - The text is the `text` column, or, when it is empty (as it often is since macOS 13), the
 //!   text archived in `attributedBody`, read by a small typedstream reader.
 //! - Times are Apple times (nanoseconds since 2001-01-01) shown in the Mac's time zone.
-//! - People are their phone numbers and email addresses; a [`ContactNames`] given in the
-//!   options turns them into names (the Mac app, which may ask for Contacts access, provides
-//!   one; the core never reads Contacts).
+//! - People are their phone numbers and email addresses; a [`ContactNames`] turns them into
+//!   names (the Mac app, which may ask for Contacts access, can provide one; the core never
+//!   reads Contacts).
 //! - Reactions (tapbacks) are left out: they are not messages, and a reaction taken back would
 //!   otherwise stay in the node. Edited messages show their last text, marked edited; messages
 //!   taken back show that one was.
-//! - Where to go on from is a [`Cursor`], the number of the last message read. Conversations
-//!   excluded by guid are never read. On the first sync, [`History`] says whether to bring
-//!   everything Messages has or only what is sent from today on.
+//! - The cursor is the number (`ROWID`) of the last message read. Conversations excluded by
+//!   guid are never read. With [`History::FromToday`], nothing sent before the day the
+//!   connector was connected is read.
 
 mod db;
 mod typedstream;
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
-use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::{DateTime, FixedOffset, Local, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use knode_format::{Provenance, Space};
-
-pub use db::Stamp;
+use chrono::{DateTime, FixedOffset, Local, NaiveDateTime, Utc};
+use knode_format::{ChangeOp, Provenance, Space, Timestamp};
 
 use super::files::Files;
 use super::model::{Chat, ChatMessage, Media};
 use super::render::{escape_name, escape_text};
 use super::write::ChatWriter;
-use super::{ChatFormat, ChatImportError, ChatImportReport, keys};
-use db::{ChatRow, MessageRow, Snapshot};
+use super::{ChatFormat, ChatImportError, ChatImportReport};
+use crate::sources::{
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
+    SourceInfo, Trigger, Written,
+};
+use db::{ChatRow, MessageRow, Snapshot, failed};
 
-/// The id of the app in `chat.app`.
+/// The id of the connector, and of the app in `chat.app`.
 pub const APP: &str = "imessage";
 
 /// Seconds from 1970-01-01 to 2001-01-01, where Apple times start.
@@ -55,27 +58,83 @@ const APPLE_EPOCH: i64 = 978_307_200;
 /// `chat.style` of a group conversation.
 const STYLE_GROUP: i64 = 43;
 
+/// The longest time between two runs when no change of the database was seen.
+const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(15 * 60);
+
 /// The Messages folder of the person running Knode: `~/Library/Messages`.
 pub fn default_messages_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Messages"))
 }
 
-/// Where Messages keeps its database and files.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessagesSource {
-    /// The Messages folder, with `chat.db` and `Attachments` in it.
-    pub dir: PathBuf,
+/// Turns phone numbers and email addresses into the names of people, such as from Contacts.
+pub trait ContactNames: Send + Sync {
+    /// The name of whoever has this phone number or email address, if known.
+    fn name(&self, handle: &str) -> Option<String>;
 }
 
-impl MessagesSource {
-    /// The Messages folder of the person running Knode.
-    pub fn local() -> Option<MessagesSource> {
-        default_messages_dir().map(MessagesSource::new)
+/// How messages are shown.
+#[derive(Clone)]
+struct Options {
+    me: String,
+    names: Option<Arc<dyn ContactNames>>,
+    offset: Option<FixedOffset>,
+}
+
+/// The iMessage connector: reads the conversations of Messages on this Mac, from a copy of its
+/// database, into one `chat` node per conversation.
+#[derive(Clone)]
+pub struct IMessageConnector {
+    /// The Messages folder, with `chat.db` and `Attachments` in it.
+    dir: PathBuf,
+    options: Options,
+}
+
+impl fmt::Debug for IMessageConnector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IMessageConnector")
+            .field("dir", &self.dir)
+            .field("me", &self.options.me)
+            .field("names", &self.options.names.is_some())
+            .field("offset", &self.options.offset)
+            .finish()
+    }
+}
+
+impl IMessageConnector {
+    /// The connector for the Messages folder of the person running Knode.
+    pub fn local() -> Option<IMessageConnector> {
+        default_messages_dir().map(IMessageConnector::new)
     }
 
-    /// A Messages folder.
-    pub fn new(dir: impl Into<PathBuf>) -> MessagesSource {
-        MessagesSource { dir: dir.into() }
+    /// The connector for a Messages folder.
+    pub fn new(dir: impl Into<PathBuf>) -> IMessageConnector {
+        IMessageConnector {
+            dir: dir.into(),
+            options: Options {
+                me: "Me".to_string(),
+                names: None,
+                offset: None,
+            },
+        }
+    }
+
+    /// The same connector, naming the person `me` as a sender (`Me` by default).
+    pub fn with_me(mut self, me: impl Into<String>) -> Self {
+        self.options.me = me.into();
+        self
+    }
+
+    /// The same connector, naming people with `names` instead of their phone numbers and
+    /// email addresses.
+    pub fn with_names(mut self, names: Arc<dyn ContactNames>) -> Self {
+        self.options.names = Some(names);
+        self
+    }
+
+    /// The same connector, showing times in `offset` instead of the Mac's time zone.
+    pub fn with_offset(mut self, offset: FixedOffset) -> Self {
+        self.options.offset = Some(offset);
+        self
     }
 
     /// The database.
@@ -83,349 +142,177 @@ impl MessagesSource {
         self.dir.join("chat.db")
     }
 
-    /// The size and time of change of the database and its log: when it is the same as at
-    /// the last sync, nothing new has arrived and there is no need to copy the database.
-    pub fn stamp(&self) -> Result<Stamp, IMessageError> {
-        db::stamp(&self.database())
+    fn names(&self) -> Option<&dyn ContactNames> {
+        self.options.names.as_deref()
     }
 }
 
-/// What to bring on the first sync of a space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum History {
-    /// Only messages sent from the start of today on.
-    #[default]
-    FromToday,
-    /// Every message Messages has.
-    Everything,
-}
-
-/// Where a sync stopped: the number (`ROWID`) of the last message in the database then. The
-/// next sync reads only messages after it. The caller keeps it for each space (as text, with
-/// `to_string` and `parse`) and gives it back to the next sync.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Cursor(pub i64);
-
-impl fmt::Display for Cursor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+impl Connector for IMessageConnector {
+    fn info(&self) -> SourceInfo {
+        SourceInfo::connector(
+            APP,
+            "Messages",
+            "The iMessage and SMS conversations of Messages on this Mac",
+        )
+        .needing([Permission::FullDiskAccess])
+        .excluding("conversation")
     }
-}
 
-impl std::str::FromStr for Cursor {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.trim().parse().map(Cursor)
-    }
-}
-
-/// Turns phone numbers and email addresses into the names of people, such as from Contacts.
-pub trait ContactNames {
-    /// The name of whoever has this phone number or email address, if known.
-    fn name(&self, handle: &str) -> Option<String>;
-}
-
-/// How to sync.
-pub struct SyncOptions<'a> {
-    /// What to bring when the space has no cursor yet.
-    pub history: History,
-    /// The guids of the conversations never to read.
-    pub excluded: BTreeSet<String>,
-    /// How the person is named as a sender: `Me` by default.
-    pub me: String,
-    /// Names for phone numbers and email addresses; without it, they are shown as they are.
-    pub names: Option<&'a dyn ContactNames>,
-    /// The time zone times are shown in; the Mac's when `None`.
-    pub offset: Option<FixedOffset>,
-    /// The time now, which says when today starts; the clock's when `None`.
-    pub now: Option<DateTime<Utc>>,
-}
-
-impl Default for SyncOptions<'_> {
-    fn default() -> Self {
-        SyncOptions {
-            history: History::default(),
-            excluded: BTreeSet::new(),
-            me: "Me".to_string(),
-            names: None,
-            offset: None,
-            now: None,
+    fn trigger(&self) -> Trigger {
+        let db = self.database();
+        Trigger::Watch {
+            paths: vec![db.clone(), db::wal_path(&db)],
+            every: RUN_AT_LEAST_EVERY,
         }
     }
-}
 
-impl fmt::Debug for SyncOptions<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SyncOptions")
-            .field("history", &self.history)
-            .field("excluded", &self.excluded)
-            .field("me", &self.me)
-            .field("names", &self.names.is_some())
-            .field("offset", &self.offset)
-            .field("now", &self.now)
-            .finish()
+    fn check(&self) -> Result<(), SourceError> {
+        Snapshot::take(&self.database()).map(|_| ())
     }
-}
 
-/// Why a sync failed. Nothing is written when it does.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum IMessageError {
-    /// macOS refused to let Knode read the Messages folder.
-    NoFullDiskAccess(PathBuf),
-    /// There is no Messages database.
-    NotFound(PathBuf),
-    /// The database is not the one Knode knows: these tables or columns are missing.
-    NeedsUpdate {
-        /// `table` or `table.column`, for each one missing.
-        missing: Vec<String>,
-    },
-    /// The copy could not be made.
-    Io(io::Error),
-    /// The copy could not be read.
-    Sqlite(rusqlite::Error),
-    /// The space could not be written.
-    Write(ChatImportError),
-}
+    fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
+        let snapshot = Snapshot::take(&self.database())?;
+        Ok(snapshot
+            .chats()
+            .map_err(failed)?
+            .iter()
+            .map(|chat| {
+                let participants = people(chat, self.names());
+                Container::new(chat.guid.clone(), name(chat, &participants))
+            })
+            .collect())
+    }
 
-impl IMessageError {
-    fn from_open(path: &Path, error: io::Error) -> IMessageError {
-        match error.kind() {
-            io::ErrorKind::PermissionDenied => IMessageError::NoFullDiskAccess(path.to_path_buf()),
-            io::ErrorKind::NotFound => IMessageError::NotFound(path.to_path_buf()),
-            _ => IMessageError::Io(error),
+    fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
+        let snapshot = Snapshot::take(&self.database())?;
+        let after = rowid(request.cursor);
+        let newest = snapshot.last_rowid().map_err(failed)?.max(after);
+        let from = match request.history {
+            History::Everything => None,
+            History::FromToday => Some(apple_time(request.since)),
+        };
+        let chats: BTreeMap<i64, ChatRow> = snapshot
+            .chats()
+            .map_err(failed)?
+            .into_iter()
+            .filter(|c| !request.is_excluded(&c.guid))
+            .map(|c| (c.rowid, c))
+            .collect();
+        let ids: Vec<i64> = chats.keys().copied().collect();
+        let limit = request.max_items.max(1);
+        // One more than asked for says whether there is more.
+        let mut rows = snapshot
+            .messages(&ids, after, from, limit + 1)
+            .map_err(failed)?;
+        let more = rows.len() > limit;
+        if more {
+            // Never cut a message in two conversations at once.
+            let last = rows[limit - 1].1.rowid;
+            rows.retain(|(_, m)| m.rowid <= last);
         }
-    }
-}
+        let cursor = if more {
+            rows.last().map_or(newest, |(_, m)| m.rowid)
+        } else {
+            newest
+        };
 
-impl fmt::Display for IMessageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IMessageError::NoFullDiskAccess(_) => f.write_str(
-                "Knode cannot read your messages: macOS only lets apps with Full Disk Access \
-                 read them. Turn on Knode in System Settings > Privacy & Security > Full Disk \
-                 Access, then try again",
-            ),
-            IMessageError::NotFound(path) => write!(
-                f,
-                "there are no messages to read at {}: open Messages and sign in to iMessage \
-                 first",
-                path.display()
-            ),
-            IMessageError::NeedsUpdate { missing } => write!(
-                f,
-                "the iMessage connector needs an update: this version of Messages keeps its \
-                 messages differently (missing {}). Nothing was read or written",
-                missing.join(", ")
-            ),
-            IMessageError::Io(error) => {
-                write!(f, "the Messages database could not be copied: {error}")
-            }
-            IMessageError::Sqlite(error) => {
-                write!(
-                    f,
-                    "the copy of the Messages database could not be read: {error}"
-                )
-            }
-            IMessageError::Write(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for IMessageError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            IMessageError::Io(error) => Some(error),
-            IMessageError::Sqlite(error) => Some(error),
-            IMessageError::Write(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for IMessageError {
-    fn from(error: io::Error) -> Self {
-        IMessageError::Io(error)
-    }
-}
-
-impl From<rusqlite::Error> for IMessageError {
-    fn from(error: rusqlite::Error) -> Self {
-        IMessageError::Sqlite(error)
-    }
-}
-
-impl From<ChatImportError> for IMessageError {
-    fn from(error: ChatImportError) -> Self {
-        IMessageError::Write(error)
-    }
-}
-
-impl From<knode_format::Error> for IMessageError {
-    fn from(error: knode_format::Error) -> Self {
-        IMessageError::Write(ChatImportError::Space(error))
-    }
-}
-
-/// A conversation in Messages, as listed to choose which to exclude.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Conversation {
-    /// Its guid, which [`SyncOptions::excluded`] names.
-    pub guid: String,
-    /// Its title, as its node would have it.
-    pub title: String,
-    /// `personal` or `group`.
-    pub kind: String,
-    /// The others in it.
-    pub participants: Vec<String>,
-}
-
-/// What [`sync`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncReport {
-    /// The nodes written and what was in them, as for a chat export.
-    pub chats: ChatImportReport,
-    /// Where to go on from next time.
-    pub cursor: Cursor,
-    /// Conversations excluded, not read.
-    pub excluded: usize,
-    /// Reactions (tapbacks) left out.
-    pub reactions: usize,
-    /// Messages with nothing to show, such as group events other than a new name, left out.
-    pub skipped_events: usize,
-}
-
-/// Every conversation in Messages, to choose which to exclude.
-pub fn conversations(
-    source: &MessagesSource,
-    names: Option<&dyn ContactNames>,
-) -> Result<Vec<Conversation>, IMessageError> {
-    let snapshot = Snapshot::take(&source.database())?;
-    Ok(snapshot
-        .chats()?
-        .iter()
-        .map(|chat| {
-            let participants = people(chat, names);
-            Conversation {
-                guid: chat.guid.clone(),
-                title: title(chat, &participants),
-                kind: kind(chat).to_string(),
-                participants,
-            }
-        })
-        .collect())
-}
-
-/// Where the last sync into `space` stopped, from the iMessage nodes in it: the highest message
-/// number they were written up to. A sync that lost its cursor goes on from here.
-pub fn cursor_in(space: &Space) -> Result<Option<Cursor>, IMessageError> {
-    let mut best = None;
-    for summary in space.find_by_property(keys::APP, APP)? {
-        if let Some(last) = space.property(&summary.id, keys::LAST)?
-            && let Ok(cursor) = last.parse::<Cursor>()
-        {
-            best = best.max(Some(cursor));
-        }
-    }
-    Ok(best)
-}
-
-/// Brings the messages Messages has after `cursor` into `space`, written by `by`: one
-/// [`CHAT_KIND`](super::CHAT_KIND) node per conversation, its new messages added under their
-/// day, and the files sent attached. Without a cursor (the first sync), `options.history` says
-/// where to start. The returned [`SyncReport::cursor`] is where the next sync goes on from; a
-/// sync with a cursor older than what the space holds never writes a message twice.
-///
-/// The database is read from a copy, and checked before anything is read: an error writes
-/// nothing.
-pub fn sync(
-    space: &mut Space,
-    source: &MessagesSource,
-    cursor: Option<Cursor>,
-    options: &SyncOptions<'_>,
-    by: &Provenance,
-) -> Result<SyncReport, IMessageError> {
-    let snapshot = Snapshot::take(&source.database())?;
-    let newest = Cursor(snapshot.last_rowid()?);
-    let cursor = cursor.max(cursor_in(space)?);
-    let offset = options.offset;
-    let (after, from) = match cursor {
-        Some(cursor) => (cursor.0, None),
-        None => match options.history {
-            History::Everything => (0, None),
-            History::FromToday => (0, Some(start_of_today(options.now, offset))),
-        },
-    };
-
-    let mut files = Files::unlisted(&source.dir);
-    let mut writer = ChatWriter {
-        space,
-        by: by.clone().with_source(APP),
-        report: ChatImportReport::new(ChatFormat::IMessage),
-    };
-    let mut report = SyncReport {
-        chats: ChatImportReport::new(ChatFormat::IMessage),
-        cursor: newest.max(Cursor(after)),
-        excluded: 0,
-        reactions: 0,
-        skipped_events: 0,
-    };
-    for row in snapshot.chats()? {
-        if options.excluded.contains(&row.guid) {
-            report.excluded += 1;
-            continue;
-        }
-        let rows = snapshot.messages(row.rowid, after, from)?;
-        if rows.is_empty() {
-            continue;
-        }
-        let participants = people(&row, options.names);
-        let mut chat = Chat::new(
-            ChatFormat::IMessage,
-            row.guid.clone(),
-            title(&row, &participants),
-        );
-        chat.kind = kind(&row).to_string();
-        chat.participants = participants;
-        chat.participants.push(options.me.clone());
-        for message in rows {
+        let mut by_chat: BTreeMap<i64, Chat> = BTreeMap::new();
+        let mut items = 0;
+        for (chat_id, message) in rows {
+            let Some(row) = chats.get(&chat_id) else {
+                continue;
+            };
+            // Reactions (tapbacks) and reactions taken back.
             if (2000..4000).contains(&message.associated_type) {
-                report.reactions += 1;
                 continue;
             }
-            match to_message(&snapshot, &message, &row, options, source)? {
-                Some(m) => chat.messages.push(m),
-                None => report.skipped_events += 1,
-            }
+            let Some(m) = to_message(&snapshot, &message, row, &self.options, &self.dir)? else {
+                continue;
+            };
+            let chat = by_chat.entry(chat_id).or_insert_with(|| {
+                let participants = people(row, self.names());
+                let mut chat = Chat::new(
+                    ChatFormat::IMessage,
+                    row.guid.clone(),
+                    title(row, &participants),
+                );
+                chat.kind = kind(row).to_string();
+                chat.participants = participants;
+                chat.participants.push(self.options.me.clone());
+                chat
+            });
+            chat.messages.push(m);
+            items += 1;
         }
-        writer.write(&chat, &mut files)?;
+        let cursor = Cursor::new(cursor.to_string());
+        if by_chat.is_empty() {
+            return Ok(Fetched::nothing(cursor).with_more(more));
+        }
+        let batch = IMessageBatch {
+            chats: by_chat.into_values().collect(),
+            dir: self.dir.clone(),
+            items,
+        };
+        Ok(Fetched::batch(batch, cursor).with_more(more))
     }
-    report.chats = writer.report;
-    Ok(report)
 }
 
-/// The start of today in `offset`, in Apple nanoseconds.
-fn start_of_today(now: Option<DateTime<Utc>>, offset: Option<FixedOffset>) -> i64 {
-    let now = now.unwrap_or_else(Utc::now);
-    let start = match offset {
-        Some(offset) => {
-            let day = now.with_timezone(&offset).date_naive();
-            offset
-                .from_local_datetime(&day.and_time(NaiveTime::MIN))
-                .earliest()
-                .map(|t| t.timestamp())
-        }
-        None => {
-            let day = now.with_timezone(&Local).date_naive();
-            Local
-                .from_local_datetime(&day.and_time(NaiveTime::MIN))
-                .earliest()
-                .map(|t| t.timestamp())
-        }
+/// The message number a cursor holds: 0 for none.
+fn rowid(cursor: Option<&Cursor>) -> i64 {
+    cursor
+        .and_then(|c| c.as_str().trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// A time in milliseconds since 1970 as an Apple time.
+fn apple_time(at: Timestamp) -> i64 {
+    let secs = at.0.div_euclid(1000) - APPLE_EPOCH;
+    let millis = at.0.rem_euclid(1000);
+    secs.saturating_mul(1_000_000_000)
+        .saturating_add(millis * 1_000_000)
+}
+
+/// Messages read from Messages, written with the chat importers' writer.
+struct IMessageBatch {
+    chats: Vec<Chat>,
+    /// The Messages folder, where the files sent are.
+    dir: PathBuf,
+    items: usize,
+}
+
+impl Batch for IMessageBatch {
+    fn len(&self) -> usize {
+        self.items
     }
-    .unwrap_or_else(|| now.timestamp());
-    (start - APPLE_EPOCH).saturating_mul(1_000_000_000)
+
+    fn write(self: Box<Self>, space: &mut Space, by: &Provenance) -> Result<Written, SourceError> {
+        let mut files = Files::unlisted(&self.dir);
+        let mut writer = ChatWriter {
+            space,
+            by: by.clone(),
+            report: ChatImportReport::new(ChatFormat::IMessage),
+        };
+        for chat in &self.chats {
+            writer.write(chat, &mut files).map_err(|e| match e {
+                ChatImportError::Space(e) => SourceError::Space(e),
+                other => SourceError::Failed(other.to_string()),
+            })?;
+        }
+        let report = writer.report;
+        Ok(Written {
+            items: report.messages,
+            created: report
+                .chats
+                .iter()
+                .filter(|c| c.op == ChangeOp::Create)
+                .count(),
+            updated: report
+                .chats
+                .iter()
+                .filter(|c| c.op == ChangeOp::Update)
+                .count(),
+        })
+    }
 }
 
 /// An Apple time as a time of day in `offset` (the Mac's when `None`).
@@ -479,6 +366,11 @@ fn people(chat: &ChatRow, names: Option<&dyn ContactNames>) -> Vec<String> {
 }
 
 fn title(chat: &ChatRow, participants: &[String]) -> String {
+    format!("iMessage - {}", name(chat, participants))
+}
+
+/// The name of a conversation: the one it was given, or who is in it.
+fn name(chat: &ChatRow, participants: &[String]) -> String {
     let name = if !chat.display_name.trim().is_empty() {
         chat.display_name.trim().to_string()
     } else if !participants.is_empty() {
@@ -490,10 +382,7 @@ fn title(chat: &ChatRow, participants: &[String]) -> String {
         .chars()
         .map(|c| if matches!(c, '[' | ']' | '|') { ' ' } else { c })
         .collect();
-    format!(
-        "iMessage - {}",
-        name.split_whitespace().collect::<Vec<_>>().join(" ")
-    )
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The text of a message: its `text`, or the text archived in `attributedBody`, without the
@@ -515,14 +404,14 @@ fn text_of(message: &MessageRow) -> String {
         .to_string()
 }
 
-fn sender(message: &MessageRow, chat: &ChatRow, options: &SyncOptions<'_>) -> String {
+fn sender(message: &MessageRow, chat: &ChatRow, options: &Options) -> String {
     if message.from_me {
         return options.me.clone();
     }
     match &message.handle {
-        Some(handle) if !handle.is_empty() => person(handle, options.names),
+        Some(handle) if !handle.is_empty() => person(handle, options.names.as_deref()),
         _ => match chat.handles.as_slice() {
-            [only] => person(only, options.names),
+            [only] => person(only, options.names.as_deref()),
             _ => "Unknown".to_string(),
         },
     }
@@ -532,9 +421,9 @@ fn to_message(
     snapshot: &Snapshot,
     message: &MessageRow,
     chat: &ChatRow,
-    options: &SyncOptions<'_>,
-    source: &MessagesSource,
-) -> Result<Option<ChatMessage>, IMessageError> {
+    options: &Options,
+    dir: &Path,
+) -> Result<Option<ChatMessage>, SourceError> {
     let time = local_time(message.date, options.offset);
     let mark = format!("{:020}", message.rowid);
     let who = sender(message, chat, options);
@@ -566,7 +455,7 @@ fn to_message(
     let media: Vec<Media> = message
         .attachments
         .iter()
-        .map(|a| attachment(a, source))
+        .map(|a| attachment(a, dir))
         .collect();
     let unsent = message.date_retracted != 0
         || (message.date_edited != 0 && text.is_empty() && media.is_empty());
@@ -588,7 +477,7 @@ fn to_message(
     }
     if let Some(guid) = message.reply_to.as_deref().filter(|g| !g.is_empty())
         && guid != message.guid
-        && let Some(original) = snapshot.message_by_guid(guid)?
+        && let Some(original) = snapshot.message_by_guid(guid).map_err(failed)?
     {
         let who = sender(&original, chat, options);
         let at = local_time(original.date, options.offset).format("%H:%M");
@@ -603,7 +492,7 @@ fn to_message(
 }
 
 /// A file sent with a message: attached when it is in the Messages folder on this Mac.
-fn attachment(row: &db::AttachmentRow, source: &MessagesSource) -> Media {
+fn attachment(row: &db::AttachmentRow, dir: &Path) -> Media {
     let path = row.filename.as_deref().unwrap_or_default();
     let name = row
         .transfer_name
@@ -627,10 +516,10 @@ fn attachment(row: &db::AttachmentRow, source: &MessagesSource) -> Media {
         name: name.clone(),
         reason: reason.to_string(),
     };
-    let Some(entry) = entry_in(path, &source.dir) else {
+    let Some(entry) = entry_in(path, dir) else {
         return not_attached("not on this Mac");
     };
-    let mut full = source.dir.clone();
+    let mut full = dir.to_path_buf();
     full.extend(entry.split('/'));
     if !full.is_file() {
         return not_attached("not on this Mac");
@@ -682,15 +571,22 @@ mod tests {
     }
 
     #[test]
-    fn today_starts_at_midnight_where_the_person_is() {
-        let now = DateTime::parse_from_rfc3339("2026-03-04T09:15:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+    fn reads_the_start_of_the_history_as_an_apple_time() {
         let utc = FixedOffset::east_opt(0);
+        let since = Timestamp((APPLE_EPOCH + 794_308_500) * 1000 + 250);
+        let apple = apple_time(since);
+        assert_eq!(apple, 794_308_500_250_000_000);
         assert_eq!(
-            local_time(start_of_today(Some(now), utc), utc).to_string(),
-            "2026-03-04 00:00:00"
+            local_time(apple, utc).to_string(),
+            "2026-03-04 09:15:00.250"
         );
+    }
+
+    #[test]
+    fn cursors_are_message_numbers() {
+        assert_eq!(rowid(None), 0);
+        assert_eq!(rowid(Some(&Cursor::new("42"))), 42);
+        assert_eq!(rowid(Some(&Cursor::new("not a number"))), 0);
     }
 
     #[test]

@@ -1,20 +1,21 @@
-//! Reading the Messages database from a copy: the database and its write-ahead log are copied
-//! as files, the copy is opened and backed up with SQLite's backup API into a snapshot that
-//! holds every committed message, and only the snapshot is read. SQLite never opens the
-//! database Messages uses, so nothing of it is locked, changed or written.
+//! Reading the Messages database from a copy ([`sqlite::open_copy`]): the database and its
+//! write-ahead log are copied as files into a private temporary folder and only the copy is
+//! opened, so SQLite never opens the database Messages uses and nothing of it is locked,
+//! changed or written. The copy is checked for every table and column read before anything is
+//! read.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 
-use super::IMessageError;
+use crate::sources::SourceError;
+use crate::sources::sqlite::{self, DatabaseCopy};
 
 /// The tables and columns read, which the database must have.
-const REQUIRED: &[(&str, &[&str])] = &[
+pub(crate) const REQUIRED: &[(&str, &[&str])] = &[
     (
         "message",
         &[
@@ -50,24 +51,17 @@ const OPTIONAL: &[&str] = &[
 /// How many times the files are copied again when Messages wrote to them during the copy.
 const COPY_ATTEMPTS: usize = 3;
 
-/// A snapshot of the Messages database in a private temporary folder, removed when dropped.
+/// A checked copy of the Messages database, removed when dropped.
 pub(crate) struct Snapshot {
-    conn: Connection,
-    dir: PathBuf,
+    copy: DatabaseCopy,
     /// The optional columns of `message` the database has.
     optional: Vec<&'static str>,
-}
-
-impl Drop for Snapshot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
 }
 
 /// The size and time of change of the database and its log, which change whenever Messages
 /// writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Stamp(Vec<(u64, Option<SystemTime>)>);
+struct Stamp(Vec<(u64, Option<SystemTime>)>);
 
 pub(crate) fn wal_path(db: &Path) -> PathBuf {
     let mut name = db.as_os_str().to_os_string();
@@ -75,90 +69,44 @@ pub(crate) fn wal_path(db: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// The stamp of the database at `db`.
-pub(crate) fn stamp(db: &Path) -> Result<Stamp, IMessageError> {
-    let mut parts = Vec::new();
-    for (i, path) in [db.to_path_buf(), wal_path(db)].iter().enumerate() {
-        match fs::metadata(path) {
-            Ok(meta) => parts.push((meta.len(), meta.modified().ok())),
-            Err(e) if i > 0 && e.kind() == io::ErrorKind::NotFound => parts.push((0, None)),
-            Err(e) => return Err(IMessageError::from_open(db, e)),
-        }
-    }
-    Ok(Stamp(parts))
-}
-
-/// A private folder for the copy.
-fn private_dir() -> io::Result<PathBuf> {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("knode-imessage-{}-{nanos}", std::process::id()));
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(&dir)?;
-    Ok(dir)
+fn stamp(db: &Path) -> Stamp {
+    Stamp(
+        [db.to_path_buf(), wal_path(db)]
+            .iter()
+            .map(|path| match fs::metadata(path) {
+                Ok(meta) => (meta.len(), meta.modified().ok()),
+                Err(_) => (0, None),
+            })
+            .collect(),
+    )
 }
 
 impl Snapshot {
     /// Copies the database at `db` (and its log) and opens the copy, after checking it has
-    /// every table and column read.
-    pub(crate) fn take(db: &Path) -> Result<Snapshot, IMessageError> {
-        // Fails here, before anything is copied, without Full Disk Access.
-        fs::File::open(db).map_err(|e| IMessageError::from_open(db, e))?;
-        let dir = private_dir()?;
-        let result = Self::take_into(db, &dir);
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&dir);
-        }
-        result
+    /// every table and column read: [`SourceError::NeedsUpdate`] when one is missing.
+    pub(crate) fn take(db: &Path) -> Result<Snapshot, SourceError> {
+        let mut attempt = 1;
+        let copy = loop {
+            let before = stamp(db);
+            let copy = sqlite::open_copy(db)?;
+            // Copied while Messages wrote: the database and its log may not match.
+            if stamp(db) == before || attempt == COPY_ATTEMPTS {
+                break copy;
+            }
+            attempt += 1;
+        };
+        sqlite::check_schema(copy.conn(), REQUIRED)?;
+        let columns = table_columns(&copy, "message").map_err(failed)?;
+        let optional = OPTIONAL
+            .iter()
+            .copied()
+            .filter(|c| columns.iter().any(|h| h == c))
+            .collect();
+        Ok(Snapshot { copy, optional })
     }
 
-    fn take_into(db: &Path, dir: &Path) -> Result<Snapshot, IMessageError> {
-        let raw = dir.join("copy.db");
-        for attempt in 1..=COPY_ATTEMPTS {
-            let before = stamp(db)?;
-            fs::copy(db, &raw).map_err(|e| IMessageError::from_open(db, e))?;
-            let wal = wal_path(db);
-            let raw_wal = wal_path(&raw);
-            match fs::copy(&wal, &raw_wal) {
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    let _ = fs::remove_file(&raw_wal);
-                }
-                Err(e) => return Err(IMessageError::from_open(db, e)),
-            }
-            if stamp(db)? == before || attempt == COPY_ATTEMPTS {
-                break;
-            }
-        }
-        // The copy is opened (which applies its log), then backed up into the snapshot read.
-        let snapshot = dir.join("snapshot.db");
-        {
-            let copy = Connection::open_with_flags(
-                &raw,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )?;
-            copy.backup(rusqlite::MAIN_DB, &snapshot, None)?;
-        }
-        for path in [raw.clone(), wal_path(&raw), dir.join("copy.db-shm")] {
-            let _ = fs::remove_file(path);
-        }
-        let conn = Connection::open_with_flags(
-            &snapshot,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        let optional = check_schema(&conn)?;
-        Ok(Snapshot {
-            conn,
-            dir: dir.to_path_buf(),
-            optional,
-        })
+    fn conn(&self) -> &rusqlite::Connection {
+        self.copy.conn()
     }
 
     fn has(&self, column: &str) -> bool {
@@ -166,8 +114,8 @@ impl Snapshot {
     }
 
     /// Every conversation.
-    pub(crate) fn chats(&self) -> Result<Vec<ChatRow>, IMessageError> {
-        let mut stmt = self.conn.prepare(
+    pub(crate) fn chats(&self) -> rusqlite::Result<Vec<ChatRow>> {
+        let mut stmt = self.conn().prepare(
             "SELECT ROWID, guid, style, chat_identifier, display_name FROM chat ORDER BY ROWID",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -181,7 +129,7 @@ impl Snapshot {
             })
         })?;
         let mut chats: Vec<ChatRow> = rows.collect::<Result<_, _>>()?;
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn().prepare(
             "SELECT j.chat_id, h.id FROM chat_handle_join j JOIN handle h ON h.ROWID = j.handle_id \
              ORDER BY j.chat_id, h.ROWID",
         )?;
@@ -200,23 +148,28 @@ impl Snapshot {
     }
 
     /// The highest message number, or 0 with no messages.
-    pub(crate) fn last_rowid(&self) -> Result<i64, IMessageError> {
+    pub(crate) fn last_rowid(&self) -> rusqlite::Result<i64> {
         Ok(self
-            .conn
+            .conn()
             .query_row("SELECT MAX(ROWID) FROM message", [], |r| {
                 r.get::<_, Option<i64>>(0)
             })?
             .unwrap_or(0))
     }
 
-    /// The messages of a conversation after message number `after` and at or after Apple time
-    /// `from`, in the order they were stored.
+    /// The messages of the conversations `chats` after message number `after` and, with
+    /// `from`, at or after that Apple time: at most `limit`, in the order they were stored, each
+    /// with the number of its conversation.
     pub(crate) fn messages(
         &self,
-        chat: i64,
+        chats: &[i64],
         after: i64,
         from: Option<i64>,
-    ) -> Result<Vec<MessageRow>, IMessageError> {
+        limit: usize,
+    ) -> rusqlite::Result<Vec<(i64, MessageRow)>> {
+        if chats.is_empty() {
+            return Ok(Vec::new());
+        }
         let col = |name: &str, default: &str| {
             if self.has(name) {
                 format!("m.{name}")
@@ -224,44 +177,50 @@ impl Snapshot {
                 default.to_string()
             }
         };
+        let ids: Vec<String> = chats.iter().map(i64::to_string).collect();
         let sql = format!(
-            "SELECT m.ROWID, m.guid, m.text, m.attributedBody, h.id, m.date, m.is_from_me, \
-             m.associated_message_type, m.item_type, {}, {}, {}, {} \
+            "SELECT j.chat_id, m.ROWID, m.guid, m.text, m.attributedBody, h.id, m.date, \
+             m.is_from_me, m.associated_message_type, m.item_type, {}, {}, {}, {} \
              FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id \
              LEFT JOIN handle h ON h.ROWID = m.handle_id \
-             WHERE j.chat_id = ?1 AND m.ROWID > ?2 AND (?3 IS NULL OR m.date >= ?3) \
-             ORDER BY m.ROWID",
+             WHERE j.chat_id IN ({}) AND m.ROWID > ?1 AND (?2 IS NULL OR m.date >= ?2) \
+             ORDER BY m.ROWID, j.chat_id LIMIT ?3",
             col("date_edited", "0"),
             col("date_retracted", "0"),
             col("group_title", "NULL"),
             col("thread_originator_guid", "NULL"),
+            ids.join(", "),
         );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![chat, after, from], |r| {
-            Ok(MessageRow {
-                rowid: r.get(0)?,
-                guid: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                text: r.get(2)?,
-                body: r.get(3)?,
-                handle: r.get(4)?,
-                date: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                from_me: r.get::<_, Option<i64>>(6)?.unwrap_or(0) != 0,
-                associated_type: r.get::<_, Option<i64>>(7)?.unwrap_or(0),
-                item_type: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
-                date_edited: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
-                date_retracted: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
-                group_title: r.get(11)?,
-                reply_to: r.get(12)?,
-                attachments: Vec::new(),
-            })
+        let mut stmt = self.conn().prepare(&sql)?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = stmt.query_map(params![after, from, limit], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                MessageRow {
+                    rowid: r.get(1)?,
+                    guid: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    text: r.get(3)?,
+                    body: r.get(4)?,
+                    handle: r.get(5)?,
+                    date: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                    from_me: r.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+                    associated_type: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                    item_type: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
+                    date_edited: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
+                    date_retracted: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
+                    group_title: r.get(12)?,
+                    reply_to: r.get(13)?,
+                    attachments: Vec::new(),
+                },
+            ))
         })?;
-        let mut messages: Vec<MessageRow> = rows.collect::<Result<_, _>>()?;
-        let mut stmt = self.conn.prepare(
+        let mut messages: Vec<(i64, MessageRow)> = rows.collect::<Result<_, _>>()?;
+        let mut stmt = self.conn().prepare(
             "SELECT a.filename, a.transfer_name, a.mime_type FROM message_attachment_join j \
              JOIN attachment a ON a.ROWID = j.attachment_id WHERE j.message_id = ?1 \
              ORDER BY a.ROWID",
         )?;
-        for message in &mut messages {
+        for (_, message) in &mut messages {
             let rows = stmt.query_map([message.rowid], |r| {
                 Ok(AttachmentRow {
                     filename: r.get(0)?,
@@ -275,9 +234,9 @@ impl Snapshot {
     }
 
     /// The message with this guid, if any: who sent it, when, and its text.
-    pub(crate) fn message_by_guid(&self, guid: &str) -> Result<Option<MessageRow>, IMessageError> {
+    pub(crate) fn message_by_guid(&self, guid: &str) -> rusqlite::Result<Option<MessageRow>> {
         let row = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT m.ROWID, m.text, m.attributedBody, h.id, m.date, m.is_from_me \
                  FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id WHERE m.guid = ?1",
@@ -306,37 +265,19 @@ impl Snapshot {
     }
 }
 
-/// The optional columns the database has, once every required one is found; otherwise the
-/// connector needs an update.
-fn check_schema(conn: &Connection) -> Result<Vec<&'static str>, IMessageError> {
-    let mut missing = Vec::new();
-    let mut message_columns = Vec::new();
-    for (table, columns) in REQUIRED {
-        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
-        let have: Vec<String> = stmt
-            .query_map([table], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        if have.is_empty() {
-            missing.push(format!("table {table}"));
-            continue;
-        }
-        for column in *columns {
-            if !have.iter().any(|h| h == column) {
-                missing.push(format!("{table}.{column}"));
-            }
-        }
-        if *table == "message" {
-            message_columns = have;
-        }
-    }
-    if !missing.is_empty() {
-        return Err(IMessageError::NeedsUpdate { missing });
-    }
-    Ok(OPTIONAL
-        .iter()
-        .copied()
-        .filter(|c| message_columns.iter().any(|h| h == c))
-        .collect())
+fn table_columns(copy: &DatabaseCopy, table: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = copy
+        .conn()
+        .prepare("SELECT name FROM pragma_table_info(?1)")?;
+    let rows = stmt.query_map([table], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// A query on the copy failed.
+pub(crate) fn failed(error: rusqlite::Error) -> SourceError {
+    SourceError::Failed(format!(
+        "the copy of the Messages database could not be read: {error}"
+    ))
 }
 
 /// A conversation.

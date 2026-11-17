@@ -60,7 +60,13 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    Vec::new()
+    #[allow(unused_mut)]
+    let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
+        connectors.push(Arc::new(imessage));
+    }
+    connectors
 }
 
 /// How Knode Service runs connectors.

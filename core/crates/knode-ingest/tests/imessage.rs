@@ -1,14 +1,16 @@
 //! The iMessage connector, against synthetic Messages databases built here with the tables and
 //! columns of the real one: invented conversations between invented people.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use chrono::{DateTime, FixedOffset, Utc};
-use knode_format::{Node, Provenance, Space};
-use knode_ingest::imessage::{
-    self, ContactNames, Cursor, History, IMessageError, MessagesSource, SyncOptions, SyncReport,
+use chrono::{DateTime, FixedOffset};
+use knode_format::{Node, Space, Timestamp};
+use knode_ingest::imessage::{self, ContactNames, IMessageConnector};
+use knode_ingest::sources::{
+    Connector, Container, Cursor, FetchRequest, History, NoSecrets, SourceError, Trigger, Written,
+    provenance,
 };
 use knode_ingest::{CHAT_KIND, chat_keys};
 use rusqlite::{Connection, params};
@@ -116,8 +118,9 @@ impl Messages {
         messages
     }
 
-    fn source(&self) -> MessagesSource {
-        MessagesSource::new(self.dir.path())
+    /// The connector, with times shown in UTC.
+    fn connector(&self) -> IMessageConnector {
+        IMessageConnector::new(self.dir.path()).with_offset(FixedOffset::east_opt(0).unwrap())
     }
 
     fn handle(&self, id: &str) -> i64 {
@@ -245,16 +248,70 @@ fn space(dir: &TempDir) -> Space {
     Space::create(dir.path().join("Test.knode"), "Test").unwrap()
 }
 
-fn by() -> Provenance {
-    Provenance::person("example")
+/// Milliseconds since 1970 of a UTC time `YYYY-MM-DDTHH:MM`.
+fn millis(time: &str) -> Timestamp {
+    Timestamp(
+        DateTime::parse_from_rfc3339(&format!("{time}:00Z"))
+            .unwrap()
+            .timestamp_millis(),
+    )
 }
 
-fn options() -> SyncOptions<'static> {
-    SyncOptions {
-        history: History::Everything,
-        offset: FixedOffset::east_opt(0),
-        ..Default::default()
+/// How a space has the connector: its history, since when, what is excluded, and how many
+/// messages a batch holds.
+struct Setting {
+    history: History,
+    since: Timestamp,
+    excluded: Vec<Container>,
+    max_items: usize,
+}
+
+impl Default for Setting {
+    fn default() -> Self {
+        Setting {
+            history: History::Everything,
+            since: millis("2026-01-01T00:00"),
+            excluded: Vec::new(),
+            max_items: 500,
+        }
     }
+}
+
+/// Runs the connector the way Knode Service does: check, then fetch and write batches until
+/// there is no more, keeping the cursor after each one.
+fn run(
+    connector: &IMessageConnector,
+    space: &mut Space,
+    cursor: Option<Cursor>,
+    setting: &Setting,
+) -> Result<(Cursor, Written), SourceError> {
+    connector.check()?;
+    let mut cursor = cursor;
+    let mut written = Written::default();
+    loop {
+        let request = FetchRequest {
+            space_id: "test",
+            cursor: cursor.as_ref(),
+            history: setting.history,
+            since: setting.since,
+            excluded: &setting.excluded,
+            max_items: setting.max_items,
+            secrets: &NoSecrets,
+        };
+        let fetched = connector.fetch(&request)?;
+        if let Some(batch) = fetched.batch {
+            written += batch.write(space, &provenance(imessage::APP))?;
+        }
+        cursor = Some(fetched.cursor);
+        if !fetched.more {
+            break;
+        }
+    }
+    Ok((cursor.unwrap(), written))
+}
+
+fn sync(m: &Messages, space: &mut Space, cursor: Option<Cursor>) -> (Cursor, Written) {
+    run(&m.connector(), space, cursor, &Setting::default()).unwrap()
 }
 
 fn chat_node(space: &Space, guid: &str) -> Node {
@@ -274,21 +331,33 @@ fn prop(space: &Space, node: &Node, key: &str) -> String {
     space.property(&node.id, key).unwrap().unwrap_or_default()
 }
 
-fn sync(
-    space: &mut Space,
-    messages: &Messages,
-    cursor: Option<Cursor>,
-    options: &SyncOptions<'_>,
-) -> SyncReport {
-    imessage::sync(space, &messages.source(), cursor, options, &by()).unwrap()
-}
-
 /// Two conversations: one with Ada, and a group named "Trip".
 fn two_conversations() -> Messages {
     let m = Messages::new();
     m.chat(ADA_CHAT, 45, "", &[ADA]);
     m.chat(TRIP_CHAT, 43, "Trip", &[GRACE, LINUS]);
     m
+}
+
+#[test]
+fn describes_itself_as_a_source() {
+    let m = two_conversations();
+    let connector = m.connector();
+    let info = connector.info();
+    assert_eq!(info.id, "imessage");
+    assert_eq!(info.name, "Messages");
+    assert_eq!(info.container.as_deref(), Some("conversation"));
+    assert_eq!(
+        info.permissions,
+        vec![knode_ingest::sources::Permission::FullDiskAccess]
+    );
+    match connector.trigger() {
+        Trigger::Watch { paths, .. } => {
+            assert_eq!(paths[0], m.dir.path().join("chat.db"));
+            assert_eq!(paths[1], m.dir.path().join("chat.db-wal"));
+        }
+        other => panic!("expected a watch, got {other:?}"),
+    }
 }
 
 #[test]
@@ -308,7 +377,7 @@ fn brings_each_conversation_into_a_chat_node() {
         ADA_CHAT,
         Some(ADA),
         "2026-03-04T09:17",
-        Some("Loved \u{201c}Yes! Eight at the usual place\u{201d}"),
+        Some("Loved \u{201c}Dinner on Friday?\u{201d}"),
         None,
         &[
             ("associated_message_type", 2000.into()),
@@ -319,7 +388,7 @@ fn brings_each_conversation_into_a_chat_node() {
         ADA_CHAT,
         Some(ADA),
         "2026-03-04T09:18",
-        Some("Removed a heart"),
+        Some("Removed a heart from \u{201c}Dinner on Friday?\u{201d}"),
         None,
         &[("associated_message_type", 3000.into())],
     );
@@ -376,6 +445,7 @@ fn brings_each_conversation_into_a_chat_node() {
             ("group_title", String::from("Trip to the coast").into()),
         ],
     );
+    // A member added: an event with nothing to show.
     m.insert(
         TRIP_CHAT,
         Some(GRACE),
@@ -387,14 +457,10 @@ fn brings_each_conversation_into_a_chat_node() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let report = sync(&mut space, &m, None, &options());
-    assert_eq!(report.chats.chats.len(), 2);
-    assert_eq!(report.chats.messages, 9);
-    assert_eq!(report.reactions, 2);
-    assert_eq!(report.skipped_events, 1);
-    assert_eq!(report.chats.attached, 1);
-    assert_eq!(report.chats.missing, 1);
-    assert_eq!(report.cursor, Cursor(12));
+    let (cursor, written) = sync(&m, &mut space, None);
+    assert_eq!(written.items, 9);
+    assert_eq!(written.created, 2);
+    assert_eq!(cursor, Cursor::new("12"));
 
     let ada = chat_node(&space, ADA_CHAT);
     assert_eq!(ada.kind, CHAT_KIND);
@@ -454,8 +520,8 @@ fn reads_what_is_still_only_in_the_write_ahead_log() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let report = sync(&mut space, &m, None, &options());
-    assert_eq!(report.chats.messages, 1);
+    let (_, written) = sync(&m, &mut space, None);
+    assert_eq!(written.items, 1);
     assert!(chat_node(&space, ADA_CHAT).body.contains("Only in the log"));
 }
 
@@ -467,15 +533,17 @@ fn never_changes_the_messages_database() {
         .iter()
         .map(|n| m.dir.path().join(n))
         .collect();
-    let before: Vec<_> = files
-        .iter()
-        .map(|f| {
-            (
-                fs::read(f).unwrap(),
-                fs::metadata(f).unwrap().modified().unwrap(),
-            )
-        })
-        .collect();
+    let read = || -> Vec<_> {
+        files
+            .iter()
+            .map(|f| {
+                (
+                    fs::read(f).unwrap(),
+                    fs::metadata(f).unwrap().modified().unwrap(),
+                )
+            })
+            .collect()
+    };
     let listing = |dir: &Path| {
         let mut names: Vec<_> = fs::read_dir(dir)
             .unwrap()
@@ -484,50 +552,51 @@ fn never_changes_the_messages_database() {
         names.sort();
         names
     };
+    let before = read();
     let names = listing(m.dir.path());
 
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    sync(&mut space, &m, None, &options());
-    imessage::conversations(&m.source(), None).unwrap();
+    sync(&m, &mut space, None);
+    let request = FetchRequest {
+        space_id: "test",
+        cursor: None,
+        history: History::Everything,
+        since: Timestamp(0),
+        excluded: &[],
+        max_items: 10,
+        secrets: &NoSecrets,
+    };
+    m.connector().containers(&request).unwrap();
 
-    let after: Vec<_> = files
-        .iter()
-        .map(|f| {
-            (
-                fs::read(f).unwrap(),
-                fs::metadata(f).unwrap().modified().unwrap(),
-            )
-        })
-        .collect();
     assert!(
-        before == after,
+        before == read(),
         "the database, its log and its index are untouched"
     );
     assert_eq!(listing(m.dir.path()), names, "no file added next to it");
 }
 
 #[test]
-fn syncing_again_adds_only_new_messages() {
+fn running_again_adds_only_new_messages() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "First");
     m.message(TRIP_CHAT, Some(GRACE), "2026-03-04T09:20", "Second");
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let first = sync(&mut space, &m, None, &options());
-    assert_eq!(first.chats.messages, 2);
+    let (first, written) = sync(&m, &mut space, None);
+    assert_eq!(written.items, 2);
 
     // Nothing new: nothing written.
-    let again = sync(&mut space, &m, Some(first.cursor), &options());
-    assert_eq!(again.chats.messages, 0);
-    assert!(again.chats.chats.is_empty());
-    assert_eq!(again.cursor, first.cursor);
+    let (again, written) = sync(&m, &mut space, Some(first.clone()));
+    assert_eq!(written, Written::default());
+    assert_eq!(again, first);
 
     m.message(ADA_CHAT, None, "2026-03-04T09:30", "Third");
     m.message(ADA_CHAT, Some(ADA), "2026-03-06T07:00", "Fourth");
-    let next = sync(&mut space, &m, Some(first.cursor), &options());
-    assert_eq!(next.chats.messages, 2);
-    assert_eq!(next.cursor, Cursor(4));
+    let (next, written) = sync(&m, &mut space, Some(first.clone()));
+    assert_eq!(written.items, 2);
+    assert_eq!(written.updated, 1);
+    assert_eq!(next, Cursor::new("4"));
     let ada = chat_node(&space, ADA_CHAT);
     assert_eq!(
         ada.body,
@@ -539,14 +608,43 @@ fn syncing_again_adds_only_new_messages() {
     );
     assert_eq!(prop(&space, &ada, chat_keys::MESSAGES), "3");
 
-    // A restart that lost its cursor, or kept an old one, writes nothing twice.
-    for cursor in [None, Some(Cursor(0)), Some(first.cursor)] {
-        let report = sync(&mut space, &m, cursor, &options());
-        assert_eq!(report.chats.messages, 0, "{cursor:?}");
+    // A run cut short before its cursor was kept, or a cursor lost, writes nothing twice.
+    for cursor in [None, Some(Cursor::new("0")), Some(first)] {
+        let (_, written) = sync(&m, &mut space, cursor.clone());
+        assert_eq!(written.items, 0, "{cursor:?}");
     }
     assert_eq!(chat_node(&space, ADA_CHAT).body, ada.body);
-    assert_eq!(imessage::cursor_in(&space).unwrap(), Some(Cursor(4)));
     assert_eq!(chat_count(&space), 2);
+}
+
+#[test]
+fn reads_in_batches_without_losing_or_repeating_a_message() {
+    let m = two_conversations();
+    for i in 0..7 {
+        let chat = if i % 2 == 0 { ADA_CHAT } else { TRIP_CHAT };
+        let from = if i % 2 == 0 { ADA } else { GRACE };
+        m.message(
+            chat,
+            Some(from),
+            &format!("2026-03-04T09:1{i}"),
+            &format!("Message {i}"),
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let setting = Setting {
+        max_items: 2,
+        ..Setting::default()
+    };
+    let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
+    assert_eq!(written.items, 7);
+    assert_eq!(cursor, Cursor::new("7"));
+    let ada = chat_node(&space, ADA_CHAT).body;
+    let trip = chat_node(&space, TRIP_CHAT).body;
+    for i in 0..7 {
+        let body = if i % 2 == 0 { &ada } else { &trip };
+        assert_eq!(body.matches(&format!("Message {i}\n")).count(), 1, "{i}");
+    }
 }
 
 #[test]
@@ -554,14 +652,13 @@ fn excluded_conversations_are_never_read() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "Keep this");
     m.message(TRIP_CHAT, Some(GRACE), "2026-03-04T09:20", "Not this");
-    let options = SyncOptions {
-        excluded: BTreeSet::from([TRIP_CHAT.to_string()]),
-        ..options()
+    let setting = Setting {
+        excluded: vec![Container::new(TRIP_CHAT, "Trip")],
+        ..Setting::default()
     };
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let report = sync(&mut space, &m, None, &options);
-    assert_eq!(report.excluded, 1);
+    let (cursor, _) = run(&m.connector(), &mut space, None, &setting).unwrap();
     assert_eq!(chat_count(&space), 1);
     assert!(
         space
@@ -579,7 +676,7 @@ fn excluded_conversations_are_never_read() {
         "New",
     );
     m.message(TRIP_CHAT, Some(LINUS), "2026-03-04T11:01", "Still not this");
-    sync(&mut space, &m, Some(report.cursor), &options);
+    run(&m.connector(), &mut space, Some(cursor), &setting).unwrap();
     assert_eq!(chat_count(&space), 2);
     assert!(
         space
@@ -590,54 +687,69 @@ fn excluded_conversations_are_never_read() {
 }
 
 #[test]
-fn from_today_brings_only_what_is_sent_from_today_on() {
+fn lists_the_conversations_to_exclude() {
+    let m = two_conversations();
+    let request = FetchRequest {
+        space_id: "test",
+        cursor: None,
+        history: History::FromToday,
+        since: Timestamp(0),
+        excluded: &[],
+        max_items: 10,
+        secrets: &NoSecrets,
+    };
+    let listed = m.connector().containers(&request).unwrap();
+    assert_eq!(
+        listed,
+        vec![
+            Container::new(ADA_CHAT, "+15550100"),
+            Container::new(TRIP_CHAT, "Trip"),
+        ]
+    );
+}
+
+#[test]
+fn from_today_brings_only_what_is_sent_from_the_day_it_was_connected() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-03T23:59", "Yesterday");
     m.message(TRIP_CHAT, Some(GRACE), "2026-03-02T10:00", "Before");
     m.message(ADA_CHAT, Some(ADA), "2026-03-04T00:00", "Today");
-    let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc);
-    let options = SyncOptions {
+    let setting = Setting {
         history: History::FromToday,
-        now: Some(now),
-        ..options()
+        since: millis("2026-03-04T00:00"),
+        ..Setting::default()
     };
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let report = sync(&mut space, &m, None, &options);
-    assert_eq!(report.chats.messages, 1);
-    assert_eq!(report.cursor, Cursor(3));
+    let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
+    assert_eq!(written.items, 1);
+    assert_eq!(cursor, Cursor::new("3"));
     assert_eq!(chat_count(&space), 1);
     assert_eq!(
         chat_node(&space, ADA_CHAT).body,
         "## 2026-03-04\n\n**+15550100** (00:00): Today\n"
     );
 
-    // Later messages come in whatever their date says.
-    m.message(TRIP_CHAT, Some(GRACE), "2026-03-04T13:00", "Later");
-    let later = sync(&mut space, &m, Some(report.cursor), &options);
-    assert_eq!(later.chats.messages, 1);
+    m.message(TRIP_CHAT, Some(GRACE), "2026-03-05T13:00", "Later");
+    let (_, written) = run(&m.connector(), &mut space, Some(cursor), &setting).unwrap();
+    assert_eq!(written.items, 1);
     assert_eq!(chat_count(&space), 2);
 }
 
 #[test]
-fn from_today_with_nothing_today_starts_after_the_last_message() {
+fn with_nothing_new_the_cursor_moves_past_what_was_left_out() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-01T09:00", "Old");
-    let now = DateTime::parse_from_rfc3339("2026-03-04T12:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc);
-    let options = SyncOptions {
+    let setting = Setting {
         history: History::FromToday,
-        now: Some(now),
-        ..options()
+        since: millis("2026-03-04T00:00"),
+        ..Setting::default()
     };
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let report = sync(&mut space, &m, None, &options);
-    assert_eq!(report.chats.messages, 0);
-    assert_eq!(report.cursor, Cursor(1));
+    let (cursor, written) = run(&m.connector(), &mut space, None, &setting).unwrap();
+    assert_eq!(written, Written::default());
+    assert_eq!(cursor, Cursor::new("1"));
     assert_eq!(chat_count(&space), 0);
 }
 
@@ -652,19 +764,31 @@ fn a_changed_database_writes_nothing_and_asks_for_an_update() {
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let error = imessage::sync(&mut space, &m.source(), None, &options(), &by()).unwrap_err();
-    match &error {
-        IMessageError::NeedsUpdate { missing } => {
-            assert_eq!(
-                missing,
-                &["message.attributedBody", "table chat_handle_join"]
-            );
-        }
-        other => panic!("expected NeedsUpdate, got {other:?}"),
-    }
-    assert!(error.to_string().contains("needs an update"), "{error}");
+    let connector = m.connector();
+    let error = connector.check().unwrap_err();
+    assert_eq!(error.kind(), "needs-update");
+    let text = error.to_string();
+    assert!(text.contains("needs an update"), "{text}");
+    assert!(text.contains("message.attributedBody"), "{text}");
+    assert!(text.contains("table chat_handle_join"), "{text}");
+
+    // Fetching without the check refuses too.
+    let request = FetchRequest {
+        space_id: "test",
+        cursor: None,
+        history: History::Everything,
+        since: Timestamp(0),
+        excluded: &[],
+        max_items: 10,
+        secrets: &NoSecrets,
+    };
+    assert_eq!(
+        connector.fetch(&request).unwrap_err().kind(),
+        "needs-update"
+    );
     assert_eq!(chat_count(&space), 0);
     assert!(space.recent(10).unwrap().is_empty());
+    let _ = &mut space;
 }
 
 #[test]
@@ -680,10 +804,13 @@ fn says_when_full_disk_access_is_missing() {
     }
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    let error = imessage::sync(&mut space, &m.source(), None, &options(), &by()).unwrap_err();
+    let error = run(&m.connector(), &mut space, None, &Setting::default()).unwrap_err();
     fs::set_permissions(&db, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(
-        matches!(error, IMessageError::NoFullDiskAccess(_)),
+        matches!(
+            error,
+            SourceError::Permission(knode_ingest::sources::Permission::FullDiskAccess, _)
+        ),
         "{error:?}"
     );
     assert!(error.to_string().contains("Full Disk Access"), "{error}");
@@ -693,17 +820,8 @@ fn says_when_full_disk_access_is_missing() {
 #[test]
 fn says_when_there_is_no_messages_database() {
     let empty = tempfile::tempdir().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let mut space = space(&dir);
-    let error = imessage::sync(
-        &mut space,
-        &MessagesSource::new(empty.path()),
-        None,
-        &options(),
-        &by(),
-    )
-    .unwrap_err();
-    assert!(matches!(error, IMessageError::NotFound(_)), "{error:?}");
+    let error = IMessageConnector::new(empty.path()).check().unwrap_err();
+    assert_eq!(error.kind(), "unavailable");
 }
 
 struct Book;
@@ -723,15 +841,10 @@ fn names_people_from_contacts_when_given() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "Hi");
     m.message(TRIP_CHAT, Some(LINUS), "2026-03-04T09:16", "Hey");
-    let book = Book;
-    let options = SyncOptions {
-        names: Some(&book),
-        me: "Example".into(),
-        ..options()
-    };
+    let connector = m.connector().with_names(Arc::new(Book)).with_me("Example");
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    sync(&mut space, &m, None, &options);
+    run(&connector, &mut space, None, &Setting::default()).unwrap();
     let ada = chat_node(&space, ADA_CHAT);
     assert_eq!(ada.title, "iMessage - Ada Lovelace");
     assert_eq!(ada.body, "## 2026-03-04\n\n**Ada Lovelace** (09:15): Hi\n");
@@ -740,12 +853,6 @@ fn names_people_from_contacts_when_given() {
         prop(&space, &trip, chat_keys::PARTICIPANTS),
         "Grace Hopper, +15550111, Example"
     );
-
-    let listed = imessage::conversations(&m.source(), Some(&book)).unwrap();
-    assert_eq!(listed.len(), 2);
-    assert_eq!(listed[0].guid, ADA_CHAT);
-    assert_eq!(listed[0].title, "iMessage - Ada Lovelace");
-    assert_eq!(listed[1].kind, "group");
 }
 
 #[test]
@@ -762,6 +869,6 @@ fn long_attributed_bodies_are_read() {
     );
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(&dir);
-    sync(&mut space, &m, None, &options());
+    sync(&m, &mut space, None);
     assert!(chat_node(&space, ADA_CHAT).body.contains(text.trim()));
 }
