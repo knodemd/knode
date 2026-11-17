@@ -280,8 +280,10 @@ extension SpaceFolder {
                     title: folder.projectTitle ?? "",
                     created: folder.projectCreated,
                     alreadyHeld: folder.projectAlreadyHeld,
+                    heldBefore: folder.projectHeldBefore,
                     passedOver: folder.projectPassedOver,
                     passedOverFolders: folder.projectPassedOverFolders,
+                    passedOverReleased: folder.projectPassedOverReleased,
                     sharedWith: folder.projectSharedWith
                 )
             }

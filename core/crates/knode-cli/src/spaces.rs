@@ -585,22 +585,40 @@ fn list_folders(client: Option<&Client>, space: &Path) -> Result<Vec<FolderInfo>
 /// What adding a project folder did to the projects of the space, in one sentence.
 fn project_message(project: &FolderProject) -> String {
     let title = &project.node.title;
-    match (&project.passed_over, project.created, project.already_held) {
-        (Some(other), true, _) => format!(
-            "Added the project {title}, named after its parent folder too: the project {} already holds the files of {}.",
-            other.title,
-            other.folders.join(", ")
-        ),
-        (Some(other), false, _) => format!(
-            "It holds the files of the project {title}, which the space already had: the project {} already holds the files of {}.",
-            other.title,
-            other.folders.join(", ")
-        ),
-        (None, true, _) => format!("Added the project {title}."),
-        (None, false, true) => format!("It already holds the files of the project {title}."),
-        (None, false, false) => {
-            format!("It holds the files of the project {title}, which the space already had.")
+    let other = project.passed_over.as_ref().map(|other| {
+        if other.released {
+            format!(
+                "the project {} is kept for {}, which held it before",
+                other.title,
+                other.folders.join(", ")
+            )
+        } else {
+            format!(
+                "the project {} already holds the files of {}",
+                other.title,
+                other.folders.join(", ")
+            )
         }
+    });
+    match (other, project.created) {
+        (Some(other), true) => {
+            format!("Added the project {title}, named after its parent folder too: {other}.")
+        }
+        (Some(other), false) => format!(
+            "It holds the files of the project {title}, which the space already had and no folder held before: {other}."
+        ),
+        (None, true) => format!("Added the project {title}."),
+        (None, false) if project.already_held => {
+            format!("It already holds the files of the project {title}.")
+        }
+        (None, false) if project.held_before => {
+            format!(
+                "It holds the files of the project {title} again, as it did before it was removed."
+            )
+        }
+        (None, false) => format!(
+            "It holds the files of the project {title}, which the space already had and no folder held before."
+        ),
     }
 }
 

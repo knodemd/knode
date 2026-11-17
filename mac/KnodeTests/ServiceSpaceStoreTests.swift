@@ -317,10 +317,10 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(try await store.spaceDetails(space.id).name == "Renamed")
         try await store.removeFolder(added.id, from: space.id)
         #expect(try await store.folders(of: space.id).isEmpty)
-        // The project stays, and adding the folder again finds it instead of making another.
+        // The project stays, and adding the folder again takes it back instead of making another.
         #expect(try await store.projects(in: space.id).map(\.id) == [made.id])
         let again = try await store.setFolder(.adding(.project, at: project), in: space.id)
-        #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false))
+        #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false, heldBefore: true))
         #expect(try await store.projects(in: space.id).count == 1)
         try await store.removeFolder(again.id, from: space.id)
 
@@ -342,7 +342,11 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let own = SpaceFolder.Project(id: "q", title: "site (b)", created: true, passedOver: "site", passedOverFolders: ["~/a/site"])
         #expect(SpaceFoldersModel.notice(for: own).hasPrefix("Added the project \u{201C}site (b)\u{201D}, named after its parent folder too: \u{201C}site\u{201D} already holds the files of ~/a/site."))
         let joined = SpaceFolder.Project(id: "q", title: "site (b)", passedOver: "site", passedOverFolders: ["~/a/site"])
-        #expect(SpaceFoldersModel.notice(for: joined) == "This folder holds the files of \u{201C}site (b)\u{201D}, the project this space already had: \u{201C}site\u{201D} already holds the files of ~/a/site.")
+        #expect(SpaceFoldersModel.notice(for: joined) == "This folder holds the files of \u{201C}site (b)\u{201D}, the project this space already had and no folder held before: \u{201C}site\u{201D} already holds the files of ~/a/site.")
+        let kept = SpaceFolder.Project(id: "r", title: "site (c)", created: true, passedOver: "site", passedOverFolders: ["~/a/site"], passedOverReleased: true)
+        #expect(SpaceFoldersModel.notice(for: kept).hasPrefix("Added the project \u{201C}site (c)\u{201D}, named after its parent folder too: \u{201C}site\u{201D} is kept for ~/a/site, which held it before."))
+        let back = SpaceFolder.Project(id: "p", title: "site", heldBefore: true)
+        #expect(SpaceFoldersModel.notice(for: back) == "This folder holds the files of \u{201C}site\u{201D} again, as it did before it was removed.")
         let shared = SpaceFolder.Project(id: "p", title: "site", sharedWith: ["~/site"])
         #expect(SpaceFoldersModel.notice(for: shared).hasSuffix("\u{201C}site\u{201D} also holds the files of ~/site."))
         let folder = SpaceFolder(id: "f", kind: "project", path: "~/Developer/site", capture: true, project: found)

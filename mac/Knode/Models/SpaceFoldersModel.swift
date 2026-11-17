@@ -97,16 +97,21 @@ final class SpaceFoldersModel {
         let title = "\u{201C}\(project.title)\u{201D}"
         var notice: String
         if let other = project.passedOver {
-            let holder = "\u{201C}\(other)\u{201D} already holds the files of \(project.passedOverFolders.joined(separator: ", "))."
+            let folders = project.passedOverFolders.joined(separator: ", ")
+            let holder = project.passedOverReleased
+                ? "\u{201C}\(other)\u{201D} is kept for \(folders), which held it before."
+                : "\u{201C}\(other)\u{201D} already holds the files of \(folders)."
             notice = project.created
                 ? "Added the project \(title), named after its parent folder too: \(holder) Removing the folder later keeps the project and its notes."
-                : "This folder holds the files of \(title), the project this space already had: \(holder)"
+                : "This folder holds the files of \(title), the project this space already had and no folder held before: \(holder)"
         } else if project.created {
             notice = "Added the project \(title). Removing the folder later keeps the project and its notes."
         } else if project.alreadyHeld {
             notice = "This folder already holds the files of \(title)."
+        } else if project.heldBefore {
+            notice = "This folder holds the files of \(title) again, as it did before it was removed."
         } else {
-            notice = "This folder holds the files of \(title), the project this space already had."
+            notice = "This folder holds the files of \(title), the project this space already had and no folder held before."
         }
         if !project.sharedWith.isEmpty {
             notice += " \(title) also holds the files of \(project.sharedWith.joined(separator: ", "))."

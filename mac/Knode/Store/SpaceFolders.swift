@@ -35,21 +35,28 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         public var created: Bool
         /// The folder had been added before and already held this project.
         public var alreadyHeld: Bool
+        /// The folder had been removed and, added again, took back the project it held before.
+        public var heldBefore: Bool
         /// When adding the folder gave it a project named after its parent folder too, such as
         /// "api (b)", the project of its own name that another folder holds.
         public var passedOver: String?
-        /// The folders, as recorded, that hold the files of `passedOver`.
+        /// The folders, as recorded, that hold the files of `passedOver`, or, when
+        /// `passedOverReleased`, the folder that held them last.
         public var passedOverFolders: [String]
+        /// No folder holds `passedOver` now: it is kept for the folder that held it.
+        public var passedOverReleased: Bool
         /// The other folders, as recorded, that hold the files of this project too.
         public var sharedWith: [String]
 
-        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], sharedWith: [String] = []) {
+        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, heldBefore: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], passedOverReleased: Bool = false, sharedWith: [String] = []) {
             self.id = id
             self.title = title
             self.created = created
             self.alreadyHeld = alreadyHeld
+            self.heldBefore = heldBefore
             self.passedOver = passedOver
             self.passedOverFolders = passedOverFolders
+            self.passedOverReleased = passedOverReleased
             self.sharedWith = sharedWith
         }
     }

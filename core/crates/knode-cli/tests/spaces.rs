@@ -125,6 +125,27 @@ fn folders_are_added_listed_and_removed() {
         .unwrap()
         .to_string();
     sb.ok(&["folders", "remove", &id]);
+    // No folder holds site (Archive) now, but another folder does not take it.
+    let third = sb.home().join("Old/Archive/site");
+    fs::create_dir_all(&third).unwrap();
+    let out = sb.ok(&["folders", "add", third.to_str().unwrap()]);
+    assert!(
+        out.contains(
+            "Added the project site (Old - Archive), named after its parent folder too: the project site already holds the files of ~/Developer/site."
+        ),
+        "{out}"
+    );
+    // The removed folder, added again, takes its project back.
+    let out = sb.ok(&["folders", "add", other.to_str().unwrap()]);
+    assert!(
+        out.contains(
+            "It holds the files of the project site (Archive) again, as it did before it was removed."
+        ),
+        "{out}"
+    );
+    for folder in [&third, &other] {
+        sb.ok(&["folders", "remove", folder.to_str().unwrap()]);
+    }
     // Capture off for a project of another space, named by its name.
     let secret = sb.home().join("Developer/secret");
     let out = sb.ok(&[

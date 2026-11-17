@@ -534,8 +534,10 @@ extension SpaceFolder {
                     title: title,
                     created: project["created"] as? Bool ?? false,
                     alreadyHeld: project["already_held"] as? Bool ?? false,
+                    heldBefore: project["held_before"] as? Bool ?? false,
                     passedOver: passedOver?["title"] as? String,
                     passedOverFolders: passedOver?["folders"] as? [String] ?? [],
+                    passedOverReleased: passedOver?["released"] as? Bool ?? false,
                     sharedWith: project["shared_with"] as? [String] ?? []
                 )
             }
