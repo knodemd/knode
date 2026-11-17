@@ -506,7 +506,10 @@ written, and the importers find what they wrote by the service's own ids, so a r
 state file or a second device running the same connector writes nothing twice.
 
 A connector runs when the files it watches change (a local database and its `-wal`), at its
-interval, and when `sources.run` asks. Connectors that read another app's database read a copy
+interval, and when `sources.run` asks. A file event runs it only when the size or modification
+time of the files or their `-wal` changed since its last run, so its own reads of them (which
+macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
+open late, so a connector that watches files also runs at least once a minute. Connectors that read another app's database read a copy
 of it, never the live file, and check its tables and columns first. Their writes are made with
 the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
 in the system credential store (the Keychain on macOS), never in a space, a settings file or a

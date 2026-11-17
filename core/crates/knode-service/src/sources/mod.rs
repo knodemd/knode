@@ -38,9 +38,9 @@ use std::time::Duration;
 
 use knode_format::{Provenance, Space, Timestamp};
 pub use knode_ingest::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, NoSecrets, Permission,
-    Secrets, SourceError, SourceInfo, SourceKind, Trigger, Written, is_source_id, provenance,
-    start_of_today,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, FileStamp, History, NoSecrets,
+    Permission, Secrets, SourceError, SourceInfo, SourceKind, Trigger, Written, is_source_id,
+    provenance, sqlite, start_of_today,
 };
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,10 @@ pub struct SourcesOptions {
     pub max_backoff: Duration,
     /// How long files a connector watches must be quiet before it runs.
     pub quiet: Duration,
+    /// The longest time between two runs of a connector that watches files, whatever its own
+    /// `every` says: macOS reports writes to a file another app keeps open late, so the
+    /// events alone do not bring things in quickly. A minute by default.
+    pub watch_every: Duration,
     /// The most items a connector is asked for in one batch.
     pub max_items: usize,
     /// The most batches in one run, so one connector never keeps the others waiting long.
@@ -91,6 +95,7 @@ impl Default for SourcesOptions {
             backoff: Duration::from_secs(30),
             max_backoff: Duration::from_secs(3600),
             quiet: Duration::from_secs(2),
+            watch_every: Duration::from_secs(60),
             max_items: 500,
             max_batches: 20,
         }
@@ -119,6 +124,7 @@ impl std::fmt::Debug for SourcesOptions {
             .field("backoff", &self.backoff)
             .field("max_backoff", &self.max_backoff)
             .field("quiet", &self.quiet)
+            .field("watch_every", &self.watch_every)
             .field("max_items", &self.max_items)
             .field("max_batches", &self.max_batches)
             .finish()
@@ -132,6 +138,7 @@ impl PartialEq for SourcesOptions {
             && self.backoff == other.backoff
             && self.max_backoff == other.max_backoff
             && self.quiet == other.quiet
+            && self.watch_every == other.watch_every
             && self.max_items == other.max_items
             && self.max_batches == other.max_batches
     }
