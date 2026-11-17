@@ -39,3 +39,29 @@ fn sources_list_the_importers_and_refuse_to_connect_them() {
     let err = sb.fails(&["sources", "connect", "x", "--history", "yesterday"]);
     assert!(err.contains("from-today"), "{err}");
 }
+
+#[test]
+fn mail_connectors_sign_in_and_out() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "personal"]);
+    let out = sb.ok(&["sources", "list"]);
+    assert!(out.contains("gmail") && out.contains("imap"), "{out}");
+
+    // A build without Knode's Google client says so instead of opening a page.
+    if option_env!("KNODE_GOOGLE_CLIENT_ID").is_none() {
+        let err = sb.fails(&["sources", "sign-in", "gmail"]);
+        assert!(err.contains("not set up"), "{err}");
+        let err = sb.fails(&["sources", "connect", "gmail"]);
+        assert!(err.contains("not set up"), "{err}");
+    }
+
+    // IMAP asks for the account; with nothing typed, signing in stops.
+    let out = sb.run(&["sources", "sign-in", "imap"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("IMAP server"), "{err}");
+    assert!(err.contains("signing in stopped"), "{err}");
+
+    let out = sb.ok(&["sources", "sign-out", "imap"]);
+    assert!(out.contains("was not signed in"), "{out}");
+}

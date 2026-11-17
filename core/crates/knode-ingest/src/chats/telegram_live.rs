@@ -1006,6 +1006,9 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
                     Err(e) => Err(source_error(e)),
                 }
             }
+            SignInStep::Browser => Err(SourceError::SignIn(
+                "Telegram signs in with the phone number and the code it sends".into(),
+            )),
         }
     }
 

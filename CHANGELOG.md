@@ -52,6 +52,15 @@ belongs to, newest first.
   same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
   message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
   build of Knode with its Telegram app id.
+- **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
+  as threads with their people, like a mail import. **Gmail** signs in with Google in your
+  browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
+  (IMAP)** reads any account with an app password (Gmail, iCloud, Fastmail, Yahoo, Outlook or
+  your own server), over TLS only. Every label or mailbox comes in, new ones too, except spam,
+  trash and the ones you exclude. A message already in the space from a Google Takeout export,
+  Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
+  `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
+  removes the secrets from the keychain.
 
 ### v0.3 - Map and import (in progress)
 

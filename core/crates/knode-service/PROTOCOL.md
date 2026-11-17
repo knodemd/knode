@@ -260,11 +260,10 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `mail`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
-file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read;
-with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`).
+file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
 
 | `from` | What `path` is |
 | --- | --- |
@@ -279,23 +278,9 @@ with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
-| `mbox` | An `.mbox` file (Gmail through Google Takeout, or a mailbox another app exported), or a folder of them: one `email` node per thread and one `person` node per address |
-| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, a folder of `.emlx` files, or a mailbox Apple Mail exported (`<name>.mbox`): as for `mbox` |
 | `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
 | `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
-
-`mail`, for `mbox` and `apple-mail` only, keeps the import to some messages and turns on
-attachments; every field is optional:
-
-```json
-{ "folders": ["Work", "INBOX"], "since": "2026-01-01", "until": "2026-03-31", "attachments": true }
-```
-
-`folders` are Gmail labels or Apple Mail mailboxes, compared without case, matching a whole
-folder path or its last part; `since` and `until` are days in UTC, both included; `attachments`
-attaches the files of the messages to their thread (off by default). Spam and trash are left out
-unless `folders` names them. `mail` with any other source fails with `invalid_params`.
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -317,7 +302,7 @@ unless `folders` names them. `mail` with any other source fails with `invalid_pa
   part way.
 - A path that is not something Knode imports, or not the kind `from` names, fails with
   `invalid`; files that cannot be read fail with `folder`; another app's notes that macOS keeps
-  from Knode Service fail with `no_access`, as does Apple Mail's store without Full Disk Access.
+  from Knode Service fail with `no_access`.
 
 ## Changes
 
@@ -491,8 +476,8 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
 | `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected |
-| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
-| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
+| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
+| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
 | `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
 
 ```json
@@ -552,6 +537,28 @@ files up to 20 MB are attached; larger ones are named in the text. When Telegram
 (a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
 until the wait is over. A build of Knode without a Telegram app id lists the connector, which
 reports `unavailable`.
+
+The `imap` connector reads any mail account over IMAP with TLS (port 993; never plain text or
+`STARTTLS`), signed in with the address and an app password, checked by signing in once. Every
+minute it asks each mailbox for its `UIDVALIDITY` and `UIDNEXT` and reads only what is new, from
+the last UID read, without marking anything read; a changed `UIDVALIDITY` reads the mailbox
+again. On Gmail (`X-GM-EXT-1`) it reads only `All Mail`, with each message's labels as its
+folders. Mailboxes are excluded by their name on the server; spam and trash are never read.
+
+The `gmail` connector reads Gmail through the Gmail API after Sign in with Google (OAuth with
+PKCE and a loopback redirect to `http://127.0.0.1:<port>`, scope `gmail.readonly`). The first
+run lists the messages (from the day it was connected with `from-today`), later runs follow
+`users.history.list`; when Google no longer has the history it lists again what arrived from a
+day before the last good run, at most 2000 messages. Labels are excluded by their id (`INBOX`,
+`Label_12`); spam and trash are never read. A build of Knode without a Google client id
+(`KNODE_GOOGLE_CLIENT_ID` when it is built, or at run time) lists the connector, which reports
+`unavailable`.
+
+Both write through the mail importer: one `email` node per thread, and a message already in the
+space from a Google Takeout `.mbox`, Apple Mail or the other connector is found by its
+`Message-ID` and not added again. Their secrets (the app password, the refresh token) are kept
+only in the system keychain, and are forgotten when the connector signs out or is disconnected
+from the last space that had it.
 
 ## Search
 

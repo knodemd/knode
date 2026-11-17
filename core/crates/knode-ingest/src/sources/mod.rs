@@ -563,11 +563,15 @@ pub enum SignInStep {
         /// The code.
         code: String,
     },
-    /// The password of the account, when it has one (two-step verification).
+    /// The password of the account, when it has one (two-step verification), or the app
+    /// password of a mail account.
     Password {
         /// The password.
         password: String,
     },
+    /// The person finished signing in on the page [`SignInState::OpenBrowser`] gave, such as
+    /// Sign in with Google.
+    Browser,
 }
 
 impl fmt::Debug for SignInStep {
@@ -577,6 +581,7 @@ impl fmt::Debug for SignInStep {
             SignInStep::Start { .. } => "SignInStep::Start",
             SignInStep::Code { .. } => "SignInStep::Code",
             SignInStep::Password { .. } => "SignInStep::Password",
+            SignInStep::Browser => "SignInStep::Browser",
         })
     }
 }
@@ -598,6 +603,12 @@ pub enum SignInState {
         /// The hint the person gave for it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hint: Option<String>,
+    },
+    /// The person signs in in the browser, on this page (Sign in with Google), and the
+    /// browser comes back to Knode on this machine: then send [`SignInStep::Browser`].
+    OpenBrowser {
+        /// The page to open.
+        url: String,
     },
     /// Signed in; the session is in the system keychain.
     SignedIn {

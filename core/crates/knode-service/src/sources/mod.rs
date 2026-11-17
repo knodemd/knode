@@ -27,6 +27,11 @@
 //! person changes the settings of a source.
 
 pub mod apple_mail;
+pub mod gmail;
+pub mod imap;
+mod mail_live;
+#[cfg(test)]
+mod mail_test_support;
 pub(crate) mod runtime;
 pub mod telegram;
 
@@ -84,6 +89,8 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
         )));
     }
     connectors.push(Arc::new(telegram::connector()));
+    connectors.push(Arc::new(gmail::GmailConnector::new()));
+    connectors.push(Arc::new(imap::ImapConnector::new()));
     connectors
 }
 

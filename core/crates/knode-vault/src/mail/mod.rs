@@ -60,6 +60,7 @@
 mod apple;
 mod mbox;
 mod message;
+mod raw;
 mod thread;
 mod write;
 
@@ -71,6 +72,7 @@ use knode_format::{NodeId, Provenance, Space};
 use serde::{Deserialize, Serialize};
 
 pub use crate::Skipped;
+pub use raw::{RawMail, import_raw_mail};
 
 /// The most recipients (`To`, `Cc` and, in sent mail, `Bcc`) a message can have for them to
 /// become people: a message to more is a newsletter or a list, and only its sender does.
@@ -116,14 +118,20 @@ pub enum MailSource {
     Mbox,
     /// The Apple Mail store on the Mac, or a folder of `.emlx` files.
     AppleMail,
+    /// A mail account read over IMAP, live ([`import_raw_mail`]).
+    Imap,
+    /// Gmail read through the Gmail API, live ([`import_raw_mail`]).
+    Gmail,
 }
 
 impl MailSource {
-    /// The id kept in [`keys::SOURCE`]: `mbox` or `apple-mail`.
+    /// The id kept in [`keys::SOURCE`]: `mbox`, `apple-mail`, `imap` or `gmail`.
     pub fn id(self) -> &'static str {
         match self {
             MailSource::Mbox => "mbox",
             MailSource::AppleMail => "apple-mail",
+            MailSource::Imap => "imap",
+            MailSource::Gmail => "gmail",
         }
     }
 }
@@ -133,6 +141,8 @@ impl fmt::Display for MailSource {
         f.write_str(match self {
             MailSource::Mbox => "mbox",
             MailSource::AppleMail => "Apple Mail",
+            MailSource::Imap => "IMAP",
+            MailSource::Gmail => "Gmail",
         })
     }
 }
@@ -472,6 +482,11 @@ pub fn import_mail(
     match source {
         MailSource::Mbox => mbox::read(path, &mut collected, &mut report)?,
         MailSource::AppleMail => apple::read(path, options, &mut collected, &mut report)?,
+        MailSource::Imap | MailSource::Gmail => {
+            return Err(MailError::Invalid(format!(
+                "{source} is read live by its connector, not from a file: import an .mbox instead"
+            )));
+        }
     }
     report.filtered = collected.filtered;
     report.junk = collected.junk;
