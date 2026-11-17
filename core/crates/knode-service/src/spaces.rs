@@ -34,8 +34,9 @@ pub struct FolderInfo {
     pub missing: bool,
     /// For a project folder, the `project` node named after it that it holds the files of: when
     /// it was just added, `created` when that made the project, `already_held` when the folder
-    /// had been added before, `passed_over` when another folder of the same name holds the
-    /// project of that name, and `shared_with` for the folders it shares the project with. `None`
+    /// had been added before, `held_before` when it was removed and took its project back,
+    /// `passed_over` when another folder holds, or held, the project of that name, and
+    /// `shared_with` for the folders it shares the project with. `None`
     /// for other folders, and for a project folder added before Knode made these, until it is
     /// added again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,11 +237,11 @@ fn check_icon(icon: &str) -> knode_format::Result<&str> {
 
 /// The folders that feed the space, oldest first, with where each one is on this machine.
 pub fn folders(space: &Space) -> knode_format::Result<Vec<FolderInfo>> {
-    space
-        .folders()?
+    Ok(space
+        .folders_with_projects()?
         .into_iter()
-        .map(|folder| FolderInfo::read(space, folder))
-        .collect()
+        .map(|(folder, project)| FolderInfo::of(folder, project.map(FolderProject::found)))
+        .collect())
 }
 
 /// Adds a folder to the space, or changes one, and records the change. Only a person can
@@ -248,8 +249,8 @@ pub fn folders(space: &Space) -> knode_format::Result<Vec<FolderInfo>> {
 ///
 /// Adding a project folder (no `id`) also creates the `project` node named after it, or finds
 /// the one the space has ([`Space::add_folder`]), so every client that adds folders gets the same
-/// project; it is returned in [`FolderInfo::project`]. Changing a folder by its id creates
-/// nothing.
+/// project; it is returned in [`FolderInfo::project`]. Changing a folder by its id into a project
+/// folder does the same; any other change by id creates nothing.
 pub fn set_folder(
     space: &mut Space,
     input: &FolderInput,
@@ -282,7 +283,18 @@ pub fn set_folder(
         capture: input.capture,
         rules: input.rules.clone(),
     };
-    if spec.id.is_some() {
+    // A folder changed to a project folder by its id records its project the way an added one
+    // does; any other change by id keeps what the folder holds.
+    let records_project = match &spec.id {
+        Some(id) => {
+            kind == folder_kinds::PROJECT
+                && space.folder(id)?.is_some_and(|f| {
+                    f.kind != folder_kinds::PROJECT || f.rules.get("project").is_none()
+                })
+        }
+        None => true,
+    };
+    if !records_project {
         let folder = space.set_folder(&spec, by)?;
         return FolderInfo::read(space, folder);
     }

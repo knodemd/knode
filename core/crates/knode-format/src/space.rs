@@ -806,7 +806,7 @@ fn check_properties(properties: &Properties) -> Result<()> {
 }
 
 /// Adds or replaces properties of a node.
-fn write_properties(
+pub(crate) fn write_properties(
     tx: &Transaction<'_>,
     id: &NodeId,
     properties: &Properties,

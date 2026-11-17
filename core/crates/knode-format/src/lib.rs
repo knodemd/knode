@@ -150,6 +150,10 @@ pub mod property_keys {
     /// The file a node was last imported from, relative to the folder, with `/` between
     /// folders, such as `Projects/Plan.md`. `[[Projects/Plan]]` links resolve by it.
     pub const MARKDOWN_PATH: &str = "markdown.path";
+    /// The project folder, as recorded, that last held the files of a `project` node. Knode
+    /// writes it when a project folder is added; a project without it was made without a folder,
+    /// such as by an import.
+    pub const PROJECT_FOLDER: &str = "project.folder";
 }
 
 /// The link kinds the format defines, built in. From schema version 4 a space defines kinds of

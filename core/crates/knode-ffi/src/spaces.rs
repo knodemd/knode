@@ -45,11 +45,18 @@ pub struct SpaceFolder {
     /// Whether the folder had been added before and already held that project. Always `false`
     /// in a list of folders.
     pub project_already_held: bool,
+    /// Whether the folder had been removed and, added again, took back the project it held
+    /// before. Always `false` in a list of folders.
+    pub project_held_before: bool,
     /// When adding the folder gave it a project named after its parent folders too, such as
     /// `api (b)`, the title of the project of its own name that another folder holds.
     pub project_passed_over: Option<String>,
-    /// The folders, as recorded, that hold the files of that passed-over project.
+    /// The folders, as recorded, that hold the files of that passed-over project, or, when
+    /// `project_passed_over_released`, the folder that held them last.
     pub project_passed_over_folders: Vec<String>,
+    /// Whether no folder holds the passed-over project now: it is kept for the folder that
+    /// held it.
+    pub project_passed_over_released: bool,
     /// The other folders, as recorded, that hold the files of this folder's project too. Empty
     /// in a list of folders.
     pub project_shared_with: Vec<String>,
@@ -71,6 +78,7 @@ impl From<knode_service::FolderInfo> for SpaceFolder {
             project_title: info.project.as_ref().map(|p| p.node.title.clone()),
             project_created: info.project.as_ref().is_some_and(|p| p.created),
             project_already_held: info.project.as_ref().is_some_and(|p| p.already_held),
+            project_held_before: info.project.as_ref().is_some_and(|p| p.held_before),
             project_passed_over: info
                 .project
                 .as_ref()
@@ -80,6 +88,11 @@ impl From<knode_service::FolderInfo> for SpaceFolder {
                 .as_ref()
                 .and_then(|p| p.passed_over.as_ref().map(|o| o.folders.clone()))
                 .unwrap_or_default(),
+            project_passed_over_released: info
+                .project
+                .as_ref()
+                .and_then(|p| p.passed_over.as_ref())
+                .is_some_and(|o| o.released),
             project_shared_with: info.project.map(|p| p.shared_with).unwrap_or_default(),
         }
     }
