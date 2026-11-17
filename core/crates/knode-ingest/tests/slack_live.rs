@@ -11,7 +11,8 @@ use std::time::Duration;
 use knode_format::{Node, Space, Timestamp, link_kinds};
 use knode_ingest::slack::{Clock, HttpResponse, Limits, SlackConfig, SlackConnector, SlackHttp};
 use knode_ingest::sources::{
-    Connector, Container, Cursor, FetchRequest, History, Secrets, SourceError, provenance,
+    Connector, Container, Cursor, FetchRequest, History, Secrets, SignInState, SignInStep,
+    SourceError, provenance,
 };
 use knode_ingest::{ChatFormat, PERSON_KIND, chat_keys, import_chat_export, person_keys};
 use serde_json::{Value, json};
@@ -456,6 +457,8 @@ fn connector(slack: &Arc<FakeSlack>, clock: &Arc<FakeClock>, limits: Limits) -> 
         slack.clone(),
         clock.clone(),
     )
+    .with_redirect_ports(&[0])
+    .with_browser_wait(Duration::from_secs(2))
 }
 
 impl Setup {
@@ -530,7 +533,10 @@ fn a_build_without_a_slack_app_says_so() {
         error.to_string().contains("KNODE_SLACK_CLIENT_ID"),
         "{error}"
     );
-    assert!(connector.begin_sign_in_on(&[0]).is_err());
+    assert!(matches!(
+        connector.sign_in_state(&MemorySecrets::default()),
+        Err(SourceError::Unavailable(_))
+    ));
     let secrets = MemorySecrets::default();
     let request = FetchRequest {
         space_id: "s",
@@ -587,15 +593,37 @@ fn query_param(url: &str, name: &str) -> String {
         .to_string()
 }
 
+/// Starts signing in: the page to open and the redirect it names.
+fn start(connector: &SlackConnector, secrets: &MemorySecrets) -> (String, String) {
+    let state = connector
+        .sign_in(
+            SignInStep::Start {
+                account: String::new(),
+            },
+            secrets,
+        )
+        .unwrap();
+    let SignInState::OpenBrowser { url } = state else {
+        panic!("{state:?}");
+    };
+    let redirect = query_param(&url, "redirect_uri")
+        .replace("%3A", ":")
+        .replace("%2F", "/");
+    (url, redirect)
+}
+
 #[test]
 fn signs_in_with_pkce_and_no_client_secret() {
     let clock = FakeClock::new(DAY);
     let slack = FakeSlack::new(clock.clone());
     let connector = connector(&slack, &clock, Limits::NotListed);
     let secrets = MemorySecrets::default();
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedOut
+    );
 
-    let pending = connector.begin_sign_in_on(&[0]).unwrap();
-    let url = pending.url().to_string();
+    let (url, redirect) = start(&connector, &secrets);
     assert!(
         url.starts_with("https://slack.com/oauth/v2/authorize?"),
         "{url}"
@@ -614,9 +642,22 @@ fn signs_in_with_pkce_and_no_client_secret() {
     assert!(!url.contains("secret"));
     let state = query_param(&url, "state");
     let challenge = query_param(&url, "code_challenge");
-    let redirect = pending.redirect_uri().to_string();
     assert!(redirect.starts_with("http://localhost:"), "{redirect}");
     assert!(redirect.ends_with("/slack/callback"));
+    // While it waits, the state says which page to open.
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::OpenBrowser { url: url.clone() }
+    );
+    // Going on before the browser came back keeps the sign-in waiting.
+    let early = connector
+        .sign_in(SignInStep::Browser, &secrets)
+        .unwrap_err();
+    assert!(matches!(early, SourceError::SignIn(_)), "{early}");
+    assert!(matches!(
+        connector.sign_in(SignInStep::Code { code: "1".into() }, &secrets),
+        Err(SourceError::SignIn(_))
+    ));
 
     let browser_thread = std::thread::spawn({
         let redirect = redirect.clone();
@@ -628,15 +669,20 @@ fn signs_in_with_pkce_and_no_client_secret() {
             (other, forged, real)
         }
     });
-    let account = connector
-        .finish_sign_in(pending, &secrets, Duration::from_secs(20))
-        .unwrap();
+    let signed_in = connector.sign_in(SignInStep::Browser, &secrets).unwrap();
     let (other, forged, real) = browser_thread.join().unwrap();
     assert!(other.contains("404"), "{other}");
     assert!(forged.contains("400"), "{forged}");
     assert!(real.contains("200"), "{real}");
+    assert_eq!(
+        signed_in,
+        SignInState::SignedIn {
+            account: "Example Team".into()
+        }
+    );
+    assert_eq!(connector.sign_in_state(&secrets).unwrap(), signed_in);
+    let account = connector.account(&secrets).unwrap().unwrap();
     assert_eq!(account.team_id, "T01");
-    assert_eq!(account.team_name.as_deref(), Some("Example Team"));
     assert_eq!(account.user_id, "U01");
 
     // One exchange, of the real code, with the verifier of the challenge and no secret.
@@ -658,13 +704,16 @@ fn signs_in_with_pkce_and_no_client_secret() {
     let kept = secrets.get("token").unwrap().unwrap();
     assert!(kept.contains("xoxp-synthetic"));
     assert!(!format!("{account:?}").contains("xoxp"));
-    assert_eq!(connector.account(&secrets).unwrap(), Some(account));
 
     // Signing out revokes the token and forgets it.
-    assert!(connector.sign_out(&secrets, true).unwrap());
+    assert!(connector.sign_out(&secrets).unwrap());
     assert_eq!(slack.calls("auth.revoke").len(), 1);
     assert_eq!(secrets.get("token").unwrap(), None);
-    assert!(!connector.sign_out(&secrets, true).unwrap());
+    assert!(!connector.sign_out(&secrets).unwrap());
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedOut
+    );
 }
 
 #[test]
@@ -674,37 +723,39 @@ fn a_refused_sign_in_keeps_nothing() {
     let connector = connector(&slack, &clock, Limits::NotListed);
     let secrets = MemorySecrets::default();
 
-    let pending = connector.begin_sign_in_on(&[0]).unwrap();
-    let state = query_param(pending.url(), "state");
-    let redirect = pending.redirect_uri().to_string();
+    let (url, redirect) = start(&connector, &secrets);
+    let state = query_param(&url, "state");
     let t = std::thread::spawn(move || {
         browser(&redirect, &format!("error=access_denied&state={state}"))
     });
     let error = connector
-        .finish_sign_in(pending, &secrets, Duration::from_secs(20))
+        .sign_in(SignInStep::Browser, &secrets)
         .unwrap_err();
     t.join().unwrap();
     assert!(matches!(error, SourceError::SignIn(_)), "{error}");
     assert!(error.to_string().contains("access_denied"), "{error}");
+    // The refused sign-in is over.
+    assert!(connector.sign_in(SignInStep::Browser, &secrets).is_err());
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedOut
+    );
 
     // A code Slack refuses.
-    let pending = connector.begin_sign_in_on(&[0]).unwrap();
-    let state = query_param(pending.url(), "state");
-    let redirect = pending.redirect_uri().to_string();
+    let (url, redirect) = start(&connector, &secrets);
+    let state = query_param(&url, "state");
     let t = std::thread::spawn(move || browser(&redirect, &format!("code=bad&state={state}")));
     let error = connector
-        .finish_sign_in(pending, &secrets, Duration::from_secs(20))
+        .sign_in(SignInStep::Browser, &secrets)
         .unwrap_err();
     t.join().unwrap();
     assert!(matches!(error, SourceError::SignIn(_)), "{error}");
-
-    // Nobody comes back.
-    let pending = connector.begin_sign_in_on(&[0]).unwrap();
-    let error = connector
-        .finish_sign_in(pending, &secrets, Duration::from_millis(200))
-        .unwrap_err();
-    assert!(matches!(error, SourceError::SignIn(_)), "{error}");
     assert_eq!(secrets.get("token").unwrap(), None);
+
+    // Starting again replaces a sign-in still waiting.
+    let (first, _) = start(&connector, &secrets);
+    let (second, _) = start(&connector, &secrets);
+    assert_ne!(query_param(&first, "state"), query_param(&second, "state"));
 }
 
 #[test]

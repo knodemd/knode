@@ -76,45 +76,32 @@ pub enum Action {
         source: String,
     },
     /// Disconnect a connector from the space. What it brought in stays; connecting it again
-    /// chooses the history again.
+    /// chooses the history again. A connector signed in to an account is signed out once no
+    /// space has it connected.
     Disconnect {
         /// The connector.
         source: String,
     },
-    /// Sign in to the account a connector reads, on this machine: for `slack`, in the
-    /// browser. The sign-in is kept in the system keychain.
+    /// Sign a connector in to the account it reads, such as Telegram: it asks for the phone
+    /// number, the code and the password, if the account has one. Gmail opens Google's
+    /// sign-in page in the browser, and Slack its own; Mail (IMAP) asks for the account and an
+    /// app password.
+    /// `connect` does it too.
     SignIn {
-        /// The connector: `slack`.
+        /// The connector.
         source: String,
-        /// Print the page to open instead of opening the browser.
-        #[arg(long)]
-        no_browser: bool,
     },
-    /// Sign out of the account a connector reads, on this machine, and forget the sign-in.
+    /// Sign a connector out of its account and forget its session.
     SignOut {
-        /// The connector: `slack`.
+        /// The connector.
         source: String,
     },
 }
 
 /// Runs `knode sources` on the space at `space`.
 pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Result<()> {
-    let action = match action {
-        Action::SignIn { source, no_browser } => return sign_in(paths, &source, no_browser),
-        Action::SignOut { source } => {
-            only_slack(&source)?;
-            if sources::slack::sign_out(&paths.home)? {
-                println!("Signed out of Slack and forgot the sign-in on this machine.");
-            } else {
-                println!("Slack was not signed in on this machine.");
-            }
-            return Ok(());
-        }
-        other => other,
-    };
     let client = service::client();
     match action {
-        Action::SignIn { .. } | Action::SignOut { .. } => unreachable!("handled above"),
         Action::List { json } => {
             let list = match &client {
                 Some(client) => client.sources_list(space)?,
@@ -127,6 +114,13 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
             }
         }
         Action::Connect { source, history } => {
+            // Signing in needs Knode Service: it keeps the session in the keychain.
+            if needs_sign_in(&source) {
+                match &client {
+                    Some(client) => crate::sign_in::if_needed(client, &source)?,
+                    None => crate::sign_in::if_needed(&crate::service::connect()?, &source)?,
+                }
+            }
             let history = history.as_deref().and_then(History::from_id);
             let status = match &client {
                 Some(client) => client.sources_connect(space, &source, history, by)?,
@@ -222,7 +216,6 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                     let was = sources::disconnect(&mut space, &source, by)?;
                     if was {
                         sources::forget_state(&paths.home, &space.manifest().id, &source)?;
-                        sources::slack::forget_if_unused(&paths.home, &source)?;
                     }
                     was
                 }
@@ -233,41 +226,34 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                 println!("{source} was not connected to this space.");
             }
         }
-    }
-    Ok(())
-}
-
-/// Sign-in is built for Slack only so far.
-fn only_slack(source: &str) -> Result<()> {
-    if source != knode_ingest::slack::SOURCE_ID {
-        return Err(anyhow!("{source} has no account to sign in to here"));
-    }
-    Ok(())
-}
-
-fn sign_in(paths: &Paths, source: &str, no_browser: bool) -> Result<()> {
-    only_slack(source)?;
-    let account = sources::slack::sign_in(&paths.home, &mut |url| {
-        println!("Allow Knode to read Slack on this page:\n\n  {url}\n");
-        if !no_browser {
-            let opener = if cfg!(target_os = "macos") {
-                "open"
-            } else {
-                "xdg-open"
+        Action::SignIn { source } => {
+            let client = match client {
+                Some(client) => client,
+                None => crate::service::connect()?,
             };
-            let _ = std::process::Command::new(opener)
-                .arg(url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            crate::sign_in::run(&client, &source)?;
         }
-        println!("Waiting for Slack...");
-    })?;
-    println!(
-        "Signed in to {}. Connect it to a space with `knode sources connect slack`.",
-        account.team_name.as_deref().unwrap_or("Slack")
-    );
+        Action::SignOut { source } => {
+            let client = match client {
+                Some(client) => client,
+                None => crate::service::connect()?,
+            };
+            if client.sources_sign_out(&source)? {
+                println!("Signed {source} out and forgot its session.");
+            } else {
+                println!("{source} was not signed in.");
+            }
+        }
+    }
     Ok(())
+}
+
+/// Whether the built-in connector `id` signs in to an account.
+fn needs_sign_in(id: &str) -> bool {
+    sources::builtin_connectors().iter().any(|c| {
+        let info = c.info();
+        info.id == id && info.permissions.contains(&sources::Permission::SignIn)
+    })
 }
 
 fn set_on(

@@ -5,7 +5,7 @@
 //!    and gives the URL of Slack's authorization page, asking for read scopes of a user token
 //!    only ([`USER_SCOPES`]). The person opens it in their browser and allows Knode.
 //! 2. Slack sends the browser back to `http://localhost:<port>/slack/callback` with a code and
-//!    the `state` given in step 1. [`PendingSignIn::finish`] takes it, checks the `state`, and
+//!    the `state` given in step 1. The connector takes it, checks the `state`, and
 //!    exchanges the code and the verifier for the token with `oauth.v2.access`, with no client
 //!    secret. The token goes into the keychain and nowhere else; the code, the verifier and
 //!    the token are never logged.
@@ -203,20 +203,19 @@ impl PendingSignIn {
     }
 
     /// Waits up to `timeout` for the browser to come back, exchanges the code for the token
-    /// and keeps it in `secrets`.
+    /// and keeps it in `secrets`. `None` when the browser did not come back in that time: the
+    /// sign-in is still waiting.
     pub(crate) fn finish(
-        self,
+        &self,
         http: &dyn SlackHttp,
         secrets: &dyn Secrets,
         unix_now: Duration,
         timeout: Duration,
-    ) -> Result<Account, SourceError> {
+    ) -> Result<Option<Account>, SourceError> {
         let deadline = Instant::now() + timeout;
         loop {
             if Instant::now() >= deadline {
-                return Err(SourceError::SignIn(
-                    "Slack did not come back in time: sign in again".into(),
-                ));
+                return Ok(None);
             }
             let mut stream = None;
             for listener in &self.listeners {
@@ -292,7 +291,7 @@ impl PendingSignIn {
                     "Knode could not finish signing in. Go back to Knode to try again.",
                 ),
             }
-            return result;
+            return result.map(Some);
         }
     }
 

@@ -7,10 +7,14 @@
 //!
 //! # Signing in
 //!
-//! OAuth 2.0 with PKCE and a loopback redirect, with no client secret: see [`oauth`]. The Slack
-//! app's client id comes from the build (`KNODE_SLACK_CLIENT_ID` when Knode is built) or the
-//! environment of Knode Service; a build without one says it has no Slack app. The token is
-//! kept with the connector's secrets, in the system keychain.
+//! OAuth 2.0 with PKCE and a loopback redirect, with no client secret, through the steps every
+//! connector signs in with ([`Connector::sign_in`]): [`SignInStep::Start`] gives the page of
+//! Slack to open ([`SignInState::OpenBrowser`]), and [`SignInStep::Browser`] waits for the
+//! browser to come back and keeps the token. See [`oauth`]. The Slack app's client id comes
+//! from the build (`KNODE_SLACK_CLIENT_ID` when Knode is built) or the environment of Knode
+//! Service; a build without one says it has no Slack app. The token is kept with the
+//! connector's secrets, in the system keychain; [`Connector::sign_out`] revokes it with Slack
+//! and forgets it.
 //!
 //! # Reading
 //!
@@ -58,8 +62,8 @@ use super::slack::{
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportError, ChatImportReport};
 use crate::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, Permission, Secrets, SourceError,
-    SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, Permission, Secrets, SignInState,
+    SignInStep, SourceError, SourceInfo, Trigger, Written,
 };
 use api::{ApiConversation, ApiError, ConversationsList, Messages, UserInfo, UsersList, decode};
 use oauth::Token;
@@ -87,6 +91,8 @@ const CONVERSATIONS_TTL: Duration = Duration::from_secs(600);
 const THREAD_WATCH: Duration = Duration::from_secs(7 * 24 * 3600);
 /// The most threads the cursor follows; the least active ones are dropped first.
 const MAX_THREADS: usize = 1000;
+/// How long [`SignInStep::Browser`] waits for the browser to come back from Slack.
+const BROWSER_WAIT: Duration = Duration::from_secs(30);
 /// The most members asked for one by one in a run, for members `users.list` did not have.
 const MAX_USER_LOOKUPS: usize = 20;
 
@@ -219,6 +225,11 @@ pub struct SlackConnector {
     http: Arc<dyn SlackHttp>,
     clock: Arc<dyn Clock>,
     memory: Mutex<Memory>,
+    /// The sign-in waiting for the browser, between [`SignInStep::Start`] and
+    /// [`SignInStep::Browser`].
+    pending: Mutex<Option<PendingSignIn>>,
+    ports: Vec<u16>,
+    browser_wait: Duration,
 }
 
 impl SlackConnector {
@@ -238,6 +249,9 @@ impl SlackConnector {
             http,
             clock,
             memory: Mutex::new(Memory::default()),
+            pending: Mutex::new(None),
+            ports: oauth::REDIRECT_PORTS.to_vec(),
+            browser_wait: BROWSER_WAIT,
         }
     }
 
@@ -259,29 +273,21 @@ impl SlackConnector {
         self.memory.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Starts signing in: listens on a loopback port and gives the page of Slack to open in
-    /// the browser. [`finish_sign_in`](Self::finish_sign_in) waits for it.
-    pub fn begin_sign_in(&self) -> Result<PendingSignIn, SourceError> {
-        self.begin_sign_in_on(&oauth::REDIRECT_PORTS)
+    /// The same connector, listening for the browser on these ports instead of
+    /// [`oauth::REDIRECT_PORTS`] (`0` for any free one), for tests.
+    pub fn with_redirect_ports(mut self, ports: &[u16]) -> Self {
+        self.ports = ports.to_vec();
+        self
     }
 
-    /// The same, on the first free one of these ports (`0` for any).
-    pub fn begin_sign_in_on(&self, ports: &[u16]) -> Result<PendingSignIn, SourceError> {
-        oauth::begin(self.client_id()?, ports)
+    /// The same connector, waiting this long in [`SignInStep::Browser`], for tests.
+    pub fn with_browser_wait(mut self, wait: Duration) -> Self {
+        self.browser_wait = wait;
+        self
     }
 
-    /// Waits up to `timeout` for the browser to come back from Slack, exchanges the code for
-    /// the token and keeps it in `secrets`.
-    pub fn finish_sign_in(
-        &self,
-        pending: PendingSignIn,
-        secrets: &dyn Secrets,
-        timeout: Duration,
-    ) -> Result<Account, SourceError> {
-        self.client_id()?;
-        let account = pending.finish(self.http.as_ref(), secrets, self.clock.unix(), timeout)?;
-        *self.memory() = Memory::default();
-        Ok(account)
+    fn pending(&self) -> MutexGuard<'_, Option<PendingSignIn>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Who is signed in, if anyone.
@@ -291,20 +297,6 @@ impl SlackConnector {
             team_name: t.team_name,
             user_id: t.user_id,
         }))
-    }
-
-    /// Signs out: asks Slack to revoke the token, when `revoke`, and forgets it. Returns
-    /// whether there was one.
-    pub fn sign_out(&self, secrets: &dyn Secrets, revoke: bool) -> Result<bool, SourceError> {
-        let token = Token::load(secrets).ok().flatten();
-        if revoke && let Some(token) = &token {
-            // Forgotten here whatever Slack answers.
-            let _ = self
-                .http
-                .post("auth.revoke", Some(&token.access_token), &[]);
-        }
-        *self.memory() = Memory::default();
-        Ok(secrets.delete(oauth::TOKEN_SECRET)?)
     }
 
     /// The token, refreshed when it is about to expire.
@@ -342,6 +334,84 @@ impl Connector for SlackConnector {
 
     fn check(&self) -> Result<(), SourceError> {
         self.client_id().map(|_| ())
+    }
+
+    fn sign_in_state(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        self.client_id()?;
+        if let Some(account) = self.account(secrets)? {
+            return Ok(SignInState::SignedIn {
+                account: account.team_name.unwrap_or(account.team_id),
+            });
+        }
+        if let Some(pending) = self.pending().as_ref() {
+            return Ok(SignInState::OpenBrowser {
+                url: pending.url().to_string(),
+            });
+        }
+        Ok(SignInState::SignedOut)
+    }
+
+    /// [`SignInStep::Start`] listens on a loopback port and gives the page of Slack to open,
+    /// [`SignInState::OpenBrowser`] (the account given is not used: the person picks the
+    /// workspace there). [`SignInStep::Browser`], once the person allowed Knode there, waits
+    /// up to 30 seconds for the browser to come back and keeps the token.
+    fn sign_in(&self, step: SignInStep, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        let client_id = self.client_id()?;
+        match step {
+            SignInStep::Start { .. } => {
+                let mut pending = self.pending();
+                // A new start replaces a sign-in still waiting, and frees its port first.
+                *pending = None;
+                let started = oauth::begin(client_id, &self.ports)?;
+                let url = started.url().to_string();
+                *pending = Some(started);
+                Ok(SignInState::OpenBrowser { url })
+            }
+            SignInStep::Browser => {
+                let mut pending = self.pending();
+                let Some(waiting) = pending.as_ref() else {
+                    return Err(SourceError::SignIn(
+                        "start signing in to Slack first".into(),
+                    ));
+                };
+                let result = waiting.finish(
+                    self.http.as_ref(),
+                    secrets,
+                    self.clock.unix(),
+                    self.browser_wait,
+                );
+                match result {
+                    Ok(None) => Err(SourceError::SignIn(
+                        "allow Knode on Slack's page in the browser first, then go on".into(),
+                    )),
+                    Ok(Some(account)) => {
+                        *pending = None;
+                        drop(pending);
+                        *self.memory() = Memory::default();
+                        Ok(SignInState::SignedIn {
+                            account: account.team_name.unwrap_or(account.team_id),
+                        })
+                    }
+                    Err(error) => {
+                        *pending = None;
+                        Err(error)
+                    }
+                }
+            }
+            _ => Err(SourceError::SignIn("Slack signs in in the browser".into())),
+        }
+    }
+
+    /// Asks Slack to revoke the token and forgets it, whatever Slack answers.
+    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
+        *self.pending() = None;
+        if let Some(token) = Token::load(secrets).ok().flatten() {
+            let _ = self
+                .http
+                .post("auth.revoke", Some(&token.access_token), &[]);
+        }
+        *self.memory() = Memory::default();
+        Ok(secrets.delete(oauth::TOKEN_SECRET)?)
     }
 
     fn containers(&self, request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {

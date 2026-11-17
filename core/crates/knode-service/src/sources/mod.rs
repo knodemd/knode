@@ -26,8 +26,13 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod gmail;
+pub mod imap;
+mod mail_live;
+#[cfg(test)]
+mod mail_test_support;
 pub(crate) mod runtime;
-pub mod slack;
+pub mod telegram;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,8 +45,8 @@ use std::time::Duration;
 use knode_format::{Provenance, Space, Timestamp};
 pub use knode_ingest::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, NoSecrets, Permission,
-    Secrets, SourceError, SourceInfo, SourceKind, Trigger, Written, is_source_id, provenance,
-    start_of_today,
+    Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind, Trigger, Written,
+    is_source_id, provenance, start_of_today,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +66,12 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    vec![Arc::new(knode_ingest::slack::SlackConnector::from_env())]
+    vec![
+        Arc::new(telegram::connector()),
+        Arc::new(gmail::GmailConnector::new()),
+        Arc::new(imap::ImapConnector::new()),
+        Arc::new(knode_ingest::slack::SlackConnector::from_env()),
+    ]
 }
 
 /// How Knode Service runs connectors.
@@ -189,8 +199,18 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ),
         ImportSource::Notion => ("Notion", "A Notion Markdown & CSV export", &[]),
         ImportSource::Evernote => ("Evernote", "Evernote .enex files", &[]),
+        ImportSource::Mbox => (
+            "Mail (mbox)",
+            "An .mbox file: Gmail through Google Takeout, or a mailbox another app exported",
+            &[],
+        ),
+        ImportSource::AppleMail => (
+            "Apple Mail",
+            "The mail of Apple Mail on this Mac, or a folder of .emlx files",
+            &[FullDiskAccess],
+        ),
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
-        ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
+        ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export, in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
     };
     SourceInfo {
@@ -363,6 +383,9 @@ pub(crate) struct SourceParams {
     /// Who makes the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<Provenance>,
+    /// The step of signing in, for `sources.sign_in`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<SignInStep>,
 }
 
 /// The connectors a service knows, with what they did on this machine.
@@ -621,6 +644,16 @@ impl StateFile {
     fn remove(&mut self, key: &str) {
         self.sources.remove(key);
     }
+
+    /// The keys of the source `source_id` in every space it ran in.
+    pub(crate) fn keys_of(&self, source_id: &str) -> Vec<String> {
+        let suffix = format!("/{source_id}");
+        self.sources
+            .keys()
+            .filter(|k| k.ends_with(&suffix))
+            .cloned()
+            .collect()
+    }
 }
 
 /// The secrets of one connector, in the credential store agent keys use: the Keychain on
@@ -715,7 +748,7 @@ fn invalid(message: impl Into<String>) -> knode_format::Error {
     knode_format::Error::Invalid(message.into())
 }
 
-fn unknown(id: &str) -> knode_format::Error {
+pub(crate) fn unknown(id: &str) -> knode_format::Error {
     invalid(format!(
         "no source is named {id:?}: `knode sources list` shows them"
     ))

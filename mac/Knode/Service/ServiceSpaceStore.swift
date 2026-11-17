@@ -525,7 +525,11 @@ extension SpaceFolder {
             capture: object["capture"] as? Bool ?? true,
             rules: rules.map { String(decoding: $0, as: UTF8.self) } ?? "{}",
             localURL: (object["local"] as? String).map { URL(filePath: $0, directoryHint: .isDirectory) },
-            isMissing: object["missing"] as? Bool ?? false
+            isMissing: object["missing"] as? Bool ?? false,
+            project: (object["project"] as? [String: Any]).flatMap { project in
+                guard let node = project["node"] as? [String: Any], let id = node["id"] as? String, let title = node["title"] as? String else { return nil }
+                return Project(id: id, title: title, created: project["created"] as? Bool ?? false)
+            }
         )
     }
 }
