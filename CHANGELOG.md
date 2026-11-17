@@ -146,7 +146,8 @@ belongs to, newest first.
   become notes of the space, each part of the project that folder belongs to: a project folder of
   the space, a project made by guided import from that folder, or a project named as the folder.
   No project is made up: notes whose folder matches none are imported on their own and listed.
-  Importing again updates the same notes.
+  Importing again updates the same notes, skips memory that did not change, and keeps a note
+  edited in Knode as it is.
 
 #### Changed
 

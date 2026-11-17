@@ -469,6 +469,72 @@ fn an_onboarding_receipt_is_read_as_onboarding_reads_it() {
     assert_eq!(parts(&space, &p), vec![solo]);
 }
 
+#[test]
+fn importing_again_keeps_what_was_edited_in_knode() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    let folder = "-Users-ada-Work";
+    memory(
+        &projects,
+        folder,
+        "a.md",
+        &memory_file("A", "user", "From the file."),
+    );
+    memory(
+        &projects,
+        folder,
+        "b.md",
+        &memory_file("B", "user", "From the file."),
+    );
+    let mut space = space_in(dir.path());
+    import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    let a = node_at(&space, "claude-code-memory/-Users-ada-Work/a.md");
+    let b = node_at(&space, "claude-code-memory/-Users-ada-Work/b.md");
+    let edit = |space: &mut Space, id: &NodeId| {
+        space
+            .update_node(
+                id,
+                knode_format::NodeUpdate {
+                    body: Some("Edited in Knode.".into()),
+                    ..Default::default()
+                },
+                &Provenance::person("Ada"),
+            )
+            .unwrap();
+    };
+    let body = |space: &Space, id: &NodeId| space.get_node(id).unwrap().unwrap().body;
+
+    // The file did not change: the edit stays.
+    edit(&mut space, &a);
+    let again = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert_eq!(again.count(MemoryOutcome::Unchanged), 2, "{again:#?}");
+    assert_eq!(body(&space, &a), "Edited in Knode.");
+
+    // Both changed: the node is kept, and said so. A node not edited takes the file.
+    memory(
+        &projects,
+        folder,
+        "a.md",
+        &memory_file("A", "user", "File, again."),
+    );
+    memory(
+        &projects,
+        folder,
+        "b.md",
+        &memory_file("B", "user", "File, again."),
+    );
+    let third = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert_eq!(third.count(MemoryOutcome::Kept), 1, "{third:#?}");
+    assert_eq!(third.count(MemoryOutcome::Updated), 1, "{third:#?}");
+    assert_eq!(body(&space, &a), "Edited in Knode.");
+    assert!(body(&space, &b).contains("File, again."));
+    edit(&mut space, &b);
+    let fourth = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert_eq!(fourth.count(MemoryOutcome::Kept), 1, "{fourth:#?}");
+    assert_eq!(fourth.count(MemoryOutcome::Unchanged), 1, "{fourth:#?}");
+    assert_eq!(body(&space, &b), "Edited in Knode.");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_memory_folder_that_is_a_link_is_left_out_and_said_so() {

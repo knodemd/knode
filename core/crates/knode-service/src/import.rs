@@ -972,6 +972,7 @@ pub fn run(
                     MemoryOutcome::Created => ImportOutcome::Created,
                     MemoryOutcome::Updated => ImportOutcome::Updated,
                     MemoryOutcome::Unchanged => ImportOutcome::Unchanged,
+                    MemoryOutcome::Kept => ImportOutcome::Edited,
                 };
                 result.node(Some(n.id), n.title.clone(), outcome);
                 result.nodes.last_mut().expect("just added").note = Some(match &n.project {

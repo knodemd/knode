@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 
 use knode_format::{NodeId, Provenance, Space, folder_kinds, link_kinds};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::import::{self, Batch, ImportReport, Outcome, Skipped};
-use crate::{Result, io_error};
+use crate::{Result, io_error, property_keys};
 
 /// The folder, in `markdown.path`, under which imported memory files are kept:
 /// `claude-code-memory/<encoded folder>/<file>`. Importing again finds them there.
@@ -32,6 +33,11 @@ pub const TYPE_PROPERTY: &str = "claude-code.type";
 
 /// The property with the `description` of a memory.
 pub const DESCRIPTION_PROPERTY: &str = "claude-code.description";
+
+/// The property that records what an import wrote: `<node>:<file>`, the SHA-256 of the node's
+/// title, body and tags as the import left them, and of the memory file it read. Importing
+/// again skips a file that did not change, and keeps a node that was edited in Knode since.
+pub const IMPORTED_PROPERTY: &str = "claude-code.imported";
 
 /// Why a `MEMORY.md` is left out.
 pub const LEFT_OUT_INDEX: &str = "the index of the other memory files";
@@ -51,8 +57,11 @@ pub enum MemoryOutcome {
     Created,
     /// It changed the node imported from it before.
     Updated,
-    /// The node already had everything.
+    /// The node already had everything, or the file did not change since it was imported.
     Unchanged,
+    /// The file changed, but so did the node, in Knode, since it was imported: the node was
+    /// kept as it is.
+    Kept,
 }
 
 /// One memory file read into the space.
@@ -140,6 +149,8 @@ pub fn projects_folder(path: &Path) -> PathBuf {
 /// - A note is `part-of` the project of the space its folder belongs to (see
 ///   [`ProjectMatcher`]). No project is ever created: a folder that matches none is listed in
 ///   [`unmatched`](MemoryReport::unmatched) and its notes imported without one.
+/// - Importing again skips a file that did not change since it was imported, and keeps a node
+///   edited in Knode since then even when its file changed ([`MemoryOutcome::Kept`]).
 /// - Folders that are symbolic links to other folders are left out.
 pub fn import_claude_code_memory(
     space: &mut Space,
@@ -231,6 +242,32 @@ pub fn import_claude_code_memory(
             }
             let title = note.title.clone();
             let source = by.clone().with_source(full.display().to_string());
+            let read = sha256(text.as_bytes());
+            // Imported before: skip a file that did not change, and keep a node edited since.
+            if let Some((id, record)) = imported_before(space, &rel, note.id)? {
+                let edited = fingerprint(space, &id)? != record.node;
+                let changed = record.file != read;
+                if edited || !changed {
+                    imported = true;
+                    if let Some((project_id, project_title)) = &project {
+                        space.link(&id, project_id, link_kinds::PART_OF, &source)?;
+                        *report.linked.entry(project_title.clone()).or_default() += 1;
+                    }
+                    report.notes.push(MemoryNote {
+                        id,
+                        title: space.get_node(&id)?.map(|n| n.title).unwrap_or(title),
+                        folder: folder.clone(),
+                        file,
+                        outcome: if changed {
+                            MemoryOutcome::Kept
+                        } else {
+                            MemoryOutcome::Unchanged
+                        },
+                        project: project.as_ref().map(|(_, t)| t.clone()),
+                    });
+                    continue;
+                }
+            }
             let skipped_before = inner.skipped.len();
             let written =
                 batch.note(space, &rel, note, &source, &mut inner, &mut import::no_hook)?;
@@ -247,6 +284,10 @@ pub fn import_claude_code_memory(
             if let Some((project_id, project_title)) = &project {
                 space.link(&id, project_id, link_kinds::PART_OF, &source)?;
                 *report.linked.entry(project_title.clone()).or_default() += 1;
+            }
+            let record = format!("{}:{read}", fingerprint(space, &id)?);
+            if space.property(&id, IMPORTED_PROPERTY)?.as_deref() != Some(record.as_str()) {
+                space.set_property(&id, IMPORTED_PROPERTY, &record, &source)?;
             }
             report.notes.push(MemoryNote {
                 id,
@@ -281,6 +322,64 @@ fn left_out(path: impl Into<String>, reason: &str) -> Skipped {
         path: path.into(),
         reason: reason.into(),
     }
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// What [`IMPORTED_PROPERTY`] records.
+struct Record {
+    node: String,
+    file: String,
+}
+
+/// The node an earlier import made from the file `rel` (found as [`Batch::note`] finds it), and
+/// what that import recorded. `None` for a new file, and for a node with no record.
+fn imported_before(
+    space: &Space,
+    rel: &str,
+    id: Option<NodeId>,
+) -> Result<Option<(NodeId, Record)>> {
+    let existing = match id {
+        Some(id) => import::find(space, &id.to_string())?,
+        None => space
+            .find_by_property(property_keys::PATH, rel)?
+            .first()
+            .map(|s| s.id),
+    };
+    let Some(id) = existing else {
+        return Ok(None);
+    };
+    let record = space.property(&id, IMPORTED_PROPERTY)?;
+    Ok(record
+        .as_deref()
+        .and_then(|r| r.split_once(':'))
+        .map(|(node, file)| {
+            (
+                id,
+                Record {
+                    node: node.to_string(),
+                    file: file.to_string(),
+                },
+            )
+        }))
+}
+
+/// The SHA-256 of what a person edits of a node: its title, body and tags.
+fn fingerprint(space: &Space, id: &NodeId) -> Result<String> {
+    let Some(node) = space.get_node(id)? else {
+        return Ok(String::new());
+    };
+    let mut text = format!("{}\0{}", node.title, node.body);
+    for tag in &node.tags {
+        text.push('\0');
+        text.push_str(tag);
+    }
+    Ok(sha256(text.as_bytes()))
 }
 
 /// `<folder>/memory/<file>` for the `markdown.path` `claude-code-memory/<folder>/<file>`.
