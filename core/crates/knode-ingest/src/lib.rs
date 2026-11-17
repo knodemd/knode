@@ -36,7 +36,8 @@
 //! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 //!
 //! Chats between people come from the exports of the apps they were held in:
-//! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat.
+//! [`import_chat_export`] reads a WhatsApp chat export or a Telegram Desktop export into one
+//! `chat` node per chat.
 
 mod aider;
 mod amp;

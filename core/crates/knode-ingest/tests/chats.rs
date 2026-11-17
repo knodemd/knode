@@ -288,8 +288,169 @@ fn refuses_what_is_not_a_chat_export() {
     let mut space = space(&dir);
     let error = import_chat_export(&mut space, &notes, None, &by()).unwrap_err();
     assert!(matches!(error, ChatImportError::NotRecognized { .. }));
-    assert!(error.to_string().contains("is not a WhatsApp chat export"));
+    assert!(
+        error
+            .to_string()
+            .contains("is not a WhatsApp or Telegram Desktop chat export")
+    );
     assert_eq!(space.node_count().unwrap(), 0);
+}
+
+#[test]
+fn imports_a_telegram_chat_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let path = fixture("telegram-chat");
+    assert_eq!(detect_chat_export(&path), Some(ChatFormat::Telegram));
+    assert_eq!(
+        detect_chat_export(path.join("result.json")),
+        Some(ChatFormat::Telegram)
+    );
+    let report = import_chat_export(&mut space, &path, None, &by()).unwrap();
+    assert_eq!(report.format, ChatFormat::Telegram);
+    assert_eq!(report.chats.len(), 1);
+    assert_eq!(report.messages, 7);
+    assert_eq!(report.attached, 2);
+    assert_eq!(report.missing, 1, "the PDF the export left out");
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+
+    let node = chat_node(&space, "telegram", "1000000001");
+    assert_eq!(node.kind, CHAT_KIND);
+    assert_eq!(node.title, "Telegram - Book Club");
+    let opening = "\"Shall we read the lighthouse novel next?…\"";
+    assert_eq!(
+        node.body,
+        format!(
+            "## 2026-03-04\n\n\
+             *(09:14) Ada created \"Book Club\"*\n\n\
+             **Ada** (09:15): Shall we read **the lighthouse novel** next? Notes are [here](<https://example.com/notes>).\n\n\
+             **Grace** (09:16, replying to Ada at 09:15: {opening}): @ada yes! Run `make list` first.\n\n\
+             **Ada** (09:17): The cover\n![[photo_1@04-03-2026_09-17-00.jpg]]\n\n\
+             **Grace** (09:18): [[audio_1@04-03-2026_09-18-00.ogg]]\n\n\
+             ## 2026-03-05\n\n\
+             **Grace** (20:00): *[reading-list.pdf left out of the export]*\n\n\
+             **Linus** (20:01, replying to Ada at 2026-03-04 09:15: {opening}): *Finally*\n```rust\nfn main() {{}}\n```\n"
+        )
+    );
+    assert_eq!(prop(&space, &node, chat_keys::TYPE), "group");
+    assert_eq!(
+        prop(&space, &node, chat_keys::PARTICIPANTS),
+        "Ada, Grace, Linus"
+    );
+    assert_eq!(prop(&space, &node, chat_keys::LAST), "00000000000000000007");
+    let names: Vec<String> = space
+        .attachments(&node.id)
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "photo_1@04-03-2026_09-17-00.jpg",
+            "audio_1@04-03-2026_09-18-00.ogg"
+        ]
+    );
+
+    // Again, zipped: nothing new. Then a newer export with one more message.
+    let zipped = dir.path().join("ChatExport.zip");
+    let photo = fs::read(path.join("photos/photo_1@04-03-2026_09-17-00.jpg")).unwrap();
+    let result = fs::read_to_string(path.join("result.json")).unwrap();
+    zip(
+        &zipped,
+        &[
+            ("ChatExport_2026-03-06/result.json", result.as_bytes()),
+            (
+                "ChatExport_2026-03-06/photos/photo_1@04-03-2026_09-17-00.jpg",
+                &photo,
+            ),
+        ],
+    );
+    let again = import_chat_export(&mut space, &zipped, None, &by()).unwrap();
+    assert_eq!(
+        (again.unchanged, again.messages, again.chats.len()),
+        (1, 0, 0)
+    );
+
+    let newer = result.replacen(
+        "\"messages\": [",
+        "\"messages\": [\n{\"id\": 8, \"type\": \"message\", \"date\": \"2026-03-05T21:00:00\", \"from\": \"Ada\", \"text\": \"Night all\", \"text_entities\": [{\"type\": \"plain\", \"text\": \"Night all\"}]},",
+        1,
+    );
+    assert_ne!(newer, result);
+    let newer_dir = dir.path().join("newer");
+    fs::create_dir_all(&newer_dir).unwrap();
+    fs::write(newer_dir.join("result.json"), newer).unwrap();
+    let report =
+        import_chat_export(&mut space, &newer_dir, Some(ChatFormat::Telegram), &by()).unwrap();
+    assert_eq!(report.messages, 1);
+    let updated = chat_node(&space, "telegram", "1000000001");
+    assert_eq!(
+        &updated.body[node.body.len()..],
+        "\n**Ada** (21:00): Night all\n"
+    );
+    assert_eq!(prop(&space, &updated, chat_keys::MESSAGES), "8");
+}
+
+#[test]
+fn imports_every_chat_of_a_telegram_account_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let path = fixture("telegram-account");
+    let report = import_chat_export(&mut space, &path, None, &by()).unwrap();
+    assert_eq!(report.format, ChatFormat::Telegram);
+    let titles: Vec<&str> = report.chats.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Telegram - Grace",
+            "Telegram - Garden News",
+            "Telegram - Old Team"
+        ]
+    );
+    assert_eq!(report.empty, 1, "the chat with no messages");
+    assert_eq!(report.messages, 4);
+
+    let grace = chat_node(&space, "telegram", "102");
+    assert_eq!(
+        grace.body,
+        "## 2026-03-04\n\n**Grace** (08:00): Morning\n\n**Ada** (08:01): ~~Tea~~ Coffee?\n"
+    );
+    assert_eq!(prop(&space, &grace, chat_keys::TYPE), "personal");
+    let news = chat_node(&space, "telegram", "1000000002");
+    assert_eq!(
+        news.body,
+        "## 2026-03-06\n\n**Garden News** (12:00): #tomatoes go in <https://example.com/plot>\n"
+    );
+    assert_eq!(prop(&space, &news, chat_keys::TYPE), "channel");
+    chat_node(&space, "telegram", "1000000003");
+
+    let again = import_chat_export(&mut space, &path, None, &by()).unwrap();
+    assert!(again.chats.is_empty(), "{again:?}");
+    assert_eq!(again.unchanged, 3);
+    assert_eq!(space.node_count().unwrap(), 3);
+}
+
+#[test]
+fn refuses_an_export_of_another_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let error = import_chat_export(
+        &mut space,
+        fixture("telegram-chat"),
+        Some(ChatFormat::WhatsApp),
+        &by(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("is not a WhatsApp export"),
+        "{error}"
+    );
+    let broken = dir.path().join("broken");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("result.json"), "{\"messages\": [ {\"id\": }").unwrap();
+    let error = import_chat_export(&mut space, &broken, None, &by()).unwrap_err();
+    assert!(matches!(error, ChatImportError::Json { .. }), "{error}");
 }
 
 /// A WhatsApp export folder named as WhatsApp names it, with `text` as its `_chat.txt`.

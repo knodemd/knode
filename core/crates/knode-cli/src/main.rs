@@ -82,7 +82,8 @@ enum Command {
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
     /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
     /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, or a
-    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`).
+    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`) or a Telegram Desktop
+    /// export in JSON (the folder with `result.json`).
     /// Knode tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes` or
