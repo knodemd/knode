@@ -11,6 +11,12 @@ final class FakeSourcesClient: SourcesClient {
         var containers: [String: [SourceContainer]] = [:]
         var calls: [String] = []
         var failing: [String: ServiceError] = [:]
+        /// The account of each connector that reads one, as `sources.account` answers.
+        var accounts: [String: SourceAccountState] = [:]
+        /// How many `browser` steps still answer that the person has not finished on the page.
+        var browserWaits: [String: Int] = [:]
+        /// What a mail account was started with, until its app password comes.
+        var mailAccount: String?
     }
 
     let state = Mutex(State())
@@ -72,11 +78,11 @@ final class FakeSourcesClient: SourcesClient {
         }
     }
 
-    func connect(_ source: String, history: SourceHistory, in space: URL) async throws -> SourceStatus {
-        try record("connect \(source) \(history.rawValue)", "connect")
+    func connect(_ source: String, history: SourceHistory, on: Bool, in space: URL) async throws -> SourceStatus {
+        try record("connect \(source) \(history.rawValue)\(on ? "" : " paused")", "connect")
         return try change(source) { status in
-            status.setting = SourceStatus.Setting(on: true, history: history, connectedAt: 1_763_372_400_000, since: 1_763_337_600_000)
-            status.state = .idle
+            status.setting = SourceStatus.Setting(on: on, history: history, connectedAt: 1_763_372_400_000, since: 1_763_337_600_000)
+            status.state = on ? .idle : .paused
         }
     }
 
@@ -108,6 +114,73 @@ final class FakeSourcesClient: SourcesClient {
         _ = try change(source) { status in
             status.setting = nil
             status.state = .off
+        }
+    }
+
+    func setAccount(_ state: SourceAccountState, for source: String) {
+        self.state.withLock { $0.accounts[source] = state }
+    }
+
+    func account(for source: String) -> SourceAccountState {
+        state.withLock { $0.accounts[source] ?? .signedOut }
+    }
+
+    /// Makes the next `count` browser steps of `source` answer that the person is not done yet.
+    func setBrowserWaits(_ count: Int, for source: String) {
+        state.withLock { $0.browserWaits[source] = count }
+    }
+
+    func account(of source: String) async throws -> SourceAccountState {
+        try record("account \(source)", "account")
+        return account(for: source)
+    }
+
+    /// Signs in as the services do: Telegram by phone, code and password; Gmail and Slack in
+    /// the browser; mail with an address and an app password.
+    func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState {
+        let described: String = switch step {
+        case .start(let account): "start \(account)"
+        case .code(let code): "code \(code)"
+        case .password(let password): "password \(password)"
+        case .browser: "browser"
+        }
+        try record("sign-in \(source) \(described)", "sign-in")
+        func wrong(_ message: String) -> ServiceError { .remote(code: -32004, kind: "sign-in", message: "sign in again: \(message)") }
+        return try state.withLock { state in
+            let next: SourceAccountState
+            switch (source, step) {
+            case ("telegram", .start): next = .codeSent(via: "the Telegram app")
+            case ("telegram", .code(let code)):
+                guard code == "12345" else { throw wrong("that code is not right") }
+                next = .passwordNeeded(hint: "the name of the cat")
+            case ("telegram", .password(let password)):
+                guard password == "secret" else { throw wrong("that password is not right") }
+                next = .signedIn(account: "Ada Lovelace")
+            case ("gmail", .start), ("slack", .start): next = .openBrowser(url: URL(string: "https://example.com/\(source)/sign-in")!)
+            case ("gmail", .browser), ("slack", .browser):
+                if let left = state.browserWaits[source], left > 0 {
+                    state.browserWaits[source] = left - 1
+                    throw wrong("finish signing in in the browser first, then go on")
+                }
+                next = .signedIn(account: source == "slack" ? "Example workspace" : "ada@example.com")
+            case ("imap", .start(let account)):
+                state.mailAccount = account
+                next = .passwordNeeded(hint: account.components(separatedBy: " ").first)
+            case ("imap", .password(let password)):
+                guard password == "abcd efgh ijkl", let account = state.mailAccount else { throw wrong("the server refused the app password") }
+                next = .signedIn(account: account.components(separatedBy: " ")[0])
+            default: throw wrong("that step does not apply")
+            }
+            state.accounts[source] = next.isSignedIn ? next : state.accounts[source] ?? .signedOut
+            return next
+        }
+    }
+
+    func signOut(_ source: String) async throws -> Bool {
+        try record("sign-out \(source)", "sign-out")
+        return state.withLock { state in
+            defer { state.accounts[source] = .signedOut }
+            return state.accounts[source]?.isSignedIn ?? false
         }
     }
 }
@@ -287,8 +360,9 @@ final class FakeSignIn: SourceSignIn {
 
         flow.history = .everything
         await flow.connect()
-        // Connected, then paused at once, so nothing is read before the exclusions are chosen.
-        #expect(client.actions == ["connect whatsapp everything", "pause whatsapp", "containers whatsapp"])
+        // Connected paused, so nothing is read before the exclusions are chosen.
+        #expect(client.actions == ["connect whatsapp everything paused", "containers whatsapp"])
+        #expect(client.source("whatsapp")?.isOn == false)
         #expect(flow.step == .containers)
         #expect(flow.stepIndex == 2)
         #expect(flow.containers.map(\.name) == ["Ada", "Family"])
@@ -421,9 +495,202 @@ final class FakeSignIn: SourceSignIn {
         #expect(flow.step == .history)
         #expect(flow.steps == ["History", "Conversations"])
         await flow.connect()
-        #expect(client.actions == ["connect mail from-today", "pause mail", "containers mail"])
+        #expect(client.actions == ["connect mail from-today paused", "containers mail"])
         #expect(flow.containersLoaded)
         #expect(flow.containers.isEmpty)
+    }
+
+
+    // MARK: Signing in through Knode Service
+
+    static func connector(_ id: String, _ name: String, container: String = "chat", connected: Bool = false) -> SourceStatus {
+        SourceStatus(
+            id: id, name: name, kind: "connector", reads: "\(name) things", permissions: [.signIn, .network], container: container,
+            state: connected ? .idle : .off,
+            setting: connected ? SourceStatus.Setting(on: true, history: .fromToday, connectedAt: 1, since: 0) : nil
+        )
+    }
+
+    /// A model whose connectors sign in through the service's shared sign-in, as in the app.
+    func serviceModel(_ client: FakeSourcesClient, opened: Opened? = nil) -> SourcesModel {
+        SourcesModel(client: client, openURL: { url in opened?.add(url) }, pollInterval: .milliseconds(20))
+    }
+
+    func flow(_ model: SourcesModel, signInAgain: Bool = false) throws -> SourceConnectFlow {
+        let first = try #require(model.connectors.first)
+        return try #require(model.connectFlow(for: first, signInAgain: signInAgain))
+    }
+
+    @Test func telegramSignsInWithPhoneCodeAndPassword() async throws {
+        let client = FakeSourcesClient([Self.connector("telegram", "Telegram")])
+        client.setContainers([SourceContainer(id: "42", name: "Family")], for: "telegram")
+        let model = serviceModel(client)
+        await model.select(space)
+        #expect(model.account(of: try #require(model.connectors.first)) == .signedOut)
+        let flow = try flow(model)
+        #expect(flow.step == .checkingSignIn)
+        #expect(flow.steps == ["Sign in", "History", "Chats"])
+
+        await flow.begin()
+        guard case .signIn(let phone) = flow.step else { Issue.record("expected the phone step"); return }
+        #expect(phone.fields.map(\.id) == ["account"])
+        flow.values["account"] = " +34600000000 "
+        await flow.submitSignIn()
+
+        guard case .signIn(let code) = flow.step else { Issue.record("expected the code step"); return }
+        #expect(code.message?.contains("the Telegram app") == true)
+        flow.values["code"] = "11111"
+        await flow.submitSignIn()
+        #expect(flow.errorMessage == "Sign in again: that code is not right.")
+        #expect(flow.step == .signIn(code))
+        flow.values["code"] = "12345"
+        await flow.submitSignIn()
+
+        guard case .signIn(let password) = flow.step else { Issue.record("expected the password step"); return }
+        #expect(password.fields.first?.isSecret == true)
+        #expect(password.message?.contains("the name of the cat") == true)
+        flow.values["password"] = "secret"
+        await flow.submitSignIn()
+        #expect(flow.step == .history)
+        #expect(flow.errorMessage == nil)
+
+        await flow.connect()
+        await flow.finish()
+        #expect(client.actions.filter { !$0.hasPrefix("account") } == [
+            "sign-in telegram start +34600000000", "sign-in telegram code 11111", "sign-in telegram code 12345",
+            "sign-in telegram password secret", "connect telegram from-today paused", "containers telegram", "resume telegram",
+        ])
+        for _ in 0..<100 where !(model.account(of: try #require(model.connectors.first))?.isSignedIn ?? false) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.account(of: try #require(model.connectors.first)) == .signedIn(account: "Ada Lovelace"))
+    }
+
+    @Test func gmailOpensTheBrowserAndWaitsUntilItComesBack() async throws {
+        let client = FakeSourcesClient([Self.connector("gmail", "Gmail", container: "label")])
+        client.setBrowserWaits(2, for: "gmail")
+        let opened = Opened()
+        let model = serviceModel(client, opened: opened)
+        await model.select(space)
+        let flow = try flow(model)
+
+        await flow.begin()
+        guard case .signIn(let browser) = flow.step else { Issue.record("expected the browser step"); return }
+        #expect(browser.browserURL == URL(string: "https://example.com/gmail/sign-in"))
+        #expect(opened.all == [URL(string: "https://example.com/gmail/sign-in")!], "The page opens by itself.")
+        await flow.browserWaitEnded()
+
+        #expect(flow.step == .history)
+        #expect(!flow.isWaitingForBrowser)
+        #expect(flow.errorMessage == nil)
+        #expect(client.actions.filter { $0.hasPrefix("sign-in") } == [
+            "sign-in gmail start ", "sign-in gmail browser", "sign-in gmail browser", "sign-in gmail browser",
+        ])
+        #expect(client.account(for: "gmail") == .signedIn(account: "ada@example.com"))
+    }
+
+    @Test func slackSignInCanBeCancelledWhileWaiting() async throws {
+        let client = FakeSourcesClient([Self.connector("slack", "Slack", container: "channel")])
+        client.setBrowserWaits(Int.max, for: "slack")
+        let opened = Opened()
+        let model = serviceModel(client, opened: opened)
+        await model.select(space)
+        let flow = try flow(model)
+
+        await flow.begin()
+        guard case .signIn(let browser) = flow.step else { Issue.record("expected the browser step"); return }
+        for _ in 0..<100 where !flow.isWaitingForBrowser {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(flow.isWaitingForBrowser)
+        flow.cancel()
+        await flow.browserWaitEnded()
+        #expect(flow.step == .signIn(browser), "Cancelling stays where it was; the sheet closes.")
+        #expect(flow.errorMessage == nil)
+        #expect(!client.actions.contains { $0.hasPrefix("connect") })
+
+        // Open the page again: it opens once more and waits again.
+        client.setBrowserWaits(0, for: "slack")
+        flow.openBrowser()
+        await flow.browserWaitEnded()
+        #expect(opened.all.count == 2)
+        #expect(flow.step == .history)
+    }
+
+    @Test func mailSignsInWithAddressServerAndAppPasswordInOneStep() async throws {
+        let client = FakeSourcesClient([Self.connector("imap", "Mail (IMAP)", container: "mailbox")])
+        let model = serviceModel(client)
+        await model.select(space)
+        let flow = try flow(model)
+
+        await flow.begin()
+        guard case .signIn(let mail) = flow.step else { Issue.record("expected the mail step"); return }
+        #expect(mail.fields.map(\.id) == ["address", "server", "password"])
+        #expect(mail.fields[1].isOptional)
+        #expect(mail.fields[2].isSecret)
+        flow.values = ["address": "ada@example.com", "password": "wrong"]
+        await flow.submitSignIn()
+        #expect(flow.errorMessage == "Sign in again: the server refused the app password.")
+
+        flow.values = ["address": "ada@example.com", "server": "imap.example.com", "password": "abcd efgh ijkl"]
+        await flow.submitSignIn()
+        #expect(flow.step == .history)
+        #expect(client.actions.filter { $0.hasPrefix("sign-in") }.suffix(2) == [
+            "sign-in imap start ada@example.com imap.example.com", "sign-in imap password abcd efgh ijkl",
+        ])
+    }
+
+    @Test func aConnectorSignedInAlreadyGoesStraightToTheHistory() async throws {
+        let client = FakeSourcesClient([Self.connector("slack", "Slack", container: "channel")])
+        client.setAccount(.signedIn(account: "Example workspace"), for: "slack")
+        let model = serviceModel(client)
+        await model.select(space)
+        let flow = try flow(model)
+        await flow.begin()
+        #expect(flow.step == .history)
+        #expect(!client.actions.contains { $0.hasPrefix("sign-in") })
+    }
+
+    @Test func signsOutAndSignsInAgainFromTheCard() async throws {
+        let client = FakeSourcesClient([Self.connector("slack", "Slack", container: "channel", connected: true)])
+        client.setAccount(.signedIn(account: "Example workspace"), for: "slack")
+        client.setContainers([SourceContainer(id: "C1", name: "general")], for: "slack")
+        let model = serviceModel(client)
+        await model.select(space)
+        let slack = try #require(model.connectors.first)
+        #expect(model.account(of: slack) == .signedIn(account: "Example workspace"))
+
+        await model.signOut(slack)
+        #expect(client.actions.contains("sign-out slack"))
+        #expect(model.account(of: slack) == .signedOut)
+        #expect(model.errorMessage == nil)
+
+        let flow = try flow(model, signInAgain: true)
+        #expect(flow.isManaging)
+        await flow.begin()
+        await flow.browserWaitEnded()
+        #expect(flow.step == .containers, "Signing in again ends at what it reads.")
+        #expect(flow.containers.map(\.name) == ["general"])
+        await flow.finish()
+        #expect(!client.actions.contains { $0.hasPrefix("connect") || $0.hasPrefix("resume") })
+        for _ in 0..<100 where model.account(of: slack) != .signedIn(account: "Example workspace") {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.account(of: slack) == .signedIn(account: "Example workspace"))
+    }
+
+    @Test func aSourceThatNeedsNoSignInAsksForNoAccount() async throws {
+        let client = FakeSourcesClient([Self.whatsapp(connected: true)])
+        let model = serviceModel(client)
+        await model.select(space)
+        #expect(model.account(of: try #require(model.connectors.first)) == nil)
+        #expect(!client.calls.contains { $0.hasPrefix("account") })
+    }
+
+    @Test func onlyTheServiceWaitingForTheBrowserIsTriedAgain() {
+        #expect(ServiceSourceSignIn.isStillWaiting(.remote(code: -32004, kind: "sign-in", message: "sign in again: allow Knode on Slack's page in the browser first, then go on")))
+        #expect(!ServiceSourceSignIn.isStillWaiting(.remote(code: -32004, kind: "sign-in", message: "sign in again: the browser did not come back: sign in again")))
+        #expect(!ServiceSourceSignIn.isStillWaiting(.disconnected))
     }
 
     @Test func signInStepsAreCompleteOnlyWithEveryField() {
@@ -433,7 +700,12 @@ final class FakeSignIn: SourceSignIn {
         #expect(!step.isComplete(["user": "ada@example.com"]))
         #expect(!step.isComplete(["user": "ada@example.com", "password": "  "]))
         #expect(step.isComplete(["user": "ada@example.com", "password": "abcd efgh"]))
-        #expect(SourceSignIns.builtIn.flow(for: "telegram") == nil)
+        #expect(SourceSignIns().flow(for: SourcesModelTests.telegram) == nil)
+        let fallback = SourceSignIns(fallback: FakeSignIn())
+        #expect(fallback.flow(for: SourcesModelTests.telegram) != nil, "A connector that reads an account signs in.")
+        #expect(fallback.flow(for: SourcesModelTests.whatsapp()) == nil, "One that reads this Mac does not.")
+        let optional = SourceSignInStep(id: "mail", title: "Mail", fields: [.init(id: "server", label: "Server", isOptional: true)])
+        #expect(optional.isComplete([:]))
     }
 }
 
@@ -500,11 +772,12 @@ final class FakeSignIn: SourceSignIn {
         service.answer("sources.containers", with: [["id": "123@g.us", "name": "Family", "excluded": true], ["id": "9@s.whatsapp.net", "name": "Ada", "excluded": false]])
         let client = ServiceSourcesClient(socketURL: service.socketURL, person: "Ada")
 
-        _ = try await client.connect("whatsapp", history: .everything, in: space)
+        _ = try await client.connect("whatsapp", history: .everything, on: false, in: space)
         let connect = try #require(service.params(of: "sources.connect"))
         #expect(connect["space"] as? String == "/tmp/Work.knode")
         #expect(connect["source"] as? String == "whatsapp")
         #expect(connect["history"] as? String == "everything")
+        #expect(connect["on"] as? Bool == false)
         #expect((connect["by"] as? [String: Any])?["kind"] as? String == "person")
         #expect((connect["by"] as? [String: Any])?["actor"] as? String == "Ada")
 
@@ -527,6 +800,36 @@ final class FakeSignIn: SourceSignIn {
 
         try await client.disconnect("whatsapp", in: space)
         #expect(service.params(of: "sources.disconnect")?["source"] as? String == "whatsapp")
+    }
+
+    @Test func signsInOverTheSocket() async throws {
+        let client = ServiceSourcesClient(socketURL: service.socketURL, person: "Ada")
+        service.answer("sources.account", with: ["state": "signed-out"])
+        #expect(try await client.account(of: "slack") == .signedOut)
+        #expect(service.params(of: "sources.account")?["source"] as? String == "slack")
+
+        service.answer("sources.sign_in", with: ["state": "open-browser", "url": "https://slack.com/oauth/v2/authorize?x=1"])
+        #expect(try await client.signIn("slack", .start(account: "")) == .openBrowser(url: URL(string: "https://slack.com/oauth/v2/authorize?x=1")!))
+        let start = try #require(service.params(of: "sources.sign_in"))
+        #expect(start["source"] as? String == "slack")
+        #expect((start["step"] as? [String: Any])?["step"] as? String == "start")
+        #expect((start["step"] as? [String: Any])?["account"] as? String == "")
+
+        service.answer("sources.sign_in", with: ["state": "code-sent", "via": "the Telegram app"])
+        #expect(try await client.signIn("telegram", .code("12345")) == .codeSent(via: "the Telegram app"))
+        #expect((service.params(of: "sources.sign_in")?["step"] as? [String: Any])?["code"] as? String == "12345")
+
+        service.answer("sources.sign_in", with: ["state": "password-needed"])
+        #expect(try await client.signIn("telegram", .password("secret")) == .passwordNeeded(hint: nil))
+        #expect((service.params(of: "sources.sign_in")?["step"] as? [String: Any])?["password"] as? String == "secret")
+
+        service.answer("sources.sign_in", with: ["state": "signed-in", "account": "Example workspace"])
+        #expect(try await client.signIn("slack", .browser) == .signedIn(account: "Example workspace"))
+        #expect((service.params(of: "sources.sign_in")?["step"] as? [String: Any])?["step"] as? String == "browser")
+
+        service.answer("sources.sign_out", with: true)
+        #expect(try await client.signOut("slack"))
+        #expect(service.params(of: "sources.sign_out")?["source"] as? String == "slack")
     }
 
     @Test func aMissingServiceMeansItIsNotRunning() async throws {
