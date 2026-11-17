@@ -7,7 +7,9 @@ use knode_format::Provenance;
 use super::{Client, space_path};
 use crate::Result;
 use crate::protocol::methods;
-use crate::sources::{ContainerInfo, History, SourceParams, SourceStatus, SpaceSources};
+use crate::sources::{
+    ContainerInfo, History, SignInState, SignInStep, SourceParams, SourceStatus, SpaceSources,
+};
 
 impl Client {
     fn sources_call<T: serde::de::DeserializeOwned>(
@@ -173,5 +175,23 @@ impl Client {
             Some(source),
             |p| p.by = Some(by.clone()),
         )
+    }
+
+    /// Whether the connector `source` is signed in to the account it reads, on this machine.
+    pub fn sources_account(&self, source: &str) -> Result<SignInState> {
+        self.sources_call(methods::SOURCES_ACCOUNT, None, Some(source), |_| {})
+    }
+
+    /// Takes one step of signing the connector `source` in, and says what comes next.
+    pub fn sources_sign_in(&self, source: &str, step: SignInStep) -> Result<SignInState> {
+        self.sources_call(methods::SOURCES_SIGN_IN, None, Some(source), |p| {
+            p.step = Some(step);
+        })
+    }
+
+    /// Signs the connector `source` out and forgets its session. Returns whether it was
+    /// signed in.
+    pub fn sources_sign_out(&self, source: &str) -> Result<bool> {
+        self.sources_call(methods::SOURCES_SIGN_OUT, None, Some(source), |_| {})
     }
 }

@@ -43,6 +43,15 @@ belongs to, newest first.
   after it was brought in keeps the text it had then. If Messages numbers its messages again (a
   rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
   each conversation is missing. People show as their phone number or email address.
+- **Telegram connector**: brings your Telegram chats in as they arrive, through Telegram's
+  official API, as Knode's own client. `knode sources connect telegram` signs in once with your
+  phone number, the code Telegram sends and your password if you set one; the session stays in
+  the system keychain, and `knode sources sign-out telegram` (or disconnecting it from the last
+  space) ends it. While Knode Service runs new messages come in as they happen, and after a
+  restart it catches up from the last message it brought in of each chat. Messages land in the
+  same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
+  message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
+  build of Knode with its Telegram app id.
 
 ### v0.3 - Map and import (in progress)
 

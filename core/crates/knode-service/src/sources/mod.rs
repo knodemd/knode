@@ -28,6 +28,7 @@
 
 pub mod apple_mail;
 pub(crate) mod runtime;
+pub mod telegram;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,8 +41,8 @@ use std::time::Duration;
 use knode_format::{Provenance, Space, Timestamp};
 pub use knode_ingest::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, FileStamp, History, NoSecrets,
-    Permission, Secrets, SourceError, SourceInfo, SourceKind, Trigger, Written, is_source_id,
-    provenance, sqlite, start_of_today,
+    Permission, Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind, Trigger,
+    Written, is_source_id, provenance, sqlite, start_of_today,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,8 +61,9 @@ pub const STATE_FILE: &str = "state.json";
 /// The connectors built into this version of Knode, for this system.
 ///
 /// Each connector adds itself here once it implements [`Connector`].
+// Off macOS the connectors of the Mac are left out, and the first push follows `Vec::new()`.
+#[allow(clippy::vec_init_then_push)]
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    #[allow(unused_mut)]
     let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
     #[cfg(target_os = "macos")]
     if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
@@ -81,6 +83,7 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
             "Me",
         )));
     }
+    connectors.push(Arc::new(telegram::connector()));
     connectors
 }
 
@@ -410,6 +413,9 @@ pub(crate) struct SourceParams {
     /// Who makes the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<Provenance>,
+    /// The step of signing in, for `sources.sign_in`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<SignInStep>,
 }
 
 /// The connectors a service knows, with what they did on this machine.
@@ -690,6 +696,16 @@ impl StateFile {
     fn remove(&mut self, key: &str) {
         self.sources.remove(key);
     }
+
+    /// The keys of the source `source_id` in every space it ran in.
+    pub(crate) fn keys_of(&self, source_id: &str) -> Vec<String> {
+        let suffix = format!("/{source_id}");
+        self.sources
+            .keys()
+            .filter(|k| k.ends_with(&suffix))
+            .cloned()
+            .collect()
+    }
 }
 
 /// What a connector is told when it cannot keep a secret because the system has no credential
@@ -823,7 +839,7 @@ fn invalid(message: impl Into<String>) -> knode_format::Error {
     knode_format::Error::Invalid(message.into())
 }
 
-fn unknown(id: &str) -> knode_format::Error {
+pub(crate) fn unknown(id: &str) -> knode_format::Error {
     invalid(format!(
         "no source is named {id:?}: `knode sources list` shows them"
     ))
