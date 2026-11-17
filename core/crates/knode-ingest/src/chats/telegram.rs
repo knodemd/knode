@@ -123,16 +123,18 @@ struct Message {
     poll: Option<Poll>,
 }
 
+/// A part of a message's text, plain or formatted, as Telegram Desktop exports it. The
+/// connector cuts the text it reads from Telegram into the same parts.
 #[derive(Debug, Deserialize)]
-struct Entity {
+pub(super) struct Entity {
     #[serde(default, rename = "type")]
-    kind: String,
+    pub kind: String,
     #[serde(default)]
-    text: String,
+    pub text: String,
     #[serde(default)]
-    href: Option<String>,
+    pub href: Option<String>,
     #[serde(default)]
-    language: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,11 +207,7 @@ fn chat(single: SingleChat, dir: &str, files: &Files) -> Option<Chat> {
             "saved_messages" => "Saved Messages".to_string(),
             _ => format!("chat {id}"),
         });
-    let name = name
-        .replace(['[', ']', '|'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let name = clean_name(&name);
     let mut chat = Chat::new(ChatFormat::Telegram, id, format!("Telegram - {name}"));
     chat.kind = match kind.as_str() {
         "personal_chat" | "bot_chat" | "saved_messages" => "personal",
@@ -302,6 +300,14 @@ fn chat(single: SingleChat, dir: &str, files: &Files) -> Option<Chat> {
     }
     chat.collect_participants();
     Some(chat)
+}
+
+/// A chat's name as its node's title holds it: no `[`, `]` or `|`, single spaces.
+pub(super) fn clean_name(name: &str) -> String {
+    name.replace(['[', ']', '|'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn parse_time(date: &str) -> Option<chrono::NaiveDateTime> {
@@ -429,7 +435,7 @@ fn markdown(m: &Message) -> String {
     out
 }
 
-fn entity_markdown(e: &Entity) -> String {
+pub(super) fn entity_markdown(e: &Entity) -> String {
     let text = e.text.as_str();
     let wrap = |marker: &str| {
         let core = text.trim();
