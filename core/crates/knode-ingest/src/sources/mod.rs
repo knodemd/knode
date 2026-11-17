@@ -30,6 +30,23 @@
 //! service in the system keychain and reached through [`Secrets`]; a connector never writes
 //! them into a space, a settings file or a log.
 //!
+//! # Plugins
+//!
+//! The plugin API ([knode#61](https://github.com/knodemd/knode/issues/61)) exposes this same
+//! interface instead of inventing its own, so a first-party source could later ship as a plugin
+//! and a third-party source looks the same in Settings > Sources:
+//!
+//! - A plugin declares its [`SourceInfo`] and [`Trigger`] in its manifest, and the service
+//!   asks for the permissions it lists when the person connects it, never before.
+//! - The plugin host, sandboxed in WebAssembly, implements [`Connector`] for the plugin:
+//!   [`Connector::fetch`] calls the plugin's `fetch` export with the request as JSON (the cursor,
+//!   the history, `since` and the excluded containers) and reads back the cursor and the items.
+//!   Everything here is plain data and serializes for that boundary; [`Secrets`] becomes a host
+//!   import scoped to the plugin.
+//! - A plugin's items are not written by the plugin: they are written by a built-in importer of
+//!   a known shape (chat messages, mail, notes) chosen in its manifest, through the space API,
+//!   with provenance naming the plugin. A plugin never opens a space.
+//!
 //! See decisions 0010 (sources and plugins) and 0013 (live connectors) of the Knode handbook.
 
 pub mod sqlite;
@@ -99,7 +116,9 @@ impl fmt::Display for Permission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInfo {
     /// Its id: lower case letters, digits and `-`, such as `whatsapp`, `imessage` or
-    /// `apple-mail`. It never changes: the settings of a space and the saved cursors use it.
+    /// `apple-mail`. It never changes: the settings of a space and the saved cursors use it. A
+    /// connector and the importer it hands its items to may share an id (`telegram`); ids are
+    /// unique among connectors.
     pub id: String,
     /// Its name for people: `WhatsApp`, `Messages`, `Apple Mail`.
     pub name: String,
@@ -214,6 +233,19 @@ impl History {
             _ => None,
         }
     }
+}
+
+/// The start of today in the local time of this machine, in milliseconds since 1970: the
+/// [`FetchRequest::since`] of a connector connected now with [`History::FromToday`].
+pub fn start_of_today() -> Timestamp {
+    use chrono::{Local, TimeZone};
+    let now = Local::now();
+    let midnight = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| Local.from_local_datetime(&t).earliest())
+        .unwrap_or(now);
+    Timestamp(midnight.timestamp_millis())
 }
 
 /// Where a connector stopped in its source, for one space: an opaque text only the connector
@@ -578,6 +610,14 @@ mod tests {
             ..request
         };
         assert!(everything.wants(Timestamp(0)));
+    }
+
+    #[test]
+    fn today_starts_before_now() {
+        let start = start_of_today();
+        let now = Timestamp::now();
+        assert!(start <= now);
+        assert!(now.0 - start.0 <= 25 * 3600 * 1000);
     }
 
     #[test]

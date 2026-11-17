@@ -1,0 +1,535 @@
+//! The thread that runs connectors: for every space it knows (those in `config.toml` and those
+//! it has open) and every connector switched on there, it runs the connector when its files
+//! change or its interval comes, writes what it read through the space's mutex, saves the
+//! cursor only after the write, and waits longer after each error in a row.
+//!
+//! Nothing runs while `sources` or `capture` is off in `config.toml`: Knode Service then brings
+//! nothing in on its own. Runs happen one at a time, so a space is never written by two
+//! connectors at once and locks are always taken in the same order (the space, then the state
+//! of the sources).
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use knode_format::Timestamp;
+use notify::{RecursiveMode, Watcher as _};
+
+use super::{
+    Connector, FetchRequest, LastError, SourceError, SourceSecrets, SourceSetting, SourcesOptions,
+    Trigger, Written, provenance, source_settings, state_key,
+};
+use crate::server::{State, last_change, lock_ignoring_poison};
+
+/// What wakes the runtime up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Wake {
+    /// Settings changed: read them again.
+    Reload,
+    /// Run this source of this space now: `<space id>/<source id>`.
+    Run(String),
+    /// Files a connector watches changed.
+    Files(String),
+    /// Stop.
+    Stop,
+}
+
+/// The runtime of a running service.
+pub(crate) struct SourcesTask {
+    stopping: Arc<AtomicBool>,
+    wake: mpsc::Sender<Wake>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl SourcesTask {
+    pub(crate) fn start(
+        state: Arc<State>,
+        home: PathBuf,
+        options: SourcesOptions,
+    ) -> std::io::Result<Self> {
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (wake, woken) = mpsc::channel();
+        state.set_sources_wake(Some(wake.clone()));
+        let thread = {
+            let stopping = stopping.clone();
+            let wake = wake.clone();
+            thread::Builder::new()
+                .name("knode-sources".into())
+                .spawn(move || {
+                    let mut runtime = Runtime {
+                        state,
+                        home,
+                        options,
+                        stopping,
+                        wake,
+                        watchers: BTreeMap::new(),
+                        files_changed: BTreeMap::new(),
+                        forced: BTreeSet::new(),
+                        last_config_error: None,
+                    };
+                    runtime.supervise(&woken);
+                    runtime.state.registry().set_active(false);
+                    runtime.state.set_sources_wake(None);
+                })?
+        };
+        Ok(SourcesTask {
+            stopping,
+            wake,
+            thread: Some(thread),
+        })
+    }
+
+    /// Stops running connectors and waits for a run in progress to finish.
+    pub(crate) fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        let _ = self.wake.send(Wake::Stop);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for SourcesTask {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// One connector switched on in one space.
+struct Entry {
+    space: PathBuf,
+    space_id: String,
+    connector: Arc<dyn Connector>,
+    source_id: String,
+    setting: SourceSetting,
+}
+
+impl Entry {
+    fn key(&self) -> String {
+        state_key(&self.space_id, &self.source_id)
+    }
+}
+
+struct Runtime {
+    state: Arc<State>,
+    home: PathBuf,
+    options: SourcesOptions,
+    stopping: Arc<AtomicBool>,
+    wake: mpsc::Sender<Wake>,
+    /// The file watchers, by source id, with the paths they watch.
+    watchers: BTreeMap<String, (Vec<PathBuf>, notify::RecommendedWatcher)>,
+    /// When the files of each source last changed, by source id: it runs once they are quiet.
+    files_changed: BTreeMap<String, Instant>,
+    /// Sources asked to run now.
+    forced: BTreeSet<String>,
+    last_config_error: Option<String>,
+}
+
+impl Runtime {
+    fn supervise(&mut self, woken: &mpsc::Receiver<Wake>) {
+        loop {
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            let entries = self.entries();
+            self.watch(&entries);
+            // Sources whose files changed and have been quiet long enough.
+            let quiet = self.options.quiet;
+            let files: BTreeSet<String> = self
+                .files_changed
+                .iter()
+                .filter(|(_, changed)| changed.elapsed() >= quiet)
+                .map(|(id, _)| id.clone())
+                .collect();
+            self.files_changed.retain(|id, _| !files.contains(id));
+            for entry in &entries {
+                if self.stopping.load(Ordering::SeqCst) {
+                    return;
+                }
+                if self.due(entry, &files) {
+                    self.forced.remove(&entry.key());
+                    self.run(entry);
+                }
+            }
+            let wait = self.wait(&entries);
+            match woken.recv_timeout(wait) {
+                Ok(wake) => {
+                    self.take(wake);
+                    while let Ok(wake) = woken.try_recv() {
+                        self.take(wake);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    fn take(&mut self, wake: Wake) {
+        match wake {
+            Wake::Reload => {}
+            Wake::Run(key) => {
+                self.forced.insert(key);
+            }
+            Wake::Files(id) => {
+                self.files_changed.insert(id, Instant::now());
+            }
+            Wake::Stop => self.stopping.store(true, Ordering::SeqCst),
+        }
+    }
+
+    /// Every connector switched on in a space this service knows, when sources are on.
+    fn entries(&mut self) -> Vec<Entry> {
+        let registry = self.state.registry();
+        let config = knode_config::Config::load_from(&self.home.join(knode_config::CONFIG_FILE));
+        let config = match config {
+            Ok(config) => {
+                self.last_config_error = None;
+                config
+            }
+            Err(e) => {
+                let e = e.to_string();
+                if self.last_config_error.as_ref() != Some(&e) {
+                    eprintln!("Knode Service: sources stopped, config.toml cannot be read: {e}");
+                }
+                self.last_config_error = Some(e);
+                registry.set_active(false);
+                return Vec::new();
+            }
+        };
+        let active = config.sources_enabled();
+        registry.set_active(active);
+        if !active {
+            return Vec::new();
+        }
+        let mut paths: Vec<PathBuf> = config
+            .known_spaces()
+            .into_iter()
+            .filter(|p| p.is_absolute() && p.exists())
+            .collect();
+        paths.extend(self.state.open_paths());
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut entries = Vec::new();
+        for path in paths {
+            let Ok(space) = self.state.space(&path) else {
+                continue;
+            };
+            let space = lock_ignoring_poison(&space);
+            let space_id = space.manifest().id.clone();
+            if !seen.insert(space_id.clone()) {
+                continue;
+            }
+            let settings = match source_settings(&space) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    eprintln!(
+                        "Knode Service: the sources of {} cannot be read: {e}",
+                        space.path().display()
+                    );
+                    continue;
+                }
+            };
+            for (id, setting) in settings {
+                if !setting.on {
+                    continue;
+                }
+                if let Some(connector) = registry.connector(&id) {
+                    entries.push(Entry {
+                        space: space.path().to_path_buf(),
+                        space_id: space_id.clone(),
+                        connector: connector.clone(),
+                        source_id: id,
+                        setting,
+                    });
+                }
+            }
+        }
+        entries
+    }
+
+    /// Watches the files of the connectors that run, and stops watching the others.
+    fn watch(&mut self, entries: &[Entry]) {
+        let mut wanted: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        for entry in entries {
+            if let Trigger::Watch { paths, .. } = entry.connector.trigger() {
+                wanted.insert(entry.source_id.clone(), paths);
+            }
+        }
+        self.watchers
+            .retain(|id, (paths, _)| wanted.get(id) == Some(paths));
+        for (id, paths) in wanted {
+            if self.watchers.contains_key(&id) {
+                continue;
+            }
+            match watcher(&id, &paths, self.wake.clone()) {
+                Ok(watcher) => {
+                    self.watchers.insert(id, (paths, watcher));
+                }
+                Err(e) => eprintln!("Knode Service: cannot watch the files of {id}: {e}"),
+            }
+        }
+    }
+
+    /// Whether the entry should run now: asked to, or its time came, or its files changed and
+    /// are quiet, unless it waits after an error.
+    fn due(&self, entry: &Entry, files: &BTreeSet<String>) -> bool {
+        let key = entry.key();
+        if self.forced.contains(&key) {
+            return true;
+        }
+        let registry = self.state.registry();
+        let state = registry.states().get(&key).cloned().unwrap_or_default();
+        let now = Timestamp::now();
+        if state.failures > 0 && state.next_run.is_some_and(|t| now < t) {
+            return false;
+        }
+        files.contains(&entry.source_id) || state.next_run.is_none_or(|t| now >= t)
+    }
+
+    /// How long to wait before looking again.
+    fn wait(&self, entries: &[Entry]) -> Duration {
+        let mut wait = self.options.settings_poll;
+        let registry = self.state.registry();
+        let now = Timestamp::now();
+        for entry in entries {
+            if let Some(next) = registry.states().get(&entry.key()).and_then(|s| s.next_run) {
+                let ms = (next.0 - now.0).max(0) as u64;
+                wait = wait.min(Duration::from_millis(ms));
+            }
+        }
+        // Files that changed run once they are quiet.
+        let quiet = self.options.quiet;
+        for changed in self.files_changed.values() {
+            wait = wait.min(quiet.saturating_sub(changed.elapsed()));
+        }
+        wait.max(Duration::from_millis(10))
+    }
+
+    /// Runs one connector for one space and records what happened.
+    fn run(&self, entry: &Entry) {
+        let registry = self.state.registry();
+        let key = entry.key();
+        let started = Timestamp::now();
+        registry.set_running(&key, true);
+        let result = self.batches(entry, &key);
+        registry.set_running(&key, false);
+        let interval = match entry.connector.trigger() {
+            Trigger::Watch { every, .. } => every,
+            Trigger::Interval(every) => every,
+        };
+        let mut states = registry.states();
+        let state = states.entry(&key);
+        state.last_run = Some(started);
+        let now = Timestamp::now();
+        match result {
+            Ok(written) => {
+                state.last_success = Some(now);
+                state.last_items = written.items;
+                state.last_error = None;
+                state.failures = 0;
+                state.next_run = Some(later(now, interval));
+            }
+            Err((written, error)) => {
+                state.last_items = written.items;
+                state.failures = state.failures.saturating_add(1);
+                let wait = backoff(&self.options, state.failures).max(match error {
+                    // A database that changed is not checked again every few seconds.
+                    SourceError::NeedsUpdate(_) => interval,
+                    _ => Duration::ZERO,
+                });
+                state.next_run = Some(later(now, wait));
+                let message = error.to_string();
+                if state
+                    .last_error
+                    .as_ref()
+                    .is_none_or(|e| e.message != message)
+                {
+                    eprintln!("Knode Service: {} failed: {message}", entry.source_id);
+                }
+                state.last_error = Some(LastError {
+                    kind: error.kind().to_string(),
+                    message,
+                    at: now,
+                });
+            }
+        }
+        if let Err(e) = states.save(&self.home) {
+            eprintln!("Knode Service: the state of sources cannot be saved: {e}");
+        }
+    }
+
+    /// Fetches and writes batches until the connector has nothing more, or the run is long
+    /// enough. Returns what was written, and the error that stopped it, if any.
+    fn batches(&self, entry: &Entry, key: &str) -> Result<Written, (Written, SourceError)> {
+        let mut written = Written::default();
+        entry.connector.check().map_err(|e| (written, e))?;
+        let registry = self.state.registry();
+        let secrets = SourceSecrets::new(&self.home, &entry.source_id);
+        let by = provenance(&entry.source_id);
+        for _ in 0..self.options.max_batches.max(1) {
+            if self.stopping.load(Ordering::SeqCst) {
+                break;
+            }
+            let cursor = registry.states().get(key).and_then(|s| s.cursor.clone());
+            let request = FetchRequest {
+                space_id: &entry.space_id,
+                cursor: cursor.as_ref(),
+                history: entry.setting.history,
+                since: entry.setting.since,
+                excluded: &entry.setting.exclude,
+                max_items: self.options.max_items.max(1),
+                secrets: &secrets,
+            };
+            let fetched = entry.connector.fetch(&request).map_err(|e| (written, e))?;
+            let mut this = Written::default();
+            if let Some(batch) = fetched.batch.filter(|b| !b.is_empty()) {
+                let space = self
+                    .state
+                    .space(&entry.space)
+                    .map_err(|e| (written, SourceError::Failed(e.message)))?;
+                let mut space = lock_ignoring_poison(&space);
+                let mark =
+                    last_change(&space).map_err(|e| (written, SourceError::Failed(e.message)))?;
+                let result = batch.write(&mut space, &by);
+                // What was written before a failure is announced too.
+                let _ = self.state.notify_since(&space, mark);
+                this = result.map_err(|e| (written, e))?;
+                written += this;
+            }
+            // Saved only now that the batch is in the space.
+            {
+                let mut states = registry.states();
+                let state = states.entry(key);
+                state.cursor = Some(fetched.cursor);
+                state.items = state.items.saturating_add(this.items as u64);
+                if let Err(e) = states.save(&self.home) {
+                    return Err((
+                        written,
+                        SourceError::Failed(format!("the cursor cannot be saved: {e}")),
+                    ));
+                }
+            }
+            if !fetched.more {
+                break;
+            }
+        }
+        Ok(written)
+    }
+}
+
+/// The wait after `failures` errors in a row: `backoff` doubled each time, at most
+/// `max_backoff`.
+fn backoff(options: &SourcesOptions, failures: u32) -> Duration {
+    let doubled = options
+        .backoff
+        .saturating_mul(2u32.saturating_pow(failures.saturating_sub(1).min(20)));
+    doubled.min(options.max_backoff)
+}
+
+fn later(now: Timestamp, wait: Duration) -> Timestamp {
+    Timestamp(
+        now.0
+            .saturating_add(wait.as_millis().min(i64::MAX as u128) as i64),
+    )
+}
+
+/// Watches the folders of `paths` (a database and its `-wal` are replaced and written beside
+/// each other) and sends [`Wake::Files`] when anything in them changes.
+fn watcher(
+    id: &str,
+    paths: &[PathBuf],
+    wake: mpsc::Sender<Wake>,
+) -> notify::Result<notify::RecommendedWatcher> {
+    let id = id.to_string();
+    // Events name files by their real path (`/private/var/...` for `/var/...` on macOS).
+    let wanted: Vec<PathBuf> = paths.iter().map(|p| real(p)).collect();
+    let wake = Mutex::new(wake);
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let relevant = match &event {
+            Ok(event) => event.paths.iter().any(|p| touches(&wanted, p)),
+            Err(_) => true,
+        };
+        if relevant {
+            let _ = lock_ignoring_poison(&wake).send(Wake::Files(id.clone()));
+        }
+    })?;
+    let mut folders: BTreeSet<PathBuf> = BTreeSet::new();
+    for path in paths {
+        let path = real(path);
+        let folder = if path.is_dir() {
+            path
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or_default()
+        };
+        if folder.is_dir() {
+            folders.insert(folder);
+        }
+    }
+    for folder in folders {
+        watcher.watch(&folder, RecursiveMode::NonRecursive)?;
+    }
+    Ok(watcher)
+}
+
+/// The real path of `path`: itself when it exists, else its folder's real path and its name.
+fn real(path: &Path) -> PathBuf {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    match (path.parent().map(std::fs::canonicalize), path.file_name()) {
+        (Some(Ok(parent)), Some(name)) => parent.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Whether a change to `path` concerns one of `wanted`: the path itself or anything in it, or
+/// a file beside it whose name starts with its name (`chat.db-wal`).
+fn touches(wanted: &[PathBuf], path: &Path) -> bool {
+    wanted.iter().any(|w| {
+        if path.starts_with(w) {
+            return true;
+        }
+        match (w.parent(), w.file_name(), path.parent(), path.file_name()) {
+            (Some(wp), Some(wn), Some(pp), Some(pn)) => {
+                wp == pp && pn.to_string_lossy().starts_with(&*wn.to_string_lossy())
+            }
+            _ => false,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_up_to_the_most() {
+        let options = SourcesOptions {
+            backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_secs(100),
+            ..SourcesOptions::with_connectors(Vec::new())
+        };
+        assert_eq!(backoff(&options, 1), Duration::from_secs(30));
+        assert_eq!(backoff(&options, 2), Duration::from_secs(60));
+        assert_eq!(backoff(&options, 3), Duration::from_secs(100));
+        assert_eq!(backoff(&options, 400), Duration::from_secs(100));
+    }
+
+    #[test]
+    fn a_database_and_its_wal_are_watched() {
+        let wanted = vec![PathBuf::from("/x/Messages/chat.db")];
+        assert!(touches(&wanted, Path::new("/x/Messages/chat.db")));
+        assert!(touches(&wanted, Path::new("/x/Messages/chat.db-wal")));
+        assert!(!touches(&wanted, Path::new("/x/Messages/other.db")));
+        let folder = vec![PathBuf::from("/x/Mail")];
+        assert!(touches(&folder, Path::new("/x/Mail/V10/INBOX.mbox/1.emlx")));
+    }
+}
