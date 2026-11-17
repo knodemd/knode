@@ -8,6 +8,12 @@
 //! connects with its own key: Knode Service checks its grants on every call and records its
 //! writes under the agent's name, such as `claude-code`.
 //!
+//! When the space is not set up yet (see [`knode_vault::onboarding::is_set_up`]), the
+//! instructions the server sends to an agent that runs commands on this machine (Claude Code,
+//! Codex) ask it to offer to set Knode up for the person with the `setup_guide` tool, so
+//! connecting an agent is enough to get started. Other agents are asked to send the person to
+//! Get started in the Knode app.
+//!
 //! ```no_run
 //! use knode_mcp::{DirectBackend, run_stdio};
 //!
@@ -23,12 +29,12 @@ mod service;
 pub mod tools;
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
+    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -58,6 +64,30 @@ link_nodes, with a kind from link_kinds that says how they relate. Search first 
 existing node instead of creating a duplicate. history shows who changed what; undo takes back a \
 change of your own. Use read_excerpt for bounded body ranges of long notes; its snapshot is for continuation, not a full-note rewrite. Read surrounding ranges when qualifications may be missing and read_node before rewriting a note.";
 
+/// What the server adds to [`INSTRUCTIONS`] when the space it serves is not set up yet and the
+/// agent runs commands on this machine (see [`runs_commands`]), which the guide needs.
+pub const SETUP_INSTRUCTIONS: &str = "This person has just connected Knode and their memory is \
+empty: Knode is not set up yet. Offer once, in a sentence, to set it up for them now (bring \
+their notes, projects and their agents' memory into Knode); start only if they agree. Then call \
+the setup_guide tool and follow it step by step for the space you are connected to, asking only \
+what it says to ask, in the person's language.";
+
+/// What the server adds to [`INSTRUCTIONS`] when the space is not set up yet and the agent may
+/// not run commands on this machine, such as Claude Desktop: the guide needs the `knode`
+/// command, so the agent sends the person to the app instead.
+pub const SETUP_IN_APP_INSTRUCTIONS: &str = "Knode is not set up yet: this person's memory is \
+empty. Setting it up runs commands on their computer. If they ask about Knode or their memory, \
+tell them to open the Knode app and choose Get started.";
+
+/// The MCP clients that run commands on this machine, by the name they give in `initialize`:
+/// Claude Code (`claude-code`) and Codex (`codex-mcp-client`, `codex`). Any other client,
+/// including one that gives no name, counts as one that cannot, so it is never asked to follow
+/// a guide it cannot run.
+pub fn runs_commands(client: &str) -> bool {
+    let client = client.trim().to_ascii_lowercase();
+    client == "claude-code" || client == "codex" || client.starts_with("codex-")
+}
+
 /// The version of this crate.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -67,12 +97,15 @@ pub fn version() -> &'static str {
 #[derive(Debug)]
 pub struct KnodeServer<B> {
     backend: Arc<B>,
+    /// Whether the space is set up, asked once, the first time the instructions are needed.
+    set_up: Arc<OnceLock<bool>>,
 }
 
 impl<B> Clone for KnodeServer<B> {
     fn clone(&self) -> Self {
         KnodeServer {
             backend: Arc::clone(&self.backend),
+            set_up: Arc::clone(&self.set_up),
         }
     }
 }
@@ -82,12 +115,31 @@ impl<B: Backend> KnodeServer<B> {
     pub fn new(backend: B) -> Self {
         KnodeServer {
             backend: Arc::new(backend),
+            set_up: Arc::default(),
         }
     }
 
     /// The backend.
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// What the server tells the agent `client` (the name it gave in `initialize`) when it
+    /// connects: [`INSTRUCTIONS`], and after them, when the space is not set up yet,
+    /// [`SETUP_INSTRUCTIONS`] for an agent that [`runs_commands`] or
+    /// [`SETUP_IN_APP_INSTRUCTIONS`] for any other. Whether it is set up is asked of the backend
+    /// once and kept; a space that cannot be asked counts as set up.
+    pub fn instructions(&self, client: Option<&str>) -> String {
+        let set_up = *self
+            .set_up
+            .get_or_init(|| self.backend.is_set_up().unwrap_or(true));
+        if set_up {
+            INSTRUCTIONS.to_string()
+        } else if client.is_some_and(runs_commands) {
+            format!("{INSTRUCTIONS}\n\n{SETUP_INSTRUCTIONS}")
+        } else {
+            format!("{INSTRUCTIONS}\n\n{SETUP_IN_APP_INSTRUCTIONS}")
+        }
     }
 }
 
@@ -121,7 +173,18 @@ impl<B: Backend> ServerHandler for KnodeServer<B> {
         server.website_url = Some("https://knode.md".into());
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(server)
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(self.instructions(None))
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut result = self.negotiate_initialize(&request)?;
+        result.instructions = Some(self.instructions(Some(&request.client_info.name)));
+        Ok(result)
     }
 
     async fn list_tools(
@@ -203,6 +266,90 @@ mod tests {
         assert_eq!(
             search.annotations.as_ref().unwrap().read_only_hint,
             Some(true)
+        );
+        let setup = tools.iter().find(|t| t.name == "setup_guide").unwrap();
+        let hints = setup.annotations.as_ref().unwrap();
+        assert_eq!(setup.title.as_deref(), Some("Set up Knode"));
+        assert_eq!(hints.read_only_hint, Some(true));
+        assert_eq!(hints.idempotent_hint, Some(true));
+        // Only the instructions for a space that is not set up nudge agents to it, and only
+        // agents that can run it.
+        assert!(!INSTRUCTIONS.contains("setup_guide"));
+        assert!(SETUP_INSTRUCTIONS.contains("setup_guide"));
+        assert!(!SETUP_IN_APP_INSTRUCTIONS.contains("setup_guide"));
+    }
+
+    fn instructions_of(space: knode_format::Space) -> String {
+        KnodeServer::new(DirectBackend::from_space(space)).instructions(Some("claude-code"))
+    }
+
+    #[test]
+    fn only_agents_that_run_commands_are_asked_to_set_up_and_only_as_an_offer() {
+        assert!(runs_commands("claude-code"));
+        assert!(runs_commands("codex-mcp-client"));
+        assert!(runs_commands("Codex"));
+        for other in [
+            "claude-ai",
+            "Claude Desktop",
+            "cursor-vscode",
+            "",
+            UNKNOWN_AGENT,
+        ] {
+            assert!(!runs_commands(other), "{other}");
+        }
+        // An offer: the agent asks first.
+        assert!(!SETUP_INSTRUCTIONS.contains("without asking"));
+        assert!(SETUP_INSTRUCTIONS.contains("only if they agree"));
+        assert!(SETUP_IN_APP_INSTRUCTIONS.contains("Get started"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = |name: &str| {
+            let path = dir.path().join(format!("{name}.knode"));
+            KnodeServer::new(DirectBackend::from_space(
+                knode_format::Space::create(path, name).unwrap(),
+            ))
+        };
+        let shell = fresh("Shell").instructions(Some("claude-code"));
+        assert!(shell.ends_with(SETUP_INSTRUCTIONS), "{shell}");
+        for (name, client) in [("Desktop", Some("claude-ai")), ("Nameless", None)] {
+            let text = fresh(name).instructions(client);
+            assert!(text.starts_with(INSTRUCTIONS));
+            assert!(text.ends_with(SETUP_IN_APP_INSTRUCTIONS), "{text}");
+            assert!(!text.contains("setup_guide"), "{text}");
+        }
+        // What the server says before it knows the client is for an agent without a shell.
+        let info = fresh("Info").get_info().instructions.unwrap_or_default();
+        assert!(info.ends_with(SETUP_IN_APP_INSTRUCTIONS), "{info}");
+    }
+
+    #[test]
+    fn asks_the_agent_to_set_up_a_space_that_is_not_set_up() {
+        use knode_format::{NewNode, Provenance, Space, kinds};
+        let dir = tempfile::tempdir().unwrap();
+
+        let fresh = Space::create(dir.path().join("Fresh.knode"), "Fresh").unwrap();
+        let text = instructions_of(fresh);
+        assert!(text.starts_with(INSTRUCTIONS));
+        assert!(text.ends_with(SETUP_INSTRUCTIONS), "{text}");
+
+        let mut with_project = Space::create(dir.path().join("Work.knode"), "Work").unwrap();
+        let mut project = NewNode::note("Web", "");
+        project.kind = kinds::PROJECT.into();
+        with_project
+            .create_node(project, &Provenance::person("Ada"))
+            .unwrap();
+        assert_eq!(instructions_of(with_project), INSTRUCTIONS);
+
+        let onboarded = Space::create(dir.path().join("Notes.knode"), "Notes").unwrap();
+        std::fs::write(onboarded.path().join("onboarding.json"), "{}").unwrap();
+        assert_eq!(instructions_of(onboarded), INSTRUCTIONS);
+
+        // A space that cannot be opened is not pushed to be set up.
+        let missing = KnodeServer::new(DirectBackend::unavailable("no space"));
+        assert_eq!(missing.instructions(Some("claude-code")), INSTRUCTIONS);
+        assert_eq!(
+            missing.get_info().instructions.as_deref(),
+            Some(INSTRUCTIONS)
         );
     }
 }

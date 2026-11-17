@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use knode_config::{Config, Paths};
 use knode_format::{FolderProject, Manifest, Provenance, Space, setting_keys};
+use knode_service::spaces::{FolderOverlap, SpaceFolders};
 use knode_service::{Client, FolderInfo, FolderInput, spaces};
 
 use crate::service;
@@ -86,6 +87,14 @@ pub enum FoldersAction {
     Remove {
         /// The folder's path, or its id from `knode folders list`.
         folder: String,
+    },
+    /// List the project folders of every space Knode knows that overlap: the same folder in two
+    /// spaces (its conversations are captured into both), or a folder inside another (its
+    /// conversations go to the inner folder's space only).
+    Overlaps {
+        /// Print the overlaps as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -219,7 +228,7 @@ pub fn run(paths: &Paths, action: Option<SpacesAction>, json: bool) -> Result<()
             set_setting(&path, setting_keys::CAPTURE_ENABLED, Some(value), &by)?;
             match state {
                 Switch::On => println!(
-                    "Agent conversations are captured into {} again.",
+                    "Agent conversations are captured into {} from now on.",
                     name_of(&path)
                 ),
                 Switch::Off => println!(
@@ -343,7 +352,7 @@ fn list(paths: &Paths, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
+pub fn folders(paths: &Paths, space: &Path, action: FoldersAction) -> Result<()> {
     let by = crate::person();
     let client = service::client();
     match action {
@@ -363,6 +372,13 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             for info in &folders {
                 print_folder(info);
             }
+            let here = canonical(space);
+            let overlaps = overlaps(paths, client.as_ref(), Some(space))?;
+            warn_overlaps(
+                overlaps
+                    .iter()
+                    .filter(|o| o.outer.space == here || o.inner.space == here),
+            );
             Ok(())
         }
         FoldersAction::Add {
@@ -414,6 +430,28 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             if info.missing {
                 eprintln!("warning: {} does not exist on this machine", path.display());
             }
+            let overlaps = overlaps(paths, client.as_ref(), Some(space))?;
+            let id = &info.folder.id;
+            warn_overlaps(
+                overlaps
+                    .iter()
+                    .filter(|o| &o.outer.folder == id || &o.inner.folder == id),
+            );
+            Ok(())
+        }
+        FoldersAction::Overlaps { json } => {
+            let overlaps = overlaps(paths, client.as_ref(), Some(space))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&overlaps)?);
+                return Ok(());
+            }
+            if overlaps.is_empty() {
+                println!("No project folders overlap: each one's conversations go to one space.");
+                return Ok(());
+            }
+            for overlap in &overlaps {
+                println!("{}", overlap.message);
+            }
             Ok(())
         }
         FoldersAction::Remove { folder } => {
@@ -447,6 +485,93 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The folders of every space capture routes conversations over: the spaces in `config.toml`
+/// that exist and are not archived, and `also` (the space a command works on). Each space once,
+/// by its canonical path; a space that cannot be read is left out with a warning.
+pub fn routed_spaces(
+    paths: &Paths,
+    client: Option<&Client>,
+    also: Option<&Path>,
+) -> Result<Vec<SpaceFolders>> {
+    let config = Config::load(paths)?;
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut all = Vec::new();
+    let candidates = config
+        .known_spaces()
+        .into_iter()
+        .chain(also.map(Path::to_path_buf));
+    for path in candidates {
+        if !path.exists() || knode_config::is_archived_space(&path) {
+            continue;
+        }
+        let path = canonical(&path);
+        if seen.contains(&path) {
+            continue;
+        }
+        seen.push(path.clone());
+        let read = || -> Result<SpaceFolders> {
+            Ok(match client {
+                Some(client) => SpaceFolders {
+                    name: Manifest::read(&path)?.name,
+                    folders: client
+                        .folders(&path)?
+                        .into_iter()
+                        .map(|info| info.folder)
+                        .collect(),
+                    // Absent means on, anything but `on` off, as capture reads it.
+                    capture: client
+                        .settings(&path)?
+                        .get(setting_keys::CAPTURE_ENABLED)
+                        .is_none_or(|value| value == "on"),
+                    space: path.clone(),
+                },
+                None => SpaceFolders {
+                    space: path.clone(),
+                    ..SpaceFolders::of(&Space::open(&path)?)?
+                },
+            })
+        };
+        match read() {
+            Ok(space) => all.push(space),
+            Err(error) => eprintln!(
+                "warning: cannot read the folders of {}: {error:#}",
+                path.display()
+            ),
+        }
+    }
+    Ok(all)
+}
+
+/// The project folders that overlap across [`routed_spaces`].
+fn overlaps(
+    paths: &Paths,
+    client: Option<&Client>,
+    also: Option<&Path>,
+) -> Result<Vec<FolderOverlap>> {
+    Ok(spaces::folder_overlaps(&routed_spaces(
+        paths, client, also,
+    )?))
+}
+
+/// Prints overlapping folders as warnings, on standard error.
+fn warn_overlaps<'a>(overlaps: impl Iterator<Item = &'a FolderOverlap>) {
+    let mut any = false;
+    for overlap in overlaps {
+        any = true;
+        eprintln!("warning: {}", overlap.message);
+    }
+    if any {
+        eprintln!(
+            "`knode folders overlaps` lists every overlap; `knode folders remove` removes a \
+             folder from a space."
+        );
     }
 }
 

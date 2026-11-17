@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use knode_format::{NewNode, Provenance, Space, kinds};
+use knode_format::{NewNode, Provenance, Space, kinds, setting_keys};
 use knode_service::{
     Agent, CaptureOptions, ChangeKind, Client, Config, Event, ServiceHandle, WatchOptions, start,
 };
@@ -25,13 +25,32 @@ struct Fixture {
 
 impl Fixture {
     /// A service with capture on, following session folders in a temporary folder, with a space
-    /// that is not yet the default.
+    /// that is not yet the default and where the person turned capture on.
     fn new() -> Self {
+        Fixture::with_space(true)
+    }
+
+    /// The same with a space just created, as `knode init` leaves it.
+    fn fresh() -> Self {
+        Fixture::with_space(false)
+    }
+
+    fn with_space(capture_on: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture { dir, service: None };
         fs::create_dir_all(fixture.claude()).unwrap();
         fs::create_dir_all(fixture.codex().join("2026/01/02")).unwrap();
-        drop(Space::create(fixture.space(), "Personal").unwrap());
+        let mut space = Space::create(fixture.space(), "Personal").unwrap();
+        if capture_on {
+            space
+                .set_setting(
+                    setting_keys::CAPTURE_ENABLED,
+                    Some("on"),
+                    &Provenance::person("tester"),
+                )
+                .unwrap();
+        }
+        drop(space);
         let options = CaptureOptions {
             roots: Some(vec![
                 (Agent::ClaudeCode, fixture.claude()),
@@ -93,6 +112,30 @@ impl Drop for Fixture {
 
 /// One Claude Code record of a user or assistant message.
 fn record(project: &str, session: &str, role: &str, minute: u32, text: &str) -> String {
+    record_at(
+        project,
+        session,
+        role,
+        minute,
+        &format!("2026-01-02T10:{minute:02}:00.000Z"),
+        text,
+    )
+}
+
+/// A record of a session held now, after anything a test turned on.
+fn record_now(project: &str, session: &str, role: &str, minute: u32, text: &str) -> String {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    record_at(project, session, role, minute, &now, text)
+}
+
+fn record_at(
+    project: &str,
+    session: &str,
+    role: &str,
+    minute: u32,
+    timestamp: &str,
+    text: &str,
+) -> String {
     let message = if role == "assistant" {
         json!({"role": "assistant", "model": "claude-example-2",
                "content": [{"type": "text", "text": text}]})
@@ -102,7 +145,7 @@ fn record(project: &str, session: &str, role: &str, minute: u32, text: &str) -> 
     let line = json!({
         "type": role, "sessionId": session, "cwd": project, "gitBranch": "main",
         "isSidechain": false, "uuid": format!("{role}-{minute}"),
-        "timestamp": format!("2026-01-02T10:{minute:02}:00.000Z"), "message": message,
+        "timestamp": timestamp, "message": message,
     });
     format!("{line}\n")
 }
@@ -377,4 +420,149 @@ fn routes_conversations_by_the_folders_of_every_space() {
         assert!(client.search(space, "more", 10).unwrap().is_empty());
     }
     assert_eq!(conversations(&client, &personal).len(), 1);
+}
+
+/// Writes a session from before the space was set up, names the space the default and checks
+/// that capture leaves it alone; then `release` sets the space up in some way, and the session
+/// is captured.
+fn waits_for_setup_until(release: impl FnOnce(&Fixture, &Client, &Path)) {
+    let (fixture, client, space) = waiting_space();
+    release(&fixture, &client, &space);
+    wait_until("the earlier session once the space is set up", || {
+        conversations(&client, &space) == vec!["An earlier private chat".to_string()]
+    });
+}
+
+/// A new space named the default, with a session from before it was set up that capture left
+/// alone.
+fn waiting_space() -> (Fixture, Client, PathBuf) {
+    let fixture = Fixture::fresh();
+    append(
+        &fixture.session(PROJECT, "old-1"),
+        &record(PROJECT, "old-1", "user", 0, "An earlier private chat"),
+    );
+    let client = fixture.client();
+    fixture.write_config("");
+    let space = fs::canonicalize(fixture.space()).unwrap();
+    wait_until("capture to run", || {
+        client.status().unwrap().capture.is_some()
+    });
+    thread::sleep(Duration::from_millis(800));
+    assert!(client.recent(&space, 10).unwrap().is_empty());
+    let state = fs::read_to_string(fixture.home().join("capture/state.json")).unwrap_or_default();
+    assert!(!state.contains("An earlier private chat"));
+    (fixture, client, space)
+}
+
+#[test]
+fn a_new_space_turned_on_captures_from_then_on_without_earlier_sessions() {
+    let (fixture, client, space) = waiting_space();
+    let settings = client
+        .set_setting(&space, setting_keys::CAPTURE_ENABLED, Some("on"), &me())
+        .unwrap();
+    // The choice is kept, so it is not mistaken for the default, with when it was made.
+    assert_eq!(settings[setting_keys::CAPTURE_ENABLED], "on");
+    assert!(settings.contains_key("capture.since"), "{settings:?}");
+
+    // "From now on": a session started after is captured, the earlier one is not.
+    append(
+        &fixture.session(PROJECT, "new-1"),
+        &record_now(PROJECT, "new-1", "user", 0, "A chat after setup"),
+    );
+    wait_until("the session started after capture was turned on", || {
+        conversations(&client, &space) == vec!["A chat after setup".to_string()]
+    });
+    // The earlier session grows too, after capture was turned on: it still stays out.
+    append(
+        &fixture.session(PROJECT, "old-1"),
+        &record_now(PROJECT, "old-1", "assistant", 1, "More of the earlier chat"),
+    );
+    append(
+        &fixture.session(PROJECT, "new-1"),
+        &record_now(PROJECT, "new-1", "assistant", 1, "An answer"),
+    );
+    thread::sleep(Duration::from_millis(1000));
+    assert_eq!(
+        conversations(&client, &space),
+        vec!["A chat after setup".to_string()]
+    );
+}
+
+#[test]
+fn a_space_turned_off_and_on_again_does_not_bring_what_was_held_meanwhile() {
+    let fixture = Fixture::fresh();
+    let client = fixture.client();
+    let space = fs::canonicalize(fixture.space()).unwrap();
+    client
+        .set_setting(&space, setting_keys::CAPTURE_ENABLED, Some("off"), &me())
+        .unwrap();
+    fixture.write_config("");
+    append(
+        &fixture.session(PROJECT, "off-1"),
+        &record(PROJECT, "off-1", "user", 0, "Held while capture was off"),
+    );
+    wait_until("capture to run", || {
+        client.status().unwrap().capture.is_some()
+    });
+    thread::sleep(Duration::from_millis(800));
+    client
+        .set_setting(&space, setting_keys::CAPTURE_ENABLED, Some("on"), &me())
+        .unwrap();
+    append(
+        &fixture.session(PROJECT, "on-1"),
+        &record_now(PROJECT, "on-1", "user", 0, "Held once it was on"),
+    );
+    wait_until("the session held once capture was on again", || {
+        conversations(&client, &space) == vec!["Held once it was on".to_string()]
+    });
+}
+
+#[test]
+fn a_new_space_waits_for_a_note_of_the_person() {
+    waits_for_setup_until(|_, client, space| {
+        client
+            .create_node(space, NewNode::note("Plans", "Mine."), &me())
+            .unwrap();
+    });
+}
+
+#[test]
+fn a_new_space_waits_for_onboarding() {
+    waits_for_setup_until(|fixture, _, _| {
+        fs::write(fixture.space().join("onboarding.json"), "{}").unwrap();
+    });
+}
+
+#[test]
+fn a_new_space_waits_for_a_folder() {
+    waits_for_setup_until(|_, client, space| {
+        let folder = knode_service::FolderInput {
+            id: None,
+            kind: "project".into(),
+            path: "/Users/example/elsewhere".into(),
+            capture: true,
+            rules: json!({}),
+        };
+        client.set_folder(space, &folder, &me()).unwrap();
+    });
+}
+
+#[test]
+fn a_new_space_turned_off_stays_off() {
+    let fixture = Fixture::fresh();
+    append(
+        &fixture.session(PROJECT, "old-1"),
+        &record(PROJECT, "old-1", "user", 0, "An earlier private chat"),
+    );
+    let client = fixture.client();
+    let space = fs::canonicalize(fixture.space()).unwrap();
+    client
+        .set_setting(&space, setting_keys::CAPTURE_ENABLED, Some("off"), &me())
+        .unwrap();
+    fixture.write_config("");
+    client
+        .create_node(&space, NewNode::note("Plans", "Mine."), &me())
+        .unwrap();
+    thread::sleep(Duration::from_millis(1000));
+    assert!(conversations(&client, &space).is_empty());
 }

@@ -6,6 +6,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case newSpace
     case onboarding
     case onboardingReview(URL)
+    /// Connect your agents, on its own.
+    case connectAgents
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -47,6 +49,15 @@ final class AppModel {
     private(set) var defaultSpaceURL: URL?
     /// The sheet shown over the window, if any.
     var sheet: SpaceSheet?
+
+    /// Whether Connect your agents can open now: never over another sheet, which may be busy (Get
+    /// started importing, for one) and shows its own way there.
+    var canShowConnectAgents: Bool { sheet == nil || sheet == .connectAgents }
+
+    /// Opens Connect your agents unless another sheet is open.
+    func showConnectAgents() {
+        if canShowConnectAgents { sheet = .connectAgents }
+    }
     /// The space the person asked to take off the sidebar, while they confirm.
     var spaceToRemove: SpaceItem?
     private(set) var selectedSpaceID: Space.ID?

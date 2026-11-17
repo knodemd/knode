@@ -303,3 +303,115 @@ enum AgentSpaces {
         return rows
     }
 }
+
+/// Connect your agents: the agents of this machine, Claude Code first, each with a Connect button,
+/// and what to do next once one is connected. On the first run and in Get started.
+struct ConnectAgentsPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
+    @State private var connect: ConnectAgentsModel
+    @State private var space: URL?
+
+    init() {
+        let refusal = ConnectAgentsModel.moveFirst(
+            executable: CommandLineTool.forThisApp.executable().resolvingSymlinksInPath(),
+            bundle: Bundle.main.bundleURL.resolvingSymlinksInPath(),
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
+        _connect = State(initialValue: ConnectAgentsModel(refusal: refusal) { arguments in
+            try await KnodeCommand.withShellPath().run(arguments)
+        })
+    }
+
+    private var spaces: [SpaceItem] { model.sidebarSpaces.filter { !$0.isExample && !$0.isMissing } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x3) {
+            KExplanation("Connecting gives an agent a key of its own, kept in your Keychain, and adds Knode to its settings. The first time, it can read and write only this space.")
+            if let refusal = connect.refusal {
+                KBanner(.warning, title: "Knode is not in Applications", message: refusal, actions: {
+                    KButton("Move to Applications", icon: .folder, kind: .primary, size: .small) {
+                        _ = ApplicationMover().offerToMove(evenIfDeclined: true)
+                    }
+                })
+            }
+            if spaces.isEmpty {
+                KExplanation("You have no space yet: your agent will make one when it sets up your memory.")
+            } else {
+                KSettingRow("Space") {
+                    KDropdown(selection: $space, options: spaces.map { KOption(Optional($0.url), $0.isDefault ? "\($0.name) (space for agents)" : $0.name) }, size: .small)
+                        .frame(width: 260)
+                }
+            }
+            switch connect.state {
+            case .loading:
+                HStack(spacing: KSpace.x2) { KSpinner(); KExplanation("Looking for your agents") }
+            case .failed(let message):
+                KErrorText(message).textSelection(.enabled)
+                KButton("Check again", icon: .search, size: .small) { Task { await connect.load() } }
+            case .loaded where connect.agents.isEmpty:
+                KExplanation("No agents found on this Mac. Install Claude Code or Codex, then check again.")
+                KButton("Check again", icon: .search, size: .small) { Task { await connect.load() } }
+            case .loaded:
+                ForEach(connect.agents) { agent in row(agent) }
+                HStack {
+                    Spacer()
+                    KButton("Connect all detected", icon: .connect, kind: .primary, size: .small) {
+                        Task { await connect.connectAllDetected(space: space, defaultSpace: model.defaultSpaceURL) }
+                    }
+                    .disabled(connect.isBusy || connect.refusal != nil || connect.detectedNotConnected.isEmpty)
+                }
+            }
+        }
+        .task { await connect.load() }
+        .onAppear { if space == nil { space = model.defaultSpaceURL ?? spaces.first?.url } }
+    }
+
+    private func row(_ agent: AgentOnThisMachine) -> some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            HStack(spacing: KSpace.x2) {
+                Text(agent.title).font(KFont.ui(13, .semibold))
+                if !agent.detected { Text("Not found on this Mac").font(KFont.ui(11)).foregroundStyle(theme.muted) }
+                Spacer()
+                if agent.connected {
+                    HStack(spacing: KSpace.x1) { KIcon(.done, size: .sm); Text("Connected").font(KFont.ui(12)) }
+                } else if connect.outcomes[agent.agent] == .connecting {
+                    KSpinner()
+                } else {
+                    KButton("Connect", icon: .connect, size: .small) {
+                        Task { await connect.connect(agent, space: space, defaultSpace: model.defaultSpaceURL) }
+                    }
+                    .disabled(connect.isBusy || connect.refusal != nil)
+                }
+            }
+            if connect.connectedNow.contains(agent.agent) {
+                KExplanation(ConnectAgentsModel.nextStep(for: agent.title))
+            }
+            switch connect.outcomes[agent.agent] {
+            case .notConnected(let text), .failed(let text):
+                KErrorText(text.isEmpty ? "\(agent.title) is not connected yet." : text).textSelection(.enabled)
+            default:
+                EmptyView()
+            }
+        }
+    }
+}
+
+/// The Connect your agents step on its own, after the `knode` command is installed on the first
+/// run and from the Knode menu.
+struct ConnectAgentsSheet: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        KSheetSurface(width: 560) {
+            KSheetTitle(kicker: "Get started", title: "Connect your agents", close: { model.sheet = nil })
+            ConnectAgentsPanel()
+            HStack {
+                Spacer()
+                KButton("Done", icon: .done, kind: .primary) { model.sheet = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .knodeTheme()
+    }
+}
