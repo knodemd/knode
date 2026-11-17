@@ -28,6 +28,27 @@ pub(crate) fn is_exported_mailbox(dir: &Path) -> bool {
     file_name(dir).ends_with(".mbox") && dir.join("mbox").is_file()
 }
 
+/// Whether every file and folder in `dir` (hidden ones aside) is an `.mbox` file, and there is
+/// at least one.
+pub(crate) fn only_mbox_files(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut any = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = file_name(&path);
+        if name.starts_with('.') {
+            continue;
+        }
+        if !(path.is_file() && name.ends_with(".mbox")) {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
 /// The `mbox` files at `path`, each with the folder its messages are in when they have no
 /// Gmail labels: the file's name without `.mbox`.
 pub(crate) fn files(path: &Path) -> Vec<(PathBuf, String)> {

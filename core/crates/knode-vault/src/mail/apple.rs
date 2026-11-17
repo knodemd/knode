@@ -36,6 +36,12 @@ fn is_version(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// Whether `dir` is a mailbox folder of Apple Mail's store (`INBOX.mbox`), with `.emlx` files
+/// in it.
+pub(crate) fn is_mailbox(dir: &Path) -> bool {
+    file_name(dir).ends_with(".mbox") && has_emlx(dir)
+}
+
 /// Whether there are `.emlx` files in the folder, looking at a limited number of entries.
 pub(crate) fn has_emlx(dir: &Path) -> bool {
     let mut seen = 0;
@@ -80,35 +86,70 @@ fn root(path: &Path) -> Result<PathBuf, MailError> {
 }
 
 /// Every `.emlx` file under `root`, in order, with its mailbox.
-fn files(root: &Path) -> Result<Vec<(PathBuf, String)>, MailError> {
+fn files(root: &Path, report: &mut MailReport) -> Result<Vec<(PathBuf, String)>, MailError> {
     let mut out = Vec::new();
     if root.is_file() {
         out.push((root.to_path_buf(), String::new()));
         return Ok(out);
     }
-    walk(root, root, &mut out)?;
+    // The store itself must be readable; without Full Disk Access it is not.
+    let entries = std::fs::read_dir(root).map_err(read_error(root))?;
+    walk(root, entries, &mut out, report)?;
     Ok(out)
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<(), MailError> {
-    let entries = std::fs::read_dir(dir).map_err(read_error(dir))?;
-    let mut paths = Vec::new();
+/// Walks a folder without following symbolic links. macOS refusing a folder is
+/// [`MailError::NoAccess`]; a folder that cannot be read for another reason is skipped and
+/// listed.
+fn walk(
+    root: &Path,
+    entries: std::fs::ReadDir,
+    out: &mut Vec<(PathBuf, String)>,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
+    let mut found = Vec::new();
     for entry in entries {
-        paths.push(entry.map_err(read_error(dir))?.path());
+        match entry {
+            Ok(entry) => match entry.file_type() {
+                Ok(kind) => found.push((entry.path(), kind)),
+                Err(e) => skip_unreadable(&entry.path(), e, report)?,
+            },
+            Err(e) => skip_unreadable(root, e, report)?,
+        }
     }
-    paths.sort();
-    for path in paths {
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, kind) in found {
         let name = file_name(&path);
         // `MailData` holds Apple Mail's index, not messages.
-        if name.starts_with('.') || name == "maildata" {
+        if name.starts_with('.') || name == "maildata" || kind.is_symlink() {
             continue;
         }
-        if path.is_dir() {
-            walk(root, &path, out)?;
-        } else if name.ends_with(".emlx") {
+        if kind.is_dir() {
+            match std::fs::read_dir(&path) {
+                Ok(entries) => walk(root, entries, out, report)?,
+                Err(e) => skip_unreadable(&path, e, report)?,
+            }
+        } else if kind.is_file() && name.ends_with(".emlx") {
             out.push((path.clone(), mailbox(root, &path)));
         }
     }
+    Ok(())
+}
+
+fn skip_unreadable(
+    path: &Path,
+    error: std::io::Error,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return Err(MailError::NoAccess {
+            path: path.to_path_buf(),
+        });
+    }
+    report.skip(
+        path.display().to_string(),
+        format!("could not be read: {error}"),
+    );
     Ok(())
 }
 
@@ -143,12 +184,19 @@ fn mailbox(root: &Path, file: &Path) -> String {
 /// The message in an `.emlx` file: the bytes its first line counts.
 pub(crate) fn read_emlx(path: &Path) -> Result<Vec<u8>, MailError> {
     let bytes = std::fs::read(path).map_err(read_error(path))?;
-    Ok(message_of(bytes))
+    message_of(bytes).ok_or_else(|| MailError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the length on its first line is not one a message can have",
+        ),
+    })
 }
 
-fn message_of(mut bytes: Vec<u8>) -> Vec<u8> {
+/// The message of an `.emlx` file's bytes; `None` when the length it gives cannot be.
+fn message_of(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
     let Some(newline) = bytes.iter().position(|b| *b == b'\n') else {
-        return bytes;
+        return Some(bytes);
     };
     let Ok(length) = std::str::from_utf8(&bytes[..newline])
         .unwrap_or("")
@@ -156,13 +204,13 @@ fn message_of(mut bytes: Vec<u8>) -> Vec<u8> {
         .parse::<usize>()
     else {
         // No count: the whole file is the message.
-        return bytes;
+        return Some(bytes);
     };
     let start = newline + 1;
-    let end = (start + length).min(bytes.len());
+    let end = start.checked_add(length)?.min(bytes.len());
     bytes.truncate(end);
     bytes.drain(..start);
-    bytes
+    Some(bytes)
 }
 
 /// Reads every message of the store at `path` into `collected`.
@@ -172,8 +220,14 @@ pub(crate) fn read(
     collected: &mut Collector<'_>,
     report: &mut MailReport,
 ) -> Result<(), MailError> {
+    // A mailbox Apple Mail exported is an mbox.
+    if super::mbox::is_exported_mailbox(path)
+        || (path.is_file() && !file_name(path).ends_with(".emlx"))
+    {
+        return super::mbox::read(path, collected, report);
+    }
     let root = root(path)?;
-    let files = files(&root)?;
+    let files = files(&root, report)?;
     if files.is_empty() {
         return Err(MailError::NotRecognized {
             path: path.to_path_buf(),
@@ -231,7 +285,10 @@ mod tests {
         let mut file = format!("{}\n", message.len()).into_bytes();
         file.extend_from_slice(&message);
         file.extend_from_slice(b"<?xml version=\"1.0\"?><plist></plist>\n");
-        assert_eq!(message_of(file), message);
+        assert_eq!(message_of(file), Some(message));
+        // A length that does not fit is refused, not a panic.
+        let huge = format!("{}\nSubject: Hi\n", usize::MAX).into_bytes();
+        assert_eq!(message_of(huge), None);
     }
 
     #[test]
