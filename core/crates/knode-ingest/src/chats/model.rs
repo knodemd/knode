@@ -2,6 +2,7 @@
 //! participants and [`ChatMessage`]s, each with a sender, a time, Markdown text and [`Media`].
 
 use chrono::NaiveDateTime;
+use knode_format::Properties;
 
 use super::ChatFormat;
 
@@ -21,6 +22,8 @@ pub(crate) struct Chat {
     pub participants: Vec<String>,
     /// The messages, oldest first.
     pub messages: Vec<ChatMessage>,
+    /// More properties of its node, such as how its dates are read.
+    pub properties: Properties,
 }
 
 impl Chat {
@@ -33,6 +36,7 @@ impl Chat {
             kind: String::new(),
             participants: Vec::new(),
             messages: Vec::new(),
+            properties: Properties::new(),
         }
     }
 
