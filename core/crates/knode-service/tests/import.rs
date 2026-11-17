@@ -171,6 +171,18 @@ fn every_source_is_told_from_its_path_and_content() {
         )),
         ImportSource::WhatsApp
     );
+    assert_eq!(
+        found(&fx::ingest("chats/telegram-chat")),
+        (ImportSource::Telegram, "Telegram Desktop export".into())
+    );
+    assert_eq!(
+        s(&fx::ingest("chats/telegram-account/result.json")),
+        ImportSource::Telegram
+    );
+    assert_eq!(
+        found(&fx::ingest("chats/slack")),
+        (ImportSource::Slack, "Slack export".into())
+    );
 
     // `from` names it.
     let named = |path: &Path, from| prepare(Some(path), None, Some(from)).map(|p| p.source());
@@ -187,6 +199,7 @@ fn every_source_is_told_from_its_path_and_content() {
     assert!(named(&notes, ImportSource::Export).is_err());
     assert!(named(&notes, ImportSource::Pdf).is_err());
     assert!(named(&notes, ImportSource::WhatsApp).is_err());
+    assert!(named(&whatsapp, ImportSource::Telegram).is_err());
     assert_eq!(
         named(&whatsapp, ImportSource::WhatsApp).unwrap(),
         ImportSource::WhatsApp
@@ -243,6 +256,12 @@ fn every_source_imports_once_through_the_service() {
             ImportSource::WhatsApp,
             1,
         ),
+        (
+            fx::ingest("chats/telegram-account"),
+            ImportSource::Telegram,
+            3,
+        ),
+        (fx::ingest("chats/slack"), ImportSource::Slack, 2),
     ];
     let mut first = true;
     for (path, source, at_least) in cases {

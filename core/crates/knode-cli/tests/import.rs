@@ -39,6 +39,8 @@ fn imports_every_source_told_from_its_path() {
             fx::ingest("chats/whatsapp-ios/WhatsApp Chat - Book Club"),
             "WhatsApp export",
         ),
+        (fx::ingest("chats/telegram-chat"), "Telegram Desktop export"),
+        (fx::ingest("chats/slack"), "Slack export"),
     ];
     for (path, format) in &cases {
         let out = sb.ok(&["import", s(path)]);

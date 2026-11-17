@@ -1,0 +1,5 @@
+[
+ {"type": "message", "user": "U01", "text": "Seeds arrive on *Friday*", "ts": "1772625600.000100", "thread_ts": "1772625600.000100", "reply_count": 1},
+ {"type": "message", "user": "U02", "text": "Thanks <@U01>", "ts": "1772625660.000200", "thread_ts": "1772625600.000100"},
+ {"type": "message", "user": "U02", "text": "Shed is open", "ts": "1772625720.000300"}
+]
