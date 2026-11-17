@@ -11,6 +11,7 @@ mod markdown;
 mod onboard;
 mod readwise;
 mod service;
+mod sources;
 mod spaces;
 
 use std::path::{Path, PathBuf};
@@ -216,6 +217,12 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         agent: Option<String>,
     },
+    /// The importers and connectors of the space: connect a connector with the history to
+    /// bring in, pause or resume it, exclude chats, channels or folders, or disconnect it.
+    Sources {
+        #[command(subcommand)]
+        action: sources::Action,
+    },
     /// Keep or forget the Readwise access token `knode import --from readwise-api` uses.
     Readwise {
         #[command(subcommand)]
@@ -417,6 +424,10 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Command::Mcp { agent } => mcp(&paths, cli.space.as_deref(), agent),
+        Command::Sources { action } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            sources::run(&paths, &space, action, &person())
+        }
         Command::Readwise { action } => readwise::run(&paths, action),
         Command::Agents { action } => agents::run(&paths, action),
         Command::Spaces { action, json } => spaces::run(&paths, action, json),

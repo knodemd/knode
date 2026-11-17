@@ -127,7 +127,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
-| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. |
+| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
 | `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
@@ -471,6 +471,71 @@ kept there either. Its writes are made with the provenance
 `{ "kind": "agent", "actor": "claude-code" | "codex" | ..., "session": "<session id>" }`, go
 through the same space as every client's, one at a time, and are announced with `changed` like
 any other write. `service.status` gives the default space as `capture` while capture runs.
+
+## Sources
+
+A *source* brings things into a space: an *importer* runs once on what the person gives it
+(`import.run`), a *connector* keeps running in Knode Service and brings in what is new (a chat
+app, a mail store, a messaging API). Every connector is off until the person connects it to a
+space. All `sources.*` methods are for people only; `space` is the space's path and `source` the
+source's id (`whatsapp`, `apple-mail`...).
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `sources.list` | `space` | Every source of the space, connectors then importers, as below |
+| `sources.status` | `space`?, `source`? | `[{ "space", "name", "sources": [...] }]`: the connectors connected to the space, or with no `space` to every space the service knows that has one |
+| `sources.connect` | `space`, `source`, `history`?, `on`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. With `on` `false` it is connected paused: its history and the day it was connected are fixed and `sources.containers` and `sources.exclude` work, but nothing is read until `sources.resume`, so what to leave out can be chosen first (connecting paused a source already connected pauses it). The history is chosen once: asking for another one for a connected source fails with `invalid` |
+| `sources.pause` / `sources.resume` | `space`, `source`, `by` | The source, off or on again |
+| `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
+| `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
+| `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
+| `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
+| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays |
+
+```json
+{ "id": "whatsapp", "name": "WhatsApp", "kind": "connector", "reads": "The chats of WhatsApp for Mac",
+  "permissions": ["full-disk-access"], "container": "chat", "state": "idle",
+  "setting": { "on": true, "history": "from-today", "connected_at": 1763372400000,
+               "since": 1763337600000, "exclude": [{ "id": "123@g.us", "name": "Family" }] },
+  "last_run": 1763380000000, "last_success": 1763380000000, "last_items": 4, "items": 120,
+  "next_run": 1763380300000 }
+```
+
+- `kind` is `importer` or `connector`. `permissions` are among `full-disk-access`, `sign-in`,
+  `network`, `calendar`, `contacts`, `microphone` and `photos`.
+- `state` is `importer`, `off` (not connected), `paused`, `unavailable` (connected, but this
+  machine has no such connector), `stopped` (`sources` or `capture` is off in `config.toml`),
+  `running`, `idle`, `failing` (its last run failed; it tries again later, waiting twice as long
+  after each error in a row, up to an hour), `needs-update` (the other app's database changed:
+  nothing is written until Knode is updated) or `needs-attention` (a permission or a sign-in is
+  missing). `last_error` is `{ "kind", "message", "at" }`.
+- Times are milliseconds since 1970. With `from-today`, nothing older than `since`, the start of
+  the day it was connected, is brought in.
+
+The settings of a connector are the person's and belong to the space: they are kept in its
+`source.<id>` setting, as the JSON of `setting`, and changing them is announced with a `space`
+notification (`settings`, `key` `source.<id>`). What a connector did on this machine (where it
+stopped, when it ran, its errors) is kept in `$KNODE_HOME/sources/state.json`, which only its
+owner can read; it never holds what was read. The cursor is saved only after what was read is
+written, and the importers find what they wrote by the service's own ids, so a restart, a lost
+state file or a second device running the same connector writes nothing twice.
+
+A connector runs when the files it watches change (a local database and its `-wal`), at its
+interval, and when `sources.run` asks. A file event runs it only when the size or modification
+time of the files or their `-wal` changed since its last run, so its own reads of them (which
+macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
+open late, so a connector that watches files also runs at least once a minute. Connectors that
+read another app's database read a copy of it, never the live file: a copy made while the app
+wrote the database or its `-wal` is made again, and one that fails SQLite's `quick_check` is
+not read (the run fails and is tried again later). They check its tables and columns first. Their writes are made with
+the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
+in the system credential store (the Keychain on macOS, the Secret Service on Linux), never in a
+space, a settings file or a log. Where Linux has no Secret Service, a connector that needs a
+secret cannot sign in and says to install one (GNOME Keyring or KeePassXC), unless
+`source_secrets_in_files = true` in `config.toml` lets it keep them in a file only its owner can
+read in `$KNODE_HOME/agent-keys/`. `sources.containers` does not keep the space locked while the
+connector lists its chats, which may take long over the network. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
+stops everything Knode Service brings in by itself.
 
 ## Search
 

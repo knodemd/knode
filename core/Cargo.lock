@@ -2138,6 +2138,7 @@ dependencies = [
  "libc",
  "lopdf",
  "md5",
+ "notify",
  "rusqlite",
  "security-framework",
  "serde",
