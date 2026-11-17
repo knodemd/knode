@@ -8,11 +8,12 @@ use super::{Client, absolute, space_path};
 use crate::Result;
 use crate::import::{ImportResult, ImportRunParams, ImportSource, Secret};
 use crate::protocol::methods;
+use knode_vault::mail::MailOptions;
 
 impl Client {
     /// Imports what is at `path` on this machine into the space: a data export, Markdown, a
-    /// session, a PDF, a saved web page, Kindle or Readwise highlights, or the notes of Apple
-    /// Notes, Bear, Notion or Evernote. `from` names the kind; without it, the service tells it
+    /// session, a PDF, a saved web page, Kindle or Readwise highlights, the notes of Apple
+    /// Notes, Bear, Notion or Evernote, or a WhatsApp, Telegram Desktop or Slack chat export. `from` names the kind; without it, the service tells it
     /// from the path. With `from` Apple Notes or Bear and no path, the app's own notes on this
     /// Mac are read. People only.
     pub fn import_path(
@@ -29,6 +30,32 @@ impl Client {
             from,
             by: by.clone(),
             token: None,
+            mail: None,
+        };
+        self.request(methods::IMPORT_RUN, params)
+    }
+
+    /// Imports mail from local files: an `.mbox` file or a folder of them (`from`
+    /// [`ImportSource::Mbox`]), or Apple Mail (`from` [`ImportSource::AppleMail`]), whose own
+    /// store on this Mac is read when `path` is left out. `options` keeps the import to some
+    /// folders and dates, and turns on attachments. Without `from`, the service tells it from
+    /// the path. People only.
+    pub fn import_mail(
+        &self,
+        space: impl AsRef<Path>,
+        path: Option<&Path>,
+        from: Option<ImportSource>,
+        options: &MailOptions,
+        by: &Provenance,
+    ) -> Result<ImportResult> {
+        let params = ImportRunParams {
+            space: space_path(space.as_ref())?,
+            path: path.map(absolute).transpose()?,
+            url: None,
+            from,
+            by: by.clone(),
+            token: None,
+            mail: Some(options.clone()),
         };
         self.request(methods::IMPORT_RUN, params)
     }
@@ -47,6 +74,7 @@ impl Client {
             from: Some(ImportSource::Web),
             by: by.clone(),
             token: None,
+            mail: None,
         };
         self.request(methods::IMPORT_RUN, params)
     }
@@ -67,6 +95,7 @@ impl Client {
             from: Some(ImportSource::ReadwiseApi),
             by: by.clone(),
             token: token.map(|t| Secret(t.to_string())),
+            mail: None,
         };
         self.request(methods::IMPORT_RUN, params)
     }
