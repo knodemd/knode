@@ -25,6 +25,15 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
+  as threads with their people, like a mail import. **Gmail** signs in with Google in your
+  browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
+  (IMAP)** reads any account with an app password (Gmail, iCloud, Fastmail, Yahoo, Outlook or
+  your own server), over TLS only. Every label or mailbox comes in, new ones too, except spam,
+  trash and the ones you exclude. A message already in the space from a Google Takeout export,
+  Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
+  `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
+  removes the secrets from the keychain.
 
 ### v0.3 - Map and import (in progress)
 
