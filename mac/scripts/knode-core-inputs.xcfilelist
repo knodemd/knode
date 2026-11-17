@@ -70,6 +70,8 @@ $(SRCROOT)/../core/crates/knode-ingest/src/opencode.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/reader.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/redact.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/render.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/sources/mod.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/sources/sqlite.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/text.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/vscdb.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/watch.rs
@@ -86,6 +88,7 @@ $(SRCROOT)/../core/crates/knode-service/src/capture.rs
 $(SRCROOT)/../core/crates/knode-service/src/client.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/maps.rs
+$(SRCROOT)/../core/crates/knode-service/src/client/sources.rs
 $(SRCROOT)/../core/crates/knode-service/src/coedit.rs
 $(SRCROOT)/../core/crates/knode-service/src/error.rs
 $(SRCROOT)/../core/crates/knode-service/src/import.rs
@@ -103,6 +106,9 @@ $(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/sources.rs
+$(SRCROOT)/../core/crates/knode-service/src/sources/mod.rs
+$(SRCROOT)/../core/crates/knode-service/src/sources/runtime.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-sync/Cargo.toml
 $(SRCROOT)/../core/crates/knode-sync/src/error.rs
