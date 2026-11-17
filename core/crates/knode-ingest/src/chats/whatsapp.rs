@@ -13,6 +13,7 @@
 //! | Month, day, year | `3/4/26` (United States and others) |
 //! | Year first | `2026-03-04`, `2026. 03. 04.` |
 //! | 12 hours | `9:15 AM`, `9:15 a. m.`, `오후 9:15`, with a narrow no-break space before `AM` |
+//! | A word before the time | `04/03/2026 à 09:15` (French), `4.3.2026 klo 9.15` (Finnish) |
 //!
 //! Lines that do not start with a date continue the message before them. Day and month are
 //! told apart by a number over 12 when there is one, else by the order that keeps the
@@ -36,17 +37,23 @@ use super::files::{Files, file_name, join, parent, stem};
 use super::model::{Chat, ChatMessage, Media, stable_hash};
 use super::render::escape_text;
 
+/// Words some locales write between the date and the time: French `à`, Finnish `klo`.
+const TIME_WORDS: &str = "à|klo";
+
 /// The line that starts a message. Groups: 1 `[`, 2-4 the date's numbers, 5 an East Asian
 /// morning or afternoon before the time, 6-8 hours, minutes and seconds, 9 `a` or `p` of
 /// AM or PM, 10 what ends the date (`] ` or ` - `), 11 the rest.
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
+    Regex::new(&format!(
+        "{}{}(?:(?:{TIME_WORDS})\\s+)?{}",
         r"^[\x{200E}\x{200F}\x{FEFF}\x{202A}-\x{202E}]*(\[)?",
         r"(\d{1,4})[./-] ?(\d{1,2})[./-] ?(\d{1,4})\.?,?\s+",
-        r"(?:(오전|오후|午前|午後|上午|下午)\s?)?",
-        r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
-        r"(?:\s*([AaPp])\.?\s?[Mm]\.?)?",
-        r"(\]\s|\s[-–]\s)(.*)$"
+        concat!(
+            r"(?:(오전|오후|午前|午後|上午|下午)\s?)?",
+            r"(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?",
+            r"(?:\s*([AaPp])\.?\s?[Mm]\.?)?",
+            r"(\]\s|\s[-–]\s)(.*)$"
+        )
     ))
     .expect("a valid regex")
 });
@@ -109,8 +116,8 @@ const NAME_WORDS: &[&str] = &[
 ];
 
 /// The chat file of a WhatsApp export, if it has one: `_chat.txt`, or a `.txt` named after
-/// WhatsApp, the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// WhatsApp, in `root` (see [`super::in_root`]) and the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     let candidate = match &files.single {
         Some(single) if single.to_ascii_lowercase().ends_with(".txt") => Some(single.clone()),
         Some(_) => None,
@@ -119,7 +126,7 @@ pub(crate) fn locate(files: &mut Files) -> Option<String> {
                 files
                     .names()
                     .iter()
-                    .filter(|n| wanted(file_name(n)))
+                    .filter(|n| super::in_root(n, root) && wanted(file_name(n)))
                     .min_by_key(|n| (n.matches('/').count(), n.len()))
                     .cloned()
             };
@@ -329,6 +336,8 @@ pub(crate) struct Read {
     pub note: Option<String>,
     /// Lines that start like a message but whose date is not one, with why.
     pub skipped: Vec<(String, String)>,
+    /// How many secrets in the messages were replaced.
+    pub redacted: usize,
 }
 
 /// Why a chat cannot be imported into the node it was imported into before.
@@ -395,6 +404,7 @@ pub(crate) fn read(
             .insert(super::keys::DATE_ORDER.into(), order.id().into());
     }
     let mut skipped = Vec::new();
+    let mut redacted = 0;
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (h, more) in entries {
         let Some(time) = time(&h, order) else {
@@ -418,6 +428,9 @@ pub(crate) fn read(
                 files.contains(&entry).then_some(entry)
             });
         }
+
+        let (message_text, n) = crate::redact::redact_tokens(&message_text);
+        redacted += n;
 
         let mark = time.format("%Y-%m-%dT%H:%M").to_string();
         let base = stable_hash(&[&mark, sender.as_deref().unwrap_or(""), &without_bidi(&raw)]);
@@ -449,6 +462,7 @@ pub(crate) fn read(
         chat,
         note,
         skipped,
+        redacted,
     }))
 }
 
@@ -604,7 +618,7 @@ fn after_whatsapp(name: &str) -> Option<String> {
 }
 
 /// A name a title can hold: no `[`, `]` or `|`, spaces collapsed.
-fn clean_title(name: &str) -> String {
+pub(crate) fn clean_title(name: &str) -> String {
     without_bidi(name)
         .replace(['[', ']', '|'], " ")
         .split_whitespace()

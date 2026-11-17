@@ -31,10 +31,12 @@ use crate::lock::InstanceLock;
 use crate::paths::{LOCK_FILE, SOCKET_FILE, knode_home};
 use crate::protocol::*;
 use crate::search::{Index, IndexOptions};
+use crate::sources::{Registry, SourcesOptions, SourcesTask};
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
 mod import;
 mod maps;
+mod sources;
 
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
 const CHANGE_BUFFER: usize = 1024;
@@ -60,6 +62,9 @@ pub struct Config {
     pub capture: Option<CaptureOptions>,
     /// Indexing of the open spaces for search by meaning, or `None` for search by words only.
     pub index: Option<IndexOptions>,
+    /// Running the connectors switched on in the spaces, or `None` for none. `sources.*`
+    /// answers either way.
+    pub sources: Option<SourcesOptions>,
 }
 
 impl Config {
@@ -69,16 +74,25 @@ impl Config {
             home: home.into(),
             capture: None,
             index: None,
+            sources: None,
         }
     }
 
     /// A service in the default Knode home (see [`knode_home`](crate::knode_home)) that
-    /// captures conversations and indexes spaces for search by meaning as `config.toml` says.
-    /// This is `knode service run`.
+    /// captures conversations, indexes spaces for search by meaning and runs the connectors of
+    /// the spaces as `config.toml` says. This is `knode service run`.
     pub fn from_env() -> Result<Self> {
         Ok(Config::new(knode_home()?)
             .with_capture(CaptureOptions::default())
-            .with_index(IndexOptions::default()))
+            .with_index(IndexOptions::default())
+            .with_sources(SourcesOptions::default()))
+    }
+
+    /// The same service, running the connectors switched on in the spaces with these options,
+    /// while `sources` and `capture` are on in `config.toml`.
+    pub fn with_sources(mut self, options: SourcesOptions) -> Self {
+        self.sources = Some(options);
+        self
     }
 
     /// The same service, indexing the open spaces for search by meaning with these options,
@@ -210,6 +224,7 @@ struct Bound {
     home: PathBuf,
     capture: Option<CaptureOptions>,
     index: Option<IndexOptions>,
+    sources: Option<SourcesOptions>,
     auth: Auth,
 }
 
@@ -241,6 +256,7 @@ impl Bound {
             home: config.home.clone(),
             capture: config.capture.clone(),
             index: config.index.clone(),
+            sources: config.sources.clone(),
             auth,
         })
     }
@@ -256,11 +272,21 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
         home,
         capture,
         index,
+        sources,
         auth,
     } = bound;
     let listener = UnixListener::from_std(listener)?;
-    let state = Arc::new(State::new(auth));
+    let connectors = match &sources {
+        Some(options) => options.connectors.clone(),
+        None => crate::sources::builtin_connectors(),
+    };
+    let registry = Arc::new(Registry::new(&home, connectors));
+    let state = Arc::new(State::new(auth, registry));
     let index = index.and_then(|options| state.index.start(state.clone(), &home, options));
+    let sources = match sources {
+        Some(options) => Some(SourcesTask::start(state.clone(), home.clone(), options)?),
+        None => None,
+    };
     let capture = match capture {
         Some(options) => Some(CaptureTask::start(state.clone(), home, options)?),
         None => None,
@@ -308,6 +334,9 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
     }
     if let Some(capture) = capture {
         tokio::task::spawn_blocking(move || capture.stop()).await?;
+    }
+    if let Some(sources) = sources {
+        tokio::task::spawn_blocking(move || sources.stop()).await?;
     }
     if let Some(flushing) = flushing {
         let _ = flushing.await;
@@ -376,11 +405,17 @@ pub(crate) struct State {
     docs: Mutex<knode_sync::Docs>,
     /// Search by meaning: the index of the open spaces.
     pub(crate) index: Index,
+    /// The connectors, and what they did on this machine. Locked after a space, never before.
+    sources: Arc<Registry>,
+    /// Wakes the runtime of the sources up, while it runs.
+    sources_wake: Mutex<Option<std::sync::mpsc::Sender<crate::sources::runtime::Wake>>>,
 }
 
 impl State {
-    fn new(auth: Auth) -> Self {
+    fn new(auth: Auth, sources: Arc<Registry>) -> Self {
         State {
+            sources,
+            sources_wake: Mutex::new(None),
             auth,
             spaces: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGE_BUFFER).0,
@@ -693,6 +728,26 @@ impl State {
         *lock_ignoring_poison(&self.capture_wake) = wake;
     }
 
+    /// The connectors, and what they did on this machine.
+    pub(crate) fn registry(&self) -> &Registry {
+        &self.sources
+    }
+
+    /// Where [`State::wake_sources`] sends its wake-ups, or `None` when the runtime stops.
+    pub(crate) fn set_sources_wake(
+        &self,
+        wake: Option<std::sync::mpsc::Sender<crate::sources::runtime::Wake>>,
+    ) {
+        *lock_ignoring_poison(&self.sources_wake) = wake;
+    }
+
+    /// Wakes the runtime of the sources up, if it runs.
+    pub(crate) fn wake_sources(&self, wake: crate::sources::runtime::Wake) {
+        if let Some(sender) = lock_ignoring_poison(&self.sources_wake).as_ref() {
+            let _ = sender.send(wake);
+        }
+    }
+
     /// The canonical paths of the spaces the service has open.
     pub(crate) fn open_paths(&self) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = lock_ignoring_poison(&self.spaces).keys().cloned().collect();
@@ -702,7 +757,7 @@ impl State {
 
     /// Announces every node written by the changes made after `after`, oldest first: for the
     /// writes that touch many nodes, such as an undo or an import.
-    fn notify_since(&self, space: &Space, after: ChangeId) -> Result<(), RpcError> {
+    pub(crate) fn notify_since(&self, space: &Space, after: ChangeId) -> Result<(), RpcError> {
         let mut changes = Vec::new();
         let mut before = None;
         'pages: loop {
@@ -794,7 +849,7 @@ fn require_absolute_dir(dir: &Path) -> Result<(), RpcError> {
 }
 
 /// The id of the newest change of the space, or 0 when it has none.
-fn last_change(space: &Space) -> Result<ChangeId, RpcError> {
+pub(crate) fn last_change(space: &Space) -> Result<ChangeId, RpcError> {
     Ok(space.changes(1, None)?.first().map_or(0, |c| c.id))
 }
 
@@ -1142,6 +1197,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         | methods::DOC_MERGE
         | methods::DOC_UPDATES => crate::coedit::call(state, method, raw),
         methods::IMPORT_RUN => import::run(state, raw),
+        m if m.starts_with(methods::SOURCES_PREFIX) => sources::call(state, m, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(
                 codes::METHOD_NOT_FOUND,

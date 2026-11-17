@@ -32,6 +32,7 @@ use crate::{Error, Result, paths};
 
 mod import;
 mod maps;
+mod sources;
 
 /// How long [`connect_or_spawn`] waits for a new service to listen.
 pub const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
