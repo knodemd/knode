@@ -22,6 +22,12 @@ final class SpaceFoldersModel {
     private(set) var notice: String?
     /// Called when adding a folder created a project, so the sidebar lists it.
     @ObservationIgnored var projectsChanged: (@MainActor () async -> Void)?
+    /// The project folders that overlap, in this space or with another, as the core finds them.
+    private(set) var overlaps: [FolderOverlap] = []
+    /// Where the space is, to tell its folders in `overlaps` apart from those of other spaces.
+    @ObservationIgnored var spaceURL: URL?
+    /// The spaces capture routes over (`config.toml`), compared for overlaps.
+    @ObservationIgnored var captureSpaces: (@MainActor () -> [URL])?
 
     @ObservationIgnored private let store: any SpaceStore
     @ObservationIgnored private var changesTask: Task<Void, Never>?
@@ -59,6 +65,20 @@ final class SpaceFoldersModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+        await loadOverlaps()
+    }
+
+    /// Asks the core which project folders of the spaces capture routes over overlap. Without
+    /// Knode Service none are shown.
+    private func loadOverlaps() async {
+        guard let captureSpaces, spaceURL != nil else { return }
+        overlaps = (try? await store.folderOverlaps(spaces: captureSpaces())) ?? []
+    }
+
+    /// What the core says about each overlap of one folder of this space.
+    func overlapMessages(for folder: SpaceFolder) -> [String] {
+        guard let spaceURL, folder.knownKind == .project else { return [] }
+        return overlaps.filter { $0.involves(folder: folder.id, inSpace: spaceURL) }.map(\.message)
     }
 
     /// Turns capture into the whole space on or off.

@@ -144,3 +144,35 @@ struct CaptureAgent: Identifiable, Hashable, Sendable {
 enum CaptureSetting {
     static let key = "capture.enabled"
 }
+
+/// Two project folders that overlap, as `folders.overlaps` answers: the same folder in two spaces,
+/// or one inside another. The core decides and says what it means in `message`.
+public struct FolderOverlap: Decodable, Hashable, Sendable {
+    /// One of the two folders, with its space.
+    public struct Folder: Decodable, Hashable, Sendable {
+        public var space: String
+        public var spaceName: String
+        /// The id of the folder in its space.
+        public var folder: String
+        public var path: String
+
+        enum CodingKeys: String, CodingKey {
+            case space, folder, path
+            case spaceName = "space_name"
+        }
+    }
+
+    /// `same` or `nested`, or a kind of a newer version.
+    public var kind: String
+    public var outer: Folder
+    public var inner: Folder
+    public var message: String
+
+    /// Whether the folder `id` of the space at `space` is one of the two.
+    func involves(folder id: String, inSpace space: URL) -> Bool {
+        let path = AgentInfo.canonicalPath(space)
+        return [outer, inner].contains {
+            $0.folder == id && AgentInfo.canonicalPath(URL(filePath: $0.space, directoryHint: .isDirectory)) == path
+        }
+    }
+}

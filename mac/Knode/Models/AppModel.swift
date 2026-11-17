@@ -975,6 +975,8 @@ final class AppModel {
         do {
             let space = try await openedSpace(at: url)
             let folders = SpaceFoldersModel(space: space, store: store(for: space.id))
+            folders.spaceURL = url
+            folders.captureSpaces = { [settings] in settings.knownSpaces() }
             folders.projectsChanged = { [weak self] in
                 if self?.selectedSpaceID == space.id { await self?.reload() }
             }

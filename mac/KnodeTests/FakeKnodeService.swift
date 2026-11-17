@@ -50,6 +50,8 @@ final class FakeKnodeService: @unchecked Sendable {
     private var conflicts: [Int64: [Int64]] = [:]
     /// The agents `agents.list` answers with.
     private var agents: [[String: Any]] = []
+    /// What `folders.overlaps` answers, whatever spaces it is asked about.
+    private var overlaps: [[String: Any]] = []
     /// The documents of the bodies edited together (`doc.open`, `doc.edit`), by node id.
     private var documents: [String: FakeDocument] = [:]
     private var versionCounter = 0
@@ -176,6 +178,10 @@ final class FakeKnodeService: @unchecked Sendable {
     }
 
     /// Adds an agent with one valid key and the given levels by space path.
+    func setOverlaps(_ overlaps: [[String: Any]]) {
+        lock.withLock { self.overlaps = overlaps }
+    }
+
     func addAgent(_ name: String, levels: [String: String]) {
         lock.withLock {
             agents.append([
@@ -363,6 +369,8 @@ final class FakeKnodeService: @unchecked Sendable {
             if let index { spaces[path]?.folders[index] = saved } else { spaces[path]?.folders.append(saved) }
             spaceEvents.append(["space": path, "what": "folders", "folder": id])
             return (saved, nil)
+        case "folders.overlaps":
+            return (overlaps, nil)
         case "folders.remove":
             let id = params["id"] as? String ?? ""
             let before = try space().folders.count
