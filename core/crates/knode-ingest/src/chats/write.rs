@@ -112,6 +112,7 @@ impl ChatWriter<'_> {
                 return Ok(None);
             }
             let id = self.create(chat, &new, files)?;
+            self.report.redacted += new.iter().map(|m| m.redacted).sum::<usize>();
             self.report.chats.push(imported(id, ChangeOp::Create));
             return Ok(Some(id));
         };
@@ -211,6 +212,7 @@ impl ChatWriter<'_> {
         }
         self.space.set_properties(&id, &props, &self.by)?;
         self.report.messages += new.len();
+        self.report.redacted += new.iter().map(|m| m.redacted).sum::<usize>();
         self.report.chats.push(imported(id, ChangeOp::Update));
         Ok(Some(id))
     }

@@ -143,6 +143,12 @@ belongs to, newest first.
   Slack workspace exports become one node per channel and direct message, each thread its own
   node linked to its channel, and the members who wrote or were mentioned `person` nodes that
   mentions link to; files are kept as links, or attached when the export includes them.
+  Credentials in the messages are replaced with `[redacted]`: known key formats, a value of 8 or
+  more characters after `password` or `pwd`, and after `secret` or `token` a value of 16 or more
+  characters with letters and digits; the summary counts those in the messages written. A folder
+  holding notes is imported as notes even with a chat export in it, and the summary says how to
+  import the export; a folder holding only exports says how to import each. When a Telegram
+  `result.json` is cut off partway, the chats written before it stopped are kept and named.
   `--from whatsapp`, `--from telegram` or `--from slack` says what it is; Knode Service imports
   them through `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the

@@ -1027,6 +1027,13 @@ fn no_token_in_a_chat_reaches_a_node() {
         "{:?}",
         report.notes
     );
+    // Imported again, nothing is written, so no secret is replaced.
+    let again = import_chat_export(&mut space, &root, None, &by()).unwrap();
+    assert!(
+        !again.notes.iter().any(|n| n.contains("secret")),
+        "{:?}",
+        again.notes
+    );
 
     // WhatsApp.
     let dir = tempfile::tempdir().unwrap();
@@ -1046,6 +1053,11 @@ fn no_token_in_a_chat_reaches_a_node() {
     // Imported again, the redacted message is the same message.
     let again = import_chat_export(&mut space, &folder, None, &by()).unwrap();
     assert_eq!(again.messages, 0);
+    assert!(
+        !again.notes.iter().any(|n| n.contains("secret")),
+        "{:?}",
+        again.notes
+    );
 
     // Telegram: in the text, its parts, a link and a reply's quote.
     let dir = tempfile::tempdir().unwrap();
@@ -1064,9 +1076,60 @@ fn no_token_in_a_chat_reaches_a_node() {
         ),
     );
     let mut space = self::space(&dir);
-    import_chat_export(&mut space, &root, None, &by()).unwrap();
+    let report = import_chat_export(&mut space, &root, None, &by()).unwrap();
     let all = everything(&space);
     assert!(!all.contains("xoxb-") && !all.contains(API_KEY), "{all}");
+    assert!(
+        report.notes.iter().any(|n| n.contains("secret")),
+        "{:?}",
+        report.notes
+    );
+    let again = import_chat_export(&mut space, &root, None, &by()).unwrap();
+    assert!(
+        !again.notes.iter().any(|n| n.contains("secret")),
+        "{:?}",
+        again.notes
+    );
+}
+
+#[test]
+fn a_short_password_in_a_chat_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("WhatsApp Chat - Ada");
+    write_file(
+        &folder,
+        "_chat.txt",
+        "[04/03/2026, 09:15:02] Ada: password: hunter2hunter2\n[04/03/2026, 09:16:00] Grace: ok\n",
+    );
+    let mut space = self::space(&dir);
+    import_chat_export(&mut space, &folder, None, &by()).unwrap();
+    let all = everything(&space);
+    assert!(
+        !all.contains("hunter2hunter2") && all.contains("password: [redacted]"),
+        "{all}"
+    );
+}
+
+#[test]
+fn a_telegram_export_cut_off_keeps_and_names_the_chats_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Telegram");
+    write_file(
+        &root,
+        "result.json",
+        r#"{"chats":{"list":[
+         {"name":"Ada","type":"personal_chat","id":1,"messages":[
+           {"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada","text":"hi"}]},
+         {"name":"Grace","type":"personal_chat","id":2,"messages":[
+           {"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Grace","text":"hel"#,
+    );
+    let mut space = self::space(&dir);
+    let error = import_chat_export(&mut space, &root, None, &by()).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Telegram - Ada"), "{message}");
+    assert!(!message.contains("Telegram - Grace"), "{message}");
+    assert_eq!(space.find_by_title("Telegram - Ada").unwrap().len(), 1);
+    assert!(space.find_by_title("Telegram - Grace").unwrap().is_empty());
 }
 
 #[test]
