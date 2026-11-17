@@ -38,6 +38,8 @@ fits, and follow its path (confirm it in step 3):
 
 Run `knode spaces`. If the person already has a space (not marked archived), ask whether this
 import should become their memory or stay a separate space; see "If they already have a space".
+A space that only holds captured conversations (kind `conversation`) is not their memory yet:
+treat it as empty.
 
 Also look for memory their agents already keep, to bring it in step 4: Claude Code's
 `~/.claude/projects/*/memory/` folders, global instruction files (`~/.claude/CLAUDE.md`,
@@ -94,7 +96,9 @@ leave a link at the old place until nothing uses it.
 ## Starting from nothing
 
 1. Create the space and make it the default: `knode init "<Name>"` and
-   `knode spaces default "<Name>"`.
+   `knode spaces default "<Name>"`. A new space captures the conversations of every agent from the
+   start: unless the person chose capture in step 3, turn it off right away with
+   `knode spaces capture "<Name>" off`.
 2. Ask which projects they work on now, and where. For each: register its folder
    (`knode --space "<Name>" folders add <folder> --kind project`); if that does not report a
    project node, create one by importing a folder holding a note named after the project whose
@@ -105,8 +109,7 @@ leave a link at the old place until nothing uses it.
    you from those sources. Ask the person to correct anything you could not verify.
 3. Bring the memory their agents already keep (see step 0): import a folder that holds those
    files, `knode --space "<Name>" import <folder>`, and link each note to its project.
-4. Ask whether Knode should also keep their agent conversations from now on (capture): it is off
-   unless they choose it, per space (`knode spaces capture "<Name>" on`).
+4. Capture, as the person chose in step 3: `knode spaces capture "<Name>" on|off`.
 
 Then continue with steps 6 to 8.
 
@@ -183,6 +186,8 @@ message, with a recommended answer for each so the person can reply "yes to all"
   (`knode onboard sessions --plan /tmp/knode-plan.json` lists them; recommend yes);
 - whether to bring their agents' existing memory (step 0; recommend yes);
 - which agents to connect (those `knode connect --list` detects; recommend the ones they use);
+- whether Knode should keep every agent conversation from now on (capture; recommend off at
+  first: whole transcripts crowd search, and the agents already save what matters);
 - whether to update their projects' instruction files (step 7; recommend yes), and to turn off
   other memories (step 0; recommend yes).
 
