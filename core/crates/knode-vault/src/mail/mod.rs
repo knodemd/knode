@@ -142,6 +142,12 @@ impl MailOptions {
     }
 }
 
+/// A day as [`MailOptions::since`] and [`MailOptions::until`] take it: `YYYY-MM-DD`.
+pub fn parse_day(text: &str) -> Result<NaiveDate, MailError> {
+    NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+        .map_err(|_| MailError::Invalid(format!("{text:?} is not a day: write it as YYYY-MM-DD")))
+}
+
 /// Why [`import_mail`] could not read the mail. Messages that cannot be read one by one do not
 /// fail the import: they are listed in [`MailReport::skipped`].
 #[derive(Debug, thiserror::Error)]
@@ -265,6 +271,11 @@ impl MailReport {
             skipped: Vec::new(),
             limits: Vec::new(),
         }
+    }
+
+    /// How many threads the import read: created, updated or unchanged.
+    pub fn read_threads(&self) -> usize {
+        self.created.len() + self.updated.len() + self.unchanged
     }
 
     pub(crate) fn skip(&mut self, what: impl Into<String>, reason: impl Into<String>) {
