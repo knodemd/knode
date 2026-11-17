@@ -173,19 +173,15 @@ pub fn parse_day(text: &str) -> Result<NaiveDate, MailError> {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MailError {
-    /// macOS keeps Knode from reading Apple Mail's store: the app running Knode needs Full Disk
-    /// Access.
-    #[error(
-        "macOS does not let Knode read {} (Apple Mail keeps its mail there): only apps with Full \
-         Disk Access can. Open System Settings > Privacy & Security > Full Disk Access, turn it \
-         on for the app that runs Knode (Knode, or your terminal), then quit and reopen that \
-         app. Or export the mailboxes from Apple Mail (Mailbox > Export Mailbox) and import the \
-         exported .mbox.",
-        path.display()
-    )]
+    /// macOS keeps Knode from reading Apple Mail's store: the program that read it needs Full
+    /// Disk Access. The message names it when it is known ([`MailError::read_by`]).
+    #[error("{}", no_access(path, program.as_deref()))]
     NoAccess {
         /// The folder or file that could not be read.
         path: PathBuf,
+        /// The program that tried to read it, when it is not one people started themselves:
+        /// Knode Service, which macOS asks about by its own path.
+        program: Option<PathBuf>,
     },
     /// Nothing at the path.
     #[error("{} does not exist", .0.display())]
@@ -214,6 +210,42 @@ pub enum MailError {
     Space(#[from] knode_format::Error),
 }
 
+impl MailError {
+    /// Names `program` as the one that read the mail: Knode Service, when the import ran in it.
+    /// macOS gives Full Disk Access to a program by its path, so it is the one to allow, not the
+    /// terminal or app that asked for the import. Other errors are left as they are.
+    pub fn read_by(self, program: impl Into<PathBuf>) -> Self {
+        match self {
+            MailError::NoAccess { path, .. } => MailError::NoAccess {
+                path,
+                program: Some(program.into()),
+            },
+            other => other,
+        }
+    }
+}
+
+/// What [`MailError::NoAccess`] says: what to allow, and the way round it.
+fn no_access(path: &Path, program: Option<&Path>) -> String {
+    let allow = match program {
+        Some(program) => format!(
+            "Knode Service read it: open System Settings > Privacy & Security > Full Disk \
+             Access, click +, add {} (press Command-Shift-G to type the path) and turn it on, \
+             then restart Knode Service (knode service stop, then knode service start)",
+            program.display()
+        ),
+        None => "Open System Settings > Privacy & Security > Full Disk Access, turn it on for the \
+                 app that runs Knode (Knode, or your terminal), then quit and reopen that app"
+            .to_string(),
+    };
+    format!(
+        "macOS does not let Knode read {} (Apple Mail keeps its mail there): only apps with Full \
+         Disk Access can. {allow}. Or export the mailboxes from Apple Mail (Mailbox > Export \
+         Mailbox) and import the exported .mbox.",
+        path.display()
+    )
+}
+
 /// Turns a failure to read `path` into [`MailError::NoAccess`] when macOS refused it, else into
 /// [`MailError::Io`].
 pub(crate) fn read_error(path: &Path) -> impl FnOnce(std::io::Error) -> MailError + '_ {
@@ -221,6 +253,7 @@ pub(crate) fn read_error(path: &Path) -> impl FnOnce(std::io::Error) -> MailErro
         if source.kind() == std::io::ErrorKind::PermissionDenied {
             MailError::NoAccess {
                 path: path.to_path_buf(),
+                program: None,
             }
         } else {
             MailError::Io {
@@ -432,4 +465,31 @@ pub fn import_mail(
     let threads = thread::group(collected.into_mails());
     write::write(space, source, threads, options, &by, &mut report)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_access_names_the_program_that_read_the_store() {
+        let path = PathBuf::from("/Users/example/Library/Mail");
+        let error = MailError::NoAccess {
+            path: path.clone(),
+            program: None,
+        };
+        assert!(
+            error.to_string().contains("(Knode, or your terminal)"),
+            "{error}"
+        );
+        let error = error.read_by("/opt/knode/bin/knode");
+        let text = error.to_string();
+        assert!(text.contains("Knode Service read it"), "{text}");
+        assert!(text.contains("add /opt/knode/bin/knode"), "{text}");
+        assert!(!text.contains("your terminal"), "{text}");
+        assert!(text.contains("/Users/example/Library/Mail"), "{text}");
+        // Other errors are left as they are.
+        let other = MailError::NotFound(path).read_by("/opt/knode/bin/knode");
+        assert!(matches!(other, MailError::NotFound(_)));
+    }
 }

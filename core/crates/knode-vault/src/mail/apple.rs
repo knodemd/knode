@@ -144,6 +144,7 @@ fn skip_unreadable(
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         return Err(MailError::NoAccess {
             path: path.to_path_buf(),
+            program: None,
         });
     }
     report.skip(

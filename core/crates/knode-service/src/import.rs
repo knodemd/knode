@@ -363,6 +363,8 @@ pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
     input: Input,
+    /// The program that reads the files when it is not one people started: Knode Service.
+    reader: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,6 +451,13 @@ impl Prepared {
     /// Whether it reads mail, which takes [`MailOptions`].
     pub fn is_mail(&self) -> bool {
         matches!(self.input, Input::Mail(..))
+    }
+
+    /// Says that `program` reads the files: Knode Service. When macOS refuses to let it read
+    /// a store that needs Full Disk Access, the error names it as the program to allow.
+    pub fn read_by(mut self, program: impl Into<PathBuf>) -> Self {
+        self.reader = Some(program.into());
+        self
     }
 
     /// Gives the options to read mail with; nothing otherwise.
@@ -567,7 +576,10 @@ pub fn prepare(
             }
         }
     };
-    Ok(Prepared { input })
+    Ok(Prepared {
+        input,
+        reader: None,
+    })
 }
 
 /// What `path` is read as when the person names the kind.
@@ -891,7 +903,10 @@ pub fn run(
             result.notes.extend(report.limits.iter().cloned());
         }
         Input::Mail(source, path, options) => mail_result(
-            mail::import_mail(space, *source, path, options, by),
+            mail::import_mail(space, *source, path, options, by).map_err(|e| match &what.reader {
+                Some(program) => e.read_by(program),
+                None => e,
+            }),
             &mut result,
         )?,
         Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
