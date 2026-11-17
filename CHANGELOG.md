@@ -104,6 +104,9 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
+  skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
+  the command line.
 - **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
   including the default space, now appear in the sidebar the next time the app opens, unless you
   took them off the list.
