@@ -6,7 +6,8 @@
 //! `spaces`, and those it has open) are matched against the folder the conversation was held
 //! in, the most specific one wins, and capture turned off for a project, or for a space, means
 //! nothing of it is stored. Conversations of no project go to the space of the `agent` folder
-//! they were read from, or else to the default space.
+//! they were read from, or else to the default space. A new space nobody has set up yet
+//! receives nothing until it is ([`capture_waits_for_setup`]).
 //!
 //! The machine-wide settings come from `config.toml` in the Knode home: `default_space`,
 //! `spaces`, `capture` (on unless `false`) and `capture_exclude`, which leaves projects out
@@ -35,7 +36,7 @@ use knode_ingest::{
 use crate::markdown::{record_path, resolve_path};
 use crate::protocol::ChangeKind;
 use crate::server::State;
-use crate::spaces::{capture_enabled, excluded, rule_patterns};
+use crate::spaces::{capture_enabled, capture_waits_for_setup, excluded, rule_patterns};
 
 /// The folder in the Knode home where capture keeps its state.
 pub const CAPTURE_DIR: &str = "capture";
@@ -197,7 +198,9 @@ impl Routes {
     }
 
     fn add(&mut self, space: &Space, id: &str) -> knode_format::Result<()> {
-        let capture = capture_enabled(space)?;
+        // A new space nobody has set up yet gets nothing until it is (#293). Routes are read
+        // again at every poll, so capture starts, and catches up, once it is.
+        let capture = capture_enabled(space)? && !capture_waits_for_setup(space)?;
         let folders = space.folders()?;
         self.spaces.insert(
             id.to_string(),

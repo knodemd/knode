@@ -173,13 +173,35 @@ pub fn capture_enabled(space: &Space) -> knode_format::Result<bool> {
         .is_none_or(|value| value == "on"))
 }
 
+/// The receipt onboarding leaves in a space it set up (`knode_vault::onboarding`).
+const ONBOARDING_RECEIPT: &str = "onboarding.json";
+
+/// Whether capture waits before writing anything into the space, because it is a new space
+/// nobody has set up yet: its `capture.enabled` was never chosen, it has no onboarding receipt,
+/// no folders and no nodes at all. Capture into such a space starts, earlier sessions included,
+/// as soon as one of these changes: the person turns capture on (or off), onboarding sets the
+/// space up, a folder is added or anything is written into it. A space capture already wrote
+/// to has nodes, so it never waits again.
+///
+/// This keeps a space that `knode init` or the app has just created, and that `knode connect`
+/// starts Knode Service on, from filling with every earlier agent conversation of the machine
+/// before the person was asked about capture.
+pub fn capture_waits_for_setup(space: &Space) -> knode_format::Result<bool> {
+    Ok(space.setting(setting_keys::CAPTURE_ENABLED)?.is_none()
+        && !space.path().join(ONBOARDING_RECEIPT).exists()
+        && space.folders()?.is_empty()
+        && space.recent(1)?.is_empty())
+}
+
 /// Changes a setting of the space, or puts it back to its default with `None`, and records the
 /// change. Returns whether anything changed. Only a person can change settings.
 ///
 /// The settings that can be changed this way are `space.icon` (one emoji) and
 /// `capture.enabled` (`on` or `off`). `space.id` never changes, and the live Markdown folder
 /// (`markdown.folder`) is changed with `markdown.folder.set`. A value equal to the default is
-/// stored as no value, as the specification asks.
+/// stored as no value, as the specification asks, except `capture.enabled` turned `on`: it is
+/// kept as the person's choice, so a new space does not wait for setup
+/// ([`capture_waits_for_setup`]).
 pub fn set_setting(
     space: &mut Space,
     key: &str,
@@ -194,8 +216,8 @@ pub fn set_setting(
             Some(icon) => Some(check_icon(icon)?),
         },
         setting_keys::CAPTURE_ENABLED => match value {
-            None | Some("on") => None,
-            Some("off") => Some("off"),
+            None => None,
+            Some(value @ ("on" | "off")) => Some(value),
             Some(other) => {
                 return Err(invalid(format!(
                     "capture.enabled is \"on\" or \"off\", not {other:?}"

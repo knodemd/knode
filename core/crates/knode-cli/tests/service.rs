@@ -152,8 +152,20 @@ fn the_service_captures_sessions_into_the_default_space() {
     )
     .unwrap();
 
-    // init starts the service, which picks up the new default space.
+    // init starts the service, which picks up the new default space; but a new space waits
+    // until it is set up, so the earlier session is not captured yet.
     sb.ok(&["init", "work"]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !sb.ok(&["service", "status"]).contains("Capture: on, into ") {
+        assert!(Instant::now() < deadline, "capture did not start");
+        thread::sleep(Duration::from_millis(200));
+    }
+    thread::sleep(Duration::from_secs(2));
+    let found = sb.ok(&["search", "health", "check"]);
+    assert!(!found.contains("Server health check"), "{found}");
+
+    // Turning capture on is the person's choice: it starts at once, earlier sessions included.
+    sb.ok(&["spaces", "capture", "work", "on"]);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let found = sb.ok(&["search", "health", "check"]);

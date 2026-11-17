@@ -219,7 +219,7 @@ pub fn run(paths: &Paths, action: Option<SpacesAction>, json: bool) -> Result<()
             set_setting(&path, setting_keys::CAPTURE_ENABLED, Some(value), &by)?;
             match state {
                 Switch::On => println!(
-                    "Agent conversations are captured into {} again.",
+                    "Agent conversations are captured into {}, earlier ones included.",
                     name_of(&path)
                 ),
                 Switch::Off => println!(

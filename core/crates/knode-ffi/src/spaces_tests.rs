@@ -56,9 +56,17 @@ fn renames_and_changes_settings_with_the_rules_of_the_service() {
             .unwrap()
     );
     assert!(!space.capture_enabled().unwrap());
-    // `on` is the default, stored as no value.
+    // `on` is kept as the person's choice; back to the default, it is stored as no value.
     space
         .change_setting("capture.enabled".into(), Some("on".into()), me())
+        .unwrap();
+    assert!(space.capture_enabled().unwrap());
+    assert_eq!(
+        space.setting("capture.enabled".into()).unwrap().as_deref(),
+        Some("on")
+    );
+    space
+        .change_setting("capture.enabled".into(), None, me())
         .unwrap();
     assert!(space.capture_enabled().unwrap());
     assert_eq!(space.setting("capture.enabled".into()).unwrap(), None);

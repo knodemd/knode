@@ -104,6 +104,12 @@ belongs to, newest first.
 
 #### Fixed
 
+- **A new space no longer fills with every earlier agent conversation** as soon as `knode
+  connect` starts Knode Service. Capture into a space nobody has set up yet (no capture choice,
+  no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
+  it up, a folder is added or something is written into it. Capture stays on by default, and
+  spaces it already writes to are not affected. `knode spaces capture <space> on` is now kept as
+  your choice instead of being stored as the default.
 - **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
   skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
   the command line.
