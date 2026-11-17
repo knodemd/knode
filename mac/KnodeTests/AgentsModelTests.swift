@@ -305,3 +305,99 @@ import Testing
         #expect(ConnectAgentsModel.arguments(connecting: "codex", to: home, defaultSpace: nil) == ["connect", "codex", "--space", "/tmp/Home.knode/"])
     }
 }
+
+/// `knode connect <agent> --check --json`: what the app reads from the core's report, through a
+/// stand-in command. Nothing runs the real `knode`.
+@MainActor
+@Suite struct AgentCheckTests {
+    static let wrongSpace = #"""
+    {
+      "agent": "codex",
+      "name": "codex",
+      "project": "/tmp/kn-site",
+      "destinations": [],
+      "intended": { "space": "/tmp/Work.knode", "name": "Work", "from": "project" },
+      "settings": [],
+      "access": null,
+      "ok": false,
+      "problems": [
+        { "code": "wrong_space", "message": "codex uses \"Home\" (it follows the default space), not \"Work\". `knode connect codex --space /tmp/Work.knode` points it there; it gets access only if it has none anywhere, else `knode agents grant codex <space> write`." }
+      ],
+      "notes": ["Knode Service did not answer, so the agent's access is not known."]
+    }
+    """#
+
+    static let ok = #"""
+    {"agent": "claude-code", "name": "claude-code", "project": null, "destinations": [],
+     "intended": {"space": "/tmp/Work.knode", "name": "Work", "from": "default"}, "settings": [],
+     "access": "read", "ok": true, "problems": [], "notes": ["claude-code may only read \"Work\": it cannot save there."]}
+    """#
+
+    @Test func readsTheReportWithTheCommandsItSuggests() throws {
+        let check = try AgentCheck.decode("warning: something\n" + Self.wrongSpace)
+        #expect(!check.ok)
+        #expect(check.intended?.shown == "Work")
+        #expect(check.problems.map(\.code) == ["wrong_space"])
+        let problem = try #require(check.problems.first)
+        #expect(problem.commands == ["knode connect codex --space /tmp/Work.knode", "knode agents grant codex <space> write"])
+        #expect(!problem.text.contains("`"))
+        #expect(check.notes.count == 1)
+
+        let ok = try AgentCheck.decode(Self.ok)
+        #expect(ok.ok && ok.problems.isEmpty && ok.access == "read")
+        #expect(AgentCheckView.okText(ok) == "Reaches \u{201C}Work\u{201D}, and may read there.")
+        #expect(AgentCheck.commands(in: "No command here, `not knode` either.").isEmpty)
+    }
+
+    @Test func anAgentIsCheckedByItsOwnNameOnly() {
+        func agent(_ name: String, kind: String, revoked: Bool = false) -> AgentInfo {
+            AgentInfo(id: name, name: name, kind: kind, createdAt: 0,
+                      keys: [.init(fingerprint: "sha256:00", createdAt: 0, revokedAt: revoked ? 1 : nil)], spaces: [])
+        }
+        #expect(ConnectableAgent.checkable(agent("claude-code", kind: "claude-code")) == .claudeCode)
+        #expect(ConnectableAgent.checkable(agent("gemini-cli", kind: "gemini-cli")) == .gemini)
+        // Another agent of the same kind would show the check of the agent named claude-code.
+        #expect(ConnectableAgent.checkable(agent("work-claude", kind: "claude-code")) == nil)
+        #expect(ConnectableAgent.checkable(agent("codex", kind: "codex", revoked: true)) == nil)
+    }
+
+    @Test func checksAgainstTheChosenSpaceOrProjectOnly() {
+        let work = URL(filePath: "/tmp/Work.knode", directoryHint: .isDirectory)
+        let home = URL(filePath: "/tmp/Home.knode", directoryHint: .isDirectory)
+        let site = URL(filePath: "/tmp/kn-site", directoryHint: .isDirectory)
+        #expect(AgentCheck.arguments(agent: "codex") == ["connect", "codex", "--check", "--json"])
+        #expect(AgentCheck.arguments(agent: "codex", space: work, defaultSpace: work) == ["connect", "codex", "--check", "--json"])
+        #expect(AgentCheck.arguments(agent: "codex", space: home, defaultSpace: work) == ["connect", "codex", "--check", "--json", "--space", "/tmp/Home.knode/"])
+        #expect(AgentCheck.arguments(agent: "codex", space: home, defaultSpace: work, project: site) == ["connect", "codex", "--check", "--json", "--project", "/tmp/kn-site/"])
+    }
+
+    @Test func runsOnlyTheReadOnlyCheck() async {
+        var calls: [[String]] = []
+        let checks = AgentChecks { arguments in
+            calls.append(arguments)
+            return arguments[1] == "codex" ? Self.wrongSpace : Self.ok
+        }
+        await checks.check("codex")
+        await checks.check("claude-code")
+        // Only the check ran: nothing was connected or granted.
+        #expect(calls.count == 2 && calls.allSatisfy { $0.contains("--check") })
+        guard case .checked(let codex) = checks.results["codex"], case .checked(let claude) = checks.results["claude-code"] else {
+            Issue.record("not checked: \(checks.results)")
+            return
+        }
+        #expect(!codex.ok)
+        #expect(claude.ok)
+    }
+
+    @Test func aFailedCheckSaysWhy() async {
+        let old = AgentChecks { arguments in
+            throw KnodeCommand.Failure(arguments: arguments, status: 2, output: "error: unexpected argument '--check' found\n")
+        }
+        await old.check("codex")
+        #expect(old.results["codex"] == .failed(AgentChecks.updateKnode))
+
+        let garbled = AgentChecks { _ in "not json" }
+        await garbled.check("codex")
+        #expect(garbled.results["codex"] == .failed("Could not read what knode connect --check printed."))
+    }
+}

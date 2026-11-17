@@ -508,7 +508,7 @@ pub fn routed_spaces(
         .into_iter()
         .chain(also.map(Path::to_path_buf));
     for path in candidates {
-        if !path.exists() || knode_config::is_archived_space(&path) {
+        if !knode_config::is_routed_space(&path) {
             continue;
         }
         let path = canonical(&path);

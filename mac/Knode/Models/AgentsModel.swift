@@ -29,6 +29,13 @@ enum ConnectableAgent: String, CaseIterable, Identifiable {
         guard let match = Self.allCases.first(where: { $0.agentName == agent || $0.rawValue == agent }) else { return nil }
         self = match
     }
+
+    /// The agent `knode connect --check` checks for `agent`, when it has a key: by its own name,
+    /// never by its kind, which would show the check of another agent of that kind.
+    static func checkable(_ agent: AgentInfo) -> ConnectableAgent? {
+        guard agent.validKey != nil else { return nil }
+        return ConnectableAgent(agent: agent.name)
+    }
 }
 
 /// The agents of this machine and what each may do in each space, managed through Knode Service
@@ -335,4 +342,115 @@ final class ConnectAgentsModel {
         }
         return error.localizedDescription
     }
+}
+
+// MARK: Check an agent
+
+/// What `knode connect <agent> --check --json` reports: whether the agent reaches the space meant
+/// for it, and if not, why and what to run. The core decides; the app only shows it. The check
+/// writes nothing and grants nothing.
+struct AgentCheck: Decodable, Equatable, Sendable {
+    struct Problem: Decodable, Equatable, Sendable {
+        /// `not_connected`, `no_key`, `other_agent`, `no_space`, `wrong_space`, `unknown_agent`,
+        /// `no_access` or `ambiguous_project`, or a code of a newer version.
+        var code: String
+        var message: String
+
+        /// The message as a sentence, without the backticks around commands.
+        var text: String { message.replacingOccurrences(of: "`", with: "") }
+        /// The `knode` commands the message suggests, in order.
+        var commands: [String] { AgentCheck.commands(in: message) }
+    }
+
+    /// The space the agent is meant to use, and why.
+    struct Intended: Decodable, Equatable, Sendable {
+        var space: String
+        var name: String?
+        /// `flag`, `project` or `default`.
+        var from: String
+
+        var shown: String { name ?? URL(filePath: space).deletingPathExtension().lastPathComponent }
+    }
+
+    /// What to type after `knode connect`.
+    var agent: String
+    /// The agent's name in Knode.
+    var name: String
+    /// The project folder checked, if any.
+    var project: String?
+    var intended: Intended?
+    /// `none`, `read` or `write` in the space the agent uses, when known.
+    var access: String?
+    var ok: Bool
+    var problems: [Problem]
+    var notes: [String]
+
+    /// The report `--check --json` printed. Anything printed before the JSON is skipped.
+    static func decode(_ text: String) throws -> AgentCheck {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let json = lines.firstIndex { $0.hasPrefix("{") }.map { lines[$0...].joined(separator: "\n") } ?? text
+        return try JSONDecoder().decode(AgentCheck.self, from: Data(json.utf8))
+    }
+
+    /// The commands between backticks in a message that run `knode`.
+    static func commands(in message: String) -> [String] {
+        message.split(separator: "`", omittingEmptySubsequences: false)
+            .enumerated()
+            .filter { $0.offset % 2 == 1 && $0.element.hasPrefix("knode ") }
+            .map { String($0.element) }
+    }
+
+    /// The arguments that check `agent`: against the space a `project` folder's conversations go
+    /// to, else against `space` when it is not the default space (the default is what the check
+    /// compares with when none is named).
+    static func arguments(agent: String, space: URL? = nil, defaultSpace: URL? = nil, project: URL? = nil) -> [String] {
+        var arguments = ["connect", agent, "--check", "--json"]
+        if let project {
+            arguments += ["--project", project.path(percentEncoded: false)]
+        } else if let space, space.standardizedFileURL != defaultSpace?.standardizedFileURL {
+            arguments += ["--space", space.path(percentEncoded: false)]
+        }
+        return arguments
+    }
+}
+
+/// The checks of the agents on one screen, by what to type after `knode connect`.
+@MainActor
+@Observable
+final class AgentChecks {
+    enum Result: Equatable {
+        case checking
+        case checked(AgentCheck)
+        case failed(String)
+    }
+
+    private(set) var results: [String: Result] = [:]
+
+    @ObservationIgnored private let run: @MainActor ([String]) async throws -> String
+
+    /// - Parameter run: runs `knode` with these arguments and returns what it printed.
+    init(run: @escaping @MainActor ([String]) async throws -> String) {
+        self.run = run
+    }
+
+    /// Runs `knode connect <agent> --check --json` and keeps its report. Nothing is changed.
+    func check(_ agent: String, space: URL? = nil, defaultSpace: URL? = nil, project: URL? = nil) async {
+        results[agent] = .checking
+        do {
+            let output = try await run(AgentCheck.arguments(agent: agent, space: space, defaultSpace: defaultSpace, project: project))
+            results[agent] = .checked(try AgentCheck.decode(output))
+        } catch let failure as KnodeCommand.Failure where failure.output.contains("unexpected argument '--check'") {
+            results[agent] = .failed(Self.updateKnode)
+        } catch let failure as KnodeCommand.Failure where !failure.output.isEmpty {
+            results[agent] = .failed(failure.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch is DecodingError {
+            results[agent] = .failed("Could not read what knode connect --check printed.")
+        } catch {
+            results[agent] = .failed(error.localizedDescription)
+        }
+    }
+
+    /// What to do when `knode` is older than `knode connect --check`.
+    static let updateKnode = "This knode is too old to check agents. Update it with "
+        + "brew upgrade knodemd/tap/knode (or install the latest Knode), then check again."
 }

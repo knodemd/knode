@@ -26,6 +26,14 @@ protocol KnodeSettings: Sendable {
     func setEmbeddingsEnabled(_ on: Bool) throws
 }
 
+extension KnodeSettings {
+    /// The known spaces capture routes over: those on this machine that are not archived copies,
+    /// by the core's rule, as `knode folders overlaps` compares them.
+    func captureSpaces() -> [URL] {
+        knownSpaces().filter { KnodeCore.isRoutedSpace(path: ServiceSpaceStore.path(of: $0)) }
+    }
+}
+
 /// The settings in `$KNODE_HOME/config.toml`, read and written by the Rust core
 /// (`knode-config`), so the app, the `knode` command and Knode Service agree.
 struct CoreKnodeSettings: KnodeSettings {

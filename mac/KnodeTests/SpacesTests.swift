@@ -53,6 +53,25 @@ import Testing
         #expect(model.sheet == nil)
     }
 
+    @Test func overlapsAreAskedOnlyAboutTheSpacesCaptureRoutesOver() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Work", in: folder)
+        let work = try #require(model.selectedSpace?.url)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let archived = folder.appending(path: "Work-archive-1794871951073089000.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+        let gone = folder.appending(path: "Gone.knode", directoryHint: .isDirectory)
+        try model.settings.setDefaultSpace(work)
+        try model.settings.rememberSpace(archived)
+        try model.settings.rememberSpace(gone)
+
+        // As the core decides: a moved or deleted space and an archived copy are left out.
+        #expect(model.settings.captureSpaces() == [work.standardizedFileURL])
+        let folders = try #require(await model.foldersModel(at: work))
+        folders.stop()
+        #expect(folders.captureSpaces?() == [work.standardizedFileURL])
+    }
+
     @Test func aProjectCanBeAddedWithoutEnablingCapture() async throws {
         let model = makeModel()
         await model.createSpace(named: "Work", in: folder)

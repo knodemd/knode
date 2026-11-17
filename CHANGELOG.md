@@ -175,6 +175,12 @@ belongs to, newest first.
   default space), whether that is the space the project's conversations go to (or `--space`), and
   whether the agent may read there. A project folder does not switch an agent's space, and the
   check never changes settings or gives access; it says what to run. `--json` prints the report.
+- **The Mac app shows both**: in Settings > Spaces each project folder says which space its
+  conversations go to and warns, with the core's sentence, when it overlaps a project folder of
+  this or another space. Settings > Agents and access and the Connect your agents step check each
+  connected agent and show OK, or each problem with the command that fixes it, to copy into
+  Terminal (**Check a project** checks against a project folder's space). Nothing is granted or
+  changed.
 - **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
   Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
   become notes of the space, each part of the project that folder belongs to: a project folder of

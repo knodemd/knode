@@ -233,6 +233,52 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(again.icon == "🧪")
     }
 
+    // MARK: Overlapping project folders
+
+    @MainActor @Test func overlapsShowOnTheProjectFoldersOfTheirSpace() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let api = try await store.setFolder(.adding(.project, at: URL(filePath: "/tmp/kn-work/api")), in: space.id)
+        let other = try await store.setFolder(.adding(.project, at: URL(filePath: "/tmp/kn-site")), in: space.id)
+        let message = "/tmp/kn-work/api is inside /tmp/kn-work, a project folder of \u{201C}Other\u{201D}: conversations held in it go to \u{201C}Test\u{201D} only."
+        let elsewhere = "/tmp/kn-site is a project folder of \u{201C}Elsewhere\u{201D} too."
+        func folder(_ space: String, _ name: String, _ id: String, _ path: String) -> [String: Any] {
+            ["space": space, "space_name": name, "folder": id, "path": path, "capture": true, "space_capture": true]
+        }
+        service.setOverlaps([
+            ["kind": "nested", "outer": folder("/tmp/Other.knode", "Other", "outer", "/tmp/kn-work"),
+             "inner": folder(path, "Test", api.id, "/tmp/kn-work/api"), "message": message],
+            // The same id in two other spaces is not a folder of this one.
+            ["kind": "same", "outer": folder("/tmp/Elsewhere.knode", "Elsewhere", other.id, "/tmp/kn-site"),
+             "inner": folder("/tmp/Other.knode", "Other", other.id, "/tmp/kn-site"), "message": elsewhere],
+        ])
+
+        let direct = try await store.folderOverlaps(spaces: [url])
+        #expect(direct.map(\.kind) == ["nested", "same"])
+        #expect(direct.first?.inner.spaceName == "Test")
+
+        let folders = SpaceFoldersModel(space: space, store: store)
+        folders.spaceURL = url
+        folders.captureSpaces = { [url] in [url, URL(filePath: "/tmp/Other.knode", directoryHint: .isDirectory)] }
+        await folders.load()
+        folders.stop()
+        #expect(service.params(of: "folders.overlaps")?["spaces"] as? [String] == [path, "/tmp/Other.knode"])
+        #expect(folders.overlapMessages(for: api) == [message])
+        #expect(folders.overlapMessages(for: other).isEmpty)
+    }
+
+    @MainActor @Test func noOverlapsWithoutTheSpacesCaptureUses() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let folders = SpaceFoldersModel(space: space, store: store)
+        await folders.load()
+        folders.stop()
+        #expect(!service.requests.contains("folders.overlaps"))
+        #expect(try await store.folderOverlaps(spaces: []).isEmpty)
+        // Stores other than Knode Service do not compare spaces.
+        #expect(try await PreviewSpaceStore().folderOverlaps(spaces: [url]).isEmpty)
+    }
+
     // MARK: Name, settings and folders through the service
 
     @Test func storeChangesFoldersThroughTheService() async throws {

@@ -222,6 +222,13 @@ pub fn known_spaces() -> Result<Vec<String>> {
     known_spaces_in(&config_paths()?)
 }
 
+/// Whether capture routes conversations over the folders of this known space: it exists and is
+/// not an archived copy, as `knode folders overlaps` decides.
+#[uniffi::export]
+pub fn is_routed_space(path: String) -> bool {
+    knode_config::is_routed_space(Path::new(&path))
+}
+
 /// Adds a space to `spaces` in `config.toml` unless Knode knows it already. Returns whether it
 /// was added.
 #[uniffi::export]
