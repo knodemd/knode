@@ -31,14 +31,13 @@ pub mod client;
 pub mod wire;
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Days, Local, NaiveDate};
-use knode_ingest::sources::sign_in::{SignIn, SignInField, SignInStep, SignInValues};
 use knode_ingest::sources::{
-    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets, SourceError,
-    SourceInfo, Trigger,
+    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets, SignInState,
+    SignInStep, SourceError, SourceInfo, Trigger,
 };
 use knode_vault::mail::{MailSource, RawMail, is_junk_folder};
 use serde::{Deserialize, Serialize};
@@ -71,9 +70,10 @@ const NOT_SIGNED_IN: &str = "sign in to your mail account first: in the Mac app,
      Sources > Mail (IMAP) > Connect; or run knode sources sign-in imap";
 
 /// Mail over IMAP. See the [module](self).
-#[derive(Clone)]
 pub struct ImapConnector {
     net: Arc<dyn ImapConnect>,
+    /// The account given in the first step of signing in, until its app password comes.
+    pending: Mutex<Option<Account>>,
 }
 
 impl std::fmt::Debug for ImapConnector {
@@ -96,7 +96,10 @@ impl ImapConnector {
 
     /// The connector over `net`: a server in memory, in tests.
     pub fn with_network(net: Arc<dyn ImapConnect>) -> Self {
-        ImapConnector { net }
+        ImapConnector {
+            net,
+            pending: Mutex::new(None),
+        }
     }
 
     fn account(secrets: &dyn Secrets) -> Result<Option<(Account, String)>, SourceError> {
@@ -348,8 +351,52 @@ impl Connector for ImapConnector {
         Ok(layout?.containers())
     }
 
-    fn sign_in(&self) -> Option<&dyn SignIn> {
-        Some(self)
+    fn sign_in_state(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        Ok(match Self::account(secrets)? {
+            Some((account, _)) => SignInState::SignedIn {
+                account: account.describe(),
+            },
+            None => SignInState::SignedOut,
+        })
+    }
+
+    /// [`SignInStep::Start`] with the account, `you@example.com`, followed by the server when
+    /// it is not a well-known provider (`you@example.com imap.example.com`), then
+    /// [`SignInStep::Password`] with an app password, checked by signing in once.
+    fn sign_in(&self, step: SignInStep, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        match step {
+            SignInStep::Start { account } => {
+                let account = parse_account(&account)?;
+                let hint = format!("an app password for {}", account.describe());
+                *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(account);
+                Ok(SignInState::PasswordNeeded { hint: Some(hint) })
+            }
+            SignInStep::Password { password } => {
+                let account = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone()
+                    .ok_or_else(|| {
+                        SourceError::SignIn("give the account first, then its app password".into())
+                    })?;
+                self.check_and_keep(&account, &password, secrets)?;
+                *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                Ok(SignInState::SignedIn {
+                    account: account.describe(),
+                })
+            }
+            _ => Err(SourceError::SignIn(
+                "Mail (IMAP) signs in with the account and an app password".into(),
+            )),
+        }
+    }
+
+    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let password = secrets.delete(PASSWORD_SECRET)?;
+        let account = secrets.delete(ACCOUNT_SECRET)?;
+        Ok(password || account)
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
@@ -505,72 +552,56 @@ fn known_server(username: &str) -> Option<&'static str> {
     })
 }
 
-/// The id of the only step of signing in.
-const ACCOUNT_STEP: &str = "account";
-
-fn account_step() -> SignInStep {
-    SignInStep::new(ACCOUNT_STEP, "Your mail account")
-        .message(
-            "Knode reads your mail over IMAP with TLS, and never sends or changes anything. Use \
-             an app password: for Gmail, iCloud, Yahoo or Outlook with two-step verification, \
-             make one in your account's security settings. The server can stay empty for those.",
-        )
-        .field(
-            SignInField::new("username", "Email or user name")
-                .placeholder("you@example.com")
-                .code(),
-        )
-        .field(SignInField::new("password", "App password").secret())
-        .field(
-            SignInField::new("server", "IMAP server")
-                .placeholder("imap.example.com")
-                .code(),
-        )
-        .continue_title("Sign in")
+/// The account a person typed: the address or user name, then the server when it is not a
+/// well-known provider's: `you@gmail.com`, `you@example.com imap.example.com:993`.
+fn parse_account(text: &str) -> Result<Account, SourceError> {
+    let mut parts = text.split_whitespace();
+    let username = parts
+        .next()
+        .ok_or_else(|| SourceError::SignIn("give the email or user name of the account".into()))?;
+    let server = match parts.next() {
+        Some(server) => server.to_string(),
+        None => known_server(username)
+            .ok_or_else(|| {
+                SourceError::SignIn(format!(
+                    "add the IMAP server after the account, such as `{username} imap.example.com`"
+                ))
+            })?
+            .to_string(),
+    };
+    if parts.next().is_some() {
+        return Err(SourceError::SignIn(
+            "give the account and the server only, such as `you@example.com imap.example.com`"
+                .into(),
+        ));
+    }
+    let (host, port) = parse_server(&server)?;
+    Ok(Account {
+        host,
+        port,
+        username: username.to_string(),
+    })
 }
 
-impl SignIn for ImapConnector {
-    fn start(&self, secrets: &dyn Secrets) -> Result<Option<SignInStep>, SourceError> {
-        Ok(match Self::account(secrets)? {
-            Some(_) => None,
-            None => Some(account_step()),
-        })
-    }
-
-    fn answer(
+impl ImapConnector {
+    /// Signs in once with the app password and, when the server lets it, keeps the account
+    /// and the password in the keychain.
+    fn check_and_keep(
         &self,
-        step: &str,
-        values: &SignInValues,
+        account: &Account,
+        password: &str,
         secrets: &dyn Secrets,
-    ) -> Result<Option<SignInStep>, SourceError> {
-        if step != ACCOUNT_STEP {
-            return Ok(Some(account_step()));
-        }
-        let username = values
-            .get("username")
-            .ok_or_else(|| SourceError::SignIn("enter the email or user name".into()))?;
-        let password = values
-            .get("password")
-            .ok_or_else(|| SourceError::SignIn("enter the app password".into()))?;
-        let server = match values.get("server") {
-            Some(server) => server.to_string(),
-            None => known_server(username)
-                .ok_or_else(|| SourceError::SignIn("enter the IMAP server".into()))?
-                .to_string(),
-        };
-        let (host, port) = parse_server(&server)?;
-        let account = Account {
-            host,
-            port,
-            username: username.to_string(),
-        };
+    ) -> Result<(), SourceError> {
         // App passwords are shown in groups with spaces; the servers take them without.
-        let password: String = if known_server(username).is_some() {
+        let password: String = if known_server(&account.username).is_some() {
             password.split_whitespace().collect()
         } else {
-            password.to_string()
+            password.trim().to_string()
         };
-        let mut session = self.net.connect(&account, &password).map_err(|e| match e {
+        if password.is_empty() {
+            return Err(SourceError::SignIn("give the app password".into()));
+        }
+        let mut session = self.net.connect(account, &password).map_err(|e| match e {
             ImapError::Login(what) => SourceError::SignIn(format!(
                 "{} refused the user name or app password: {what}",
                 account.host
@@ -579,20 +610,10 @@ impl SignIn for ImapConnector {
         })?;
         session.logout();
         let json =
-            serde_json::to_string(&account).map_err(|e| SourceError::Failed(e.to_string()))?;
+            serde_json::to_string(account).map_err(|e| SourceError::Failed(e.to_string()))?;
         secrets.set(ACCOUNT_SECRET, &json)?;
         secrets.set(PASSWORD_SECRET, &password)?;
-        Ok(None)
-    }
-
-    fn account(&self, secrets: &dyn Secrets) -> Result<Option<String>, SourceError> {
-        Ok(Self::account(secrets)?.map(|(account, _)| account.describe()))
-    }
-
-    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
-        let password = secrets.delete(PASSWORD_SECRET)?;
-        let account = secrets.delete(ACCOUNT_SECRET)?;
-        Ok(password || account)
+        Ok(())
     }
 }
 

@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDate;
 use knode_format::Timestamp;
-use knode_ingest::sources::sign_in::SignInValues;
-use knode_ingest::sources::{Connector, Container, Cursor, History, Secrets, SourceError};
+use knode_ingest::sources::{
+    Connector, Container, Cursor, History, Secrets, SignInState, SignInStep, SourceError,
+};
 
 use super::client::{
     Account, FetchedMessage, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus,
@@ -224,17 +225,30 @@ impl ImapSession for MemSession {
     fn logout(&mut self) {}
 }
 
+fn start(account: &str) -> SignInStep {
+    SignInStep::Start {
+        account: account.into(),
+    }
+}
+
+fn password(password: &str) -> SignInStep {
+    SignInStep::Password {
+        password: password.into(),
+    }
+}
+
 fn signed_in(net: &Net, host: &str) -> (ImapConnector, MemSecrets) {
     let connector = ImapConnector::with_network(Arc::new(net.clone()));
     let secrets = MemSecrets::default();
-    let values = SignInValues::default()
-        .with("username", "ana@example.com")
-        .with("password", "app-password")
-        .with("server", host);
-    assert_eq!(
-        connector.answer("account", &values, &secrets).unwrap(),
-        None
-    );
+    connector
+        .sign_in(start(&format!("ana@example.com {host}")), &secrets)
+        .unwrap();
+    assert!(matches!(
+        connector
+            .sign_in(password("app-password"), &secrets)
+            .unwrap(),
+        SignInState::SignedIn { .. }
+    ));
     (connector, secrets)
 }
 
@@ -283,30 +297,55 @@ fn signs_in_with_an_app_password_and_keeps_it_in_the_secrets() {
     let net = generic();
     let connector = ImapConnector::with_network(Arc::new(net.clone()));
     let secrets = MemSecrets::default();
-    let step = connector.start(&secrets).unwrap().unwrap();
-    assert_eq!(step.id, "account");
-    assert!(step.fields.iter().any(|f| f.id == "password" && f.secret));
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedOut
+    );
+    // A password before the account is refused.
+    assert!(
+        connector
+            .sign_in(password("app-password"), &secrets)
+            .is_err()
+    );
+    // An address of an unknown provider needs the server.
+    let error = connector
+        .sign_in(start("ana@example.com"), &secrets)
+        .unwrap_err();
+    assert!(error.to_string().contains("imap.example.com"), "{error}");
+    // Plain-text IMAP is refused.
+    assert!(
+        connector
+            .sign_in(start("ana@example.com imap.example.com:143"), &secrets)
+            .is_err()
+    );
 
-    let wrong = SignInValues::default()
-        .with("username", "ana@example.com")
-        .with("password", "nope")
-        .with("server", "imap.example.com");
-    let error = connector.answer("account", &wrong, &secrets).unwrap_err();
+    let state = connector
+        .sign_in(start("ana@example.com imap.example.com"), &secrets)
+        .unwrap();
+    assert!(matches!(
+        state,
+        SignInState::PasswordNeeded { hint: Some(_) }
+    ));
+    let error = connector.sign_in(password("nope"), &secrets).unwrap_err();
     assert!(matches!(error, SourceError::SignIn(_)), "{error}");
     assert!(secrets.names().is_empty());
-
-    let plain = SignInValues::default()
-        .with("username", "ana@example.com")
-        .with("password", "app-password")
-        .with("server", "imap.example.com:143");
-    assert!(connector.answer("account", &plain, &secrets).is_err());
-
-    let (connector, secrets) = signed_in(&net, "imap.example.com");
-    assert_eq!(secrets.names(), vec!["account", "password"]);
-    assert_eq!(connector.start(&secrets).unwrap(), None);
+    // The account is kept for another try.
     assert_eq!(
-        SignIn::account(&connector, &secrets).unwrap().as_deref(),
-        Some("ana@example.com")
+        connector
+            .sign_in(password("app-password"), &secrets)
+            .unwrap(),
+        SignInState::SignedIn {
+            account: "ana@example.com".into()
+        }
+    );
+    assert!(connector.sign_in(SignInStep::Browser, &secrets).is_err());
+
+    assert_eq!(secrets.names(), vec!["account", "password"]);
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedIn {
+            account: "ana@example.com".into()
+        }
     );
     // The account holds no password.
     assert!(
@@ -327,13 +366,13 @@ fn gmail_addresses_need_no_server_and_spaces_in_app_passwords_are_dropped() {
     let connector = ImapConnector::with_network(Arc::new(net.clone()));
     let secrets = MemSecrets::default();
     net.0.lock().unwrap().password = "abcdefghijklmnop".into();
-    let values = SignInValues::default()
-        .with("username", "ana@gmail.com")
-        .with("password", "abcd efgh ijkl mnop");
-    assert_eq!(
-        connector.answer("account", &values, &secrets).unwrap(),
-        None
-    );
+    connector.sign_in(start("ana@gmail.com"), &secrets).unwrap();
+    assert!(matches!(
+        connector
+            .sign_in(password("abcd efgh ijkl mnop"), &secrets)
+            .unwrap(),
+        SignInState::SignedIn { .. }
+    ));
     let account: Account = serde_json::from_str(&secrets.get("account").unwrap().unwrap()).unwrap();
     assert_eq!(account.host, "imap.gmail.com");
     assert_eq!(account.port, 993);

@@ -9,7 +9,9 @@ use serde_json::Value;
 use super::{State, lock_ignoring_poison, params, to_value};
 use crate::protocol::{RpcError, codes, methods};
 use crate::sources::runtime::Wake;
-use crate::sources::{self, Container, SourceError, SourceParams, SpaceSources, state_key};
+use crate::sources::{
+    self, Container, SourceError, SourceParams, SourceSecrets, SpaceSources, state_key,
+};
 use crate::spaces::SpaceEventKind;
 
 pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, RpcError> {
@@ -17,19 +19,11 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     if method == methods::SOURCES_STATUS {
         return to_value(status(state, &p)?);
     }
-    if method == methods::SOURCES_SIGN_IN {
-        let id = source(&p, method)?;
-        let values = p.values.clone().unwrap_or_default();
-        return to_value(
-            state
-                .registry()
-                .sign_in(&id, p.step.as_deref(), &values)
-                .map_err(rpc)?,
-        );
-    }
-    if method == methods::SOURCES_SIGN_OUT {
-        let id = source(&p, method)?;
-        return to_value(state.registry().sign_out(&id).map_err(rpc)?);
+    if matches!(
+        method,
+        methods::SOURCES_ACCOUNT | methods::SOURCES_SIGN_IN | methods::SOURCES_SIGN_OUT
+    ) {
+        return account(state, method, p);
     }
     let path = p
         .space
@@ -66,7 +60,11 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             state.notify_space(&space, SpaceEventKind::Settings, |e| e.key = Some(key));
             state.wake_sources(Wake::Reload);
             match method {
-                methods::SOURCES_DISCONNECT => to_value(true),
+                methods::SOURCES_DISCONNECT => {
+                    drop(space);
+                    forget_unused_account(state, &id);
+                    to_value(true)
+                }
                 _ => to_value(registry.get(&space, &id)?),
             }
         }
@@ -118,32 +116,92 @@ fn change(
                         format!("the state of {id} could not be forgotten: {e}"),
                     )
                 })?;
-                // Disconnecting forgets the account too: its secrets leave the keychain.
-                if state.registry().connector(id).is_some() {
-                    state.registry().sign_out(id).map_err(rpc)?;
-                }
             }
         }
     }
     Ok(())
 }
 
+/// `sources.account`, `sources.sign_in` and `sources.sign_out`: the account a connector
+/// reads belongs to this machine, not to a space. Its session goes only into the keychain.
+fn account(state: &State, method: &str, p: SourceParams) -> Result<Value, RpcError> {
+    let id = source(&p, method)?;
+    let registry = state.registry();
+    let connector = registry
+        .connector(&id)
+        .ok_or_else(|| RpcError::from(sources::unknown(&id)))?
+        .clone();
+    let secrets = SourceSecrets::new(registry.home(), &id);
+    match method {
+        methods::SOURCES_ACCOUNT => to_value(connector.sign_in_state(&secrets).map_err(rpc)?),
+        methods::SOURCES_SIGN_IN => {
+            let step = p
+                .step
+                .ok_or_else(|| RpcError::invalid_params(format!("{method} needs step")))?;
+            let signed = connector.sign_in(step, &secrets).map_err(rpc)?;
+            if matches!(signed, sources::SignInState::SignedIn { .. }) {
+                // Signed in again: it runs now in every space, without waiting out the
+                // backoff of the runs that failed for want of a session.
+                state.wake_sources(Wake::Reload);
+                for key in registry.states().keys_of(&id) {
+                    state.wake_sources(Wake::Run(key));
+                }
+            }
+            to_value(signed)
+        }
+        _ => to_value(connector.sign_out(&secrets).map_err(rpc)?),
+    }
+}
+
+/// Signs a connector out of its account once no space this service knows has it connected:
+/// its session is forgotten with the last space it brought things into.
+fn forget_unused_account(state: &State, id: &str) {
+    let registry = state.registry();
+    let Some(connector) = registry.connector(id).cloned() else {
+        return;
+    };
+    if !connector
+        .info()
+        .permissions
+        .contains(&sources::Permission::SignIn)
+    {
+        return;
+    }
+    let still = known_spaces(state).into_iter().any(|path| {
+        let Ok(space) = state.space(&path) else {
+            return false;
+        };
+        let space = lock_ignoring_poison(&space);
+        sources::source_settings(&space).is_ok_and(|s| s.contains_key(id))
+    });
+    if still {
+        return;
+    }
+    let secrets = SourceSecrets::new(registry.home(), id);
+    if let Err(e) = connector.sign_out(&secrets) {
+        eprintln!("Knode Service: {id} could not sign out: {e}");
+    }
+}
+
+/// The spaces in `config.toml` and the ones open now.
+fn known_spaces(state: &State) -> Vec<PathBuf> {
+    let home = state.registry().home().to_path_buf();
+    let mut paths: Vec<PathBuf> =
+        knode_config::Config::load_from(&home.join(knode_config::CONFIG_FILE))
+            .map(|c| c.known_spaces())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.is_absolute() && p.exists())
+            .collect();
+    paths.extend(state.open_paths());
+    paths
+}
+
 /// The connectors connected to the space asked for, or to every space the service knows.
 fn status(state: &State, p: &SourceParams) -> Result<Vec<SpaceSources>, RpcError> {
     let paths: Vec<PathBuf> = match &p.space {
         Some(path) => vec![path.clone()],
-        None => {
-            let home = state.registry().home().to_path_buf();
-            let mut paths: Vec<PathBuf> =
-                knode_config::Config::load_from(&home.join(knode_config::CONFIG_FILE))
-                    .map(|c| c.known_spaces())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|p| p.is_absolute() && p.exists())
-                    .collect();
-            paths.extend(state.open_paths());
-            paths
-        }
+        None => known_spaces(state),
     };
     let mut out: Vec<SpaceSources> = Vec::new();
     let mut seen: Vec<String> = Vec::new();

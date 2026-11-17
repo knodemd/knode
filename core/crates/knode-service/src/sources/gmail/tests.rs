@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use knode_format::{Provenance, Timestamp};
-use knode_ingest::sources::sign_in::SignInValues;
-use knode_ingest::sources::{Connector, Container, Cursor, History, Secrets, SourceError};
+use knode_ingest::sources::{
+    Connector, Container, Cursor, History, Secrets, SignInState, SignInStep, SourceError,
+};
 use knode_vault::mail::{MailOptions, MailSource, RawMail, import_mail};
 use serde_json::{Value, json};
 
@@ -309,6 +310,19 @@ fn browser(redirect: &str, path_and_query: &str) -> String {
     page
 }
 
+fn start(account: &str) -> SignInStep {
+    SignInStep::Start {
+        account: account.into(),
+    }
+}
+
+fn page_of(state: SignInState) -> String {
+    match state {
+        SignInState::OpenBrowser { url } => url,
+        other => panic!("not a page to open: {other:?}"),
+    }
+}
+
 #[test]
 fn without_a_client_id_it_says_sign_in_with_google_is_not_set_up() {
     let fake = Fake::default();
@@ -317,7 +331,10 @@ fn without_a_client_id_it_says_sign_in_with_google_is_not_set_up() {
     assert_eq!(error.kind(), "unavailable");
     assert!(error.to_string().contains("KNODE_GOOGLE_CLIENT_ID"));
     let secrets = MemSecrets::default();
-    assert_eq!(connector.start(&secrets).unwrap_err().kind(), "unavailable");
+    assert_eq!(
+        connector.sign_in(start(""), &secrets).unwrap_err().kind(),
+        "unavailable"
+    );
     assert_eq!(
         connector
             .fetch(&request(None, History::Everything, &[], &secrets))
@@ -333,9 +350,15 @@ fn signs_in_with_google_with_pkce_and_a_loopback_redirect() {
     fake.0.lock().unwrap().email = "ana@example.com".into();
     let connector = connector(&fake);
     let secrets = MemSecrets::default();
-    let step = connector.start(&secrets).unwrap().unwrap();
-    assert_eq!(step.id, "browser");
-    let url = step.browser_url.unwrap();
+    assert_eq!(
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedOut
+    );
+    let url = page_of(
+        connector
+            .sign_in(start("ana@example.com"), &secrets)
+            .unwrap(),
+    );
     let (base, query) = url.split_once('?').unwrap();
     assert_eq!(base, "https://accounts.test/auth");
     let params = query_pairs(query);
@@ -350,6 +373,7 @@ fn signs_in_with_google_with_pkce_and_a_loopback_redirect() {
     assert_eq!(get("code_challenge_method"), "S256");
     assert_eq!(get("client_id"), "test-client");
     assert_eq!(get("access_type"), "offline");
+    assert_eq!(get("login_hint"), "ana@example.com");
     let redirect = get("redirect_uri");
     assert!(redirect.starts_with("http://127.0.0.1:"));
     fake.0.lock().unwrap().challenge = Some(get("code_challenge"));
@@ -365,20 +389,21 @@ fn signs_in_with_google_with_pkce_and_a_loopback_redirect() {
     assert!(page.contains("Signed in"));
 
     assert_eq!(
-        connector
-            .answer("browser", &SignInValues::default(), &secrets)
-            .unwrap(),
-        None
+        connector.sign_in(SignInStep::Browser, &secrets).unwrap(),
+        SignInState::SignedIn {
+            account: "ana@example.com".into()
+        }
     );
     assert_eq!(
         secrets.get(REFRESH_TOKEN_SECRET).unwrap().as_deref(),
         Some("rt-1")
     );
     assert_eq!(
-        SignIn::account(&connector, &secrets).unwrap().as_deref(),
-        Some("ana@example.com")
+        connector.sign_in_state(&secrets).unwrap(),
+        SignInState::SignedIn {
+            account: "ana@example.com".into()
+        }
     );
-    assert_eq!(connector.start(&secrets).unwrap(), None);
 
     // Signing out forgets the secrets and revokes the token.
     assert!(connector.sign_out(&secrets).unwrap());
@@ -391,8 +416,9 @@ fn a_refused_sign_in_says_so_and_can_start_again() {
     let fake = Fake::default();
     let connector = connector(&fake);
     let secrets = MemSecrets::default();
-    let step = connector.start(&secrets).unwrap().unwrap();
-    let url = step.browser_url.unwrap();
+    // Going on before starting is refused.
+    assert!(connector.sign_in(SignInStep::Browser, &secrets).is_err());
+    let url = page_of(connector.sign_in(start(""), &secrets).unwrap());
     let params = query_pairs(url.split_once('?').unwrap().1);
     let get = |k: &str| {
         params
@@ -407,16 +433,18 @@ fn a_refused_sign_in_says_so_and_can_start_again() {
     );
     assert!(page.contains("Not signed in"));
     let error = connector
-        .answer("browser", &SignInValues::default(), &secrets)
+        .sign_in(SignInStep::Browser, &secrets)
         .unwrap_err();
     assert_eq!(error.kind(), "sign-in");
     assert!(secrets.names().is_empty());
-    // Going on again opens a new sign-in page.
-    let again = connector
-        .answer("browser", &SignInValues::default(), &secrets)
-        .unwrap()
-        .unwrap();
-    assert!(again.browser_url.is_some());
+    // Starting again opens a new sign-in page.
+    let again = page_of(connector.sign_in(start(""), &secrets).unwrap());
+    assert_ne!(again, url);
+    assert!(
+        connector
+            .sign_in(SignInStep::Code { code: "1".into() }, &secrets)
+            .is_err()
+    );
 }
 
 #[test]

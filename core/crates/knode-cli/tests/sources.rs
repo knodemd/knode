@@ -56,10 +56,9 @@ fn mail_connectors_sign_in_and_out() {
     // IMAP asks for the account; with nothing typed, signing in stops.
     let out = sb.run(&["sources", "sign-in", "imap"]);
     assert!(!out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Your mail account"), "{stdout}");
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("signing in was stopped"), "{err}");
+    assert!(err.contains("IMAP server"), "{err}");
+    assert!(err.contains("signing in stopped"), "{err}");
 
     let out = sb.ok(&["sources", "sign-out", "imap"]);
     assert!(out.contains("was not signed in"), "{out}");

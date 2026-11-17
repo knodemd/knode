@@ -15,7 +15,7 @@ use knode_service::sources::imap::ImapConnector;
 use knode_service::sources::imap::client::{
     Account, FetchedMessage, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus,
 };
-use knode_service::sources::{SignInValues, SourcesOptions};
+use knode_service::sources::{SignInState, SignInStep, SourcesOptions};
 use knode_service::{Client, Config, ServiceHandle, start};
 use tempfile::TempDir;
 
@@ -178,33 +178,46 @@ fn sign_in_connect_bring_in_and_disconnect_forgets_the_account() {
     let client = fixture.client();
     let me = Provenance::person("Ana");
 
-    // Not signed in: the first step asks for the account.
-    let first = client
-        .sources_sign_in("imap", None, &SignInValues::default())
+    // Not signed in: the account, then its app password.
+    assert_eq!(
+        client.sources_account("imap").unwrap(),
+        SignInState::SignedOut
+    );
+    let state = client
+        .sources_sign_in(
+            "imap",
+            SignInStep::Start {
+                account: "ana@example.com imap.example.com".into(),
+            },
+        )
         .unwrap();
-    assert!(!first.signed_in);
-    let step = first.step.unwrap();
-    assert_eq!(step.id, "account");
+    assert!(matches!(state, SignInState::PasswordNeeded { .. }));
 
     // A wrong app password is refused and nothing is kept.
-    let wrong = SignInValues::default()
-        .with("username", "ana@example.com")
-        .with("password", "wrong")
-        .with("server", "imap.example.com");
     let error = client
-        .sources_sign_in("imap", Some("account"), &wrong)
+        .sources_sign_in(
+            "imap",
+            SignInStep::Password {
+                password: "wrong".into(),
+            },
+        )
         .unwrap_err();
     assert!(error.to_string().contains("refused"), "{error}");
 
-    let right = SignInValues::default()
-        .with("username", "ana@example.com")
-        .with("password", "app-password")
-        .with("server", "imap.example.com");
     let done = client
-        .sources_sign_in("imap", Some("account"), &right)
+        .sources_sign_in(
+            "imap",
+            SignInStep::Password {
+                password: "app-password".into(),
+            },
+        )
         .unwrap();
-    assert!(done.signed_in);
-    assert_eq!(done.account.as_deref(), Some("ana@example.com"));
+    assert_eq!(
+        done,
+        SignInState::SignedIn {
+            account: "ana@example.com".into()
+        }
+    );
 
     // The password is in the secrets store, never in the space or the state.
     let space_files: Vec<_> = walk(&fixture.space());
@@ -234,14 +247,14 @@ fn sign_in_connect_bring_in_and_disconnect_forgets_the_account() {
         .unwrap();
     fixture.wait_until("the first mail", |f| f.threads() == vec!["Plans"]);
 
-    // Disconnecting forgets the account: signing in starts again.
+    // Disconnecting it from the last space forgets the account.
     client
         .sources_disconnect(fixture.space(), "imap", &me)
         .unwrap();
-    let again = client
-        .sources_sign_in("imap", None, &SignInValues::default())
-        .unwrap();
-    assert!(!again.signed_in);
+    assert_eq!(
+        client.sources_account("imap").unwrap(),
+        SignInState::SignedOut
+    );
     assert!(!client.sources_sign_out("imap").unwrap());
 }
 

@@ -8,7 +8,7 @@ use super::{Client, space_path};
 use crate::Result;
 use crate::protocol::methods;
 use crate::sources::{
-    ContainerInfo, History, SignInStatus, SignInValues, SourceParams, SourceStatus, SpaceSources,
+    ContainerInfo, History, SignInState, SignInStep, SourceParams, SourceStatus, SpaceSources,
 };
 
 impl Client {
@@ -155,22 +155,20 @@ impl Client {
         )
     }
 
-    /// Takes one step of signing the connector `source` in to its account: the first one when
-    /// `step` is `None`, else the answer to `step` with what the person entered.
-    pub fn sources_sign_in(
-        &self,
-        source: &str,
-        step: Option<&str>,
-        values: &SignInValues,
-    ) -> Result<SignInStatus> {
+    /// Whether the connector `source` is signed in to the account it reads, on this machine.
+    pub fn sources_account(&self, source: &str) -> Result<SignInState> {
+        self.sources_call(methods::SOURCES_ACCOUNT, None, Some(source), |_| {})
+    }
+
+    /// Takes one step of signing the connector `source` in, and says what comes next.
+    pub fn sources_sign_in(&self, source: &str, step: SignInStep) -> Result<SignInState> {
         self.sources_call(methods::SOURCES_SIGN_IN, None, Some(source), |p| {
-            p.step = step.map(str::to_string);
-            p.values = Some(values.clone());
+            p.step = Some(step);
         })
     }
 
-    /// Signs the connector `source` out and forgets its secrets. Returns whether it was signed
-    /// in.
+    /// Signs the connector `source` out and forgets its session. Returns whether it was
+    /// signed in.
     pub fn sources_sign_out(&self, source: &str) -> Result<bool> {
         self.sources_call(methods::SOURCES_SIGN_OUT, None, Some(source), |_| {})
     }

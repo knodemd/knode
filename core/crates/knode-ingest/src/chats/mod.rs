@@ -20,6 +20,7 @@ mod model;
 mod render;
 mod slack;
 mod telegram;
+pub mod telegram_live;
 mod whatsapp;
 mod write;
 
@@ -209,7 +210,7 @@ pub struct ChatImportReport {
 }
 
 impl ChatImportReport {
-    fn new(format: ChatFormat) -> Self {
+    pub(crate) fn new(format: ChatFormat) -> Self {
         ChatImportReport {
             format,
             chats: Vec::new(),

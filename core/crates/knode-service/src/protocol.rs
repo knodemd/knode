@@ -205,9 +205,11 @@ pub mod methods {
     pub const SOURCES_RUN: &str = "sources.run";
     /// Disconnects a connector from a space; what it brought in stays.
     pub const SOURCES_DISCONNECT: &str = "sources.disconnect";
-    /// Signs a connector in to the account it reads, one step at a time.
+    /// Whether a connector is signed in to the account it reads, on this machine.
+    pub const SOURCES_ACCOUNT: &str = "sources.account";
+    /// Takes one step of signing a connector in: the account, the code, the password.
     pub const SOURCES_SIGN_IN: &str = "sources.sign_in";
-    /// Signs a connector out of its account and forgets its secrets.
+    /// Signs a connector out and forgets its session.
     pub const SOURCES_SIGN_OUT: &str = "sources.sign_out";
 }
 

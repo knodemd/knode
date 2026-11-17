@@ -100,7 +100,12 @@ impl Drop for Pending {
 }
 
 /// Starts signing in: listens on a loopback port and returns the page of Google to open.
-pub(crate) fn begin(client: &GoogleClient, auth_endpoint: &str) -> io::Result<Pending> {
+/// `login_hint` (an address, or empty) picks the Google account on the page.
+pub(crate) fn begin(
+    client: &GoogleClient,
+    auth_endpoint: &str,
+    login_hint: &str,
+) -> io::Result<Pending> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
@@ -116,6 +121,10 @@ pub(crate) fn begin(client: &GoogleClient, auth_endpoint: &str) -> io::Result<Pe
         challenge(&verifier),
         encode(&state),
     );
+    let url = match login_hint.trim() {
+        "" => url,
+        hint => format!("{url}&login_hint={}", encode(hint)),
+    };
     let (send, codes) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     {

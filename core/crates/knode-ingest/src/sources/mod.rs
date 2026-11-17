@@ -30,6 +30,10 @@
 //! service in the system keychain and reached through [`Secrets`]; a connector never writes
 //! them into a space, a settings file or a log.
 //!
+//! A connector that reads an account ([`Permission::SignIn`]) is signed in step by step with
+//! [`Connector::sign_in`] ([`SignInStep`], [`SignInState`]); the account belongs to the
+//! machine, not to a space.
+//!
 //! # Plugins
 //!
 //! The plugin API ([knode#61](https://github.com/knodemd/knode/issues/61)) exposes this same
@@ -49,7 +53,6 @@
 //!
 //! See decisions 0010 (sources and plugins) and 0013 (live connectors) of the Knode handbook.
 
-pub mod sign_in;
 pub mod sqlite;
 
 use std::fmt;
@@ -531,6 +534,81 @@ impl From<io::Error> for SourceError {
     }
 }
 
+/// A step of signing in to the account a connector reads, sent by the person: first the
+/// account (a phone number), then the code the service sent, then a password if the account
+/// has one. Never logged or kept: the connector keeps only the session it gets.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "kebab-case")]
+pub enum SignInStep {
+    /// Start signing in to this account, such as a phone number in international format.
+    Start {
+        /// The account.
+        account: String,
+    },
+    /// The code the service sent.
+    Code {
+        /// The code.
+        code: String,
+    },
+    /// The password of the account, when it has one (two-step verification), or the app
+    /// password of a mail account.
+    Password {
+        /// The password.
+        password: String,
+    },
+    /// The person finished signing in on the page [`SignInState::OpenBrowser`] gave, such as
+    /// Sign in with Google.
+    Browser,
+}
+
+impl fmt::Debug for SignInStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Codes and passwords never reach a log.
+        f.write_str(match self {
+            SignInStep::Start { .. } => "SignInStep::Start",
+            SignInStep::Code { .. } => "SignInStep::Code",
+            SignInStep::Password { .. } => "SignInStep::Password",
+            SignInStep::Browser => "SignInStep::Browser",
+        })
+    }
+}
+
+/// Where signing in to a connector's account is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum SignInState {
+    /// Not signed in: send [`SignInStep::Start`].
+    SignedOut,
+    /// The service sent a code: send [`SignInStep::Code`].
+    CodeSent {
+        /// Where it was sent, for people: "the Telegram app", "an SMS".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
+    },
+    /// The account has a password: send [`SignInStep::Password`].
+    PasswordNeeded {
+        /// The hint the person gave for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<String>,
+    },
+    /// The person signs in in the browser, on this page (Sign in with Google), and the
+    /// browser comes back to Knode on this machine: then send [`SignInStep::Browser`].
+    OpenBrowser {
+        /// The page to open.
+        url: String,
+    },
+    /// Signed in; the session is in the system keychain.
+    SignedIn {
+        /// The account, for people: a name.
+        account: String,
+    },
+}
+
+/// The error of a connector with no account to sign in to.
+fn no_account(info: &SourceInfo) -> SourceError {
+    SourceError::Unavailable(format!("{} has no account to sign in to", info.name))
+}
+
 /// A source that keeps running in Knode Service and brings in what is new.
 ///
 /// One value serves every space the connector is switched on in: what differs by space comes
@@ -561,15 +639,31 @@ pub trait Connector: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// How the connector signs in to the account it reads, for a connector that needs
-    /// [`Permission::SignIn`]: see [`sign_in`]. None unless the connector says otherwise.
-    fn sign_in(&self) -> Option<&dyn sign_in::SignIn> {
-        None
-    }
-
     /// Reads what is new after `request.cursor`, at most about `request.max_items` items,
     /// leaving out excluded containers and what is older than the history chosen.
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError>;
+
+    /// Whether the connector is signed in to the account it reads, for a connector that
+    /// needs [`Permission::SignIn`]. The account is the same for every space: it belongs to
+    /// this machine. Unavailable unless the connector says otherwise.
+    fn sign_in_state(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        let _ = secrets;
+        Err(no_account(&self.info()))
+    }
+
+    /// Takes one step of signing in and says what comes next. The session the connector gets
+    /// at the end goes into `secrets`, nowhere else.
+    fn sign_in(&self, step: SignInStep, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        let _ = (step, secrets);
+        Err(no_account(&self.info()))
+    }
+
+    /// Signs out of the account and forgets the session kept in `secrets`. Returns whether
+    /// it was signed in.
+    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
+        let _ = secrets;
+        Err(no_account(&self.info()))
+    }
 }
 
 #[cfg(test)]

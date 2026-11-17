@@ -260,11 +260,10 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `mail`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
-file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read;
-with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`).
+file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
 
 | `from` | What `path` is |
 | --- | --- |
@@ -279,23 +278,9 @@ with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
-| `mbox` | An `.mbox` file (Gmail through Google Takeout, or a mailbox another app exported), or a folder of them: one `email` node per thread and one `person` node per address |
-| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, a folder of `.emlx` files, or a mailbox Apple Mail exported (`<name>.mbox`): as for `mbox` |
 | `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
 | `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
-
-`mail`, for `mbox` and `apple-mail` only, keeps the import to some messages and turns on
-attachments; every field is optional:
-
-```json
-{ "folders": ["Work", "INBOX"], "since": "2026-01-01", "until": "2026-03-31", "attachments": true }
-```
-
-`folders` are Gmail labels or Apple Mail mailboxes, compared without case, matching a whole
-folder path or its last part; `since` and `until` are days in UTC, both included; `attachments`
-attaches the files of the messages to their thread (off by default). Spam and trash are left out
-unless `folders` names them. `mail` with any other source fails with `invalid_params`.
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -317,7 +302,7 @@ unless `folders` names them. `mail` with any other source fails with `invalid_pa
   part way.
 - A path that is not something Knode imports, or not the kind `from` names, fails with
   `invalid`; files that cannot be read fail with `folder`; another app's notes that macOS keeps
-  from Knode Service fail with `no_access`, as does Apple Mail's store without Full Disk Access.
+  from Knode Service fail with `no_access`.
 
 ## Changes
 
@@ -490,9 +475,10 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
-| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine, and signs a connector that signed in out of its account; what it brought in stays |
-| `sources.sign_in` | `source`, `step`?, `values`? | `{ "signed_in", "account"?, "step"? }`. Without `step`, the first step of signing the connector in to the account it reads (none when it is signed in); with `step`, the answer to that step with `values` (`{ "<field id>": "<text>" }`) and the next step, until `signed_in` |
-| `sources.sign_out` | `source` | Whether it was signed in. Forgets the connector's secrets and signs it out of its account |
+| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected |
+| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
+| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
+| `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
 
 ```json
 { "id": "whatsapp", "name": "WhatsApp", "kind": "connector", "reads": "The chats of WhatsApp for Mac",
@@ -522,24 +508,6 @@ owner can read; it never holds what was read. The cursor is saved only after wha
 written, and the importers find what they wrote by the service's own ids, so a restart, a lost
 state file or a second device running the same connector writes nothing twice.
 
-A connector that reads an account (`sign-in` among its permissions, such as `gmail` and `imap`)
-signs in once per machine, for every space, before it is connected. Each step is
-`{ "id", "title", "message"?, "fields"?: [{ "id", "label", "placeholder"?, "secret"?, "code"? }],
-"browser_url"?, "continue_title"? }`: fields to fill in (a `secret` one is hidden as it is typed),
-a page to open in the browser (Sign in with Google), or both. The client shows it, then calls
-`sources.sign_in` with the step's `id` and what the person entered. A wrong answer fails with
-`invalid` and kind `sign-in`, and the step can be answered again. For `gmail`, the browser step
-is answered once the browser has come back to Knode on `http://127.0.0.1:<port>`; the call waits
-up to 30 seconds for it.
-
-```json
-{ "signed_in": false, "step": { "id": "account", "title": "Your mail account",
-  "fields": [{ "id": "username", "label": "Email or user name", "code": true },
-             { "id": "password", "label": "App password", "secret": true },
-             { "id": "server", "label": "IMAP server", "placeholder": "imap.example.com", "code": true }],
-  "continue_title": "Sign in" } }
-```
-
 A connector runs when the files it watches change (a local database and its `-wal`), at its
 interval, and when `sources.run` asks. Connectors that read another app's database read a copy
 of it, never the live file, and check its tables and columns first. Their writes are made with
@@ -547,6 +515,17 @@ the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connector
 in the system credential store (the Keychain on macOS), never in a space, a settings file or a
 log. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
 stops everything Knode Service brings in by itself.
+
+The `telegram` connector reads Telegram through its official API, as Knode's own client. It is
+signed in once with `sources.sign_in`; while the service runs it keeps a connection open and
+brings in new messages as they arrive, and when the service starts it catches up from the last
+message it brought in of each chat. Messages go through the Telegram Desktop export importer
+and find the same `chat` nodes by Telegram's chat id. Chats are excluded by that id (as
+`sources.containers` lists them); secret chats never reach the API and are not read. Photos and
+files up to 20 MB are attached; larger ones are named in the text. When Telegram asks to wait
+(a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
+until the wait is over. A build of Knode without a Telegram app id lists the connector, which
+reports `unavailable`.
 
 ## Search
 

@@ -34,10 +34,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use knode_format::Timestamp;
-use knode_ingest::sources::sign_in::{SignIn, SignInStep, SignInValues};
 use knode_ingest::sources::{
-    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets, SourceError,
-    SourceInfo, Trigger,
+    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets, SignInState,
+    SignInStep, SourceError, SourceInfo, Trigger,
 };
 use knode_vault::mail::{MailSource, RawMail};
 use serde::{Deserialize, Serialize};
@@ -444,8 +443,43 @@ impl Connector for GmailConnector {
         Ok(out)
     }
 
-    fn sign_in(&self) -> Option<&dyn SignIn> {
-        Some(self)
+    fn sign_in_state(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        self.client()?;
+        if secrets.get(REFRESH_TOKEN_SECRET)?.is_some()
+            && let Some(account) = secrets.get(ACCOUNT_SECRET)?
+        {
+            return Ok(SignInState::SignedIn { account });
+        }
+        Ok(SignInState::SignedOut)
+    }
+
+    /// [`SignInStep::Start`] (the account, if given, picks it on Google's page) gives the page
+    /// to open, [`SignInState::OpenBrowser`]; [`SignInStep::Browser`] once the person signed
+    /// in there waits up to 30 seconds for the browser to come back, then keeps the refresh
+    /// token.
+    fn sign_in(&self, step: SignInStep, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        match step {
+            SignInStep::Start { account } => self.open_browser(&account),
+            SignInStep::Browser => self.browser_came_back(secrets),
+            _ => Err(SourceError::SignIn(
+                "Gmail signs in with Google in the browser".into(),
+            )),
+        }
+    }
+
+    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
+        *lock(&self.pending) = None;
+        *lock(&self.token) = None;
+        let refresh = secrets.get(REFRESH_TOKEN_SECRET)?;
+        if let Some(token) = &refresh {
+            // Best effort: the token is forgotten here whatever Google answers.
+            let _ = self
+                .http
+                .post_form(&self.endpoints.revoke, &[("token", token)]);
+        }
+        let had_token = secrets.delete(REFRESH_TOKEN_SECRET)?;
+        let had_account = secrets.delete(ACCOUNT_SECRET)?;
+        Ok(refresh.is_some() || had_token || had_account)
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
@@ -598,24 +632,45 @@ impl Connector for GmailConnector {
     }
 }
 
-/// The id of the step of signing in in the browser.
-const BROWSER_STEP: &str = "browser";
-
 impl GmailConnector {
-    fn browser_step(&self) -> Result<SignInStep, SourceError> {
+    fn open_browser(&self, login_hint: &str) -> Result<SignInState, SourceError> {
         let client = self.client()?;
-        let pending = oauth::begin(client, &self.endpoints.auth)
+        let pending = oauth::begin(client, &self.endpoints.auth, login_hint)
             .map_err(|e| failed(format!("Knode could not start signing in: {e}")))?;
-        let step = SignInStep::new(BROWSER_STEP, "Sign in with Google")
-            .message(
-                "Sign in with Google in your browser and allow Knode to read your mail. Knode \
-                 only reads: it never sends, changes or deletes mail. Come back here once the \
-                 browser says you are signed in.",
-            )
-            .browser(pending.url.clone())
-            .continue_title("I signed in");
+        let url = pending.url.clone();
         *lock(&self.pending) = Some(pending);
-        Ok(step)
+        Ok(SignInState::OpenBrowser { url })
+    }
+
+    fn browser_came_back(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        let mut guard = lock(&self.pending);
+        let Some(pending) = guard.as_ref() else {
+            return Err(SourceError::SignIn(
+                "start signing in with Google first".into(),
+            ));
+        };
+        match pending.codes.recv_timeout(ANSWER_WAIT) {
+            Ok(Ok(code)) => {
+                let pending = guard.take().expect("a sign-in is under way");
+                drop(guard);
+                self.finish(pending, &code, secrets)?;
+                let account = secrets.get(ACCOUNT_SECRET)?.unwrap_or_default();
+                Ok(SignInState::SignedIn { account })
+            }
+            Ok(Err(why)) => {
+                *guard = None;
+                Err(SourceError::SignIn(why))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(SourceError::SignIn(
+                "finish signing in with Google in the browser first, then go on".into(),
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                *guard = None;
+                Err(SourceError::SignIn(
+                    "the browser did not come back: sign in again".into(),
+                ))
+            }
+        }
     }
 
     fn finish(
@@ -657,72 +712,6 @@ impl GmailConnector {
         };
         secrets.set(ACCOUNT_SECRET, &email)?;
         Ok(())
-    }
-}
-
-impl SignIn for GmailConnector {
-    fn start(&self, secrets: &dyn Secrets) -> Result<Option<SignInStep>, SourceError> {
-        if secrets.get(REFRESH_TOKEN_SECRET)?.is_some() && secrets.get(ACCOUNT_SECRET)?.is_some() {
-            return Ok(None);
-        }
-        self.browser_step().map(Some)
-    }
-
-    fn answer(
-        &self,
-        step: &str,
-        _values: &SignInValues,
-        secrets: &dyn Secrets,
-    ) -> Result<Option<SignInStep>, SourceError> {
-        let mut guard = lock(&self.pending);
-        let (true, Some(pending)) = (step == BROWSER_STEP, guard.as_ref()) else {
-            drop(guard);
-            return self.browser_step().map(Some);
-        };
-        let received = pending.codes.recv_timeout(ANSWER_WAIT);
-        match received {
-            Ok(Ok(code)) => {
-                let pending = guard.take().expect("a sign-in is under way");
-                drop(guard);
-                self.finish(pending, &code, secrets)?;
-                Ok(None)
-            }
-            Ok(Err(why)) => {
-                *guard = None;
-                Err(SourceError::SignIn(why))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(SourceError::SignIn(
-                "finish signing in with Google in the browser first, then continue".into(),
-            )),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                *guard = None;
-                Err(SourceError::SignIn(
-                    "the browser did not come back: sign in again".into(),
-                ))
-            }
-        }
-    }
-
-    fn account(&self, secrets: &dyn Secrets) -> Result<Option<String>, SourceError> {
-        Ok(match secrets.get(REFRESH_TOKEN_SECRET)? {
-            Some(_) => secrets.get(ACCOUNT_SECRET)?,
-            None => None,
-        })
-    }
-
-    fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
-        *lock(&self.pending) = None;
-        *lock(&self.token) = None;
-        let refresh = secrets.get(REFRESH_TOKEN_SECRET)?;
-        if let Some(token) = &refresh {
-            // Best effort: the token is forgotten here whatever Google answers.
-            let _ = self
-                .http
-                .post_form(&self.endpoints.revoke, &[("token", token)]);
-        }
-        let had_token = secrets.delete(REFRESH_TOKEN_SECRET)?;
-        let had_account = secrets.delete(ACCOUNT_SECRET)?;
-        Ok(refresh.is_some() || had_token || had_account)
     }
 }
 

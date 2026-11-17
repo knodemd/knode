@@ -11,6 +11,7 @@ mod markdown;
 mod onboard;
 mod readwise;
 mod service;
+mod sign_in;
 mod sources;
 mod spaces;
 
