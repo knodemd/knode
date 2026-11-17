@@ -175,6 +175,21 @@ import Testing
         #expect(makeModel(settings: MemoryKnodeSettings(defaultSpace: work)).sidebarSpaces.isEmpty)
     }
 
+    @Test func aSpaceArchivedFromTheCommandLineLeavesTheList() throws {
+        let work = folder.appending(path: "Work.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        SpaceLibrary(defaults: defaults).add(work, name: "Work")
+        #expect(SpaceLibrary(defaults: defaults).entries.map(\.name) == ["Work"])
+        // `knode onboard archive` renames the package; the bookmark follows it.
+        let archive = folder.appending(path: "Work-archive-1794871951073089000.knode", directoryHint: .isDirectory)
+        try FileManager.default.moveItem(at: work, to: archive)
+        #expect(SpaceLibrary(defaults: defaults).entries.isEmpty)
+        // An archive the person opens on purpose stays listed.
+        SpaceLibrary(defaults: defaults).add(archive, name: "Work")
+        #expect(SpaceLibrary(defaults: defaults).entries.map(\.url.lastPathComponent) == [archive.lastPathComponent])
+        #expect(SpaceLibrary.isArchive(archive) && !SpaceLibrary.isArchive(work))
+    }
+
     @Test func spacesMadeOutsideTheAppAppearOnTheNextLaunch() throws {
         // The first launch saves an empty list: no space exists yet.
         #expect(makeModel().sidebarSpaces.isEmpty)

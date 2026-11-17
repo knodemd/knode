@@ -170,6 +170,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/mail/write.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
 $(SRCROOT)/../core/crates/knode-vault/src/onboarding.rs
+$(SRCROOT)/../core/crates/knode-vault/src/onboarding_guide.md
 $(SRCROOT)/../core/crates/knode-vault/src/preview.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/book.rs
 $(SRCROOT)/../core/crates/knode-vault/src/reading/dates.rs
