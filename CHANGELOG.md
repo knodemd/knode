@@ -66,6 +66,11 @@ belongs to, newest first.
 
 #### Added
 
+- **Connect your agents** in the Mac app: once the `knode` command is installed on the first run,
+  in Get started and from **Knode > Connect Your Agents…**, the app lists the agents on your Mac,
+  Claude Code first, with a Connect button each and **Connect all detected**. After connecting it
+  says to open a new session of the agent, which sets your memory up. `knode connect --list
+  --json` prints the same list, with whether each agent is already connected.
 - **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
   any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
   asks you only what needs your judgment, imports a copy, connects itself and moves your
