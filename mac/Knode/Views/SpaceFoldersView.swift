@@ -319,6 +319,6 @@ struct AddProjectSheet: View {
         guard let name = SpaceFolder.projectName(for: url) else {
             return "This folder has no name of its own, so no project is added for it."
         }
-        return "Adds the project \u{201C}\(name)\u{201D} to this space, or uses the one of that name it already has. Removing the folder later keeps the project and its notes."
+        return "Adds the project \u{201C}\(name)\u{201D} to this space, or uses the one of that name it already has. If another folder named \u{201C}\(name)\u{201D} holds that project, this one gets its own, named after its parent folder too. Removing the folder later keeps the project and its notes."
     }
 }

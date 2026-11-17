@@ -71,6 +71,10 @@ struct OnboardingSheet: View {
     init(existing: URL? = nil) { self.existing = existing }
     @Environment(AppModel.self) private var model
     @State private var step = 0
+    /// Whether an agent does the import, the default, or the person does it in this sheet.
+    @State private var byAgent = true
+    @State private var agentPrompt: String?
+    @State private var copied = false
     @State private var mode = "vault"
     @State private var source: URL?
     /// The suggested name before a source is chosen, and for an empty start.
@@ -111,7 +115,7 @@ struct OnboardingSheet: View {
 
     var body: some View {
         KSheetSurface(width: 760) {
-            KSheetTitle(kicker: "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
+            KSheetTitle(kicker: step == 0 && byAgent ? "Get started" : "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
             if step == 0 { startingPoint }
             if step == 1 { review }
             if step == 2 {
@@ -149,6 +153,54 @@ struct OnboardingSheet: View {
     }
 
     private var startingPoint: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("Who brings your notes in?", selection: $byAgent) {
+                Text("Let your agent do it").tag(true)
+                Text("Do it yourself").tag(false)
+            }
+            .pickerStyle(.segmented)
+            if byAgent { agentStart } else { manualStart }
+        }
+    }
+
+    /// The agent reads the guide that comes with Knode (`knode onboard guide`), decides what needs
+    /// judgment with the person and runs the same commands this sheet runs.
+    private var agentStart: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            KExplanation("Your agent reads a guide that comes with Knode, looks at your folders and asks you only what needs your judgment: which notes are yours, which stay with their code, which projects keep their files. Then it imports them, connects itself and moves your instruction files to Knode, showing you each change first. Your files are never changed: Knode imports a copy.")
+            HStack {
+                Text(source?.path(percentEncoded: false) ?? "No folder chosen: your agent will ask").font(KFont.mono(12)).lineLimit(2)
+                Spacer()
+                KButton("Choose folder", icon: .folder) {
+                    source = SpacePanels.chooseFolder(title: "Where are your notes?", message: "Read only: your agent imports a copy into a separate space.")
+                }
+            }
+            Text("Paste this into Claude Code, Codex or any agent that can run commands on this Mac:").font(KFont.ui(13))
+            ScrollView {
+                Text(agentPrompt ?? "…").font(KFont.mono(12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 76)
+            HStack {
+                KButton("Not now") { model.sheet = nil }
+                Spacer()
+                KButton(copied ? "Copied" : "Copy prompt", icon: copied ? .done : .copy, kind: .primary) {
+                    guard let agentPrompt else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(agentPrompt, forType: .string)
+                    copied = true
+                }
+                .disabled(agentPrompt == nil)
+            }
+        }
+        .task(id: source) {
+            copied = false
+            var args = ["onboard", "prompt"]
+            if let source { args += ["--source", source.path(percentEncoded: false)] }
+            agentPrompt = try? await command.run(args).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private var manualStart: some View {
         VStack(alignment: .leading, spacing: 14) {
             KExplanation("Knode creates a separate copy. Your current notes, project files and Obsidian settings stay where they are. You can review the organization, archive the copy and start again.")
             Picker("How do you work today?", selection: $mode) {

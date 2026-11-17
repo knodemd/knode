@@ -9,7 +9,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::message::{self, Collector, Origin};
+use super::message::{self, Collector, MAX_MESSAGE_SIZE, Origin};
 use super::{MailError, MailOptions, MailReport, file_name, read_error};
 
 /// How many entries [`has_emlx`] looks at before giving up.
@@ -144,6 +144,7 @@ fn skip_unreadable(
     if error.kind() == std::io::ErrorKind::PermissionDenied {
         return Err(MailError::NoAccess {
             path: path.to_path_buf(),
+            program: None,
         });
     }
     report.skip(
@@ -181,8 +182,16 @@ fn mailbox(root: &Path, file: &Path) -> String {
     name.strip_suffix(".mbox").unwrap_or(&name).to_string()
 }
 
-/// The message in an `.emlx` file: the bytes its first line counts.
+/// The message in an `.emlx` file: the bytes its first line counts. A file larger than
+/// [`MAX_MESSAGE_SIZE`] is not read.
 pub(crate) fn read_emlx(path: &Path) -> Result<Vec<u8>, MailError> {
+    let size = std::fs::metadata(path).map_err(read_error(path))?.len();
+    if size > MAX_MESSAGE_SIZE {
+        return Err(MailError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, super::mbox::too_large()),
+        });
+    }
     let bytes = std::fs::read(path).map_err(read_error(path))?;
     message_of(bytes).ok_or_else(|| MailError::Io {
         path: path.to_path_buf(),
@@ -235,6 +244,31 @@ pub(crate) fn read(
                 .into(),
         });
     }
+    read_files(files, options, collected, report)
+}
+
+/// Reads the `.emlx` files given, each in its mailbox under the store `root` (a `V<n>`
+/// folder), into `collected`: what a connector that knows which messages are new reads.
+pub(crate) fn read_some(
+    root: &Path,
+    files: &[PathBuf],
+    options: &MailOptions,
+    collected: &mut Collector<'_>,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
+    let files = files
+        .iter()
+        .map(|file| (file.clone(), mailbox(root, file)))
+        .collect();
+    read_files(files, options, collected, report)
+}
+
+fn read_files(
+    files: Vec<(PathBuf, String)>,
+    options: &MailOptions,
+    collected: &mut Collector<'_>,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
     for (file, mailbox) in files {
         let raw = match read_emlx(&file) {
             Ok(raw) => raw,

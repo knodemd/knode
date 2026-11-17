@@ -48,7 +48,7 @@ jobs:
             grep -Fxq "$asset" <<< "$names" || missing="$missing $asset"
           done
           if [ -n "$missing" ]; then
-            echo "::error::Release v$version has no Mac builds (missing:$missing), so the Homebrew tap is not updated. It was probably a Linux-only draft: re-run the release workflow's failed jobs with the Mac signing secrets set, then run this workflow by hand with $version."
+            echo "::error::Release v$version has no Mac builds (missing:$missing), so the Homebrew tap is not updated. It was probably a Linux-only draft published by mistake: turn it back into a draft (gh release edit v$version --draft=true), re-run the failed jobs of the release workflow's run for v$version with the Mac signing secrets set, and publish it again, which runs this workflow; or release a new patch version."
             exit 1
           fi
           if [ -z "$TAP_DISPATCH_TOKEN" ]; then

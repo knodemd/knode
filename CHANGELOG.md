@@ -10,10 +10,66 @@ No version is released yet. Everything below is on `main`, so the first release 
 It is grouped by the version of the [roadmap](https://knode.md/handbook/roadmap) each change
 belongs to, newest first.
 
+### v0.4 - Capture life (in progress)
+
+#### Added
+
+- **Sources**: one list of everything that brings things into a space, the importers you run once
+  and the connectors that keep bringing in what is new. A connector is off until you connect it
+  to a space, choosing to bring in what happens from today on (the default) or everything it
+  has; you can pause it, exclude chats, channels or folders it will never read again, or
+  disconnect it, and what it brought in stays. Knode Service runs the connected ones when their
+  files change or every few minutes, picks up where it stopped after a restart without writing
+  anything twice, waits longer after each error, and stops and says so when another app's
+  database changed instead of writing wrong data. `knode sources` lists the sources of a space
+  with when each last ran, how much it brought in and its last error, and connects, pauses,
+  resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
+  keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Apple Mail connector**: new mail of every account you added to Apple Mail on your Mac
+  (Gmail, iCloud, Outlook, Exchange, any IMAP account, and the mailboxes On My Mac) comes into
+  your space within a minute, through the same mail import, so threads, people and your edits
+  are kept, and mail you imported before from an Apple Mail export or a Gmail Takeout file is
+  not added twice. Every mailbox comes in, new ones too, except spam, trash and the mailboxes you
+  exclude. It reads Mail's files without changing them, needs Full Disk Access and says how to
+  give it, and stops with a clear message if a new version of Mail changes its index.
+  `knode sources connect apple-mail` turns it on.
+- **Messages (iMessage) connector**, on macOS: `knode sources connect imessage` brings every
+  iMessage and SMS conversation of the Mac into one `chat` node each, the same shape as the chat
+  imports, messages grouped by day with their sender and time, and the photos and files sent
+  attached when the Mac has them. It reads a copy of the Messages database, never the database
+  itself, and needs Full Disk Access, which it asks for by name when it is missing. Text that
+  newer versions of Messages keep only in their archived form is read too; reactions are left
+  out, edited messages are marked edited and unsent ones unsent; a message edited or unsent
+  after it was brought in keeps the text it had then. If Messages numbers its messages again (a
+  rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
+  each conversation is missing. People show as their phone number or email address.
+- **Telegram connector**: brings your Telegram chats in as they arrive, through Telegram's
+  official API, as Knode's own client. `knode sources connect telegram` signs in once with your
+  phone number, the code Telegram sends and your password if you set one; the session stays in
+  the system keychain, and `knode sources sign-out telegram` (or disconnecting it from the last
+  space) ends it. While Knode Service runs new messages come in as they happen, and after a
+  restart it catches up from the last message it brought in of each chat. Messages land in the
+  same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
+  message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
+  build of Knode with its Telegram app id.
+- **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
+  as threads with their people, like a mail import. **Gmail** signs in with Google in your
+  browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
+  (IMAP)** reads any account with an app password (Gmail, iCloud, Fastmail, Yahoo, Outlook or
+  your own server), over TLS only. Every label or mailbox comes in, new ones too, except spam,
+  trash and the ones you exclude. A message already in the space from a Google Takeout export,
+  Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
+  `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
+  removes the secrets from the keychain.
+
 ### v0.3 - Map and import (in progress)
 
 #### Added
 
+- **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
+  any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
+  asks you only what needs your judgment, imports a copy, connects itself and moves your
+  instruction files to Knode. `knode onboard prompt` prints the prompt.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -80,9 +136,11 @@ belongs to, newest first.
 - **A project folder adds its project**: adding a project folder, in the Mac app or with
   `knode folders add`, adds the project of the same name to the space, or uses the one of that
   name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
-  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
-  removing the folder keeps the project and its notes. A folder added before this gets its
-  project when it is added again.
+  folder's name become `(`, `)` and `-`. Two different folders of the same name are kept apart:
+  when another folder already holds the project of that name, the new folder gets its own, named
+  after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
+  `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
+  added before this gets its project when it is added again.
 
 - **Migration report for a vault import**: `knode import <folder> --report report.json` writes
   where every file of a Markdown folder or Obsidian vault went (the node of each note), what was
@@ -100,6 +158,10 @@ belongs to, newest first.
   it was imported is left as it is; when its file changed too, the import says so (`edited`) for
   you to merge by hand, instead of overwriting the note with the file. Notes imported before this
   version take the file once, as before, and keep Knode's version in their history.
+- **`knode instructions --apply`** also says when the agent reads the file and what it reads with
+  it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
+  `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
+  request and the project's rules come before memory.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
@@ -118,6 +180,10 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Long conversations no longer bury short notes in search**: agent conversations, imported chats
+  and imported mail threads are long transcripts that match a query's words and meaning in passing,
+  and could come before the short note that answers it. Hybrid search now counts a transcript half,
+  so it comes first only when it matches clearly better; `--words` and `--meaning` rank as before.
 - **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
   skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
   the command line.
@@ -130,6 +196,10 @@ belongs to, newest first.
 - **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
   label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
   written that way finds its attachment on import.
+- **Importing one Markdown file** reads its frontmatter as properties instead of text, takes its
+  `title` when it has one, and updates the same note when imported again instead of adding a copy
+  (a note an earlier version imported from it included). Files with the same name in other
+  folders stay notes of their own.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).

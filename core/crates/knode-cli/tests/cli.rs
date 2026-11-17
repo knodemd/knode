@@ -148,6 +148,25 @@ fn imports_a_folder_of_markdown_and_searches_it() {
     );
     let out = sb.ok(&["import", single.to_str().unwrap()]);
     assert!(out.contains(": 0 new, 0 updated, 1 unchanged."), "{out}");
+    // Its frontmatter `title` wins over a heading, the frontmatter is not text, and a changed
+    // file updates the same note instead of adding one.
+    let fronted = sb.path("fronted.md");
+    fs::write(
+        &fronted,
+        "---\ntitle: Checkpoint\ntags: [plan]\n---\nBody.\n\n## Section\n",
+    )
+    .unwrap();
+    assert!(
+        sb.ok(&["import", fronted.to_str().unwrap()])
+            .contains("new: Checkpoint")
+    );
+    fs::write(
+        &fronted,
+        "---\ntitle: Checkpoint\ntags: [plan]\n---\nNew body.\n",
+    )
+    .unwrap();
+    let out = sb.ok(&["import", fronted.to_str().unwrap()]);
+    assert!(out.contains(": 0 new, 1 updated, 0 unchanged."), "{out}");
     let err = sb.fails(&["import", single.to_str().unwrap(), "--vault"]);
     assert!(err.contains("not a folder"), "{err}");
 
