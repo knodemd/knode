@@ -330,7 +330,10 @@ fn a_folder_of_notes_holding_a_chat_export_imports_the_notes() {
     .unwrap();
     let out = sb.ok(&["import", s(&vault)]);
     assert!(
-        out.starts_with(&format!("Imported {} (folder of Markdown files): ", vault.display())),
+        out.starts_with(&format!(
+            "Imported {} (folder of Markdown files): ",
+            vault.display()
+        )),
         "{out}"
     );
     assert!(out.contains(": 5 new"), "{out}");

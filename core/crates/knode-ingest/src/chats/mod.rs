@@ -12,6 +12,11 @@
 //! it and when. Importing the same chat again, or a newer export of it, adds only the messages
 //! after the last one imported: none is written twice.
 //!
+//! Secrets that look obvious in the messages (API keys, tokens, passwords, see
+//! [`redact_secrets`](crate::redact_secrets)) are replaced with `[redacted]`, and the access
+//! token in the private URL of a Slack file is left out, so a credential pasted into a chat is
+//! not stored in the space.
+//!
 //! Everything is read from the files the person gives and written only into the space they
 //! pick; nothing is sent anywhere.
 
@@ -249,6 +254,17 @@ impl Located {
     }
 }
 
+/// Says in the report how many secrets in the messages were replaced, if any.
+pub(crate) fn note_redacted(report: &mut ChatImportReport, n: usize) {
+    if n > 0 {
+        report.notes.push(format!(
+            "{n} {} in the messages (API keys, tokens, passwords) replaced with {}.",
+            if n == 1 { "secret" } else { "secrets" },
+            crate::REDACTED
+        ));
+    }
+}
+
 /// Finds the export in `files`. Told from the files alone (`format` is `None`), an export is
 /// only one when it is what the person gave: its files at the top, or in the one folder at the
 /// top, and no Markdown notes beside them. A folder of notes that holds a chat export somewhere
@@ -371,6 +387,7 @@ pub fn import_chat_export(
                         writer.report.skip(item, reason);
                     }
                     writer.report.notes.extend(read.note);
+                    note_redacted(&mut writer.report, read.redacted);
                     writer.write(&read.chat, &mut files)?;
                 }
                 Err(conflict) => {
@@ -379,7 +396,9 @@ pub fn import_chat_export(
             }
         }
         Located::Telegram(file) => {
-            for chat in telegram::read(&mut files, &file)? {
+            let (chats, redacted) = telegram::read(&mut files, &file)?;
+            note_redacted(&mut writer.report, redacted);
+            for chat in chats {
                 writer.write(&chat, &mut files)?;
             }
         }

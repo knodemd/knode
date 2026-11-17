@@ -246,6 +246,7 @@ pub(crate) fn import(
     // Every day file of every conversation, read first, so the members can be written before
     // the channels that mention them.
     let mut read = Vec::new();
+    let mut redacted = 0;
     for (conversation, kind, folder) in conversations {
         let days: Vec<String> = files
             .names()
@@ -257,6 +258,13 @@ pub(crate) fn import(
         for day in days {
             let mut more: Vec<Message> = read_json(files, &day)?;
             messages.append(&mut more);
+        }
+        for m in &mut messages {
+            let (text, n) = crate::redact::redact_secrets(&m.text);
+            if n > 0 {
+                m.text = text;
+                redacted += n;
+            }
         }
         messages.sort_by_key(|m| mark(&m.ts));
         read.push((conversation, kind, messages));
@@ -273,6 +281,7 @@ pub(crate) fn import(
             }
         }
     }
+    super::note_redacted(&mut writer.report, redacted);
     write_people(&mut workspace, &wanted, writer)?;
 
     for (conversation, kind, messages) in read {
@@ -619,11 +628,23 @@ fn media(file: &SlackFile, files: &Files) -> Media {
             file_name(n) == name && file_name(parent(n)) == file.id && n.contains("__uploads/")
         })
         .cloned();
-    match (entry, file.permalink.clone().or(file.url_private.clone())) {
+    // A file's private URL carries a token to open it (`?t=xoxe-...`): only the address is
+    // kept.
+    let url = file
+        .permalink
+        .as_deref()
+        .or(file.url_private.as_deref())
+        .map(without_query);
+    match (entry, url) {
         (Some(entry), _) => Media::File { name, entry },
         (None, Some(url)) => Media::Link { name, url },
         (None, None) => Media::Missing { name },
     }
+}
+
+/// A URL without its query string and fragment.
+fn without_query(url: &str) -> String {
+    url.split(['?', '#']).next().unwrap_or(url).to_string()
 }
 
 /// A name a title can hold: no `[`, `]` or `|`, spaces collapsed.

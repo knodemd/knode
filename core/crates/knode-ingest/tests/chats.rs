@@ -963,3 +963,99 @@ fn an_export_is_told_at_the_top_or_in_the_one_folder_at_the_top() {
         Some(ChatFormat::WhatsApp)
     );
 }
+
+/// Every title, body and property of every node in the space, as one text.
+fn everything(space: &Space) -> String {
+    let mut all = String::new();
+    for summary in space.recent(10_000).unwrap() {
+        let node = space.get_node(&summary.id).unwrap().unwrap();
+        all.push_str(&node.title);
+        all.push('\n');
+        all.push_str(&node.body);
+        for (key, value) in space.properties(&node.id).unwrap() {
+            all.push_str(&format!("\n{key}={value}"));
+        }
+        all.push('\n');
+    }
+    all
+}
+
+// Every token below is made up for the test; none is a real credential. They are put together
+// from parts, so the source holds no whole token.
+const BOT_TOKEN: &str = concat!("xox", "b-1234567890-", "abcdefghijklmnop");
+const FILE_TOKEN: &str = concat!("xox", "e-1-", "abcdefghijklmnopqrstuvwxyz0123456789");
+const API_KEY: &str = concat!("sk-", "ant-api03-", "abcdefghijklmnopqrstuvwxyz");
+
+#[test]
+fn no_token_in_a_chat_reaches_a_node() {
+    // Slack: in the text, and in a file's private URL.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("slack");
+    write_file(&root, "users.json", SLACK_USERS);
+    write_file(&root, "channels.json", SLACK_CHANNELS);
+    write_file(
+        &root,
+        "general/2026-03-04.json",
+        &format!(
+            r#"[{{"type":"message","user":"U01","ts":"1772625600.000100","thread_ts":"1772625600.000100",
+                "text":"the bot token is {BOT_TOKEN}",
+                "files":[{{"id":"F01","name":"map.png","title":"map","mimetype":"image/png",
+                          "url_private":"https://files.slack.com/files-pri/T01-F01/map.png?t={FILE_TOKEN}"}}]}},
+               {{"type":"message","user":"U01","ts":"1772625660.000100","thread_ts":"1772625600.000100","text":"ok"}}]"#
+        ),
+    );
+    let mut space = self::space(&dir);
+    let report = import_chat_export(&mut space, &root, None, &by()).unwrap();
+    let all = everything(&space);
+    assert!(!all.contains("xoxb-") && !all.contains("xoxe-"), "{all}");
+    assert!(
+        all.contains("[map.png](<https://files.slack.com/files-pri/T01-F01/map.png>)"),
+        "{all}"
+    );
+    assert!(all.contains("the bot token is [redacted]"), "{all}");
+    assert!(
+        report.notes.iter().any(|n| n.starts_with("1 secret ")),
+        "{:?}",
+        report.notes
+    );
+
+    // WhatsApp.
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("WhatsApp Chat - Ada");
+    write_file(
+        &folder,
+        "_chat.txt",
+        &format!("[04/03/2026, 09:15:02] Ada: key {API_KEY}\n[04/03/2026, 09:16:00] Grace: ok\n"),
+    );
+    let mut space = self::space(&dir);
+    import_chat_export(&mut space, &folder, None, &by()).unwrap();
+    let all = everything(&space);
+    assert!(
+        !all.contains(API_KEY) && all.contains("key [redacted]"),
+        "{all}"
+    );
+    // Imported again, the redacted message is the same message.
+    let again = import_chat_export(&mut space, &folder, None, &by()).unwrap();
+    assert_eq!(again.messages, 0);
+
+    // Telegram: in the text, its parts, a link and a reply's quote.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ChatExport");
+    write_file(
+        &root,
+        "result.json",
+        &format!(
+            r#"{{"name":"Ada","type":"personal_chat","id":7,"messages":[
+             {{"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada",
+               "text":["use ",{{"type":"code","text":"{BOT_TOKEN}"}}],
+               "text_entities":[{{"type":"plain","text":"use "}},{{"type":"code","text":"{BOT_TOKEN}"}}]}},
+             {{"id":2,"type":"message","date":"2026-03-04T09:01:00","from":"Ada","reply_to_message_id":1,
+               "text":"",
+               "text_entities":[{{"type":"text_link","text":"here","href":"https://example.com/?token={API_KEY}"}}]}}]}}"#
+        ),
+    );
+    let mut space = self::space(&dir);
+    import_chat_export(&mut space, &root, None, &by()).unwrap();
+    let all = everything(&space);
+    assert!(!all.contains("xoxb-") && !all.contains(API_KEY), "{all}");
+}

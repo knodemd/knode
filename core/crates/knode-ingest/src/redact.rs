@@ -26,8 +26,10 @@ static WHOLE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\bsk-[A-Za-z0-9_\-]{20,}",
         // Stripe keys.
         r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b",
-        // Slack tokens.
-        r"\bxox[abposr]-[A-Za-z0-9\-]{10,}",
+        // Slack tokens: bot, user, app, refresh and the rest (`xoxb-`, `xoxp-`, `xoxa-`,
+        // `xoxr-`, `xoxe-`, `xoxe.xoxp-`...), and app-level tokens.
+        r"\bxox[abeposr](?:\.xox[a-z])?-[A-Za-z0-9\-]{10,}",
+        r"\bxapp-[0-9]-[A-Za-z0-9\-]{10,}",
         // Google API keys.
         r"\bAIza[0-9A-Za-z_\-]{35}",
         // JSON Web Tokens.
@@ -147,6 +149,19 @@ mod tests {
             assert_eq!(n, 1, "{sample}");
             assert_eq!(out, format!("use {REDACTED} here"), "{sample}");
         }
+    }
+
+    #[test]
+    fn every_kind_of_slack_token_is_replaced() {
+        // Put together here, so the source holds no whole token.
+        for kind in ["b", "p", "a", "r", "e", "e.xoxp"] {
+            let sample = format!("xox{kind}-1-1234567890-abcdefghij");
+            let (out, n) = redact_secrets(&format!("use {sample}. here"));
+            assert_eq!(n, 1, "{sample}");
+            assert_eq!(out, format!("use {REDACTED}. here"), "{sample}");
+        }
+        let app = format!("x{}-1-A0123456789-abcdefghij", "app");
+        assert_eq!(redact_secrets(&app), (REDACTED.to_string(), 1));
     }
 
     #[test]

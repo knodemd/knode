@@ -158,8 +158,12 @@ struct PollAnswer {
     voters: u64,
 }
 
-/// Reads the chats of the export whose `result.json` is `file`.
-pub(crate) fn read(files: &mut Files, file: &str) -> Result<Vec<Chat>, super::ChatImportError> {
+/// Reads the chats of the export whose `result.json` is `file`, and how many secrets in their
+/// messages were replaced.
+pub(crate) fn read(
+    files: &mut Files,
+    file: &str,
+) -> Result<(Vec<Chat>, usize), super::ChatImportError> {
     let reader = files.open_file(file)?;
     let export: Export = serde_json::from_reader(reader).map_err(|error| match error.is_io() {
         true => super::ChatImportError::Io(error.into()),
@@ -184,12 +188,55 @@ pub(crate) fn read(files: &mut Files, file: &str) -> Result<Vec<Chat>, super::Ch
             messages: export.messages,
         });
     }
-    for single in all {
+    let mut redacted = 0;
+    for mut single in all {
+        for m in single.messages.iter_mut().flatten() {
+            redacted += redact(m);
+        }
         if let Some(chat) = chat(single, &dir, files) {
             chats.push(chat);
         }
     }
-    Ok(chats)
+    Ok((chats, redacted))
+}
+
+/// Replaces the secrets in what a message says (its text, the parts of it, their links and
+/// a poll), and says how many there were: the text and its parts say the same, so the more of
+/// the two counts.
+fn redact(m: &mut Message) -> usize {
+    fn one(text: &mut String) -> usize {
+        let (out, n) = crate::redact::redact_secrets(text);
+        if n > 0 {
+            *text = out;
+        }
+        n
+    }
+    fn value(v: &mut Value) -> usize {
+        match v {
+            Value::String(s) => one(s),
+            Value::Array(parts) => parts.iter_mut().map(value).sum(),
+            Value::Object(fields) => fields
+                .iter_mut()
+                .filter(|(k, _)| matches!(k.as_str(), "text" | "href"))
+                .map(|(_, v)| value(v))
+                .sum(),
+            _ => 0,
+        }
+    }
+    let in_text = value(&mut m.text);
+    let mut in_parts = 0;
+    for e in m.text_entities.iter_mut().flatten() {
+        in_parts += one(&mut e.text);
+        in_parts += e.href.as_mut().map_or(0, one);
+    }
+    let mut n = in_text.max(in_parts);
+    if let Some(poll) = &mut m.poll {
+        n += one(&mut poll.question);
+        for answer in &mut poll.answers {
+            n += one(&mut answer.text);
+        }
+    }
+    n
 }
 
 fn chat(single: SingleChat, dir: &str, files: &Files) -> Option<Chat> {
