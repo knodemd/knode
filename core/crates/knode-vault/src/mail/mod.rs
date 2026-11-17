@@ -41,7 +41,10 @@
 //! [`MailOptions`] keeps the import to some folders (Gmail labels or Apple Mail mailboxes) and
 //! dates, and turns on attachments, which are off by default. Spam and trash (Gmail's `Spam` and
 //! `Trash` labels, mailboxes named `Junk`, `Spam`, `Trash`, `Bin` or `Deleted Messages`) are left
-//! out unless a folder filter names them.
+//! out unless a folder filter names them. A message larger than 64 MB (or an `mbox` whose `From `
+//! lines are broken, which reads as one message) is skipped and listed in
+//! [`MailReport::skipped`]. The text of the messages is read again thread by thread as they are
+//! written, so an import holds the headers of a mailbox in memory, not its mail.
 //!
 //! # Importing again
 //!

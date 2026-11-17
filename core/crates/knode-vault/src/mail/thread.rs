@@ -270,7 +270,7 @@ mod tests {
             cc: Vec::new(),
             bcc: Vec::new(),
             date: DateTime::parse_from_rfc3339(date).ok(),
-            body: String::new(),
+            body: Some(String::new()),
             attachments: Vec::new(),
             folders: BTreeSet::new(),
             origin: Origin::Elsewhere,

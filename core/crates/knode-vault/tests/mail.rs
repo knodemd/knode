@@ -1220,3 +1220,47 @@ fn a_message_to_many_people_and_bcc_of_mail_received_add_no_people() {
             .contains("reader499@example.org")
     );
 }
+
+#[test]
+fn a_message_larger_than_the_most_is_skipped_and_listed() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 65 MB of text: a message too large, or a file whose `From ` lines were lost.
+    let line = format!("{}\n", "x".repeat(1023));
+    let huge = message(
+        &[
+            ("Message-ID", "<huge@example.com>"),
+            ("From", "ada@example.com"),
+            ("Subject", "Huge"),
+        ],
+        &line.repeat(65 * 1024),
+    );
+    let small = |id: &str, subject: &str| {
+        simple(
+            id,
+            "Bruno Sample <bruno@example.org>",
+            subject,
+            "Mon, 2 Mar 2026 09:00:00 +0000",
+            &[],
+        )
+    };
+    let file = write_mbox(
+        tmp.path(),
+        "big.mbox",
+        &[
+            small("<s1@example.com>", "Before"),
+            huge,
+            small("<s2@example.com>", "After"),
+        ],
+    );
+    let mut space = space(tmp.path());
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert_eq!(report.messages, 2);
+    assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
+    assert!(
+        report.skipped[0].reason.contains("larger than 64 MB"),
+        "{:?}",
+        report.skipped
+    );
+    thread(&space, "Before");
+    thread(&space, "After");
+}

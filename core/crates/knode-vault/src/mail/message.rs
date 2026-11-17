@@ -35,7 +35,12 @@ pub(crate) const MAX_PARENTS: usize = 100;
 /// Folders of mail that was sent, by the last part of their path, in lower case.
 const SENT: &[&str] = &["sent", "sent mail", "sent messages", "sent items"];
 
-/// Where the bytes of a message are, to read its files again when they are attached.
+/// The largest message Knode reads: a larger one (or a file whose `From ` lines are broken, read
+/// as one message) is skipped and listed. Above the 50 MB Gmail takes, so no mail Gmail delivered
+/// is left out.
+pub(crate) const MAX_MESSAGE_SIZE: u64 = 64 * 1024 * 1024;
+
+/// Where the bytes of a message are, to read its text and files again when it is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// In an `mbox` file: the bytes after the `From ` line, still escaped.
@@ -46,8 +51,20 @@ pub(crate) enum Origin {
     },
     /// An `.emlx` file.
     Emlx(PathBuf),
-    /// Nowhere Knode reads files from: a `.partial.emlx`, whose files Apple Mail keeps apart.
+    /// Nowhere Knode reads files from: a `.partial.emlx`, whose files Apple Mail keeps apart, or
+    /// a message a connector gave as bytes.
     Elsewhere,
+}
+
+impl Origin {
+    /// The bytes of the message, read again.
+    pub fn read_again(&self) -> Option<Result<Vec<u8>, super::MailError>> {
+        match self {
+            Origin::Mbox { file, offset, len } => Some(super::mbox::read_at(file, *offset, *len)),
+            Origin::Emlx(path) => Some(super::apple::read_emlx(path)),
+            Origin::Elsewhere => None,
+        }
+    }
 }
 
 /// Someone a message is from or to.
@@ -90,8 +107,10 @@ pub(crate) struct Mail {
     /// Kept apart from `cc`: who was sent a blind copy is never shown as someone who saw it.
     pub bcc: Vec<Person>,
     pub date: Option<DateTime<FixedOffset>>,
-    /// The text, as Markdown.
-    pub body: String,
+    /// The text, as Markdown. `None` once [`Collector::add`] let it go, to be read again from
+    /// [`Origin`] when the message is written ([`Mail::read_body`]): the text of a whole
+    /// mailbox is never held at once.
+    pub body: Option<String>,
     pub attachments: Vec<Attached>,
     pub folders: BTreeSet<String>,
     pub origin: Origin,
@@ -119,6 +138,26 @@ impl Mail {
     /// When it was sent, in UTC.
     pub fn utc(&self) -> Option<DateTime<Utc>> {
         self.date.map(|d| d.with_timezone(&Utc))
+    }
+
+    /// Reads the text again from where the message is, when [`Collector::add`] let it go. The
+    /// message must be the same: else (the mailbox changed since it was read) this fails.
+    pub fn read_body(&mut self) -> Result<(), String> {
+        if self.body.is_some() {
+            return Ok(());
+        }
+        let raw = match self.origin.read_again() {
+            Some(Ok(raw)) => raw,
+            Some(Err(e)) => return Err(format!("its text could not be read again: {e}")),
+            None => return Err("its text could not be read again".into()),
+        };
+        match parse(&raw, self.origin.clone(), None, self.order) {
+            Some(again) if again.id == self.id => {
+                self.body = again.body;
+                Ok(())
+            }
+            _ => Err("the mailbox changed while it was imported: import it again".into()),
+        }
     }
 
     /// Whether it is in a folder of sent mail (`Sent`, `Sent Messages`, `[Gmail]/Sent Mail`).
@@ -234,7 +273,7 @@ pub(crate) fn parse(
         cc,
         bcc,
         date,
-        body,
+        body: Some(body),
         attachments,
         folders,
         origin,
@@ -582,6 +621,11 @@ impl<'a> Collector<'a> {
             self.mails[at].folders.extend(mail.folders);
             return;
         }
+        let mut mail = mail;
+        // Read again when it is written: memory holds the headers of a mailbox, not its text.
+        if mail.origin != Origin::Elsewhere {
+            mail.body = None;
+        }
         self.index.insert(mail.id.clone(), self.mails.len());
         self.mails.push(mail);
     }
@@ -631,7 +675,7 @@ See [[nothing]] <b>here</b> <bob@example.org>\r\n";
             "2026-03-03T09:15:00+00:00"
         );
         assert_eq!(
-            mail.body,
+            mail.body.unwrap(),
             "Café at ten?\n\\# not a heading\n\\--\nSee \\[\\[nothing\\]\\] \\<b>here\\</b> <bob@example.org>"
         );
     }
@@ -642,12 +686,15 @@ See [[nothing]] <b>here</b> <bob@example.org>\r\n";
 Content-Type: multipart/alternative; boundary=x\r\n\r\n--x\r\n\
 Content-Type: text/plain\r\n\r\nThe text.\r\n--x\r\nContent-Type: text/html\r\n\r\n\
 <p>The <b>HTML</b>.</p>\r\n--x--\r\n";
-        assert_eq!(parse(both, origin(), None, 1).unwrap().body, "The text.");
+        assert_eq!(
+            parse(both, origin(), None, 1).unwrap().body.as_deref(),
+            Some("The text.")
+        );
 
         let html = b"Message-ID: <c@example.com>\r\nFrom: a@example.com\r\n\
 Content-Type: text/html; charset=windows-1252\r\nContent-Transfer-Encoding: base64\r\n\r\n\
 PGgxPkFnZW5kYTwvaDE+PHA+T25lIDxhIGhyZWY9Imh0dHBzOi8vZXhhbXBsZS5jb20iPmxpbms8L2E+IJY8L3A+\r\n";
-        let body = parse(html, origin(), None, 1).unwrap().body;
+        let body = parse(html, origin(), None, 1).unwrap().body.unwrap();
         assert!(body.starts_with("### Agenda"), "{body}");
         assert!(body.contains("[link](https://example.com)"), "{body}");
         assert!(body.contains('\u{2013}'), "windows-1252 en dash: {body}");

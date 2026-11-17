@@ -9,7 +9,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::message::{self, Collector, Origin};
+use super::message::{self, Collector, MAX_MESSAGE_SIZE, Origin};
 use super::{MailError, MailOptions, MailReport, file_name, read_error};
 
 /// How many entries [`has_emlx`] looks at before giving up.
@@ -181,8 +181,16 @@ fn mailbox(root: &Path, file: &Path) -> String {
     name.strip_suffix(".mbox").unwrap_or(&name).to_string()
 }
 
-/// The message in an `.emlx` file: the bytes its first line counts.
+/// The message in an `.emlx` file: the bytes its first line counts. A file larger than
+/// [`MAX_MESSAGE_SIZE`] is not read.
 pub(crate) fn read_emlx(path: &Path) -> Result<Vec<u8>, MailError> {
+    let size = std::fs::metadata(path).map_err(read_error(path))?.len();
+    if size > MAX_MESSAGE_SIZE {
+        return Err(MailError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, super::mbox::too_large()),
+        });
+    }
     let bytes = std::fs::read(path).map_err(read_error(path))?;
     message_of(bytes).ok_or_else(|| MailError::Io {
         path: path.to_path_buf(),
