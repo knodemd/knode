@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{NodeId, Space, link_kinds};
 use serde::{Deserialize, Serialize};
 
+use crate::apps::markdown::{decode_path, is_url};
 use crate::attachments::links;
 use crate::names::{folder_of, join};
 use crate::property_keys as keys;
@@ -250,6 +251,11 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
         .chain(&import.attachments)
         .map(String::as_str)
         .collect();
+    let failed: BTreeSet<&str> = files
+        .iter()
+        .filter(|f| f.status == FileStatus::Failed)
+        .map(|f| f.path.as_str())
+        .collect();
     let mut unresolved_links = Vec::new();
     let mut ambiguous_links = Vec::new();
     let mut missing_attachments = Vec::new();
@@ -258,7 +264,7 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
             continue;
         };
         let names: BTreeSet<String> = space.attachments(id)?.into_iter().map(|a| a.name).collect();
-        let files_named = missing(path, &node.body, &names, &others);
+        let files_named = missing(path, &node.body, &names, &others, &failed);
         let file_targets: BTreeSet<String> = files_named.iter().map(|m| m.target.clone()).collect();
         missing_attachments.extend(files_named);
         for target in space.unresolved_links(id)? {
@@ -270,6 +276,20 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
             }
         }
         ambiguous_links.extend(ambiguous(space, path, id, &node.body, &names)?);
+    }
+    // A file left out that a note next to it names by another path: say so, as its missing
+    // attachment does.
+    for m in &missing_attachments {
+        if m.reason != OTHER_PATH {
+            continue;
+        }
+        for entry in files.iter_mut().filter(|f| {
+            f.status == FileStatus::Skipped
+                && m.found.contains(&f.path)
+                && folder_of(&f.path) == folder_of(&m.path)
+        }) {
+            entry.reason = Some(NAMED_BY_OTHER_PATH.into());
+        }
     }
 
     Ok(MigrationReport {
@@ -284,6 +304,14 @@ pub fn report(space: &Space, dir: &Path, import: &ImportReport) -> Result<Migrat
         limits: LIMITS.iter().map(|s| s.to_string()).collect(),
     })
 }
+
+/// Why a file a note names is not attached when a file of that name is next to the note, but the
+/// note names another path.
+const OTHER_PATH: &str =
+    "a file of that name is next to the note, but the note names another path: not attached";
+
+/// The same, for that file.
+const NAMED_BY_OTHER_PATH: &str = "not a note: a note next to it names a file of this name by another path, so it is not attached";
 
 /// Why a file that is not a note was left out.
 fn left_out(path: &str) -> &'static str {
@@ -372,6 +400,7 @@ fn missing(
     body: &str,
     names: &BTreeSet<String>,
     others: &BTreeSet<&str>,
+    failed: &BTreeSet<&str>,
 ) -> Vec<MissingAttachment> {
     let mut wanted: BTreeSet<String> = knode_md::wiki_links(body)
         .into_iter()
@@ -379,11 +408,11 @@ fn missing(
         .filter(|t| looks_like_file(t))
         .collect();
     for (_, dest) in links(body) {
-        let dest = dest.trim_start_matches('<').trim_end_matches('>');
-        if dest.contains(':') || dest.starts_with('#') || dest.starts_with('/') {
+        if is_url(&dest) || dest.starts_with(['#', '/']) {
             continue;
         }
-        let dest = dest.replace("%20", " ");
+        let dest = dest.split(['#', '?']).next().unwrap_or_default();
+        let dest = decode_path(dest.strip_prefix("./").unwrap_or(dest));
         if looks_like_file(&dest) {
             wanted.insert(dest);
         }
@@ -405,8 +434,13 @@ fn missing(
         found.sort();
         let reason = if found.is_empty() {
             "no such file in the folder".to_string()
+        } else if found
+            .iter()
+            .any(|f| folder_of(f) == folder_of(path) && failed.contains(f.as_str()))
+        {
+            "next to the note but could not be attached: see the failed files".to_string()
         } else if found.iter().any(|f| folder_of(f) == folder_of(path)) {
-            "next to the note but not attached: see the failed files".to_string()
+            OTHER_PATH.to_string()
         } else {
             "elsewhere in the folder: only files next to the note are attached".to_string()
         };

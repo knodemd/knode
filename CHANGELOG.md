@@ -232,6 +232,12 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Importing a Markdown folder or Obsidian vault attaches the files a note embeds with standard
+  Markdown**, `![alt](pic.png)`, `![alt](<my pic.png>)` or `my%20pic.png`, or links to with
+  `[text](file.pdf)`, when they are next to the note, as it already did for `![[pic.png]]`. Web
+  addresses and `data:` images are never attached, and an export writes the link back as it was.
+  The migration report no longer sends you to the failed files when none failed: a file next to
+  the note that the note names by another path says so in both places.
 - **A new space no longer fills with every earlier agent conversation** as soon as `knode
   connect` starts Knode Service. Capture into a space nobody has set up yet (no capture choice,
   no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
