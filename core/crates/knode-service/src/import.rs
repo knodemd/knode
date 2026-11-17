@@ -577,11 +577,8 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         | ImportSource::Bear
         | ImportSource::Notion
         | ImportSource::Evernote => Input::App(source.app().expect("a note app"), p),
-        ImportSource::Mbox if path.is_file() || mail::detect(path) == Some(MailSource::Mbox) => {
-            Input::Mail(MailSource::Mbox, p, MailOptions::default())
-        }
-        ImportSource::Mbox => return not("an .mbox file or a folder of them"),
-        ImportSource::AppleMail => Input::Mail(
+        // Named as mail, a folder is read for the mail in it: an import that finds none says so.
+        ImportSource::Mbox | ImportSource::AppleMail => Input::Mail(
             source.mail().expect("a mail source"),
             p,
             MailOptions::default(),
