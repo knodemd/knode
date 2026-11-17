@@ -772,13 +772,31 @@ fn emphasis(text: &str) -> String {
     pairs(&text, '~', "~~")
 }
 
-/// The longest run of text read as one `*bold*`, `_italic_` or `~struck~`: the search for
-/// the closing marker stops there, and at the end of the line, so it stays linear in the text.
+/// The longest run of text read as one `*bold*`, `_italic_` or `~struck~`, as in Slack, which
+/// does not read a marker that far away as the closing one.
 const MAX_EMPHASIS: usize = 1000;
 
+/// `marker` pairs in `text` as `markdown`. An opening marker pairs with the first closing one
+/// after it on its line, found in a table made in one pass from the end of each line, so every
+/// character is looked at a fixed number of times however many markers stay unpaired.
 fn pairs(text: &str, marker: char, markdown: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let edge = |c: Option<&char>| c.is_none_or(|c| !c.is_alphanumeric());
+    // `next[k]`: the first closing marker at `k` or after it on the same line.
+    let mut next: Vec<Option<usize>> = vec![None; chars.len() + 1];
+    for j in (0..chars.len()).rev() {
+        next[j] = if chars[j] == '\n' {
+            None
+        } else if chars[j] == marker
+            && j > 0
+            && !chars[j - 1].is_whitespace()
+            && edge(chars.get(j + 1))
+        {
+            Some(j)
+        } else {
+            next[j + 1]
+        };
+    }
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
@@ -787,11 +805,7 @@ fn pairs(text: &str, marker: char, markdown: &str) -> String {
             && chars
                 .get(i + 1)
                 .is_some_and(|c| !c.is_whitespace() && *c != marker)
-            && let Some(close) = (i + 1..chars.len().min(i + 1 + MAX_EMPHASIS))
-                .take_while(|&j| chars[j] != '\n')
-                .find(|&j| {
-                    chars[j] == marker && !chars[j - 1].is_whitespace() && edge(chars.get(j + 1))
-                })
+            && let Some(close) = next[i + 1].filter(|&j| j - i <= MAX_EMPHASIS)
         {
             out.push_str(markdown);
             out.extend(&chars[i + 1..close]);
@@ -857,11 +871,30 @@ mod tests {
 
     #[test]
     fn emphasis_stays_linear() {
+        // 100,000 markers that never close: a search of up to MAX_EMPHASIS characters after
+        // each took seconds; read in one pass, it takes milliseconds, even in a debug build.
         let many = "*a ".repeat(100_000);
         let started = std::time::Instant::now();
         assert_eq!(emphasis(&many), many);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
         assert_eq!(emphasis("*one\ntwo*"), "*one\ntwo*");
+    }
+
+    #[test]
+    fn emphasis_pairs_as_before() {
+        assert_eq!(emphasis("*a* *b*"), "**a** **b**");
+        assert_eq!(emphasis("*a *b*"), "**a *b**");
+        assert_eq!(emphasis("x*a* *b"), "x*a* *b");
+        assert_eq!(emphasis("*a\nb* c*"), "*a\nb* c*");
+        assert_eq!(emphasis("_snake_case_ ~x~"), "*snake_case* ~~x~~");
+        let far = format!("*{}*", "a".repeat(MAX_EMPHASIS));
+        assert_eq!(emphasis(&far), far);
+        let near = format!("*{}*", "a".repeat(MAX_EMPHASIS - 2));
+        assert_eq!(
+            emphasis(&near),
+            format!("**{}**", "a".repeat(MAX_EMPHASIS - 2))
+        );
     }
 
     #[test]
