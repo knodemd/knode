@@ -13,8 +13,9 @@
 //! - [`search`] searches by words, by meaning or both, and indexes the open spaces in the
 //!   background for search by meaning (the `semantic` feature, on by default).
 //! - [`import`] tells what is at a path or URL (a data export, Markdown, a session, a PDF, a
-//!   web page, Kindle or Readwise highlights, or the notes of Apple Notes, Bear, Notion or
-//!   Evernote) and imports it: `import.run`.
+//!   web page, Kindle or Readwise highlights, the notes of Apple Notes, Bear, Notion or
+//!   Evernote, mail from an `.mbox` file or Apple Mail, or a WhatsApp, Telegram Desktop or
+//!   Slack chat export) and imports it: `import.run`.
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.

@@ -64,7 +64,7 @@ mod book;
 mod dates;
 mod document;
 mod kindle;
-mod markdown;
+pub(crate) mod markdown;
 mod pdf;
 mod readwise;
 #[cfg(feature = "fetch")]

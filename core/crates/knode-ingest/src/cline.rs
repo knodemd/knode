@@ -1,18 +1,20 @@
-//! Cline and Roo Code tasks: one folder per task in the extension's `globalStorage` folder,
-//! `<editor>/User/globalStorage/<extension>/tasks/<task id>/`.
+//! Cline and Roo Code tasks, in the two layouts Cline has written.
 //!
-//! Unverified format: no Cline or Roo Code task was available to check this reader against, so
-//! it follows the extensions' public source and reads tolerantly. Roo Code is a fork of Cline
-//! and writes the same files. Each task folder holds:
+//! **Task folders**, written by Roo Code and by Cline before its SDK (the VS Code extension's
+//! classic bundle, which most windows still run, and the older Cline CLI and JetBrains plugin):
+//! one folder per task, `<editor>/User/globalStorage/<extension>/tasks/<task id>/` for the
+//! extensions and `~/.cline/data/tasks/<task id>/` for the Cline CLI. Roo Code is a fork of
+//! Cline and writes the same files. Each task folder holds:
 //!
 //! - `ui_messages.json`: what the extension showed, a JSON array rewritten as the task runs, and
 //!   read whole when it changes. Each message has `ts` (milliseconds), `type` (`say` or `ask`),
 //!   `say` or `ask` (what kind of message it is), `text`, `images[]` and `partial` (still
 //!   streaming). The first message is the task the person gave; `user_feedback` messages are
-//!   the person's later replies; `text` and `completion_result` are the agent's answers;
-//!   `tool` (a JSON object with `tool` and `path`, `regex` or `content`), `command` (the command
-//!   line), `use_mcp_server` and `browser_action_launch` are tool calls. Reasoning, command
-//!   output, API requests and checkpoints are left out.
+//!   the person's later replies; `text`, `completion_result` and `plan_completion_result` are
+//!   the agent's answers, and `followup`, `plan_mode_respond` and `act_mode_respond` carry its
+//!   question or answer in a JSON object; `tool` (a JSON object with `tool` and `path`, `regex`
+//!   or `content`), `command` (the command line), `use_mcp_server` and `browser_action_launch`
+//!   are tool calls. Reasoning, command output, API requests and checkpoints are left out.
 //! - `api_conversation_history.json`: the messages sent to the model. Only its first part is
 //!   searched, for the working directory the extension reports in `<environment_details>`.
 //! - `history_item.json` (Roo Code): `workspace`, the project.
@@ -20,6 +22,28 @@
 //!
 //! When neither names the project, `../state/taskHistory.json` (Cline) is searched for the task's
 //! `cwdOnTaskInitialization`.
+//!
+//! **SDK sessions**, written by the Cline SDK (the current Cline CLI, and the VS Code extension
+//! windows that run on it): `~/.cline/data/sessions/<session id>/`, holding
+//!
+//! - `<session id>.messages.json`: the canonical record of the session (version `1` of its
+//!   messages contract), rewritten as it runs and read whole when it changes: `sessionId`,
+//!   `agent` (`lead` for the session itself) and `messages[]`, each with `role` (`user` or
+//!   `assistant`), `ts` (milliseconds, on the agent's messages), `modelInfo.id` and `content[]`,
+//!   blocks of `type` `text`, `thinking`, `tool_use` (`id`, `name`, `input`) and `tool_result`
+//!   (`tool_use_id`, `is_error`). The person's text is wrapped in `<user_input mode="...">`
+//!   (or `<user_command slash="...">` for a slash command), and can carry `<mode_notice>`
+//!   elements and attached file contents, which are left out. Thinking and tool results are
+//!   left out too.
+//! - `<session id>.json`, the session's manifest: `started_at` and `ended_at` (RFC 3339), `cwd`
+//!   and `workspace_root` (the project), `model`, and `metadata.title`.
+//!
+//! Subagents write their messages in the same folder under their own id, and are not captured.
+//! A classic task resumed on the SDK keeps its id: reading either file then reads both, and
+//! gives one conversation, the classic turns and then the SDK's newer ones (see `merge`).
+//!
+//! These layouts follow Cline's and Roo Code's public source; they were not checked against
+//! tasks on disk.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -28,18 +52,73 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::model::{Conversation, Part, Role, ToolCall};
+use crate::model::{Agent, Conversation, Part, Role, Title, TitleSource, ToolCall};
 use crate::text::{SUMMARY_MAX, any_time, first_str, one_line, str_field};
 
 /// The file each task's conversation is read from.
 pub(crate) const UI_MESSAGES: &str = "ui_messages.json";
 
+/// The folder of Cline's data folder that holds SDK sessions.
+pub(crate) const SDK_SESSIONS: &str = "sessions";
+
+/// What the messages file of an SDK session is named after its session id.
+pub(crate) const SDK_MESSAGES_SUFFIX: &str = ".messages.json";
+
 /// How much of `api_conversation_history.json` is searched for the working directory.
 const ENVIRONMENT_SEARCH: u64 = 256 * 1024;
 
-/// Applies a whole `ui_messages.json` document of the task at `path`. `project` is the project
-/// found by an earlier read, kept so the task's other files are not searched again.
+/// Applies a whole `ui_messages.json` document of the task at `path`, or the messages document
+/// of an SDK session. `project` is the project found by an earlier read, kept so the task's
+/// other files are not searched again.
 pub(crate) fn apply_document(
+    conversation: &mut Conversation,
+    messages: &Value,
+    path: &Path,
+    project: Option<PathBuf>,
+) {
+    let agent = conversation.agent;
+    let id = conversation.session_id.clone();
+    if is_sdk_messages(path) {
+        apply_sdk_document(conversation, messages, path);
+        if agent != Agent::Cline {
+            return;
+        }
+        let Some(classic_path) = classic_counterpart(path, &conversation.session_id) else {
+            return;
+        };
+        let Some(document) = read_json(&classic_path) else {
+            return;
+        };
+        let mut classic = Conversation::new(agent, conversation.session_id.clone());
+        apply_classic(&mut classic, &document, &classic_path, None);
+        let sdk = std::mem::replace(conversation, Conversation::new(agent, id));
+        *conversation = merge(classic, sdk);
+        return;
+    }
+    apply_classic(conversation, messages, path, project);
+    if agent != Agent::Cline {
+        return;
+    }
+    let Some(sdk_path) = sdk_counterpart(path, &id) else {
+        return;
+    };
+    let Some(document) = read_json(&sdk_path) else {
+        return;
+    };
+    let mut sdk = Conversation::new(agent, id.clone());
+    apply_sdk_document(&mut sdk, &document, &sdk_path);
+    let classic = std::mem::replace(conversation, Conversation::new(agent, id));
+    *conversation = merge(classic, sdk);
+}
+
+fn is_sdk_messages(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(SDK_MESSAGES_SUFFIX))
+}
+
+/// Applies a whole `ui_messages.json` document of a task folder.
+fn apply_classic(
     conversation: &mut Conversation,
     messages: &Value,
     path: &Path,
@@ -54,6 +133,94 @@ pub(crate) fn apply_document(
     for (index, message) in messages.iter().enumerate() {
         apply_message(conversation, message, index == 0);
     }
+}
+
+// A classic task resumed on the SDK
+
+/// The task folder of a classic task an SDK session was resumed from: the session keeps the
+/// task's id. It is looked for next to the session (`<data>/tasks/<id>`), then in every Cline
+/// task folder capture reads. The first found wins, so the result does not depend on which file
+/// changed.
+fn classic_counterpart(sdk_path: &Path, id: &str) -> Option<PathBuf> {
+    let data = sdk_path.parent()?.parent()?.parent()?;
+    let mut candidates = vec![data.join("tasks")];
+    candidates.extend(
+        crate::discover::default_roots(Agent::Cline)
+            .into_iter()
+            .filter(|root| root.file_name().is_some_and(|name| name != SDK_SESSIONS)),
+    );
+    candidates
+        .into_iter()
+        .map(|root| root.join(id).join(UI_MESSAGES))
+        .find(|path| path.is_file())
+}
+
+/// The SDK session a classic task was resumed into, if any: next to the task folder
+/// (`<data>/sessions/<id>`), then in every SDK sessions folder capture reads.
+fn sdk_counterpart(classic_path: &Path, id: &str) -> Option<PathBuf> {
+    let tasks = classic_path.parent()?.parent()?;
+    let mut candidates = Vec::new();
+    if let Some(data) = tasks.parent() {
+        candidates.push(data.join(SDK_SESSIONS));
+    }
+    candidates.extend(
+        crate::discover::default_roots(Agent::Cline)
+            .into_iter()
+            .filter(|root| root.file_name().is_some_and(|name| name == SDK_SESSIONS)),
+    );
+    candidates
+        .into_iter()
+        .map(|root| root.join(id).join(format!("{id}{SDK_MESSAGES_SUFFIX}")))
+        .find(|path| path.is_file())
+}
+
+/// One conversation from a classic task and the SDK session it was resumed into: the classic
+/// turns, then the SDK turns written after the classic task ended. An SDK session resumed from
+/// a classic task starts with a copy of that task's turns, converted; those are left out, so no
+/// turn appears twice. The SDK's title, project and model win when it records them. The same
+/// two files always give the same conversation, whichever was read first.
+fn merge(mut classic: Conversation, sdk: Conversation) -> Conversation {
+    if classic.messages.is_empty() {
+        return sdk;
+    }
+    let start = match classic.ended_at {
+        None => 0,
+        Some(end) => sdk
+            .messages
+            .iter()
+            .position(|m| m.role == Role::Assistant && m.timestamp.is_some_and(|at| at > end))
+            .map_or(sdk.messages.len(), |first| {
+                if first > 0 && sdk.messages[first - 1].role == Role::User {
+                    first - 1
+                } else {
+                    first
+                }
+            }),
+    };
+    for message in sdk.messages.into_iter().skip(start) {
+        match classic.messages.last_mut() {
+            Some(last) if last.role == message.role => {
+                if last.timestamp.is_none() {
+                    last.timestamp = message.timestamp;
+                }
+                last.parts.extend(message.parts);
+            }
+            _ => classic.messages.push(message),
+        }
+    }
+    if sdk.project.is_some() {
+        classic.project = sdk.project;
+    }
+    if sdk.model.is_some() {
+        classic.model = sdk.model;
+    }
+    if sdk.recorded_title.is_some() {
+        classic.recorded_title = sdk.recorded_title;
+    }
+    for at in [sdk.started_at, sdk.ended_at].into_iter().flatten() {
+        classic.saw_time(at);
+    }
+    classic
 }
 
 fn apply_message(conversation: &mut Conversation, message: &Value, first: bool) {
@@ -84,14 +251,16 @@ fn apply_kind(
 ) {
     match kind {
         "user_feedback" | "user_feedback_diff" => push_user(conversation, message, at, text),
-        "text" | "completion_result" => push_text(conversation, Role::Assistant, at, text),
+        "text" | "completion_result" | "plan_completion_result" => {
+            push_text(conversation, Role::Assistant, at, text)
+        }
         "followup" => {
             let question = parse_object(text)
                 .and_then(|object| first_str(&object, &["question"]).map(str::to_string))
                 .unwrap_or_else(|| text.to_string());
             push_text(conversation, Role::Assistant, at, &question);
         }
-        "plan_mode_respond" => {
+        "plan_mode_respond" | "act_mode_respond" => {
             let response = parse_object(text)
                 .and_then(|object| first_str(&object, &["response"]).map(str::to_string))
                 .unwrap_or_else(|| text.to_string());
@@ -194,6 +363,225 @@ fn mark_last_tool_failed(conversation: &mut Conversation) {
     {
         call.failed = true;
     }
+}
+
+// SDK sessions
+
+/// Applies the messages document of an SDK session, and its manifest next to it.
+fn apply_sdk_document(conversation: &mut Conversation, document: &Value, path: &Path) {
+    if let Some(id) = first_str(document, &["sessionId"]) {
+        conversation.session_id = id.to_string();
+    }
+    if let Some(manifest) = path
+        .parent()
+        .and_then(|dir| read_json(&dir.join(format!("{}.json", conversation.session_id))))
+    {
+        apply_manifest(conversation, &manifest);
+    }
+    for message in document
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        apply_sdk_message(conversation, message);
+    }
+}
+
+fn apply_manifest(conversation: &mut Conversation, manifest: &Value) {
+    if let Some(project) = first_str(manifest, &["cwd", "workspace_root"]) {
+        conversation.project = Some(project.into());
+    }
+    if let Some(model) = first_str(manifest, &["model"]) {
+        conversation.model = Some(model.to_string());
+    }
+    if let Some(title) = manifest
+        .pointer("/metadata/title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+    {
+        conversation.recorded_title = Some(Title {
+            text: one_line(title, 200),
+            source: TitleSource::Agent,
+        });
+    }
+    for key in ["started_at", "ended_at"] {
+        if let Some(at) = any_time(manifest.get(key)) {
+            conversation.saw_time(at);
+        }
+    }
+}
+
+fn apply_sdk_message(conversation: &mut Conversation, message: &Value) {
+    let role = match str_field(message, "role") {
+        Some("user") => Role::User,
+        Some("assistant") => Role::Assistant,
+        _ => return,
+    };
+    let at = any_time(message.get("ts"));
+    if let Some(at) = at {
+        conversation.saw_time(at);
+    }
+    if role == Role::Assistant {
+        if let Some(model) = message.pointer("/modelInfo/id").and_then(Value::as_str) {
+            if !model.is_empty() {
+                conversation.model = Some(model.to_string());
+            }
+        }
+    }
+    let single;
+    let blocks: &[Value] = match message.get("content") {
+        Some(Value::Array(blocks)) => blocks,
+        Some(Value::String(text)) => {
+            single = [serde_json::json!({"type": "text", "text": text})];
+            &single
+        }
+        _ => return,
+    };
+    for block in blocks {
+        match (role, str_field(block, "type")) {
+            (Role::User, Some("text")) => {
+                let text = user_input(str_field(block, "text").unwrap_or_default());
+                push_text(conversation, Role::User, at, &text);
+            }
+            (Role::User, Some("image")) => conversation.push_part(Role::User, at, Part::Image),
+            (Role::User, Some("tool_result")) => {
+                if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    if let Some(id) = str_field(block, "tool_use_id") {
+                        conversation.mark_failed(id);
+                    }
+                }
+            }
+            (Role::Assistant, Some("text")) => {
+                push_text(
+                    conversation,
+                    Role::Assistant,
+                    at,
+                    str_field(block, "text").unwrap_or_default(),
+                );
+            }
+            (Role::Assistant, Some("tool_use")) => {
+                let name = first_str(block, &["name"]).unwrap_or("tool");
+                let input = block.get("input").unwrap_or(&Value::Null);
+                conversation.push_part(
+                    Role::Assistant,
+                    at,
+                    Part::Tool(ToolCall {
+                        id: first_str(block, &["id"]).map(str::to_string),
+                        name: name.to_string(),
+                        summary: one_line(&tool_summary(input), SUMMARY_MAX),
+                        failed: false,
+                    }),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What the person typed, from a user text block of an SDK session: the content of its
+/// `<user_input>` wrapper, or `/<command> <text>` for a `<user_command>`, without the
+/// `<mode_notice>` elements and attached `<file_content>` blocks the SDK adds. Text that is
+/// only such additions gives nothing.
+fn user_input(text: &str) -> String {
+    let mut text = remove_elements(text, "mode_notice");
+    text = remove_elements(&text, "file_content");
+    if let Some((attributes, content)) = element(&text, "user_command") {
+        let slash = attribute(attributes, "slash").unwrap_or_default();
+        let command = format!("/{} {}", slash.trim_start_matches('/'), content.trim());
+        return command.trim().to_string();
+    }
+    if let Some((_, content)) = element(&text, "user_input") {
+        return content.trim().to_string();
+    }
+    text.trim().to_string()
+}
+
+/// The attributes and content of the first `<tag ...>...</tag>` element in `text`.
+fn element<'a>(text: &'a str, tag: &str) -> Option<(&'a str, &'a str)> {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)?;
+    let rest = &text[start + open.len()..];
+    if !rest.starts_with(['>', ' ']) {
+        return None;
+    }
+    let tag_end = rest.find('>')?;
+    let attributes = &rest[..tag_end];
+    let body = &rest[tag_end + 1..];
+    let end = body.find(&close).unwrap_or(body.len());
+    Some((attributes, &body[..end]))
+}
+
+fn attribute<'a>(attributes: &'a str, key: &str) -> Option<&'a str> {
+    let marker = format!("{key}=\"");
+    let start = attributes.find(&marker)? + marker.len();
+    let end = attributes[start..].find('"')? + start;
+    Some(attributes[start..end].trim())
+}
+
+/// `text` without any `<tag ...>...</tag>` element, content included.
+fn remove_elements(text: &str, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(&open) {
+        if !rest[start + open.len()..].starts_with(['>', ' ']) {
+            out.push_str(&rest[..start + open.len()]);
+            rest = &rest[start + open.len()..];
+            continue;
+        }
+        out.push_str(&rest[..start]);
+        match rest[start..].find(&close) {
+            Some(end) => rest = &rest[start + end + close.len()..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A one-line summary of an SDK tool input: the path, command, query or URL it names, the
+/// first of a list of them (`files`, `paths`, `commands`, `queries`, `requests`), or the input
+/// itself when it is a string or a list of strings.
+fn tool_summary(input: &Value) -> String {
+    fn first(value: &Value) -> Option<String> {
+        match value {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(items) => items.iter().find_map(first),
+            Value::Object(_) => {
+                if let Some(text) = first_str(
+                    value,
+                    &[
+                        "path",
+                        "file_path",
+                        "command",
+                        "query",
+                        "url",
+                        "skill",
+                        "question",
+                    ],
+                ) {
+                    let mut text = text.to_string();
+                    if let Some(args) = value.get("args").and_then(Value::as_array) {
+                        for arg in args.iter().filter_map(Value::as_str) {
+                            text.push(' ');
+                            text.push_str(arg);
+                        }
+                    }
+                    return Some(text);
+                }
+                ["files", "paths", "commands", "queries", "requests"]
+                    .iter()
+                    .find_map(|key| value.get(*key).and_then(first))
+            }
+            _ => None,
+        }
+    }
+    first(input).unwrap_or_default()
 }
 
 fn read_json(path: &Path) -> Option<Value> {
