@@ -166,8 +166,14 @@ fn a_single_file_keeps_its_frontmatter_and_is_updated_on_reimport() {
         "---\ntitle: Mi nota\ntags: [a]\n---\nCuerpo.\n\n## Sección\n\nTexto.\n",
     );
     let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
-    let report =
-        knode_vault::import_file(&mut space, &file, Some("Mi nota".into()), &me()).unwrap();
+    let report = knode_vault::import_file(
+        &mut space,
+        &file,
+        "~/notes/fichero.md",
+        Some("Mi nota".into()),
+        &me(),
+    )
+    .unwrap();
     assert_eq!(report.created.len(), 1);
     let found = space
         .find_by_property(property_keys::PATH, "fichero.md")
@@ -180,7 +186,14 @@ fn a_single_file_keeps_its_frontmatter_and_is_updated_on_reimport() {
         "---\ntitle: Mi nota\ntags: [a]\n---\nCuerpo nuevo.\n",
     )
     .unwrap();
-    let again = knode_vault::import_file(&mut space, &file, Some("Mi nota".into()), &me()).unwrap();
+    let again = knode_vault::import_file(
+        &mut space,
+        &file,
+        "~/notes/fichero.md",
+        Some("Mi nota".into()),
+        &me(),
+    )
+    .unwrap();
     assert_eq!((again.created.len(), again.updated.len()), (0, 1));
     assert_eq!(
         space
@@ -188,5 +201,86 @@ fn a_single_file_keeps_its_frontmatter_and_is_updated_on_reimport() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+/// Two files with the same name in different folders, imported one at a time, are two notes,
+/// and importing each again updates its own note in place.
+#[test]
+fn single_files_with_the_same_name_in_two_folders_are_two_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), "a/README.md", "# A\n\nFirst.\n");
+    put(dir.path(), "b/README.md", "# B\n\nSecond.\n");
+    let (a, b) = (
+        dir.path().join("a/README.md"),
+        dir.path().join("b/README.md"),
+    );
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+    let first = knode_vault::import_file(&mut space, &a, "~/a/README.md", None, &me()).unwrap();
+    let second = knode_vault::import_file(&mut space, &b, "~/b/README.md", None, &me()).unwrap();
+    assert_eq!((first.created.len(), second.created.len()), (1, 1));
+    assert_eq!(second.updated.len(), 0);
+    fn node(space: &Space, key: &str) -> knode_format::Node {
+        let found = space.find_by_property(property_keys::FILE, key).unwrap();
+        assert_eq!(found.len(), 1, "{key}");
+        space.get_node(&found[0].id).unwrap().unwrap()
+    }
+    let (node_a, node_b) = (node(&space, "~/a/README.md"), node(&space, "~/b/README.md"));
+    assert_ne!(node_a.id, node_b.id);
+    assert!(node_a.body.contains("First."));
+    assert!(node_b.body.contains("Second."));
+
+    std::fs::write(&a, "# A\n\nFirst, changed.\n").unwrap();
+    let again = knode_vault::import_file(&mut space, &a, "~/a/README.md", None, &me()).unwrap();
+    assert_eq!((again.created.len(), again.updated.len()), (0, 1));
+    assert_eq!(node(&space, "~/a/README.md").id, node_a.id);
+    assert!(
+        node(&space, "~/a/README.md")
+            .body
+            .contains("First, changed.")
+    );
+    assert!(node(&space, "~/b/README.md").body.contains("Second."));
+    let unchanged = knode_vault::import_file(&mut space, &a, "~/a/README.md", None, &me()).unwrap();
+    assert_eq!((unchanged.created.len(), unchanged.updated.len()), (0, 0));
+    assert_eq!(space.node_count().unwrap(), 2);
+}
+
+/// A folder's `README.md` is never the note a `README.md` imported on its own made, and the
+/// other way round: each import keeps updating its own note.
+#[test]
+fn a_folder_file_and_a_single_file_with_the_same_name_are_two_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    put(&vault, "README.md", "Folder readme.\n");
+    put(dir.path(), "alone/README.md", "Single readme.\n");
+    let single = dir.path().join("alone/README.md");
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+
+    let one =
+        knode_vault::import_file(&mut space, &single, "~/alone/README.md", None, &me()).unwrap();
+    assert_eq!(one.created.len(), 1);
+    let folder = import(&mut space, &vault, &me()).unwrap();
+    assert_eq!((folder.created.len(), folder.updated.len()), (1, 0));
+    let folder = import(&mut space, &vault, &me()).unwrap();
+    assert_eq!((folder.created.len(), folder.updated.len()), (0, 0));
+    let one =
+        knode_vault::import_file(&mut space, &single, "~/alone/README.md", None, &me()).unwrap();
+    assert_eq!((one.created.len(), one.updated.len()), (0, 0));
+
+    let found = space
+        .find_by_property(property_keys::PATH, "README.md")
+        .unwrap();
+    assert_eq!(found.len(), 2);
+    let bodies: Vec<String> = found
+        .iter()
+        .map(|s| space.get_node(&s.id).unwrap().unwrap().body)
+        .collect();
+    assert!(
+        bodies.iter().any(|b| b.contains("Folder readme.")),
+        "{bodies:?}"
+    );
+    assert!(
+        bodies.iter().any(|b| b.contains("Single readme.")),
+        "{bodies:?}"
     );
 }

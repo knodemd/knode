@@ -1133,8 +1133,11 @@ fn markdown_file(
     let text = fs::read_to_string(file)
         .map_err(|e| ImportError::Unreadable(format!("{}: {e}", file.display())))?;
     let title = frontmatter_title(&text).unwrap_or_else(|| markdown_title(&text, file));
-    let report =
-        knode_vault::import_file(space, file, Some(title.clone()), by).map_err(vault_error)?;
+    // The file is known by where it is, recorded as folders are, so files with the same name
+    // in two folders are two notes.
+    let key = crate::markdown::record_path(file);
+    let report = knode_vault::import_file(space, file, &key, Some(title.clone()), by)
+        .map_err(vault_error)?;
     // One file, one note: the report names it by its title, as before.
     if !report.created.is_empty() {
         result.node(None, title.clone(), ImportOutcome::Created);
