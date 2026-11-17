@@ -411,7 +411,6 @@ final class AppModel {
         }
     }
 
-    /// Takes a space off the sidebar and closes it. Its files stay where they are. With `forget`,
     /// Adds the spaces made outside the app since launch (the command line, an agent, an import)
     /// that the person has not taken off the list, and notes a new default space.
     func refreshKnownSpaces() {
@@ -422,6 +421,7 @@ final class AppModel {
         if entries != library { library = entries }
     }
 
+    /// Takes a space off the sidebar and closes it. Its files stay where they are. With `forget`,
     /// it also leaves the spaces Knode knows (`config.toml`), so capture no longer writes to it.
     func removeFromList(_ url: URL, forget: Bool = false) async {
         if forget, url != SpacePanels.exampleURL {
