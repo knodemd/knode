@@ -162,6 +162,9 @@ belongs to, newest first.
 
 #### Changed
 
+- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
+  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
+  saying how many tokens the onboarding used.
 - **`knode instructions --apply`** also says when the agent reads the file and what it reads with
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
