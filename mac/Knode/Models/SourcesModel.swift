@@ -21,6 +21,8 @@ final class SourcesModel {
     /// A call that changes a source is running.
     private(set) var isBusy = false
     var errorMessage: String?
+    /// The account each connector that reads one is signed in to on this Mac, by source id.
+    private(set) var accounts: [String: SourceAccountState] = [:]
 
     /// Whether `errorMessage` is from reading the list, which the next good read clears; an
     /// action's error stays until the next action.
@@ -39,13 +41,13 @@ final class SourcesModel {
     ///   - pollInterval: how often `watch()` asks for the sources.
     init(
         client: any SourcesClient,
-        signIns: SourceSignIns = .builtIn,
+        signIns: SourceSignIns? = nil,
         openURL: @escaping @MainActor (URL) -> Void = { _ in },
         startService: @escaping @MainActor () async -> Void = {},
         pollInterval: Duration = .seconds(2)
     ) {
         self.client = client
-        self.signIns = signIns
+        self.signIns = signIns ?? SourceSignIns(fallback: ServiceSourceSignIn(client: client))
         self.openURL = openURL
         self.startService = startService
         self.pollInterval = pollInterval
@@ -63,6 +65,41 @@ final class SourcesModel {
         state = .loading
         errorMessage = nil
         await load()
+        await loadAccounts()
+    }
+
+    /// Asks which account each connector that reads one is signed in to. Not on every refresh
+    /// of the list: when the pane opens, and after signing in or out.
+    func loadAccounts() async {
+        var found: [String: SourceAccountState] = [:]
+        for source in connectors where source.needsSignIn && source.state != .unavailable {
+            if let state = try? await client.account(of: source.id) { found[source.id] = state }
+        }
+        if accounts != found { accounts = found }
+    }
+
+    /// Whether the source is signed in, and as whom: `nil` when it reads no account, or the
+    /// service could not say.
+    func account(of source: SourceStatus) -> SourceAccountState? {
+        accounts[source.id]
+    }
+
+    /// Signs a connector out of its account on this Mac: the service ends the session and forgets
+    /// it. It reads nothing more until it is signed in again.
+    func signOut(_ source: SourceStatus) async {
+        isBusy = true
+        do {
+            try await client.signOut(source.id)
+            errorMessage = nil
+        } catch let error as ServiceError where error.meansNotRunning {
+            state = .serviceStopped
+        } catch {
+            errorMessage = error.localizedDescription
+            errorFromLoad = false
+        }
+        isBusy = false
+        await load()
+        await loadAccounts()
     }
 
     /// Asks Knode Service for the sources of the space.
@@ -125,6 +162,7 @@ final class SourcesModel {
             try await self.client.disconnect(source.id, in: space)
             return nil
         }
+        await loadAccounts()
     }
 
     /// The Connect sheet for a source: the whole flow when it is not connected, or only the
@@ -132,8 +170,9 @@ final class SourcesModel {
     func connectFlow(for source: SourceStatus, signInAgain: Bool = false) -> SourceConnectFlow? {
         guard let space else { return nil }
         return SourceConnectFlow(
-            source: source, space: space, client: client, signIn: signIns.flow(for: source.id), signInAgain: signInAgain, openURL: openURL,
-            onChange: { [weak self] status in self?.apply(status) }
+            source: source, space: space, client: client, signIn: signIns.flow(for: source), signInAgain: signInAgain, openURL: openURL,
+            onChange: { [weak self] status in self?.apply(status) },
+            onSignIn: { [weak self] in Task { await self?.loadAccounts() } }
         )
     }
 
@@ -166,14 +205,16 @@ final class SourcesModel {
 /// ones that read another app's files, the connector's own sign-in steps, the history, and the
 /// chats, channels or folders to leave out.
 ///
-/// The source is paused as soon as it is connected, so that nothing is read before the person
-/// has chosen what to leave out; Done (or closing the sheet) turns it on.
+/// The source is connected paused (`sources.connect` with `on` false), so that nothing is read
+/// before the person has chosen what to leave out; Start (or closing the sheet) turns it on.
 @MainActor
 @Observable
 final class SourceConnectFlow: Identifiable {
     enum Step: Equatable {
         /// What Full Disk Access is for, with a button to its pane of System Settings.
         case fullDiskAccess
+        /// Asking the service whether the connector is signed in already.
+        case checkingSignIn
         /// A step of the connector's sign-in.
         case signIn(SourceSignInStep)
         /// From today or everything.
@@ -198,6 +239,8 @@ final class SourceConnectFlow: Identifiable {
     private(set) var isBusy = false
     private(set) var isFinished = false
     var errorMessage: String?
+    /// Waiting for the person to sign in on the page opened in the browser.
+    private(set) var isWaitingForBrowser = false
 
     /// Connected by this flow and paused until Done.
     @ObservationIgnored private var pausedForSetup = false
@@ -209,10 +252,15 @@ final class SourceConnectFlow: Identifiable {
     @ObservationIgnored private let signIn: (any SourceSignIn)?
     @ObservationIgnored private let openURL: @MainActor (URL) -> Void
     @ObservationIgnored private let onChange: @MainActor (SourceStatus?) -> Void
+    @ObservationIgnored private let onSignIn: @MainActor () -> Void
+    @ObservationIgnored private var browserWait: Task<Void, Never>?
+    /// Which wait is the current one: a cancelled one that ends later changes nothing.
+    @ObservationIgnored private var waitID = 0
 
     init(
         source: SourceStatus, space: URL, client: any SourcesClient, signIn: (any SourceSignIn)?, signInAgain: Bool = false,
-        openURL: @escaping @MainActor (URL) -> Void, onChange: @escaping @MainActor (SourceStatus?) -> Void
+        openURL: @escaping @MainActor (URL) -> Void, onChange: @escaping @MainActor (SourceStatus?) -> Void,
+        onSignIn: @escaping @MainActor () -> Void = {}
     ) {
         self.signInAgain = signInAgain && signIn != nil && source.isConnected
         afterSignIn = source.isConnected ? .containers : .history
@@ -222,10 +270,15 @@ final class SourceConnectFlow: Identifiable {
         self.signIn = signIn
         self.openURL = openURL
         self.onChange = onChange
-        if source.isConnected {
+        self.onSignIn = onSignIn
+        if self.signInAgain {
+            step = .checkingSignIn
+        } else if source.isConnected {
             step = .containers
         } else if source.needsFullDiskAccess {
             step = .fullDiskAccess
+        } else if signIn != nil {
+            step = .checkingSignIn
         } else {
             step = .history
         }
@@ -254,7 +307,7 @@ final class SourceConnectFlow: Identifiable {
         let names = steps
         switch step {
         case .fullDiskAccess: return 0
-        case .signIn: return names.firstIndex(of: "Sign in") ?? 0
+        case .checkingSignIn, .signIn: return names.firstIndex(of: "Sign in") ?? 0
         case .history: return names.count - 2
         case .containers: return names.count - 1
         }
@@ -263,15 +316,12 @@ final class SourceConnectFlow: Identifiable {
     /// Runs the first step that needs the service: the sign-in's first step, or the containers of
     /// a connected source.
     func begin() async {
-        if signInAgain {
-            await startSignIn()
-            if step == .containers { await loadContainers() }
-            return
-        }
         switch step {
         case .containers: await loadContainers()
-        case .history: await startSignIn()
-        case .fullDiskAccess, .signIn: break
+        case .checkingSignIn:
+            await startSignIn()
+            if step == .containers, !containersLoaded { await loadContainers() }
+        case .fullDiskAccess, .signIn, .history: break
         }
     }
 
@@ -282,51 +332,100 @@ final class SourceConnectFlow: Identifiable {
     /// After Full Disk Access: the sign-in, or the history.
     func continueFromFullDiskAccess() async {
         guard step == .fullDiskAccess else { return }
-        step = .history
-        await startSignIn()
-    }
-
-    private func startSignIn() async {
-        guard let signIn else { return }
-        await busy {
-            if let first = try await signIn.start(source: self.source.id, space: self.space) {
-                self.values = [:]
-                self.step = .signIn(first)
-            } else {
-                self.step = self.afterSignIn
-            }
+        if signIn != nil {
+            step = .checkingSignIn
+            await startSignIn()
+        } else {
+            step = .history
         }
     }
 
-    /// Opens the page the sign-in step asks for, such as a Google or Slack sign-in.
+    private func startSignIn() async {
+        guard let signIn else {
+            step = afterSignIn
+            return
+        }
+        await busy {
+            let first = try await signIn.start(source: self.source.id, space: self.space)
+            self.enter(first)
+        }
+    }
+
+    /// Goes to the next step of the sign-in, or past it once signed in. A step with a page opens
+    /// it in the browser and waits for the person to sign in there.
+    private func enter(_ next: SourceSignInStep?) {
+        values = [:]
+        guard let next else {
+            step = afterSignIn
+            onSignIn()
+            return
+        }
+        step = .signIn(next)
+        if let url = next.browserURL {
+            openURL(url)
+            startWaiting(for: next)
+        }
+    }
+
+    private func startWaiting(for current: SourceSignInStep) {
+        browserWait?.cancel()
+        waitID += 1
+        let id = waitID
+        isWaitingForBrowser = true
+        browserWait = Task { await self.waitForBrowser(current, id: id) }
+    }
+
+    private func waitForBrowser(_ current: SourceSignInStep, id: Int) async {
+        guard let signIn else { return }
+        defer { if id == waitID { isWaitingForBrowser = false } }
+        do {
+            let next = try await signIn.answer(current, with: [:], source: source.id, space: space)
+            guard !Task.isCancelled, id == waitID, step == .signIn(current) else { return }
+            errorMessage = nil
+            enter(next)
+            if step == .containers, !containersLoaded { await loadContainers() }
+        } catch {
+            guard !Task.isCancelled, id == waitID, !(error is CancellationError) else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// The wait for the browser, for tests: it ends once the person signed in, or it failed.
+    func browserWaitEnded() async {
+        await browserWait?.value
+    }
+
+    /// Opens the sign-in page again, such as after closing its tab by mistake, and waits again.
     func openBrowser() {
         guard case .signIn(let current) = step, let url = current.browserURL else { return }
         openURL(url)
+        if !isWaitingForBrowser { startWaiting(for: current) }
+    }
+
+    /// Stops waiting for the browser: the sheet was cancelled or closed.
+    func cancel() {
+        browserWait?.cancel()
+        waitID += 1
+        isWaitingForBrowser = false
     }
 
     /// Gives the sign-in what the person entered and goes to its next step, or to the history.
     func submitSignIn() async {
-        guard case .signIn(let current) = step, let signIn, current.isComplete(values) else { return }
+        guard case .signIn(let current) = step, current.browserURL == nil, let signIn, current.isComplete(values) else { return }
         let entered = values
         await busy {
-            if let next = try await signIn.answer(current, with: entered, source: self.source.id, space: self.space) {
-                self.values = [:]
-                self.step = .signIn(next)
-            } else {
-                self.values = [:]
-                self.step = self.afterSignIn
-            }
+            let next = try await signIn.answer(current, with: entered, source: self.source.id, space: self.space)
+            self.enter(next)
         }
         if step == .containers, !containersLoaded { await loadContainers() }
     }
 
-    /// Connects with the history chosen, pauses it until the person has chosen what it leaves
-    /// out, and lists the chats, channels or folders.
+    /// Connects with the history chosen, paused until the person has chosen what it leaves out,
+    /// and lists the chats, channels or folders.
     func connect() async {
         guard step == .history else { return }
         await busy {
-            var status = try await self.client.connect(self.source.id, history: self.history, in: self.space)
-            status = try await self.client.setOn(false, self.source.id, in: self.space)
+            let status = try await self.client.connect(self.source.id, history: self.history, on: false, in: self.space)
             self.pausedForSetup = true
             self.source = status
             self.step = .containers
