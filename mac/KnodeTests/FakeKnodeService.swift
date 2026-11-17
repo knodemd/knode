@@ -62,6 +62,8 @@ final class FakeKnodeService: @unchecked Sendable {
     private var searchFallback: (mode: String, note: String?)?
     /// What `index.status` and `index.run` answer, and `index` in `service.status`.
     private var index: [String: Any] = FakeKnodeService.indexStatus()
+    /// Results given for methods the fake does not implement, such as `sources.*`.
+    private var canned: [String: Any] = [:]
 
     init() throws {
         // Unix socket paths are short: keep the folder name short.
@@ -192,6 +194,11 @@ final class FakeKnodeService: @unchecked Sendable {
         lock.withLock { searchFallback = (mode, note) }
     }
 
+    /// Makes `method` answer `result`, whatever its params.
+    func answer(_ method: String, with result: Any) {
+        lock.withLock { canned[method] = result }
+    }
+
     /// Sets what `index.status` answers.
     func setIndex(_ status: [String: Any]) {
         lock.withLock { index = status }
@@ -292,6 +299,7 @@ final class FakeKnodeService: @unchecked Sendable {
         func info(_ space: Space) -> [String: Any] {
             ["path": path, "id": space.id, "name": space.name, "format": 0, "created_at": "2026-10-20T09:30:00.000Z", "nodes": space.nodes.count]
         }
+        if let result = canned[method] { return (result, nil) }
         switch method {
         case "subscribe":
             clients[client] = true
