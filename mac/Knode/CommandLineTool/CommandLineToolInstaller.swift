@@ -43,8 +43,10 @@ final class CommandLineToolInstaller {
     }
 
     /// The command is a link into another copy of Knode, gone or elsewhere: agents and the
-    /// terminal would keep running that copy's version. Asked once per other copy.
+    /// terminal would keep running that copy's version. Asked once per other copy. On the first
+    /// run, pointing it at this copy also goes on to Connect your agents.
     private func offerToRelink(_ link: URL) {
+        let firstRun = !defaults.bool(forKey: Self.offeredKey)
         defaults.set(true, forKey: Self.offeredKey)
         let destination = tool.staleLinkDestination(link)
         let other = destination.flatMap(CommandLineTool.app(containing:))?.path(percentEncoded: false)
@@ -58,7 +60,7 @@ final class CommandLineToolInstaller {
         alert.addButton(withTitle: "Use This Copy")
         alert.addButton(withTitle: "Keep It")
         if alert.runModal() == .alertFirstButtonReturn {
-            install()
+            if install(), firstRun { readyOnThisFirstRun() }
         } else {
             defaults.set(key, forKey: Self.keptStaleLinkKey)
         }
