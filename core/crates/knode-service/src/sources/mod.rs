@@ -27,6 +27,7 @@
 //! person changes the settings of a source.
 
 pub(crate) mod runtime;
+pub mod slack;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -60,7 +61,7 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    Vec::new()
+    vec![Arc::new(knode_ingest::slack::SlackConnector::from_env())]
 }
 
 /// How Knode Service runs connectors.

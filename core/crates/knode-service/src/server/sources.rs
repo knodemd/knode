@@ -104,6 +104,12 @@ fn change(
                         format!("the state of {id} could not be forgotten: {e}"),
                     )
                 })?;
+                sources::slack::forget_if_unused(state.registry().home(), id).map_err(|e| {
+                    RpcError::new(
+                        codes::STORAGE,
+                        format!("the sign-in of {id} could not be forgotten: {e}"),
+                    )
+                })?;
             }
         }
     }

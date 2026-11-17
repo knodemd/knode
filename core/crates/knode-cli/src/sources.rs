@@ -81,12 +81,40 @@ pub enum Action {
         /// The connector.
         source: String,
     },
+    /// Sign in to the account a connector reads, on this machine: for `slack`, in the
+    /// browser. The sign-in is kept in the system keychain.
+    SignIn {
+        /// The connector: `slack`.
+        source: String,
+        /// Print the page to open instead of opening the browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Sign out of the account a connector reads, on this machine, and forget the sign-in.
+    SignOut {
+        /// The connector: `slack`.
+        source: String,
+    },
 }
 
 /// Runs `knode sources` on the space at `space`.
 pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Result<()> {
+    let action = match action {
+        Action::SignIn { source, no_browser } => return sign_in(paths, &source, no_browser),
+        Action::SignOut { source } => {
+            only_slack(&source)?;
+            if sources::slack::sign_out(&paths.home)? {
+                println!("Signed out of Slack and forgot the sign-in on this machine.");
+            } else {
+                println!("Slack was not signed in on this machine.");
+            }
+            return Ok(());
+        }
+        other => other,
+    };
     let client = service::client();
     match action {
+        Action::SignIn { .. } | Action::SignOut { .. } => unreachable!("handled above"),
         Action::List { json } => {
             let list = match &client {
                 Some(client) => client.sources_list(space)?,
@@ -194,6 +222,7 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                     let was = sources::disconnect(&mut space, &source, by)?;
                     if was {
                         sources::forget_state(&paths.home, &space.manifest().id, &source)?;
+                        sources::slack::forget_if_unused(&paths.home, &source)?;
                     }
                     was
                 }
@@ -205,6 +234,39 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
             }
         }
     }
+    Ok(())
+}
+
+/// Sign-in is built for Slack only so far.
+fn only_slack(source: &str) -> Result<()> {
+    if source != knode_ingest::slack::SOURCE_ID {
+        return Err(anyhow!("{source} has no account to sign in to here"));
+    }
+    Ok(())
+}
+
+fn sign_in(paths: &Paths, source: &str, no_browser: bool) -> Result<()> {
+    only_slack(source)?;
+    let account = sources::slack::sign_in(&paths.home, &mut |url| {
+        println!("Allow Knode to read Slack on this page:\n\n  {url}\n");
+        if !no_browser {
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let _ = std::process::Command::new(opener)
+                .arg(url)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        println!("Waiting for Slack...");
+    })?;
+    println!(
+        "Signed in to {}. Connect it to a space with `knode sources connect slack`.",
+        account.team_name.as_deref().unwrap_or("Slack")
+    );
     Ok(())
 }
 
