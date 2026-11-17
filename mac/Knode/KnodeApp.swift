@@ -98,16 +98,23 @@ struct KnodeApp: App {
     }
 }
 
-/// Keeps the app in the menu bar when its window closes, and offers to install the `knode`
-/// command on the first run.
+/// Keeps the app in the menu bar when its window closes, offers to move it to Applications when it
+/// runs from elsewhere, and offers to install the `knode` command or point it at this copy.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let installer = CommandLineToolInstaller()
+    let mover = ApplicationMover()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Never while tests run in the app: the dialog would wait for a click.
         guard !ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("XCTest") }) else { return }
-        DispatchQueue.main.async { [installer] in installer.offerOnFirstRun() }
+        DispatchQueue.main.async { [installer, mover] in
+            #if !DEBUG
+            // Debug builds run from Xcode's build folder on purpose.
+            if mover.offerToMove() { return }
+            #endif
+            installer.offerOnLaunch()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
