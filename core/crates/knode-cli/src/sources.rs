@@ -76,8 +76,20 @@ pub enum Action {
         source: String,
     },
     /// Disconnect a connector from the space. What it brought in stays; connecting it again
-    /// chooses the history again.
+    /// chooses the history again. A connector signed in to an account is signed out once no
+    /// space has it connected.
     Disconnect {
+        /// The connector.
+        source: String,
+    },
+    /// Sign a connector in to the account it reads, such as Telegram: it asks for the phone
+    /// number, the code and the password, if the account has one. `connect` does it too.
+    SignIn {
+        /// The connector.
+        source: String,
+    },
+    /// Sign a connector out of its account and forget its session.
+    SignOut {
         /// The connector.
         source: String,
     },
@@ -99,6 +111,13 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
             }
         }
         Action::Connect { source, history } => {
+            // Signing in needs Knode Service: it keeps the session in the keychain.
+            if needs_sign_in(&source) {
+                match &client {
+                    Some(client) => crate::sign_in::if_needed(client, &source)?,
+                    None => crate::sign_in::if_needed(&crate::service::connect()?, &source)?,
+                }
+            }
             let history = history.as_deref().and_then(History::from_id);
             let status = match &client {
                 Some(client) => client.sources_connect(space, &source, history, by)?,
@@ -204,8 +223,34 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                 println!("{source} was not connected to this space.");
             }
         }
+        Action::SignIn { source } => {
+            let client = match client {
+                Some(client) => client,
+                None => crate::service::connect()?,
+            };
+            crate::sign_in::run(&client, &source)?;
+        }
+        Action::SignOut { source } => {
+            let client = match client {
+                Some(client) => client,
+                None => crate::service::connect()?,
+            };
+            if client.sources_sign_out(&source)? {
+                println!("Signed {source} out and forgot its session.");
+            } else {
+                println!("{source} was not signed in.");
+            }
+        }
     }
     Ok(())
+}
+
+/// Whether the built-in connector `id` signs in to an account.
+fn needs_sign_in(id: &str) -> bool {
+    sources::builtin_connectors().iter().any(|c| {
+        let info = c.info();
+        info.id == id && info.permissions.contains(&sources::Permission::SignIn)
+    })
 }
 
 fn set_on(
