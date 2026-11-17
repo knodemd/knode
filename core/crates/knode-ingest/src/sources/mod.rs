@@ -116,7 +116,9 @@ impl fmt::Display for Permission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInfo {
     /// Its id: lower case letters, digits and `-`, such as `whatsapp`, `imessage` or
-    /// `apple-mail`. It never changes: the settings of a space and the saved cursors use it.
+    /// `apple-mail`. It never changes: the settings of a space and the saved cursors use it. A
+    /// connector and the importer it hands its items to may share an id (`telegram`); ids are
+    /// unique among connectors.
     pub id: String,
     /// Its name for people: `WhatsApp`, `Messages`, `Apple Mail`.
     pub name: String,
