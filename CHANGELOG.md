@@ -54,6 +54,8 @@ belongs to, newest first.
 
 #### Changed
 
+- **Guided import report**: links to documents you left out in review are counted apart as
+  expected, instead of listed with the links that found nothing.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
