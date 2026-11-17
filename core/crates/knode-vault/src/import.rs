@@ -170,7 +170,7 @@ pub fn import_file(
 /// change the note, or write the node itself first. See [`Batch::note`].
 pub(crate) type Hook<'a> = dyn FnMut(&mut Space, NodeId, &str, &mut Note) -> Result<()> + 'a;
 
-fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
+pub(crate) fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
     Ok(())
 }
 
