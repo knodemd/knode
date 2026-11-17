@@ -671,6 +671,38 @@ pub fn agent_guide(source: Option<&Path>) -> String {
     }
 }
 
+/// How many notes made by people a space needs to count as set up, without a receipt or a
+/// project. A note or two can be a test, not a memory.
+pub const SET_UP_NOTES: usize = 3;
+
+/// How many of the newest nodes made by people [`is_set_up`] looks at. A space with this many
+/// counts as set up whatever they are.
+const SET_UP_LOOK: usize = 100;
+
+/// The title prefix of example content, such as a welcome note, which does not count.
+const EXAMPLE_PREFIX: &str = "Example:";
+
+/// Whether a space has been set up, so an agent connected to it should not offer to set Knode up
+/// on its own. Leans towards yes: a space is not set up only when it has no onboarding receipt,
+/// no project and fewer than [`SET_UP_NOTES`] notes created by a person, not counting
+/// conversations captured from agents or example content (titles starting with `Example:`).
+/// Notes agents wrote do not count either: they are what an agent saved, not the person's notes.
+pub fn is_set_up(space: &Space) -> Result<bool> {
+    if space.path().join(RECEIPT).exists() || !space.projects()?.is_empty() {
+        return Ok(true);
+    }
+    let made = space.created_by(knode_format::ActorKind::Person, SET_UP_LOOK)?;
+    if made.len() >= SET_UP_LOOK {
+        return Ok(true);
+    }
+    let notes = made
+        .iter()
+        .filter(|n| n.kind != knode_format::kinds::CONVERSATION)
+        .filter(|n| !n.title.starts_with(EXAMPLE_PREFIX))
+        .count();
+    Ok(notes >= SET_UP_NOTES)
+}
+
 /// The short prompt a person pastes into an agent to start: it points the agent at the guide.
 pub fn agent_prompt(source: Option<&Path>) -> String {
     // A folder chosen in a panel can end with `/`; the commands read better without it.
@@ -1572,6 +1604,81 @@ mod tests {
             unknown.contains("Ask the person which folder")
                 && unknown.contains("--source \"<source>\"")
         );
+    }
+
+    /// The section of the guide that starts with `heading`, up to the next `## ` heading.
+    fn guide_section(guide: &str, heading: &str) -> String {
+        let start = guide.find(heading).expect(heading);
+        let rest = &guide[start + heading.len()..];
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        rest[..end].to_owned()
+    }
+
+    #[test]
+    fn starting_from_nothing_sets_up_the_space_the_agent_is_connected_to() {
+        let guide = agent_guide(None);
+        let section = guide_section(&guide, "## Starting from nothing");
+        let first = section
+            .split("\n2. ")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            first.contains("Set up the space you are connected to"),
+            "{first}"
+        );
+        assert!(first.contains("do not create another one"), "{first}");
+        // `knode init` only when there is no space at all, after being told to use the one
+        // connected.
+        let init = first.find("knode init").unwrap();
+        let only = first.find("Only when there is no space at all").unwrap();
+        assert!(only < init, "{first}");
+    }
+
+    #[test]
+    fn a_space_is_set_up_by_a_receipt_a_project_or_a_few_notes_of_a_person() {
+        use knode_format::kinds;
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("Fresh.knode"), "Fresh").unwrap();
+        assert!(!is_set_up(&space).unwrap());
+
+        // Conversations, what agents wrote and examples do not count.
+        let agent = Provenance::agent("claude-code");
+        let person = Provenance::person("Ada");
+        let mut chat = NewNode::note("A session", "");
+        chat.kind = kinds::CONVERSATION.into();
+        space.create_node(chat, &agent).unwrap();
+        for i in 0..5 {
+            let note = NewNode::note(format!("Saved {i}"), "");
+            space.create_node(note, &agent).unwrap();
+        }
+        let welcome = NewNode::note("Example: Welcome to Knode", "");
+        space.create_node(welcome, &person).unwrap();
+        for i in 0..SET_UP_NOTES - 1 {
+            let note = NewNode::note(format!("Mine {i}"), "");
+            space.create_node(note, &person).unwrap();
+        }
+        assert!(!is_set_up(&space).unwrap());
+
+        // A few notes of the person do.
+        space
+            .create_node(NewNode::note("One more", ""), &person)
+            .unwrap();
+        assert!(is_set_up(&space).unwrap());
+
+        // So does a project, made by anyone.
+        let mut space = Space::create(dir.path().join("Project.knode"), "Project").unwrap();
+        let mut project = NewNode::note("Web", "");
+        project.kind = kinds::PROJECT.into();
+        space.create_node(project, &agent).unwrap();
+        assert!(is_set_up(&space).unwrap());
+
+        // And the receipt of an onboarding.
+        let space = Space::create(dir.path().join("Onboarded.knode"), "Onboarded").unwrap();
+        fs::write(space.path().join(RECEIPT), "{}").unwrap();
+        assert!(is_set_up(&space).unwrap());
     }
 
     #[test]

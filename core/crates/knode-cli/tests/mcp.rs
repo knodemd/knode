@@ -79,12 +79,16 @@ impl Client {
     }
 
     fn initialize(&mut self, version: &str) -> Value {
+        self.initialize_as(version, "test-client")
+    }
+
+    fn initialize_as(&mut self, version: &str, client: &str) -> Value {
         let response = self.request(
             "initialize",
             json!({
                 "protocolVersion": version,
                 "capabilities": {},
-                "clientInfo": { "name": "test-client", "version": "1.0.0" }
+                "clientInfo": { "name": client, "version": "1.0.0" }
             }),
         );
         self.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
@@ -123,6 +127,30 @@ fn text(result: &Value) -> &str {
 }
 
 #[test]
+fn claude_code_is_offered_to_set_up_a_new_space_and_claude_desktop_is_sent_to_the_app() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let agent = sb.connect_agent();
+    for (client, setup) in [("claude-code", true), ("claude-ai", false)] {
+        let mut mcp = Client::start(&sb, &["--agent", agent]);
+        let init = mcp.initialize_as("2025-06-18", client);
+        let instructions = init["result"]["instructions"].as_str().unwrap().to_owned();
+        assert_eq!(
+            instructions.contains("call the setup_guide tool"),
+            setup,
+            "{client}: {instructions}"
+        );
+        assert!(!instructions.contains("without asking"), "{instructions}");
+        assert_eq!(
+            instructions.contains("choose Get started"),
+            !setup,
+            "{client}: {instructions}"
+        );
+        mcp.finish();
+    }
+}
+
+#[test]
 fn a_client_uses_every_tool() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
@@ -140,6 +168,11 @@ fn a_client_uses_every_tool() {
             .unwrap()
             .contains("write_node")
     );
+    // A new space is not set up yet; a client not known to run commands is asked to send the
+    // person to the app, not to run the guide.
+    let instructions = result["instructions"].as_str().unwrap();
+    assert!(instructions.contains("choose Get started"), "{init}");
+    assert!(!instructions.contains("setup_guide"), "{init}");
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap().clone();
@@ -159,7 +192,8 @@ fn a_client_uses_every_tool() {
             "read_canvas",
             "attach_file",
             "read_attachment",
-            "read_excerpt"
+            "read_excerpt",
+            "setup_guide"
         ]
     );
     for tool in &tools {
