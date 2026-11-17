@@ -1751,6 +1751,26 @@ mod tests {
         assert!(guide.contains("knode onboard archive --target <old space>"));
         assert!(guide.contains("connect the agents to it"));
         assert!(guide.contains("how many tokens the onboarding used"));
+
+        // "Ask in step 3 whether to merge or replace" has its question in step 3's list.
+        let step3 = guide_section(&guide, "## 3. Ask the person once");
+        assert!(step3.contains("whether to merge or replace it"), "{step3}");
+        // Starting from nothing brings Claude Code's memory with its importer when there is one.
+        let nothing = guide_section(&guide, "## Starting from nothing");
+        assert!(
+            nothing
+                .contains("import --from claude-code-memory` when `knode import --help` lists it"),
+            "{nothing}"
+        );
+        // The folder names of `~/.claude/projects/` keep only ASCII letters and digits.
+        let step0 = guide_section(&guide, "## 0. Find out where the person starts")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            step0.contains("every character that is not an ASCII letter or digit"),
+            "{step0}"
+        );
     }
 
     #[test]

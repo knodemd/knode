@@ -50,9 +50,11 @@ turn off Claude Code's own memory (`"autoMemoryEnabled": false` in `~/.claude/se
 any memory plugin that injects context into every session (`claude plugin disable <plugin>`).
 
 To bring Claude Code's memory, use `knode import --from claude-code-memory` when `knode import
---help` lists it: it links each memory to its project. Otherwise, by hand: each folder in `~/.claude/projects/` is a working folder whose
-path has every character that is not a letter or digit replaced by `-`
-(`/Users/ada/Work/web.app` is `-Users-ada-Work-web-app`); skip folders that are symbolic links.
+--help` lists it: it links each memory to its project. Otherwise, by hand: each folder in
+`~/.claude/projects/` is a working folder whose path has every character that is not an ASCII
+letter or digit (`a`-`z`, `A`-`Z`, `0`-`9`) replaced by `-`, accented letters included
+(`/Users/ada/Work/web.app` is `-Users-ada-Work-web-app`, `/Users/ada/Diseño` is
+`-Users-ada-Dise-o`); skip folders that are symbolic links.
 Match each to the project whose folder it is, or that contains it, by encoding the project
 folders the same way and taking the longest match. Copy each `memory/*.md` file (not the
 `MEMORY.md` index) into `<working folder>/<project>/Agent memory/`, and the ones of no project
@@ -110,8 +112,10 @@ leave a link at the old place until nothing uses it.
    files and recent history (`git log --oneline -20`), and save one short context note for it:
    what it is, its goal, its current state, key decisions and the next step, marked as written by
    you from those sources. Ask the person to correct anything you could not verify.
-3. Bring the memory their agents already keep (see step 0): import a folder that holds those
-   files, `knode --space "<Name>" import <folder>`, and link each note to its project.
+3. Bring the memory their agents already keep (see step 0). For Claude Code's, use
+   `knode --space "<Name>" import --from claude-code-memory` when `knode import --help` lists it:
+   it links each memory to its project. Otherwise, and for other agents, import a folder that
+   holds those files, `knode --space "<Name>" import <folder>`, and link each note to its project.
 4. Capture, as the person chose in step 3: `knode spaces capture "<Name>" on|off`.
 
 Then continue with steps 6 to 8.
@@ -187,6 +191,9 @@ so it stays as files. Shall I go ahead?" List only what is doubtful as questions
 message, with a recommended answer for each so the person can reply "yes to all":
 
 - the name of the new space (suggest "Memory" in their language, or the source folder's name);
+- if they already have a space (step 0): whether to merge or replace it, which are the same
+  steps (see "If they already have a space"), or to keep both as separate spaces (recommend
+  merge or replace, so their agents use one memory);
 - whether to bring the conversations their agents held in these project folders
   (`knode onboard sessions --plan /tmp/knode-plan.json` lists them; recommend yes);
 - whether to bring their agents' existing memory (step 0; recommend yes);
