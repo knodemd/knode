@@ -25,6 +25,14 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Messages (iMessage) connector**, on macOS: `knode sources connect imessage` brings every
+  iMessage and SMS conversation of the Mac into one `chat` node each, the same shape as the chat
+  imports, messages grouped by day with their sender and time, and the photos and files sent
+  attached when the Mac has them. It reads a copy of the Messages database, never the database
+  itself, and needs Full Disk Access, which it asks for by name when it is missing. Text that
+  newer versions of Messages keep only in their archived form is read too; reactions are left
+  out, edited messages are marked edited and unsent ones unsent. People show as their phone
+  number or email address.
 
 ### v0.3 - Map and import (in progress)
 
