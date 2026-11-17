@@ -32,6 +32,7 @@ mod whatsapp;
 pub mod whatsapp_mac;
 mod write;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -153,6 +154,14 @@ pub enum ChatImportError {
     NoChatName(PathBuf),
     /// The space could not be written.
     Space(knode_format::Error),
+    /// The export stopped being readable partway, such as a `result.json` cut off, after some
+    /// of its chats were written: those stay in the space.
+    Partial {
+        /// The titles of the chats written.
+        written: Vec<String>,
+        /// Why the rest could not be read.
+        error: Box<ChatImportError>,
+    },
 }
 
 impl fmt::Display for ChatImportError {
@@ -178,6 +187,17 @@ impl fmt::Display for ChatImportError {
             ChatImportError::Space(error) => {
                 write!(f, "the import could not write the space: {error}")
             }
+            ChatImportError::Partial { written, error } => write!(
+                f,
+                "{error}. {} imported before it stopped {} kept: {}",
+                if written.len() == 1 {
+                    "The chat"
+                } else {
+                    "The chats"
+                },
+                if written.len() == 1 { "is" } else { "are" },
+                written.join(", ")
+            ),
         }
     }
 }
@@ -189,6 +209,7 @@ impl std::error::Error for ChatImportError {
             ChatImportError::Json { error, .. } => Some(error),
             ChatImportError::NotRecognized { .. } | ChatImportError::NoChatName(_) => None,
             ChatImportError::Space(error) => Some(error),
+            ChatImportError::Partial { error, .. } => Some(error.as_ref()),
         }
     }
 }
@@ -228,6 +249,10 @@ pub struct ChatImportReport {
     pub skipped: Vec<Skipped>,
     /// What else is worth knowing, such as dates that could be read two ways.
     pub notes: Vec<String>,
+    /// Secrets replaced in the messages written, said in [`ChatImportReport::notes`] at the end.
+    pub(crate) redacted: usize,
+    /// The messages counted in `redacted`: app, chat id up to its first `/`, message key.
+    pub(crate) redacted_seen: BTreeSet<String>,
 }
 
 impl ChatImportReport {
@@ -243,6 +268,8 @@ impl ChatImportReport {
             people: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
+            redacted: 0,
+            redacted_seen: BTreeSet::new(),
         }
     }
 
@@ -271,8 +298,9 @@ impl Located {
     }
 }
 
-/// Says in the report how many secrets in the messages were replaced, if any.
-pub(crate) fn note_redacted(report: &mut ChatImportReport, n: usize) {
+/// Says in the report how many secrets in the messages written were replaced, if any.
+fn note_redacted(report: &mut ChatImportReport) {
+    let n = report.redacted;
     if n > 0 {
         report.notes.push(format!(
             "{n} {} in the messages (API keys, tokens, passwords) replaced with {}.",
@@ -454,22 +482,52 @@ pub fn import_chat_export(
         by: by.clone().with_source(path.to_string_lossy()),
         report: ChatImportReport::new(format),
     };
+    let imported = import_located(located, &mut files, path, &mut writer);
+    if let Err(error) = imported {
+        // A chat written before the export stopped being readable stays written: say which.
+        return Err(match error {
+            ChatImportError::Io(_) | ChatImportError::Json { .. }
+                if !writer.report.chats.is_empty() =>
+            {
+                ChatImportError::Partial {
+                    written: writer
+                        .report
+                        .chats
+                        .iter()
+                        .map(|c| c.title.clone())
+                        .collect(),
+                    error: Box::new(error),
+                }
+            }
+            error => error,
+        });
+    }
+    note_redacted(&mut writer.report);
+    Ok(writer.report)
+}
+
+/// Imports the export found at `located` with `writer`.
+fn import_located(
+    located: Located,
+    files: &mut Files,
+    path: &Path,
+    writer: &mut ChatWriter<'_>,
+) -> Result<(), ChatImportError> {
     match located {
         Located::WhatsApp(file) => {
-            let name = whatsapp::name(&files, path, &file)
+            let name = whatsapp::name(files, path, &file)
                 .ok_or_else(|| ChatImportError::NoChatName(path.to_path_buf()))?;
             let stored = match writer.find_id(ChatFormat::WhatsApp, &name.to_lowercase())? {
                 Some(id) => writer.space.property(&id, keys::DATE_ORDER)?,
                 None => None,
             };
-            match whatsapp::read(&mut files, &file, &name, stored.as_deref())? {
+            match whatsapp::read(files, &file, &name, stored.as_deref())? {
                 Ok(read) => {
                     for (item, reason) in read.skipped {
                         writer.report.skip(item, reason);
                     }
                     writer.report.notes.extend(read.note);
-                    note_redacted(&mut writer.report, read.redacted);
-                    writer.write(&read.chat, &mut files)?;
+                    writer.write(&read.chat, files)?;
                 }
                 Err(conflict) => {
                     writer.report.skip(format!("WhatsApp - {name}"), conflict.0);
@@ -480,9 +538,9 @@ pub fn import_chat_export(
             // `result.json` is read from a second handle on the export, while its media are
             // attached from the first.
             let mut source = Files::open(path)?;
-            telegram::import(&mut source, &file, &mut files, &mut writer)?;
+            telegram::import(&mut source, &file, files, writer)?;
         }
-        Located::Slack(dir) => slack::import(&mut files, &dir, &mut writer)?,
+        Located::Slack(dir) => slack::import(files, &dir, writer)?,
     }
-    Ok(writer.report)
+    Ok(())
 }

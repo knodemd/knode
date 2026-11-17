@@ -106,6 +106,9 @@ struct Message {
     location_information: Option<Location>,
     #[serde(default)]
     poll: Option<Poll>,
+    /// Secrets replaced in it.
+    #[serde(skip)]
+    redacted: usize,
 }
 
 /// A part of a message's text, plain or formatted, as Telegram Desktop exports it. The
@@ -169,10 +172,9 @@ fn import_with_limit(
     limit: u64,
 ) -> Result<(), ChatImportError> {
     let dir = parent(file).to_string();
-    let mut redacted = 0;
     let mut write = |mut single: SingleChat| -> Result<(), ChatImportError> {
         for m in single.messages.iter_mut().flatten() {
-            redacted += redact(m);
+            m.redacted = redact(m);
         }
         if let Some(chat) = chat(single, &dir, files) {
             writer.write(&chat, files)?;
@@ -205,7 +207,6 @@ fn import_with_limit(
     if let Some(single) = single {
         write(single)?;
     }
-    super::note_redacted(&mut writer.report, redacted);
     Ok(())
 }
 
@@ -449,6 +450,7 @@ fn chat(single: SingleChat, dir: &str, files: &Files) -> Option<Chat> {
             message.media = media(&m, dir, files);
             message
         };
+        message.redacted = m.redacted;
         if let Some(reply) = m.reply_to_message_id {
             message.reply_to = Some(match replied.get(&reply) {
                 Some((who, at, plain)) => {

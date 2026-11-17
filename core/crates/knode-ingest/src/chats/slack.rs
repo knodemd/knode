@@ -130,6 +130,9 @@ struct Message {
     thread_ts: Option<String>,
     #[serde(default)]
     files: Vec<SlackFile>,
+    /// Secrets replaced in `text`.
+    #[serde(skip)]
+    redacted: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,7 +256,6 @@ pub(crate) fn import(
     // Every day file of every conversation, read first, so the members can be written before
     // the channels that mention them.
     let mut read = Vec::new();
-    let mut redacted = 0;
     for (conversation, kind, folder) in conversations {
         // The names are sorted, so the files under a folder are found where they start.
         let prefix = format!("{folder}/");
@@ -273,7 +275,7 @@ pub(crate) fn import(
             let (text, n) = crate::redact::redact_tokens(&m.text);
             if n > 0 {
                 m.text = text;
-                redacted += n;
+                m.redacted = n;
             }
         }
         messages.sort_by_key(|m| mark(&m.ts));
@@ -291,7 +293,6 @@ pub(crate) fn import(
             }
         }
     }
-    super::note_redacted(&mut writer.report, redacted);
     write_people(&mut workspace, &wanted, writer)?;
 
     for (conversation, kind, messages) in read {
@@ -615,6 +616,7 @@ fn message(workspace: &Workspace, m: &Message, channel: &str) -> Option<ChatMess
         .iter()
         .map(|f| media(f, &workspace.uploads))
         .collect();
+    message.redacted = m.redacted;
     Some(message)
 }
 

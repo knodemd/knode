@@ -931,27 +931,45 @@ pub fn run(
                     if n == 1 { "it" } else { "them" }
                 ));
             }
-            // A chat export among the notes is not imported with them: say how to.
-            if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
-                result.notes.push(format!(
-                    "A {format} is in this folder and was not imported with the notes: import \
-                     it with knode import --from {} \"{}\".",
-                    format.id(),
-                    inner.display()
-                ));
-            }
-            result.report =
-                Some(knode_vault::migration::report(space, dir, &report).map_err(vault_error)?);
             if report.created.len() + report.updated.len() + report.unchanged == 0
                 && report.edited.is_empty()
                 && report.skipped.is_empty()
                 && report.deleted.is_empty()
             {
-                return Err(ImportError::Unknown(format!(
-                    "{} has no Markdown (.md) files",
-                    dir.display()
-                )));
+                // A folder that only holds chat exports, such as Telegram Desktop's with one
+                // `ChatExport_*` folder for each: say how to import them.
+                let exports = chat_exports_in(dir);
+                let commands: Vec<String> = exports
+                    .iter()
+                    .map(|(format, path)| import_command(*format, path))
+                    .collect();
+                return Err(ImportError::Unknown(match exports.as_slice() {
+                    [] => format!("{} has no Markdown (.md) files", dir.display()),
+                    [(format, _)] => format!(
+                        "{} has no Markdown (.md) files, but a {format} is in it: import it \
+                         with {}.",
+                        dir.display(),
+                        commands[0]
+                    ),
+                    _ => format!(
+                        "{} has no Markdown (.md) files, but {} chat exports are in it: import \
+                         each one with {}.",
+                        dir.display(),
+                        exports.len(),
+                        commands.join(", ")
+                    ),
+                }));
             }
+            // A chat export among the notes is not imported with them: say how to.
+            if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
+                result.notes.push(format!(
+                    "A {format} is in this folder and was not imported with the notes: import \
+                     it with {}.",
+                    import_command(format, &inner)
+                ));
+            }
+            result.report =
+                Some(knode_vault::migration::report(space, dir, &report).map_err(vault_error)?);
         }
         Input::MarkdownFile(file) => markdown_file(space, file, by, &mut result)?,
         Input::Session(file) => session(space, file, &mut result)?,
@@ -1203,6 +1221,29 @@ fn chats(
         ));
     }
     Ok(())
+}
+
+/// The command that imports the chat export at `path`.
+fn import_command(format: ChatFormat, path: &Path) -> String {
+    format!("knode import --from {} \"{}\"", format.id(), path.display())
+}
+
+/// The chat exports in `dir`: each file or folder in it that is one, by name, or else the one
+/// [`knode_ingest::chat_export_inside`] finds deeper down.
+fn chat_exports_in(dir: &Path) -> Vec<(ChatFormat, PathBuf)> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|read| read.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    entries.sort();
+    let found: Vec<(ChatFormat, PathBuf)> = entries
+        .into_iter()
+        .filter_map(|path| knode_ingest::detect_chat_export(&path).map(|format| (format, path)))
+        .collect();
+    if found.is_empty() {
+        knode_ingest::chat_export_inside(dir).into_iter().collect()
+    } else {
+        found
+    }
 }
 
 fn chat_error(error: knode_ingest::ChatImportError) -> ImportError {

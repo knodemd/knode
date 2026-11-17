@@ -537,3 +537,31 @@ fn a_folder_of_notes_holding_a_chat_export_imports_the_notes() {
     assert!(space.find_by_title("WhatsApp - Ada").unwrap().is_empty());
     assert_eq!(space.find_by_title("Note 3").unwrap().len(), 1);
 }
+
+#[test]
+fn a_folder_of_chat_exports_without_notes_says_to_import_them() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let downloads = sb.path("Telegram Desktop");
+    for (folder, id) in [("ChatExport_2026-03-04", 1), ("ChatExport_2026-03-05", 2)] {
+        fs::create_dir_all(downloads.join(folder)).unwrap();
+        fs::write(
+            downloads.join(folder).join("result.json"),
+            format!(
+                r#"{{"name":"Ada","type":"personal_chat","id":{id},"messages":[{{"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada","text":"hi"}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+    let out = sb.fails(&["import", s(&downloads)]);
+    assert!(out.contains("has no Markdown (.md) files"), "{out}");
+    for folder in ["ChatExport_2026-03-04", "ChatExport_2026-03-05"] {
+        assert!(
+            out.contains(&format!(
+                "knode import --from telegram \"{}\"",
+                downloads.join(folder).display()
+            )),
+            "{out}"
+        );
+    }
+}
