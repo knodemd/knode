@@ -46,6 +46,12 @@ const CLINE_EXTENSION: &str = "saoudrizwan.claude-dev";
 /// The `globalStorage` folder of the Roo Code extension.
 const ROO_CODE_EXTENSION: &str = "rooveterinaryinc.roo-cline";
 
+/// The folders in Cline's own data folder (`~/.cline/data`) that hold its sessions: `tasks`,
+/// task folders written by the Cline CLI and JetBrains plugin before Cline moved to its SDK,
+/// and `sessions`, the sessions of the Cline SDK (the Cline CLI, and the VS Code extension
+/// windows that run on it).
+const CLINE_DATA_FOLDERS: [&str; 2] = ["tasks", crate::cline::SDK_SESSIONS];
+
 /// A session an agent wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFile {
@@ -104,7 +110,9 @@ pub fn default_root(agent: Agent) -> Option<PathBuf> {
 /// installed in (VS Code, VS Code Insiders, VSCodium, Cursor and Windsurf), such as
 /// `<editor data folder>/User/globalStorage/saoudrizwan.claude-dev/tasks`, unless
 /// `KNODE_CLINE_ROOT` ([`CLINE_ROOT_VARIABLE`]) or `KNODE_ROO_CODE_ROOT`
-/// ([`ROO_CODE_ROOT_VARIABLE`]) names one folder instead. Folders that do not exist are listed
+/// ([`ROO_CODE_ROOT_VARIABLE`]) names one folder instead. Cline also keeps sessions in its own
+/// data folder, `CLINE_DATA_DIR`, else `CLINE_DIR` then `data`, else `~/.cline/data`: its
+/// `tasks` and `sessions` folders come after the editors'. Folders that do not exist are listed
 /// too: they are watched for once they appear.
 pub fn default_roots(agent: Agent) -> Vec<PathBuf> {
     let extension = match agent {
@@ -116,7 +124,7 @@ pub fn default_roots(agent: Agent) -> Vec<PathBuf> {
         if let Some(root) = env_dir(variable) {
             return vec![root];
         }
-        return VS_CODE_EDITORS
+        let mut roots: Vec<PathBuf> = VS_CODE_EDITORS
             .iter()
             .filter_map(|editor| {
                 Some(
@@ -128,6 +136,12 @@ pub fn default_roots(agent: Agent) -> Vec<PathBuf> {
                 )
             })
             .collect();
+        if agent == Agent::Cline {
+            if let Some(data) = cline_data_dir() {
+                roots.extend(CLINE_DATA_FOLDERS.iter().map(|folder| data.join(folder)));
+            }
+        }
+        return roots;
     }
     single_root(agent).into_iter().collect()
 }
@@ -179,6 +193,14 @@ fn single_root(agent: Agent) -> Option<PathBuf> {
         _ => return None,
     };
     Some(root)
+}
+
+/// Cline's own data folder: `CLINE_DATA_DIR`, else `CLINE_DIR` then `data`, else
+/// `~/.cline/data`, as the Cline SDK resolves it.
+fn cline_data_dir() -> Option<PathBuf> {
+    env_dir("CLINE_DATA_DIR")
+        .or_else(|| Some(env_dir("CLINE_DIR")?.join("data")))
+        .or_else(|| Some(home()?.join(".cline").join("data")))
 }
 
 fn env_dir(variable: &str) -> Option<PathBuf> {
@@ -307,7 +329,25 @@ fn shaped(agent: Agent, relative: &Path) -> bool {
         Agent::CopilotCli => depth == 2 && name == "events.jsonl",
         Agent::Amp => depth == 1 && extension == Some("json"),
         Agent::Aider => (1..=AIDER_DEPTH).contains(&depth) && name == crate::aider::HISTORY_FILE,
-        Agent::Cline | Agent::RooCode => depth == 2 && name == crate::cline::UI_MESSAGES,
+        Agent::Cline => depth == 2 && (name == crate::cline::UI_MESSAGES || cline_sdk(relative)),
+        Agent::RooCode => depth == 2 && name == crate::cline::UI_MESSAGES,
+        _ => false,
+    }
+}
+
+/// Whether a path relative to a Cline root is the messages file of a Cline SDK session,
+/// `<session id>/<session id>.messages.json`. A subagent's messages sit in the same folder under
+/// the subagent's id, and are left out.
+fn cline_sdk(relative: &Path) -> bool {
+    let name = relative.file_name().and_then(OsStr::to_str);
+    let folder = relative
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(OsStr::to_str);
+    match (name, folder) {
+        (Some(name), Some(folder)) => {
+            name.strip_suffix(crate::cline::SDK_MESSAGES_SUFFIX) == Some(folder)
+        }
         _ => false,
     }
 }

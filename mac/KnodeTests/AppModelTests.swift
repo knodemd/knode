@@ -149,7 +149,7 @@ import Testing
     @Test func remembersRecentSpacesButNotTheExample() async throws {
         let suite = "KnodeTests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.removeTestSuite(suite) }
         let folder = FileManager.default.temporaryDirectory.appending(path: suite, directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: folder) }
         let spaceURL = folder.appending(path: "Work.knode", directoryHint: .isDirectory)
