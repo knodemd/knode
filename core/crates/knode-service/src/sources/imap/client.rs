@@ -99,15 +99,16 @@ pub struct MailboxStatus {
     pub uid_next: Option<u32>,
 }
 
-/// One message read from the selected mailbox.
-#[derive(Clone, PartialEq, Eq)]
-pub struct FetchedMessage {
+/// What the server says of one message of the selected mailbox, before its bytes are read:
+/// enough to leave it out (spam, an excluded label, too old, too large) without downloading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageInfo {
     /// Its UID in the mailbox.
     pub uid: u32,
+    /// Its size in bytes (`RFC822.SIZE`).
+    pub size: Option<u64>,
     /// When the server received it.
     pub internal_date: Option<Timestamp>,
-    /// Its bytes; `None` when it was larger than the connector reads.
-    pub bytes: Option<Vec<u8>>,
     /// Gmail's id of the message (`X-GM-MSGID`), on Gmail.
     pub gmail_id: Option<u64>,
     /// Gmail's labels of the message (`X-GM-LABELS`), on Gmail: `\Inbox`, `\Sent`, user labels
@@ -115,14 +116,16 @@ pub struct FetchedMessage {
     pub gmail_labels: Vec<String>,
 }
 
-impl fmt::Debug for FetchedMessage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FetchedMessage")
-            .field("uid", &self.uid)
-            .field("internal_date", &self.internal_date)
-            .field("bytes", &self.bytes.as_ref().map(Vec::len))
-            .field("gmail_id", &self.gmail_id)
-            .finish_non_exhaustive()
+impl MessageInfo {
+    /// A message with this UID and nothing else known.
+    pub fn new(uid: u32) -> Self {
+        MessageInfo {
+            uid,
+            size: None,
+            internal_date: None,
+            gmail_id: None,
+            gmail_labels: Vec::new(),
+        }
     }
 }
 
@@ -162,9 +165,13 @@ pub trait ImapSession: Send {
     /// The UIDs of the selected mailbox from `from_uid` on, received on or after `since` when
     /// given (`UID SEARCH UID <from>:* SINCE <day>`), in any order.
     fn search(&mut self, from_uid: u32, since: Option<NaiveDate>) -> Result<Vec<u32>, ImapError>;
-    /// Reads these messages of the selected mailbox, without marking them read
-    /// (`UID FETCH ... BODY.PEEK[]`), with Gmail's id and labels when `gmail`.
-    fn fetch(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<FetchedMessage>, ImapError>;
+    /// What the server says of these messages of the selected mailbox, without their bytes
+    /// (`UID FETCH ... (UID RFC822.SIZE INTERNALDATE)`), with Gmail's id and labels when
+    /// `gmail` (`X-GM-MSGID X-GM-LABELS`).
+    fn fetch_info(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<MessageInfo>, ImapError>;
+    /// The bytes of these messages of the selected mailbox, without marking them read
+    /// (`UID FETCH ... BODY.PEEK[]`): only the ones that are brought in are asked for.
+    fn fetch_bodies(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>, ImapError>;
     /// Says goodbye; errors are ignored.
     fn logout(&mut self);
 }
