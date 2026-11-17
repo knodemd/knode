@@ -945,6 +945,16 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             }
             to_value(removed)
         }
+        methods::FOLDERS_OVERLAPS => {
+            let p: FolderOverlapsParams = params(method, raw)?;
+            let mut all = Vec::new();
+            for path in &p.spaces {
+                let space = state.space(path)?;
+                let space = lock_ignoring_poison(&space);
+                all.push(spaces::SpaceFolders::of(&space)?);
+            }
+            to_value(spaces::folder_overlaps(&all))
+        }
         methods::NODE_CREATE => {
             let p: NodeCreateParams = params(method, raw)?;
             let space = state.space(&p.space)?;

@@ -157,6 +157,16 @@ belongs to, newest first.
   after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
   `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
   added before this gets its project when it is added again.
+- **Overlapping project folders**: `knode folders overlaps` lists project folders that are in two
+  spaces (their conversations are captured into both) or inside another folder (their
+  conversations go to the inner folder's space only), with the space of each. `knode folders add`
+  and `knode folders list` warn about them, and Knode Service answers `folders.overlaps` for the
+  apps.
+- **Does the agent reach the right space?** `knode connect <agent> --check [--project <folder>]`
+  reads the agent's MCP settings and says which space it uses (`--space`, `KNODE_SPACE` or the
+  default space), whether that is the space the project's conversations go to (or `--space`), and
+  whether the agent may read there. A project folder does not switch an agent's space, and the
+  check never changes settings or gives access; it says what to run. `--json` prints the report.
 - **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
   Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
   become notes of the space, each part of the project that folder belongs to: a project folder of
@@ -244,6 +254,9 @@ belongs to, newest first.
   links. Titles are tried first, as before.
 - **Search by meaning on large spaces**: a search by meaning or hybrid search took minutes in a
   space of a few thousand notes (170 s on 2,700 notes and 20,000 chunks); it takes about 40 ms.
+- **`knode --space <name> connect <agent>`** wrote the name as a folder relative to where it ran,
+  so the agent pointed at a space that does not exist. It now pins the path of the space of that
+  name.
 - **A deep `KNODE_HOME`**: when the Knode Service socket would be longer than a Unix socket path
   may be, commands and `knode service run` say so, with the length and the limit, and ask for a
   shorter folder, instead of only "could not start".

@@ -10,6 +10,7 @@
 //! the agent allows them) its comments are kept, and running it again changes nothing. Aider has
 //! no MCP client, so it gets guidance instead.
 
+mod check;
 mod json;
 mod places;
 
@@ -26,6 +27,8 @@ use knode_service::keys::{KeyStore, default_key_store, fingerprint, generate_key
 use serde_json::Value;
 
 use places::Place;
+
+pub use check::run as check;
 
 /// The name of the MCP server in every agent's settings.
 const SERVER: &str = "knode";
