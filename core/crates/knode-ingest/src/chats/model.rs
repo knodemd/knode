@@ -126,6 +126,13 @@ pub(crate) enum Media {
         /// What it was, as the export says: "image", "media"...
         what: String,
     },
+    /// Only a link to it is in the export, such as a file on Slack.
+    Link {
+        /// Its file name.
+        name: String,
+        /// Where it is.
+        url: String,
+    },
 }
 
 /// A 64-bit FNV-1a hash of `parts`, as 16 hexadecimal digits: the same in every build, so a

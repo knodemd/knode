@@ -291,6 +291,10 @@ fn shown(media: &Media) -> Shown {
         Media::File { name, .. } => Shown::Attached(name.clone()),
         Media::Missing { name } => Shown::Missing(name.clone()),
         Media::Omitted { what } => Shown::Omitted(what.clone()),
+        Media::Link { name, url } => Shown::Link {
+            name: name.clone(),
+            url: url.clone(),
+        },
         Media::NotAttached { name, reason } => Shown::NotAttached {
             name: name.clone(),
             reason: reason.clone(),

@@ -36,9 +36,10 @@
 //! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 //!
 //! Chats between people come from the exports of the apps they were held in:
-//! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat.
-//! [`imessage::sync`] brings iMessage conversations in live, from a copy of the Messages
-//! database of the Mac, into the same `chat` nodes.
+//! [`import_chat_export`] reads a WhatsApp chat export, a Telegram Desktop export or a Slack
+//! workspace export into one `chat` node per chat.
+//! [`imessage::ImessageConnector`] brings iMessage conversations in live, from a copy of the
+//! Messages database of the Mac, into the same `chat` nodes.
 
 mod aider;
 mod amp;
@@ -67,8 +68,8 @@ pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
 pub use chats::imessage;
 pub use chats::{
-    CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, detect_chat_export,
-    import_chat_export, keys as chat_keys,
+    CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, PERSON_KIND, detect_chat_export,
+    import_chat_export, keys as chat_keys, person_keys,
 };
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,

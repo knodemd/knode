@@ -10,7 +10,8 @@
 //!   an `http` or `https` URL the person gave, Kindle clippings or a Kindle notebook, and
 //!   Readwise CSV and Markdown exports;
 //! - notes from other apps, with [`knode_vault::apps`]: Apple Notes, Bear, Notion and Evernote;
-//! - chat exports, with [`knode_ingest::import_chat_export`]: WhatsApp.
+//! - chat exports, with [`knode_ingest::import_chat_export`]: WhatsApp, Telegram Desktop and
+//!   Slack.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -56,11 +57,16 @@ pub enum ImportSource {
     /// A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt`.
     #[serde(rename = "whatsapp")]
     WhatsApp,
+    /// A Telegram Desktop export in JSON: the folder with `result.json`, a `.zip` of it, or the
+    /// `result.json`.
+    Telegram,
+    /// A Slack workspace export: the `.zip` or its folder.
+    Slack,
 }
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 13] = [
+    pub const ALL: [ImportSource; 15] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -74,10 +80,12 @@ impl ImportSource {
         ImportSource::Notion,
         ImportSource::Evernote,
         ImportSource::WhatsApp,
+        ImportSource::Telegram,
+        ImportSource::Slack,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
-    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `whatsapp`.
+    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `whatsapp`, `telegram`, `slack`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -93,6 +101,8 @@ impl ImportSource {
             ImportSource::Notion => "notion",
             ImportSource::Evernote => "evernote",
             ImportSource::WhatsApp => "whatsapp",
+            ImportSource::Telegram => "telegram",
+            ImportSource::Slack => "slack",
         }
     }
 
@@ -115,6 +125,8 @@ impl ImportSource {
     fn chat(self) -> Option<ChatFormat> {
         match self {
             ImportSource::WhatsApp => Some(ChatFormat::WhatsApp),
+            ImportSource::Telegram => Some(ChatFormat::Telegram),
+            ImportSource::Slack => Some(ChatFormat::Slack),
             _ => None,
         }
     }
@@ -122,6 +134,8 @@ impl ImportSource {
     fn of_chat(format: ChatFormat) -> ImportSource {
         match format {
             ChatFormat::WhatsApp => ImportSource::WhatsApp,
+            ChatFormat::Telegram => ImportSource::Telegram,
+            ChatFormat::Slack => ImportSource::Slack,
             _ => ImportSource::WhatsApp,
         }
     }
@@ -309,7 +323,7 @@ impl std::fmt::Debug for Secret {
 pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of Markdown files, \
      a .md file, a Claude Code or Codex session (.jsonl), a PDF, a saved web page (.html), an \
      http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
-     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file or a WhatsApp chat export";
+     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, a WhatsApp chat export, a Telegram Desktop export (JSON) or a Slack workspace export";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,7 +547,7 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         | ImportSource::Bear
         | ImportSource::Notion
         | ImportSource::Evernote => Input::App(source.app().expect("a note app"), p),
-        ImportSource::WhatsApp => {
+        ImportSource::WhatsApp | ImportSource::Telegram | ImportSource::Slack => {
             let format = source.chat().expect("a chat app");
             if knode_ingest::detect_chat_export(path) != Some(format) {
                 return not(&format!("a {format}"));
@@ -828,6 +842,12 @@ fn chats(
             "{} named in the chats {} not in the export, marked as missing.",
             plural(report.missing, "file"),
             if report.missing == 1 { "is" } else { "are" }
+        ));
+    }
+    if !report.people.is_empty() {
+        result.notes.push(format!(
+            "{} written for the members who wrote or were mentioned.",
+            plural(report.people.len(), "person node")
         ));
     }
     if report.empty > 0 {

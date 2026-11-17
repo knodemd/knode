@@ -63,6 +63,8 @@ $(SRCROOT)/../core/crates/knode-ingest/src/chats/files.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/mod.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/model.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/render.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/chats/slack.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/chats/telegram.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/whatsapp.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/write.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/claude_code.rs
