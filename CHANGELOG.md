@@ -179,7 +179,9 @@ belongs to, newest first.
   label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
   written that way finds its attachment on import.
 - **Importing one Markdown file** reads its frontmatter as properties instead of text, takes its
-  `title` when it has one, and updates the same note when imported again instead of adding a copy.
+  `title` when it has one, and updates the same note when imported again instead of adding a copy
+  (a note an earlier version imported from it included). Files with the same name in other
+  folders stay notes of their own.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
