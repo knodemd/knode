@@ -9,7 +9,7 @@ use mail_parser::{Address, HeaderName, HeaderValue, MessageParser, MimeHeaders, 
 use sha2::{Digest, Sha256};
 
 use super::MailOptions;
-use crate::reading::markdown::from_html;
+use crate::reading::markdown::{Images, from_html_with};
 
 /// Gmail's labels, in a Takeout `.mbox`.
 const GMAIL_LABELS: &str = "X-Gmail-Labels";
@@ -357,6 +357,8 @@ pub(crate) fn gmail_labels(text: &str) -> Vec<String> {
 }
 
 /// The text of a message as Markdown: its text parts, else its HTML parts turned into Markdown.
+/// Remote images never load by themselves: HTML images become links and tracking pixels are
+/// dropped ([`Images::Linked`]), and `![` in text is not an image.
 fn body(message: &mail_parser::Message<'_>) -> String {
     let texts: Vec<String> = message
         .text_bodies()
@@ -372,7 +374,7 @@ fn body(message: &mail_parser::Message<'_>) -> String {
     let htmls: Vec<String> = message
         .html_bodies()
         .filter_map(|part| match &part.body {
-            PartType::Html(html) => Some(shift_headings(&from_html(html))),
+            PartType::Html(html) => Some(shift_headings(&from_html_with(html, Images::Linked))),
             PartType::Text(text) => Some(plain_to_markdown(text)),
             _ => None,
         })
@@ -383,7 +385,8 @@ fn body(message: &mail_parser::Message<'_>) -> String {
 
 /// Plain text as Markdown that reads back as the same text: quotes (`>`) and lists stay what
 /// they are, but a line does not become a heading, a rule or a marker of a section, `[[` does
-/// not become a link and `<tag>` is not HTML.
+/// not become a link, `![` does not become an image (which a viewer would load) and `<tag>` is
+/// not HTML.
 pub(crate) fn plain_to_markdown(text: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     for line in text.replace("\r\n", "\n").replace('\r', "\n").lines() {
@@ -406,8 +409,8 @@ pub(crate) fn plain_to_markdown(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-/// Escapes `[[`, `]]` and `<` that does not open an autolink (`<ada@example.com>`,
-/// `<https://example.com>`).
+/// Escapes `[[`, `]]`, the `[` of `![` and `<` that does not open an autolink
+/// (`<ada@example.com>`, `<https://example.com>`).
 fn escape_inline(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let chars: Vec<char> = line.chars().collect();
@@ -415,6 +418,11 @@ fn escape_inline(line: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         match c {
+            '!' if chars.get(i + 1) == Some(&'[') => {
+                out.push_str("!\\[");
+                i += 2;
+                continue;
+            }
             '[' | ']' if chars.get(i + 1) == Some(&c) => {
                 out.push('\\');
                 out.push(c);

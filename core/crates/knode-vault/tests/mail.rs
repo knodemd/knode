@@ -968,3 +968,48 @@ fn a_message_with_a_hundred_thousand_references_imports_fast() {
     // Quadratic, this took minutes; linear, well under a second in a release build.
     assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
 }
+
+#[test]
+fn remote_images_in_mail_never_load_by_themselves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write_mbox(
+        tmp.path(),
+        "pixel.mbox",
+        &[
+            message(
+                &[
+                    ("Message-ID", "<deals@shop.example>"),
+                    ("From", "Shop <news@shop.example>"),
+                    ("To", "ada@example.com"),
+                    ("Subject", "Weekly deals"),
+                    ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+                    ("Content-Type", "text/html"),
+                ],
+                "<p>Deals this week</p><img src=\"https://tracker.shop.example/open.gif?u=42&amp;t=abc\" \
+                 width=\"1\" height=\"1\"><p><img src=\"https://cdn.shop.example/sale.png\" alt=\"Sale\"></p>",
+            ),
+            message(
+                &[
+                    ("Message-ID", "<plain@shop.example>"),
+                    ("From", "Shop <news@shop.example>"),
+                    ("To", "ada@example.com"),
+                    ("Subject", "Plain deals"),
+                    ("Date", "Tue, 03 Mar 2026 10:00:00 +0100"),
+                ],
+                "Look: ![](https://tracker.shop.example/plain.gif?u=42)\n",
+            ),
+        ],
+    );
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let html = thread(&space, "Weekly deals").body;
+    assert!(!html.contains("tracker"), "the pixel is dropped: {html}");
+    assert!(
+        html.contains("[image: Sale](https://cdn.shop.example/sale.png)"),
+        "{html}"
+    );
+    assert!(!html.contains("!["), "{html}");
+    let plain = thread(&space, "Plain deals").body;
+    assert!(plain.contains("!\\[](https://tracker"), "{plain}");
+    assert!(!plain.contains("Look: ![]"), "{plain}");
+}
