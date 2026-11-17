@@ -33,7 +33,8 @@ pub struct FolderInfo {
     /// Whether the folder is missing on this machine. A missing folder is kept and skipped.
     pub missing: bool,
     /// For a project folder, the `project` node of the same name it holds the files of
-    /// (section 15.2): `created` when adding the folder made it. `None` for other folders, and
+    /// (section 15.2; see [`Space::add_folder`]): `created` when adding the folder made it, `again`
+    /// when the folder was already there and kept it. `None` for other folders, and
     /// for a project folder added before Knode made these, until it is added again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<FolderProject>,
@@ -56,6 +57,7 @@ impl FolderInfo {
         let project = space.folder_project(&folder)?.map(|node| FolderProject {
             node,
             created: false,
+            again: false,
         });
         Ok(FolderInfo::of(folder, project))
     }

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::access::write_folder;
+use rusqlite::{Transaction, TransactionBehavior};
+
+use crate::access::{FolderWrite, write_folder};
 use crate::space::{SUMMARY_COLUMNS, SUMMARY_PATH, summary, write_new_node};
 use crate::{
     Error, Folder, FolderSpec, NewNode, NodeId, NodeSummary, Properties, Provenance, Result, Space,
@@ -19,6 +21,14 @@ fn project_node(title: &str) -> NewNode {
         title: title.into(),
         ..Default::default()
     }
+}
+
+/// What [`Space::add_folder`] does with the project of a project folder.
+enum Choice {
+    /// The folder holds the files of this project, which the space has.
+    Found(NodeSummary),
+    /// A new project, named after the folder and, when `placed`, where it is.
+    Create { placed: bool },
 }
 
 /// A project of the space, with where it sits and how much is in it.
@@ -35,7 +45,7 @@ pub struct Project {
     pub projects: u64,
 }
 
-/// The `project` node a project folder holds the files of (format section 15.2): the one of the
+/// same name as the folder, or named after where it is too (see [`Space::add_folder`]).
 /// same name as the folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderProject {
@@ -45,6 +55,10 @@ pub struct FolderProject {
     /// name, which the folder now holds the files of.
     #[serde(default)]
     pub created: bool,
+    /// Whether the space already had the folder, and the folder already held the files of this
+    /// project: adding it again changed nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub again: bool,
 }
 
 /// A folder added with [`Space::add_folder`], and the project node it holds the files of.
@@ -68,7 +82,24 @@ pub fn folder_project_name(path: &str) -> Option<String> {
     if last.is_empty() || last == "~" || last == "." || last == ".." || drive {
         return None;
     }
-    let title: String = last
+    title_text(last)
+}
+
+/// The title of the project of a project folder whose [name](folder_project_name) another
+/// project folder of the space already uses: the name followed by the folder it is in, as
+/// recorded, such as `api (~/work/b)` for `~/work/b/api`. Paths are unique, so no two folders
+/// share it. `None` when the folder has no name of its own or is not in a folder.
+fn folder_project_full_name(path: &str) -> Option<String> {
+    let name = folder_project_name(path)?;
+    let (parent, _) = path.trim().trim_end_matches('/').rsplit_once('/')?;
+    let parent = if parent.is_empty() { "/" } else { parent };
+    title_text(&format!("{name} ({parent})"))
+}
+
+/// Text as a title can hold it: in Unicode NFC, with `[` and `]` written `(` and `)`, `|`
+/// written `-` and runs of spaces as one. `None` when nothing is left.
+fn title_text(text: &str) -> Option<String> {
+    let title: String = text
         .nfc()
         .map(|c| match c {
             '[' => '(',
@@ -90,12 +121,13 @@ fn project_key(name: &str) -> String {
 impl Space {
     /// The `project` node with this name, compared without regard to case, extra spaces or
     /// Unicode normalization, or `None`. With several (such as one made on each of two devices
-    /// before they synced), always the oldest.
+    /// before they synced), always the oldest: the first created, then the smallest id, so every
+    /// device finds the same one.
     pub fn project_named(&self, name: &str) -> Result<Option<NodeSummary>> {
         let key = project_key(name);
         Ok(self
             .query_summaries(
-                "WHERE n.kind = ?1 ORDER BY n.seq",
+                "WHERE n.kind = ?1 ORDER BY n.created_at, n.id",
                 rusqlite::params![kinds::PROJECT],
             )?
             .into_iter()
@@ -112,18 +144,25 @@ impl Space {
             return Ok(FolderProject {
                 node,
                 created: false,
+                again: false,
             });
         }
         let node = self.create_node(project_node(&name), by)?;
         self.created_project(&node.id)
     }
 
-    /// The `project` node a folder holds the files of: the one named after a project folder, if
-    /// the space has it. `None` for other kinds of folder. Reads only; see
-    /// [`add_folder`](Space::add_folder).
+    /// The `project` node a folder holds the files of, if the space has it: for a project folder,
+    /// the project named after the folder and where it is (such as `api (~/work/b)`, made when
+    /// another folder already used the name `api`), else the one named after the folder alone.
+    /// `None` for other kinds of folder. Reads only; see [`add_folder`](Space::add_folder).
     pub fn folder_project(&self, folder: &Folder) -> Result<Option<NodeSummary>> {
         if folder.kind != folder_kinds::PROJECT {
             return Ok(None);
+        }
+        if let Some(full) = folder_project_full_name(&folder.path)
+            && let Some(node) = self.project_named(&full)?
+        {
+            return Ok(Some(node));
         }
         match folder_project_name(&folder.path) {
             Some(name) => self.project_named(&name),
@@ -137,40 +176,98 @@ impl Space {
     /// neither. Adding the same folder again changes nothing and finds the same node. Every
     /// client adds folders through this, so a folder and its project match. Removing the folder
     /// later keeps the node and everything part of it.
+    ///
+    /// When an older project folder in another place already holds the files of the project of
+    /// that name (two repositories called `api`), the new folder gets its own project, named
+    /// after the folder and where it is, such as `api (~/work/b)`, instead of mixing the notes
+    /// of both. [`folder_project`](Space::folder_project) finds it again from the path alone.
     pub fn add_folder(&mut self, spec: &FolderSpec, by: &Provenance) -> Result<AddedFolder> {
         let write = self.prepare_folder(spec, by)?;
         let name = folder_project_name(&write.path).filter(|_| write.kind == folder_kinds::PROJECT);
-        let found = match &name {
-            Some(name) => self.project_named(name)?,
-            None => None,
+        let full = name
+            .as_ref()
+            .and_then(|_| folder_project_full_name(&write.path));
+        // Made ready before the transaction, which needs the space only to read; at most one is
+        // written.
+        let mut prepare = |title: &Option<String>| match title {
+            Some(title) => self
+                .prepare_node(project_node(title), &Properties::new())
+                .map(Some),
+            None => Ok(None),
         };
-        let new_node = match (&name, &found) {
-            (Some(name), None) => Some(self.prepare_node(project_node(name), &Properties::new())?),
-            _ => None,
-        };
+        let (named, placed) = (prepare(&name)?, prepare(&full)?);
         let now = Timestamp::now();
-        let tx = self.conn.transaction()?;
-        write_folder(&tx, &write, by, now)?;
-        let created = match new_node {
-            Some((id, content)) => {
-                write_new_node(&tx, &id, content, &Properties::new(), by, now)?;
-                Some(id)
-            }
+        // Immediate, with the lookup inside: two writers on one package cannot both find no
+        // project and both create one.
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let choice = match &name {
+            Some(name) => Some(self.choose_folder_project(&write, name, full.as_deref())?),
             None => None,
         };
+        write_folder(&tx, &write, by, now)?;
+        let mut created = None;
+        if let Some(Choice::Create { placed: in_place }) = &choice {
+            let new = if *in_place { placed } else { named };
+            let (id, content) =
+                new.ok_or_else(|| Error::Invalid("the project has no name".into()))?;
+            write_new_node(&tx, &id, content, &Properties::new(), by, now)?;
+            created = Some(id);
+        }
         tx.commit()?;
         let folder = self
             .folder(&write.id)?
             .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))?;
-        let project = match (created, found) {
+        let project = match (created, choice) {
             (Some(id), _) => Some(self.created_project(&id)?),
-            (None, Some(node)) => Some(FolderProject {
+            (None, Some(Choice::Found(node))) => Some(FolderProject {
                 node,
                 created: false,
+                again: write.exists,
             }),
-            (None, None) => None,
+            (None, _) => None,
         };
         Ok(AddedFolder { folder, project })
+    }
+
+    /// Which project a project folder named `name` holds the files of, as it is being added (see
+    /// [`add_folder`](Space::add_folder)): its own, named `full`, if the space has it; else the
+    /// one named `name`, unless an older project folder in another place holds its files; else a
+    /// new one, named `name` when the space has no project of that name and `full` when it does.
+    fn choose_folder_project(
+        &self,
+        write: &FolderWrite,
+        name: &str,
+        full: Option<&str>,
+    ) -> Result<Choice> {
+        if let Some(full) = full
+            && let Some(node) = self.project_named(full)?
+        {
+            return Ok(Choice::Found(node));
+        }
+        let Some(node) = self.project_named(name)? else {
+            return Ok(Choice::Create { placed: false });
+        };
+        if full.is_none() {
+            return Ok(Choice::Found(node));
+        }
+        let key = project_key(name);
+        // Oldest first: only folders added before this one count, so adding an older folder
+        // again keeps the project it always had.
+        for other in self.folders()? {
+            if other.id == write.id {
+                break;
+            }
+            let same_name = other.kind == folder_kinds::PROJECT
+                && folder_project_name(&other.path).is_some_and(|n| project_key(&n) == key);
+            if same_name
+                && self
+                    .folder_project(&other)?
+                    .is_some_and(|held| held.id == node.id)
+            {
+                return Ok(Choice::Create { placed: true });
+            }
+        }
+        Ok(Choice::Found(node))
     }
 
     fn created_project(&self, id: &NodeId) -> Result<FolderProject> {
@@ -181,6 +278,7 @@ impl Space {
         Ok(FolderProject {
             node,
             created: true,
+            again: false,
         })
     }
 
@@ -236,7 +334,10 @@ impl Space {
 #[cfg(test)]
 mod tests {
     use super::folder_project_name;
-    use crate::{FolderSpec, NewNode, Provenance, Space, folder_kinds, kinds, link_kinds};
+    use crate::{
+        Folder, FolderSpec, ImportedNode, NewNode, NodeId, Properties, Provenance, Space,
+        Timestamp, folder_kinds, kinds, link_kinds,
+    };
 
     fn folder(kind: &str, path: &str) -> FolderSpec {
         FolderSpec {
@@ -311,8 +412,11 @@ mod tests {
                 &by,
             )
             .unwrap();
-        assert_eq!(other.project.unwrap().node.id, nfd);
-        assert_eq!(space.projects().unwrap().len(), 1);
+        // Another folder of that name, elsewhere, gets its own project, named in NFC too.
+        let other = other.project.unwrap();
+        assert_ne!(other.node.id, nfd);
+        assert_eq!(other.node.title, "CAF\u{c9} (/Volumes/X)");
+        assert_eq!(space.projects().unwrap().len(), 2);
         assert_eq!(
             space
                 .find_or_create_project("caf\u{e9}", &by)
@@ -339,23 +443,31 @@ mod tests {
             (kinds::PROJECT, "knode")
         );
 
-        // The same folder again, or another folder of the same name in another case, finds it.
+        // The same folder again finds it.
         let again = space
             .add_folder(&folder(folder_kinds::PROJECT, "~/Developer/knode"), &by)
             .unwrap();
         assert_eq!(again.folder.id, added.folder.id);
         let again = again.project.unwrap();
-        assert!(!again.created);
+        assert!(!again.created && again.again);
         assert_eq!(again.node.id, project.node.id);
+        assert_eq!(space.projects().unwrap().len(), 1);
+        assert_eq!(
+            space.folder_project(&added.folder).unwrap().map(|n| n.id),
+            Some(project.node.id)
+        );
+        // Another folder of the same name in another case and place gets its own.
         let other = space
             .add_folder(&folder(folder_kinds::PROJECT, "/Volumes/Backup/KNODE"), &by)
             .unwrap();
         assert_ne!(other.folder.id, added.folder.id);
-        assert_eq!(other.project.unwrap().node.id, project.node.id);
-        assert_eq!(space.projects().unwrap().len(), 1);
+        let own = other.project.unwrap();
+        assert!(own.created);
+        assert_eq!(own.node.title, "KNODE (/Volumes/Backup)");
+        assert_eq!(space.projects().unwrap().len(), 2);
         assert_eq!(
             space.folder_project(&other.folder).unwrap().map(|n| n.id),
-            Some(project.node.id)
+            Some(own.node.id)
         );
 
         // Notes and agent folders, and folders with no name, have no project.
@@ -368,7 +480,7 @@ mod tests {
             .add_folder(&folder(folder_kinds::PROJECT, "~"), &by)
             .unwrap();
         assert_eq!(home.project, None);
-        assert_eq!(space.projects().unwrap().len(), 1);
+        assert_eq!(space.projects().unwrap().len(), 2);
 
         // Only a person adds folders, so nothing is written for anyone else: no folder, no node.
         let agent = Provenance::agent("claude-code");
@@ -487,5 +599,161 @@ mod tests {
         assert_eq!(notes, ["Status", "Plan"]);
         assert_eq!(space.project_notes(&app, 1).unwrap().len(), 1);
         assert!(space.project_notes(&org, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_named_returns_the_oldest_by_creation() {
+        // A project made on another device before this one's, imported by sync after it: the
+        // oldest by creation wins on every device, not the first row written here.
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("T.knode"), "T").unwrap();
+        let by = Provenance::person("Ada");
+        let local = space.find_or_create_project("api", &by).unwrap().node.id;
+        let remote = NodeId::parse("01JB7Q9W8K3M2N4P5R6S7T8V9X").unwrap();
+        let old = Timestamp(1_600_000_000_000);
+        let imported = |id: NodeId| ImportedNode {
+            id,
+            node: NewNode {
+                kind: kinds::PROJECT.into(),
+                title: "API".into(),
+                ..Default::default()
+            },
+            created_at: old,
+            updated_at: old,
+            created_by: Provenance::person("Grace"),
+            updated_by: Provenance::person("Grace"),
+        };
+        space
+            .import_node(imported(remote), &Properties::new(), &by)
+            .unwrap();
+        assert_ne!(local, remote);
+        assert_eq!(space.project_named("api").unwrap().unwrap().id, remote);
+        // Made at the same time: the smaller id wins, wherever it was written first.
+        let twin = NodeId::parse("01JB7Q9W8K3M2N4P5R6S7T8V9W").unwrap();
+        space
+            .import_node(imported(twin), &Properties::new(), &by)
+            .unwrap();
+        assert_eq!(space.project_named("api").unwrap().unwrap().id, twin);
+    }
+
+    #[test]
+    fn folders_with_the_same_name_in_different_places_get_their_own_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        let add = |space: &mut Space, path: &str| {
+            let added = space
+                .add_folder(&folder(folder_kinds::PROJECT, path), &by)
+                .unwrap();
+            (added.folder, added.project.unwrap())
+        };
+
+        let (a, api) = add(&mut space, "~/w/a/api");
+        assert!(api.created && !api.again);
+        assert_eq!(api.node.title, "api");
+        // Another repository with the same name is another project, named after where it is.
+        let (b, other) = add(&mut space, "~/w/b/api");
+        assert!(other.created && !other.again);
+        assert_ne!(other.node.id, api.node.id);
+        assert_eq!(other.node.title, "api (~/w/b)");
+        let (c, third) = add(&mut space, "/Volumes/Backup [old]/API");
+        assert!(third.created);
+        assert_eq!(third.node.title, "API (/Volumes/Backup (old))");
+        assert_eq!(space.projects().unwrap().len(), 3);
+
+        // Each folder keeps its own project, read back or added again.
+        for (folder, project) in [(&a, &api), (&b, &other), (&c, &third)] {
+            let read = space.folder_project(folder).unwrap().unwrap();
+            assert_eq!(read.id, project.node.id, "{}", folder.path);
+            let (_, again) = add(&mut space, &folder.path);
+            assert!(!again.created && again.again, "{}", folder.path);
+            assert_eq!(again.node.id, project.node.id, "{}", folder.path);
+        }
+        assert_eq!(space.projects().unwrap().len(), 3);
+
+        // Removing the first folder and adding it again finds its project, not another.
+        assert!(space.remove_folder(&a.id, &by).unwrap());
+        let (_, back) = add(&mut space, "~/w/a/api");
+        assert!(!back.created && !back.again);
+        assert_eq!(back.node.id, api.node.id);
+        assert_eq!(space.projects().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn folders_that_shared_a_project_keep_it_for_the_oldest() {
+        // Two folders of one name that shared a project before each got its own: adding the
+        // older again keeps the project; adding the newer again gives it its own.
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        let older = space
+            .set_folder(&folder(folder_kinds::PROJECT, "~/w/a/api"), &by)
+            .unwrap();
+        let newer = space
+            .set_folder(&folder(folder_kinds::PROJECT, "~/w/b/api"), &by)
+            .unwrap();
+        let shared = space.find_or_create_project("api", &by).unwrap().node.id;
+        for folder in [&older, &newer] {
+            assert_eq!(space.folder_project(folder).unwrap().unwrap().id, shared);
+        }
+        let again = |space: &mut Space, folder: &Folder| {
+            let spec = FolderSpec {
+                id: None,
+                kind: folder.kind.clone(),
+                path: folder.path.clone(),
+                capture: true,
+                rules: serde_json::json!({}),
+            };
+            space.add_folder(&spec, &by).unwrap().project.unwrap()
+        };
+        let kept = again(&mut space, &older);
+        assert!(kept.again && !kept.created);
+        assert_eq!(kept.node.id, shared);
+        let own = again(&mut space, &newer);
+        assert!(own.created);
+        assert_eq!(own.node.title, "api (~/w/b)");
+        assert_eq!(
+            space.folder_project(&newer).unwrap().unwrap().id,
+            own.node.id
+        );
+        assert_eq!(space.folder_project(&older).unwrap().unwrap().id, shared);
+    }
+
+    #[test]
+    fn concurrent_writers_create_one_project_of_a_name() {
+        // Writers on one package (the CLI without the service while the service runs) add
+        // folders of the same new name at once: one project of that name, not several.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("S.knode");
+        drop(Space::create(&path, "S").unwrap());
+        const WRITERS: usize = 4;
+        for round in 0..20 {
+            let name = format!("app{round}");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+            let handles: Vec<_> = (0..WRITERS)
+                .map(|writer| {
+                    let (path, name, barrier) = (path.clone(), name.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        let mut space = Space::open(&path).unwrap();
+                        let spec = folder(folder_kinds::PROJECT, &format!("~/w{writer}/{name}"));
+                        barrier.wait();
+                        space
+                            .add_folder(&spec, &Provenance::person("Tester"))
+                            .unwrap();
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let space = Space::open(&path).unwrap();
+            let named = space
+                .projects()
+                .unwrap()
+                .into_iter()
+                .filter(|p| p.node.title == name)
+                .count();
+            assert_eq!(named, 1, "{name}");
+        }
     }
 }

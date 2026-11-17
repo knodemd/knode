@@ -104,6 +104,13 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Project folders with the same name** no longer share one project: when another folder already
+  holds the files of the project `api`, adding `~/work/b/api` adds the project `api (~/work/b)`,
+  so the notes of two repositories are not mixed. Adding a folder again says it holds the files
+  of its project "as before", instead of "which the space already had". With several projects of
+  one name, such as one made on each of two devices, every device now uses the same one (the
+  first created), and two programs adding folders at once no longer create two projects of one
+  name.
 - **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
   skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
   the command line.

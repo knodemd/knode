@@ -402,13 +402,22 @@ pub fn folders(space: &Path, action: FoldersAction) -> Result<()> {
             println!("{} is fed by:", name_of(space));
             print_folder(&info);
             if let Some(project) = &info.project {
-                if project.created {
-                    println!("Added the project {}.", project.node.title);
-                } else {
-                    println!(
-                        "It holds the files of the project {}, which the space already had.",
-                        project.node.title
-                    );
+                let title = &project.node.title;
+                // A project named after where the folder is, too: another folder of the same
+                // name holds the files of the project of that name.
+                let named = knode_format::folder_project_name(&info.folder.path)
+                    .filter(|name| name != title);
+                match (project.created, project.again, named) {
+                    (true, _, Some(name)) => println!(
+                        "Added the project {title}: the project {name} holds the files of another folder."
+                    ),
+                    (true, _, None) => println!("Added the project {title}."),
+                    (false, true, _) => {
+                        println!("It holds the files of the project {title}, as before.")
+                    }
+                    (false, false, _) => println!(
+                        "It holds the files of the project {title}, which the space already had."
+                    ),
                 }
             }
             if info.missing {

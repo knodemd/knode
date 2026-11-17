@@ -73,6 +73,49 @@ fn spaces_are_renamed_given_icons_and_made_the_default() {
 }
 
 #[test]
+fn project_folders_with_the_same_name_get_their_own_projects() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let a = sb.home().join("w/a/api");
+    let b = sb.home().join("w/b/api");
+    fs::create_dir_all(&a).unwrap();
+    fs::create_dir_all(&b).unwrap();
+
+    let out = sb.ok(&["folders", "add", a.to_str().unwrap()]);
+    assert!(out.contains("Added the project api."), "{out}");
+    // Another repository called api is not mixed into the first one's project.
+    let out = sb.ok(&["folders", "add", b.to_str().unwrap()]);
+    assert!(out.contains("(capture on, project api (~/w/b))"), "{out}");
+    assert!(
+        out.contains(
+            "Added the project api (~/w/b): the project api holds the files of another folder."
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("already had"), "{out}");
+    // Each folder again keeps its own project, and says so.
+    let out = sb.ok(&["folders", "add", a.to_str().unwrap()]);
+    assert!(
+        out.contains("It holds the files of the project api, as before."),
+        "{out}"
+    );
+    let out = sb.ok(&["folders", "add", b.to_str().unwrap()]);
+    assert!(
+        out.contains("It holds the files of the project api (~/w/b), as before."),
+        "{out}"
+    );
+    let out = sb.ok(&["folders", "list"]);
+    assert!(
+        out.contains("~/w/a/api  (capture on, project api)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("~/w/b/api  (capture on, project api (~/w/b))"),
+        "{out}"
+    );
+}
+
+#[test]
 fn folders_are_added_listed_and_removed() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
@@ -98,7 +141,11 @@ fn folders_are_added_listed_and_removed() {
     assert!(out.contains("Added the project site."), "{out}");
     // The same folder again keeps its project: no second one.
     let out = sb.ok(&["folders", "add", project.to_str().unwrap()]);
-    assert!(out.contains("which the space already had"), "{out}");
+    assert!(
+        out.contains("It holds the files of the project site, as before."),
+        "{out}"
+    );
+    assert!(!out.contains("already had"), "{out}");
     // Capture off for a project of another space, named by its name.
     let secret = sb.home().join("Developer/secret");
     let out = sb.ok(&[

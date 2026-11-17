@@ -18,7 +18,7 @@ use crate::{
 /// A folder checked by [`Space::prepare_folder`], ready to write.
 pub(crate) struct FolderWrite {
     pub(crate) id: String,
-    exists: bool,
+    pub(crate) exists: bool,
     pub(crate) kind: String,
     pub(crate) path: String,
     capture: &'static str,
