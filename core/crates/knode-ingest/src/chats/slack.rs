@@ -191,8 +191,11 @@ struct Workspace {
 }
 
 impl Workspace {
-    /// What a member is called: the display name chosen in the profile, else the real name,
-    /// else the handle.
+    /// What a member is called: the real name in the profile, else the one on the account,
+    /// else the display name, else the handle. The real name comes first because it is the
+    /// full name a person node is about, the same in every workspace, while a display name is
+    /// often a nickname that is changed more often. A member's node, once written, is found by
+    /// its id and keeps its title.
     fn name(&self, id: &str) -> Option<String> {
         let user = self.users.get(id)?;
         let profile = user.profile.as_ref();
@@ -895,6 +898,31 @@ mod tests {
             emphasis(&near),
             format!("**{}**", "a".repeat(MAX_EMPHASIS - 2))
         );
+    }
+
+    #[test]
+    fn names_members_by_their_real_name_first() {
+        let user = |id: &str, real: Option<&str>, display: Option<&str>| User {
+            id: id.into(),
+            team_id: None,
+            name: format!("handle{id}"),
+            real_name: None,
+            profile: Some(Profile {
+                real_name: real.map(str::to_string),
+                display_name: display.map(str::to_string),
+            }),
+        };
+        let mut w = workspace();
+        for u in [
+            user("U1", Some("Ada Lovelace"), Some("ada")),
+            user("U2", None, Some("grace")),
+            user("U3", Some(""), Some("")),
+        ] {
+            w.users.insert(u.id.clone(), u);
+        }
+        assert_eq!(w.name("U1").as_deref(), Some("Ada Lovelace"));
+        assert_eq!(w.name("U2").as_deref(), Some("grace"));
+        assert_eq!(w.name("U3").as_deref(), Some("handleU3"));
     }
 
     #[test]
