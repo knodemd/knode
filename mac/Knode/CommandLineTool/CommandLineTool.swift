@@ -140,3 +140,55 @@ public struct CommandLineTool: Sendable {
             || path.hasPrefix("/home/linuxbrew/")
     }
 }
+
+extension CommandLineTool {
+    /// Where the stale `knode` link at `link` points, for telling the person which copy it runs.
+    public func staleLinkDestination(_ link: URL) -> URL? {
+        fileSystem.destinationOfSymbolicLink(at: link)
+    }
+
+    /// The Knode app a `knode` inside it belongs to: `/Applications/Knode.app` for
+    /// `/Applications/Knode.app/Contents/Helpers/knode`.
+    static func app(containing binary: URL) -> URL? {
+        guard isInsideKnodeApp(binary) else { return nil }
+        let app = binary.standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var path = app.path(percentEncoded: false)
+        if path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        return URL(filePath: path, directoryHint: .notDirectory)
+    }
+}
+
+/// Whether Knode runs from a place it should not stay in, such as its disk image, the Downloads
+/// folder or a build folder. From there the app disappears when the image is ejected or the folder
+/// is cleaned, and the `knode` command agents run would point at a copy that is gone.
+public enum ApplicationLocation: Equatable, Sendable {
+    /// In `/Applications` or `~/Applications`.
+    case installed
+    /// On a mounted disk image or another read-only volume.
+    case diskImage
+    /// Moved aside by macOS (App Translocation) because it was opened where it was downloaded.
+    case translocated
+    /// Anywhere else, such as Downloads or a build folder.
+    case elsewhere
+
+    public init(bundle: URL, home: URL) {
+        let path = bundle.standardizedFileURL.path(percentEncoded: false)
+        let folders = ["/Applications/", home.standardizedFileURL.appending(path: "Applications").path(percentEncoded: false) + "/"]
+        if folders.contains(where: { path.hasPrefix($0) }) {
+            self = .installed
+        } else if path.contains("/AppTranslocation/") {
+            self = .translocated
+        } else if path.hasPrefix("/Volumes/") {
+            self = .diskImage
+        } else {
+            self = .elsewhere
+        }
+    }
+
+    /// Whether to offer moving the app to `/Applications`.
+    public var shouldOfferMove: Bool { self != .installed }
+
+    /// Whether the copy it runs from can be removed once moved: never a disk image or the
+    /// translocated copy macOS made.
+    public var removesOriginal: Bool { self == .elsewhere }
+}
