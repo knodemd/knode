@@ -469,7 +469,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | --- | --- | --- |
 | `sources.list` | `space` | Every source of the space, connectors then importers, as below |
 | `sources.status` | `space`?, `source`? | `[{ "space", "name", "sources": [...] }]`: the connectors connected to the space, or with no `space` to every space the service knows that has one |
-| `sources.connect` | `space`, `source`, `history`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. The history is chosen once: asking for another one for a connected source fails with `invalid` |
+| `sources.connect` | `space`, `source`, `history`?, `on`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. With `on` `false` it is connected paused: its history and the day it was connected are fixed and `sources.containers` and `sources.exclude` work, but nothing is read until `sources.resume`, so what to leave out can be chosen first (connecting paused a source already connected pauses it). The history is chosen once: asking for another one for a connected source fails with `invalid` |
 | `sources.pause` / `sources.resume` | `space`, `source`, `by` | The source, off or on again |
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
@@ -509,7 +509,10 @@ written, and the importers find what they wrote by the service's own ids, so a r
 state file or a second device running the same connector writes nothing twice.
 
 A connector runs when the files it watches change (a local database and its `-wal`), at its
-interval, and when `sources.run` asks. Connectors that read another app's database read a copy
+interval, and when `sources.run` asks. A file event runs it only when the size or modification
+time of the files or their `-wal` changed since its last run, so its own reads of them (which
+macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
+open late, so a connector that watches files also runs at least once a minute. Connectors that read another app's database read a copy
 of it, never the live file, and check its tables and columns first. Their writes are made with
 the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
 in the system credential store (the Keychain on macOS), never in a space, a settings file or a

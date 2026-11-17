@@ -39,9 +39,9 @@ use std::time::Duration;
 
 use knode_format::{Provenance, Space, Timestamp};
 pub use knode_ingest::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, NoSecrets, Permission,
-    Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind, Trigger, Written,
-    is_source_id, provenance, start_of_today,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, FileStamp, History, NoSecrets,
+    Permission, Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind, Trigger,
+    Written, is_source_id, provenance, sqlite, start_of_today,
 };
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,10 @@ pub struct SourcesOptions {
     pub max_backoff: Duration,
     /// How long files a connector watches must be quiet before it runs.
     pub quiet: Duration,
+    /// The longest time between two runs of a connector that watches files, whatever its own
+    /// `every` says: macOS reports writes to a file another app keeps open late, so the
+    /// events alone do not bring things in quickly. A minute by default.
+    pub watch_every: Duration,
     /// The most items a connector is asked for in one batch.
     pub max_items: usize,
     /// The most batches in one run, so one connector never keeps the others waiting long.
@@ -92,6 +96,7 @@ impl Default for SourcesOptions {
             backoff: Duration::from_secs(30),
             max_backoff: Duration::from_secs(3600),
             quiet: Duration::from_secs(2),
+            watch_every: Duration::from_secs(60),
             max_items: 500,
             max_batches: 20,
         }
@@ -120,6 +125,7 @@ impl std::fmt::Debug for SourcesOptions {
             .field("backoff", &self.backoff)
             .field("max_backoff", &self.max_backoff)
             .field("quiet", &self.quiet)
+            .field("watch_every", &self.watch_every)
             .field("max_items", &self.max_items)
             .field("max_batches", &self.max_batches)
             .finish()
@@ -133,6 +139,7 @@ impl PartialEq for SourcesOptions {
             && self.backoff == other.backoff
             && self.max_backoff == other.max_backoff
             && self.quiet == other.quiet
+            && self.watch_every == other.watch_every
             && self.max_items == other.max_items
             && self.max_batches == other.max_batches
     }
@@ -354,6 +361,9 @@ pub(crate) struct SourceParams {
     /// The history, for `sources.connect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
+    /// Whether `sources.connect` turns the source on (the default) or connects it paused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<bool>,
     /// The id of a chat, channel or folder, for `sources.exclude` and `sources.include`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -788,6 +798,21 @@ pub fn connect(
     history: Option<History>,
     by: &Provenance,
 ) -> knode_format::Result<SourceSetting> {
+    connect_with(space, known, id, history, true, by)
+}
+
+/// As [`connect`], but on only when `on` is true. With `on` false the source is connected
+/// paused: its history and the day it was connected are fixed and its containers can be
+/// listed, so the person can exclude some before anything is read, and nothing runs until it
+/// is resumed ([`set_on`]). Connecting paused one that is already connected pauses it.
+pub fn connect_with(
+    space: &mut Space,
+    known: &[String],
+    id: &str,
+    history: Option<History>,
+    on: bool,
+    by: &Provenance,
+) -> knode_format::Result<SourceSetting> {
     person(by)?;
     changeable(known, id)?;
     if let Some(mut setting) = source_setting(space, id)? {
@@ -799,12 +824,12 @@ pub fn connect(
                 history.id()
             )));
         }
-        setting.on = true;
+        setting.on = on;
         write_setting(space, id, Some(&setting), by)?;
         return Ok(setting);
     }
     let setting = SourceSetting {
-        on: true,
+        on,
         history: history.unwrap_or_default(),
         connected_at: Timestamp::now(),
         since: start_of_today(),
@@ -944,6 +969,11 @@ mod tests {
         let again = connect(&mut space, &known, "fake", None, &me).unwrap();
         assert!(again.on);
         assert_eq!(again.history, History::Everything);
+        let paused = connect_with(&mut space, &known, "fake", None, false, &me).unwrap();
+        assert!(!paused.on);
+        assert_eq!(paused.exclude, again.exclude);
+        assert_eq!(paused.connected_at, again.connected_at);
+        assert!(connect(&mut space, &known, "fake", None, &me).unwrap().on);
         assert!(include(&mut space, "fake", "c2", &me).is_err());
         assert!(
             include(&mut space, "fake", "c1", &me)
@@ -954,5 +984,9 @@ mod tests {
         assert!(disconnect(&mut space, "fake", &me).unwrap());
         assert!(!disconnect(&mut space, "fake", &me).unwrap());
         assert!(source_settings(&space).unwrap().is_empty());
+        let paused = connect_with(&mut space, &known, "fake", None, false, &me).unwrap();
+        assert!(!paused.on);
+        assert_eq!(paused.history, History::FromToday);
+        assert!(connect_with(&mut space, &known, "pdf", None, false, &me).is_err());
     }
 }
