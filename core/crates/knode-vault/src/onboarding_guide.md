@@ -102,8 +102,9 @@ leave a link at the old place until nothing uses it.
    set up yet, or `knode spaces` shows a default space that holds no notes of the person, that
    space is `<Name>` below; do not create another one. Only when there is no space at all, create
    one and make it the default: `knode init "<Name>"` and `knode spaces default "<Name>"`. A new
-   space captures the conversations of every agent from the start: unless the person chose
-   capture in step 3, turn it off right away with `knode spaces capture "<Name>" off`.
+   space captures nothing until it is set up, so set capture now, before anything else, as the
+   person chose in step 3: `knode spaces capture "<Name>" on` keeps their agents' conversations
+   from now on (earlier ones stay out), `off` keeps none.
 2. Ask which projects they work on now, and where. For each: register its folder
    (`knode --space "<Name>" folders add <folder> --kind project`); if that does not report a
    project node, create one by importing a folder holding a note named after the project whose
@@ -116,7 +117,6 @@ leave a link at the old place until nothing uses it.
    `knode --space "<Name>" import --from claude-code-memory` when `knode import --help` lists it:
    it links each memory to its project. Otherwise, and for other agents, import a folder that
    holds those files, `knode --space "<Name>" import <folder>`, and link each note to its project.
-4. Capture, as the person chose in step 3: `knode spaces capture "<Name>" on|off`.
 
 Then continue with steps 6 to 8.
 
@@ -229,8 +229,9 @@ knode onboard inspect --target "$HOME/Knode/<Name>.knode"
 ```
 
 Leave out `--sessions` if the person said no. Existing spaces are never overwritten. Both leave
-capture off: if the person chose it in step 3, `knode spaces capture "<space>" on`. If a new space
-is to be their main memory: `knode spaces default "$HOME/Knode/<Name>.knode"`. In the steps below,
+capture off: if the person chose it in step 3, `knode spaces capture "<space>" on`, which keeps
+conversations from now on, not earlier ones. If a new space is to be their main memory:
+`knode spaces default "$HOME/Knode/<Name>.knode"`. In the steps below,
 use the space you applied into wherever they say `$HOME/Knode/<Name>.knode`, and skip connecting
 again in step 6 the agents already connected to it.
 

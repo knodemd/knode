@@ -164,18 +164,13 @@ fn the_service_captures_sessions_into_the_default_space() {
     let found = sb.ok(&["search", "health", "check"]);
     assert!(!found.contains("Server health check"), "{found}");
 
-    // Turning capture on is the person's choice: it starts at once, earlier sessions included.
-    sb.ok(&["spaces", "capture", "work", "on"]);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let found = sb.ok(&["search", "health", "check"]);
-        if found.contains("Server health check") {
-            assert!(found.contains("conversation"), "{found}");
-            break;
-        }
-        assert!(Instant::now() < deadline, "nothing captured: {found}");
-        thread::sleep(Duration::from_millis(200));
-    }
+    // Turning capture on is the person's choice: "from now on", so the earlier session stays
+    // out (the service captures sessions started since; see knode-service's capture tests).
+    let out = sb.ok(&["spaces", "capture", "work", "on"]);
+    assert!(out.contains("from now on"), "{out}");
+    thread::sleep(Duration::from_secs(2));
+    let found = sb.ok(&["search", "health", "check"]);
+    assert!(!found.contains("Server health check"), "{found}");
     let status = sb.ok(&["service", "status"]);
     assert!(status.contains("Capture: on, into "), "{status}");
     assert!(sb.knode_home().join("capture/state.json").exists());

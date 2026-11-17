@@ -185,7 +185,8 @@ belongs to, newest first.
   no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
   it up, a folder is added or something is written into it. Capture stays on by default, and
   spaces it already writes to are not affected. `knode spaces capture <space> on` is now kept as
-  your choice instead of being stored as the default.
+  your choice instead of being stored as the default, and turning capture on for a space where
+  it was off or waiting keeps conversations from then on, not earlier ones.
 - **Long conversations no longer bury short notes in search**: agent conversations, imported chats
   and imported mail threads are long transcripts that match a query's words and meaning in passing,
   and could come before the short note that answers it. Hybrid search now counts a transcript half,

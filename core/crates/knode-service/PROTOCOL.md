@@ -130,7 +130,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `onboarding.apply_into` | `space`, `plan` (a reviewed `knode onboard analyze` plan), `by` | The onboarding receipt. Applies the plan into this space instead of a new one, only while `space.set_up` is `false`: the source is checked against the plan, the plan is rehearsed in a throwaway space, then its documents, a `project` node per project with the documents `part-of` it and `onboarding.json` are written into the space, and `capture.enabled` is set to `off`. What the space held stays. Fails with `invalid` when the space is set up, the source changed or a note of the source has the id of a node already in the space, and then writes nothing. People only. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
 | `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
-| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, both stored as the person's choice (`null` puts back the default, stored as no value). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
+| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, both stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
 | `folders.remove` | `space`, `id`, `by` | `true` if there was such a folder. Nothing captured or imported from it is removed. People only. |
@@ -442,10 +442,15 @@ A new space nobody has set up yet receives nothing, so a space that `knode init`
 just created, and that `knode connect` starts the service for, does not fill with every earlier
 agent conversation of the machine before the person was asked. Such a space has no
 `capture.enabled` value, no `onboarding.json` receipt, no folders and no nodes. Capture into it
-starts, earlier sessions included, as soon as the person turns capture on (`settings.set`
-`capture.enabled` `on`, `knode spaces capture <space> on`), onboarding sets it up, a folder is
-added, or anything is written into it. A space capture has already written to has nodes, so it
-never waits.
+starts as soon as the person turns capture on (`settings.set` `capture.enabled` `on`,
+`knode spaces capture <space> on`), onboarding sets it up, a folder is added, or anything is
+written into it. A space capture has already written to has nodes, so it never waits.
+
+When the person turns capture on for a space whose capture was off or waiting for setup, the
+service records the time in the setting `capture.since` (RFC 3339, UTC), and that space receives
+only conversations started at or after it: "from now on" does not bring every earlier one. When
+the wait ends any other way (onboarding, a folder, a note), earlier sessions are caught up as
+before.
 
 The service knows the spaces named in `$KNODE_HOME/config.toml` (`default_space` and `spaces`,
 which `knode init` and the app keep) and every space it has open. It reads the file and the

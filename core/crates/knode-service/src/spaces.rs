@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use knode_format::{
     ActorKind, Folder, FolderProject, FolderSpec, Provenance, Space, folder_kinds, setting_keys,
 };
@@ -176,6 +177,22 @@ pub fn capture_enabled(space: &Space) -> knode_format::Result<bool> {
 /// The receipt onboarding leaves in a space it set up (`knode_vault::onboarding`).
 const ONBOARDING_RECEIPT: &str = "onboarding.json";
 
+/// The setting that records when the person turned capture on for the space (RFC 3339, UTC).
+/// Knode Service writes it, not the person: see [`set_setting`].
+pub const CAPTURE_SINCE: &str = "capture.since";
+
+/// When the person turned capture on for the space, if they did after it was off or waiting
+/// for setup: capture writes to it only the conversations started since, so "keep my
+/// conversations from now on" does not also bring every earlier one. `None` for a space whose
+/// capture was never turned on that way, which takes earlier conversations as before, and for a
+/// value that cannot be read.
+pub fn capture_since(space: &Space) -> knode_format::Result<Option<DateTime<Utc>>> {
+    Ok(space
+        .setting(CAPTURE_SINCE)?
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|time| time.with_timezone(&Utc)))
+}
+
 /// Whether capture waits before writing anything into the space, because it is a new space
 /// nobody has set up yet: its `capture.enabled` was never chosen, it has no onboarding receipt,
 /// no folders and no nodes at all. Capture into such a space starts, earlier sessions included,
@@ -202,6 +219,9 @@ pub fn capture_waits_for_setup(space: &Space) -> knode_format::Result<bool> {
 /// stored as no value, as the specification asks, except `capture.enabled` turned `on`: it is
 /// kept as the person's choice, so a new space does not wait for setup
 /// ([`capture_waits_for_setup`]).
+///
+/// Turning capture on for a space whose capture was off or waiting for setup also records the
+/// time ([`CAPTURE_SINCE`]): capture starts from now, and earlier conversations stay out.
 pub fn set_setting(
     space: &mut Space,
     key: &str,
@@ -237,7 +257,16 @@ pub fn set_setting(
             )));
         }
     };
-    space.set_setting(key, value, by)
+    let capturing = |space: &Space| -> knode_format::Result<bool> {
+        Ok(capture_enabled(space)? && !capture_waits_for_setup(space)?)
+    };
+    let started = key == setting_keys::CAPTURE_ENABLED && !capturing(space)?;
+    let changed = space.set_setting(key, value, by)?;
+    if started && capture_enabled(space)? {
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        space.set_setting(CAPTURE_SINCE, Some(&now), by)?;
+    }
+    Ok(changed)
 }
 
 /// Checks an icon: one emoji. Plain text, such as letters or words, is refused.
