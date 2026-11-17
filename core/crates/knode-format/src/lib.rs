@@ -80,7 +80,7 @@ pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNod
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};
-pub use projects::{AddedFolder, FolderProject, Project, folder_project_name};
+pub use projects::{AddedFolder, FolderProject, PassedOverProject, Project, folder_project_name};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{
