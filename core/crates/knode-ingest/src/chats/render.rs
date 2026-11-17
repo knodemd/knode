@@ -19,6 +19,8 @@ pub(crate) enum Shown {
     Missing(String),
     /// Left out of the export: what it was.
     Omitted(String),
+    /// Only a link to it.
+    Link { name: String, url: String },
 }
 
 /// The heading of a day section, without `## `.
@@ -108,6 +110,11 @@ fn shown_markdown(shown: &Shown) -> String {
         }
         Shown::Missing(name) => format!("*[missing from the export: {}]*", escape_name(name)),
         Shown::Omitted(what) => format!("*[{} left out of the export]*", escape_name(what)),
+        Shown::Link { name, url } => format!(
+            "[{}](<{}>) *(not in the export)*",
+            escape_name(name),
+            url.replace(['<', '>'], "")
+        ),
     }
 }
 
@@ -212,11 +219,16 @@ mod tests {
             Shown::Attached("plan.pdf".into()),
             Shown::Missing("voice.opus".into()),
             Shown::Omitted("media".into()),
+            Shown::Link {
+                name: "notes.txt".into(),
+                url: "https://example.com/f".into(),
+            },
         ];
         assert_eq!(
             message_markdown(&m, &shown),
             "**Ada** (09:05, replying to Grace at 09:00: \"Lunch?\"): ![[photo.jpg]]\n[[plan.pdf]]\n\
-             *[missing from the export: voice.opus]*\n*[media left out of the export]*"
+             *[missing from the export: voice.opus]*\n*[media left out of the export]*\n\
+             [notes.txt](<https://example.com/f>) *(not in the export)*"
         );
     }
 
