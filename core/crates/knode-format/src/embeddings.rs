@@ -26,6 +26,16 @@ pub const HYBRID_LIST_SIZE: usize = 50;
 pub const NEAREST_CHUNKS: usize = 100;
 /// The number of results of a hybrid search when none is given (19.6).
 pub const DEFAULT_HYBRID_RESULTS: usize = 20;
+/// The kinds of nodes that hold transcripts: an agent conversation (`conversation`), an
+/// imported chat (`chat`) and an imported mail thread (`email`). They are long and touch many
+/// topics in passing, so they match the words of a query and have a chunk near its meaning more
+/// often than the short note that answers it.
+pub const TRANSCRIPT_KINDS: &[&str] = &[crate::kinds::CONVERSATION, "chat", "email"];
+/// What the fusion score of a transcript is multiplied by in a hybrid search (#269): found
+/// first by both words and meaning, it scores as a note found first one way only, so a
+/// transcript wins by matching well, not by being long. Searches by words or by meaning alone
+/// rank them as any node.
+pub const TRANSCRIPT_WEIGHT: f64 = 0.5;
 /// About how many words a snippet from a chunk keeps.
 const SNIPPET_WORDS: usize = 16;
 
@@ -625,8 +635,10 @@ impl Space {
     ///
     /// `query_vector` is the query embedded by the model in use, with its `query_prefix`. Up to
     /// 50 nodes by words and 50 by meaning are fused: each scores `1 / (60 + rank)` in every
-    /// list it is in, and ties go to the better rank, then the lower node id. Returns at most
-    /// `limit` results ([`DEFAULT_HYBRID_RESULTS`] is the usual).
+    /// list it is in, and ties go to the better rank, then the lower node id. In
+    /// [`SearchMode::Hybrid`] a transcript ([`TRANSCRIPT_KINDS`]) scores
+    /// [`TRANSCRIPT_WEIGHT`] times that. Returns at most `limit` results
+    /// ([`DEFAULT_HYBRID_RESULTS`] is the usual).
     ///
     /// [`SearchMode::Hybrid`] runs as [`SearchMode::Words`] when the space has no model in use,
     /// sqlite-vec is not loaded or `query_vector` is `None`; [`HybridResults::mode`] says so.
@@ -706,6 +718,10 @@ impl Space {
             .into_values()
             .map(|mut hit| {
                 hit.score = rrf_score(hit.word_rank, hit.meaning_rank);
+                if mode == SearchMode::Hybrid && TRANSCRIPT_KINDS.contains(&hit.node.kind.as_str())
+                {
+                    hit.score *= TRANSCRIPT_WEIGHT;
+                }
                 hit
             })
             .collect();

@@ -937,3 +937,330 @@ fn apple_mail_takes_an_exported_mailbox_and_does_not_follow_links() {
         assert_eq!(report.messages, 2);
     }
 }
+
+#[test]
+fn a_message_with_a_hundred_thousand_references_imports_fast() {
+    let tmp = tempfile::tempdir().unwrap();
+    let references: Vec<String> = (0..100_000)
+        .map(|i| format!("<r{i}@example.com>"))
+        .collect();
+    let file = write_mbox(
+        tmp.path(),
+        "refs.mbox",
+        &[message(
+            &[
+                ("Message-ID", "<many-refs@example.com>"),
+                ("From", "ada@example.com"),
+                ("Subject", "Re: Many references"),
+                ("Date", "Mon, 2 Mar 2026 09:00:00 +0000"),
+                ("References", &references.join(" ")),
+            ],
+            "Plain text.\n",
+        )],
+    );
+    let mut space = space(tmp.path());
+    let started = std::time::Instant::now();
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let again = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let took = started.elapsed();
+    assert_eq!(report.created.len(), 1);
+    assert_eq!(again.unchanged, 1);
+    let node = thread(&space, "Many references");
+    assert_eq!(
+        space.properties(&node.id).unwrap()[keys::THREAD],
+        "r0@example.com"
+    );
+    // Quadratic, this took minutes; linear, well under a second in a release build.
+    assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+}
+
+#[test]
+fn remote_images_in_mail_never_load_by_themselves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write_mbox(
+        tmp.path(),
+        "pixel.mbox",
+        &[
+            message(
+                &[
+                    ("Message-ID", "<deals@shop.example>"),
+                    ("From", "Shop <news@shop.example>"),
+                    ("To", "ada@example.com"),
+                    ("Subject", "Weekly deals"),
+                    ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+                    ("Content-Type", "text/html"),
+                ],
+                "<p>Deals this week</p><img src=\"https://tracker.shop.example/open.gif?u=42&amp;t=abc\" \
+                 width=\"1\" height=\"1\"><p><img src=\"https://cdn.shop.example/sale.png\" alt=\"Sale\"></p>",
+            ),
+            message(
+                &[
+                    ("Message-ID", "<plain@shop.example>"),
+                    ("From", "Shop <news@shop.example>"),
+                    ("To", "ada@example.com"),
+                    ("Subject", "Plain deals"),
+                    ("Date", "Tue, 03 Mar 2026 10:00:00 +0100"),
+                ],
+                "Look: ![](https://tracker.shop.example/plain.gif?u=42)\n",
+            ),
+        ],
+    );
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let html = thread(&space, "Weekly deals").body;
+    assert!(!html.contains("tracker"), "the pixel is dropped: {html}");
+    assert!(
+        html.contains("[image: Sale](https://cdn.shop.example/sale.png)"),
+        "{html}"
+    );
+    assert!(!html.contains("!["), "{html}");
+    let plain = thread(&space, "Plain deals").body;
+    assert!(plain.contains("!\\[](https://tracker"), "{plain}");
+    assert!(!plain.contains("Look: ![]"), "{plain}");
+}
+
+#[test]
+fn bcc_recipients_are_never_shown_as_cc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write_mbox(
+        tmp.path(),
+        "bcc.mbox",
+        &[
+            simple(
+                "<bcc-1@example.com>",
+                "Ada Example <ada@example.com>",
+                "Weekly deals",
+                "Tue, 03 Mar 2026 09:00:00 +0100",
+                &[("Bcc", "secret-bcc@example.com")],
+            ),
+            simple(
+                "<bcc-2@example.com>",
+                "Ada Example <ada@example.com>",
+                "Both",
+                "Tue, 03 Mar 2026 09:00:00 +0100",
+                &[("Cc", "carol@example.org"), ("Bcc", "dan@example.org")],
+            ),
+        ],
+    );
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let body = thread(&space, "Weekly deals").body;
+    assert!(!body.contains("**Cc:**"), "{body}");
+    assert!(
+        body.contains("- **Bcc:** <secret-bcc@example.com>\n"),
+        "{body}"
+    );
+    let both = thread(&space, "Both").body;
+    assert!(
+        both.contains("- **Cc:** <carol@example.org>\n- **Bcc:** <dan@example.org>\n"),
+        "{both}"
+    );
+}
+
+/// The digest the importer keeps of the lines it wrote for a message.
+fn section_digest(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let lines: Vec<&str> = content.lines().map(str::trim_end).collect();
+    Sha256::digest(lines.join("\n").as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..16]
+        .to_string()
+}
+
+#[test]
+fn headings_show_the_offset_and_sections_written_without_it_are_read_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = simple(
+        "<tz-1@example.com>",
+        "Shop <news@shop.example>",
+        "Zones",
+        "Tue, 03 Mar 2026 09:00:00 +0100",
+        &[],
+    );
+    let second = simple(
+        "<tz-2@example.com>",
+        "Bruno Sample <bruno@example.org>",
+        "Re: Zones",
+        "Tue, 03 Mar 2026 09:30:00 -0500",
+        &[("References", "<tz-1@example.com>")],
+    );
+    let file = write_mbox(tmp.path(), "tz.mbox", &[first, second]);
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let node = thread(&space, "Zones");
+    assert!(
+        node.body.contains("## Shop - 2026-03-03 09:00 +01:00\n"),
+        "{}",
+        node.body
+    );
+    assert!(
+        node.body
+            .contains("## Bruno Sample - 2026-03-03 09:30 -05:00\n"),
+        "{}",
+        node.body
+    );
+
+    // A node as an import wrote it before the offset was shown: the first section as Knode
+    // wrote it, the second changed in Knode, and a note after the first.
+    let old = |id: &str, date: &str, content: &str| {
+        format!(
+            "<!-- mail {id} {date} {} {} -->\n{content}",
+            content.lines().count(),
+            section_digest(content)
+        )
+    };
+    let a = old(
+        "tz-1@example.com",
+        "2026-03-03T08:00:00Z",
+        "## Shop - 2026-03-03 09:00\n\n- **From:** Shop <news@shop.example>\n\n- **To:** \
+         Ada Example <ada@example.com>\n\nText of <tz-1@example.com>.",
+    );
+    let b = old(
+        "tz-2@example.com",
+        "2026-03-03T14:30:00Z",
+        "## Bruno Sample - 2026-03-03 09:30\n\nText of <tz-2@example.com>.",
+    )
+    .replace("Text of", "Edited text of");
+    let body = format!("# Zones\n\n{a}\n\nMy note.\n\n{b}\n");
+    space
+        .update_node(
+            &node.id,
+            knode_format::NodeUpdate {
+                body: Some(body),
+                ..Default::default()
+            },
+            &me(),
+        )
+        .unwrap();
+
+    let again = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert!(again.created.is_empty(), "{again:?}");
+    let node = thread(&space, "Zones");
+    assert_eq!(message_ids(&node), ["tz-1@example.com", "tz-2@example.com"]);
+    assert!(
+        node.body.contains("## Shop - 2026-03-03 09:00 +01:00\n"),
+        "{}",
+        node.body
+    );
+    assert!(node.body.contains("My note."), "{}", node.body);
+    assert!(
+        node.body
+            .contains("## Bruno Sample - 2026-03-03 09:30\n\nEdited text of"),
+        "the section changed in Knode is kept: {}",
+        node.body
+    );
+}
+
+#[test]
+fn a_message_to_many_people_and_bcc_of_mail_received_add_no_people() {
+    let tmp = tempfile::tempdir().unwrap();
+    let many: Vec<String> = (0..500).map(|i| format!("reader{i}@example.org")).collect();
+    let newsletter = message(
+        &[
+            ("Message-ID", "<news@shop.example>"),
+            ("From", "Shop <news@shop.example>"),
+            ("To", &many.join(", ")),
+            ("Bcc", "ada@example.com"),
+            ("Subject", "Weekly deals"),
+            ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+        ],
+        "Deals.\n",
+    );
+    let received = message(
+        &[
+            ("Message-ID", "<blind@example.org>"),
+            ("From", "Bruno Sample <bruno@example.org>"),
+            ("To", "Chloe Test <chloe@example.org>"),
+            ("Bcc", "Ada Example <ada@example.com>"),
+            ("Subject", "A blind copy"),
+            ("Date", "Wed, 04 Mar 2026 09:00:00 +0100"),
+        ],
+        "Hi.\n",
+    );
+    let sent = message(
+        &[
+            ("X-Gmail-Labels", "Sent"),
+            ("Message-ID", "<sent@example.com>"),
+            ("From", "Ada Example <ada@example.com>"),
+            ("To", "Bruno Sample <bruno@example.org>"),
+            ("Bcc", "Dana Sample <dana@example.org>"),
+            ("Subject", "Sent with a blind copy"),
+            ("Date", "Thu, 05 Mar 2026 09:00:00 +0100"),
+        ],
+        "Hi.\n",
+    );
+    let file = write_mbox(tmp.path(), "many.mbox", &[newsletter, received, sent]);
+    let mut space = space(tmp.path());
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+
+    let titles: Vec<String> = of_kind(&space, kinds::PERSON)
+        .into_iter()
+        .map(|p| p.title)
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "Ada Example",
+            "Bruno Sample",
+            "Chloe Test",
+            "Dana Sample",
+            "Shop"
+        ],
+        "the sender of the newsletter, everyone of the mail received but its Bcc, and the Bcc of \
+         the mail sent"
+    );
+    assert_eq!(report.people, 5);
+    // The 500 readers; Ada became a person through the mail she sent.
+    assert_eq!(report.people_left_out, 500);
+    // Every address is still in the thread.
+    assert!(
+        thread(&space, "Weekly deals")
+            .body
+            .contains("reader499@example.org")
+    );
+}
+
+#[test]
+fn a_message_larger_than_the_most_is_skipped_and_listed() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 65 MB of text: a message too large, or a file whose `From ` lines were lost.
+    let line = format!("{}\n", "x".repeat(1023));
+    let huge = message(
+        &[
+            ("Message-ID", "<huge@example.com>"),
+            ("From", "ada@example.com"),
+            ("Subject", "Huge"),
+        ],
+        &line.repeat(65 * 1024),
+    );
+    let small = |id: &str, subject: &str| {
+        simple(
+            id,
+            "Bruno Sample <bruno@example.org>",
+            subject,
+            "Mon, 2 Mar 2026 09:00:00 +0000",
+            &[],
+        )
+    };
+    let file = write_mbox(
+        tmp.path(),
+        "big.mbox",
+        &[
+            small("<s1@example.com>", "Before"),
+            huge,
+            small("<s2@example.com>", "After"),
+        ],
+    );
+    let mut space = space(tmp.path());
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert_eq!(report.messages, 2);
+    assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
+    assert!(
+        report.skipped[0].reason.contains("larger than 64 MB"),
+        "{:?}",
+        report.skipped
+    );
+    thread(&space, "Before");
+    thread(&space, "After");
+}
