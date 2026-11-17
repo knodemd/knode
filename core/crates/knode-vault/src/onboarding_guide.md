@@ -4,7 +4,8 @@ You are an agent setting up Knode, the local memory a person's agents share, for
 Do it now, from start to end: do not ask whether they want to. Follow these steps in order with the
 `knode` command on this machine. Speak to the person in their language, briefly. Look things up
 yourself instead of asking; ask only once, in step 3, everything that needs their judgment or
-their consent, then do all of it without stopping again unless a command fails.
+their consent, in one batch (one message, or one call of your question tool if you have one),
+then do all of it without stopping again unless a command fails.
 
 Source folder: {source}
 
@@ -115,7 +116,9 @@ Then continue with steps 6 to 8.
 
 ## If they already have a space
 
-When the new import is meant to replace an existing space (for example, a first try made by hand):
+Ask in step 3 whether to merge or replace: either way the new import becomes their memory and
+the old space is put aside, so they are the same steps. If they want to keep both, skip this and
+connect the agents to the space they choose (step 6).
 
 1. Before archiving anything, list the notes only the old space has: export both
    (`knode --space <old> export <folder>` and the same for the new one) and compare paths and
@@ -266,5 +269,6 @@ import a folder that holds the note: `knode --space "<space>" import <folder>`.
 
 Then tell the person, in a few lines (and to open new agent sessions so they use Knode): the space
 and how many projects and notes it holds, what
-stayed as files, what changed in their agents and instruction files (with the backups), and that
-`knode onboard archive --target "<space>"` puts the copy aside if they want to start again.
+stayed as files, what changed in their agents and instruction files (with the backups), that
+`knode onboard archive --target "<space>"` puts the copy aside if they want to start again, and
+how many tokens the onboarding used, or where they can see it (in Claude Code, `/cost`).
