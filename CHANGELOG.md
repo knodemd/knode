@@ -54,13 +54,10 @@ belongs to, newest first.
 
 #### Changed
 
-<<<<<<< HEAD
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
-=======
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
   "Imported memory" for every import; the name stays editable.
->>>>>>> origin/main
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
