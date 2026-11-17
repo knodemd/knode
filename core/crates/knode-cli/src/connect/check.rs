@@ -441,6 +441,15 @@ fn read(file: &Path) -> Option<String> {
     fs::read_to_string(file).ok()
 }
 
+/// The file Claude Code keeps its user and local scopes in: `.claude.json` in
+/// `$CLAUDE_CONFIG_DIR` when it is set, else in the home folder. Claude Code reads only that one.
+fn claude_user_file(config_dir: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    match config_dir.filter(|d| !d.is_empty()) {
+        Some(dir) => vec![PathBuf::from(dir).join(".claude.json")],
+        None => home.map(|h| h.join(".claude.json")).into_iter().collect(),
+    }
+}
+
 /// The `knode` entries in the agent's settings, in the order the agent reads them: for Claude
 /// Code, the local scope of `project`, its `.mcp.json`, then the user scope.
 pub fn entries(agent: Agent, project: Option<&Path>) -> Vec<Entry> {
@@ -448,13 +457,7 @@ pub fn entries(agent: Agent, project: Option<&Path>) -> Vec<Entry> {
     match agent {
         Agent::Aider => {}
         Agent::ClaudeCode => {
-            let mut files = Vec::new();
-            if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
-                files.push(PathBuf::from(dir).join(".claude.json"));
-            }
-            if let Ok(home) = home() {
-                files.push(home.join(".claude.json"));
-            }
+            let files = claude_user_file(std::env::var_os("CLAUDE_CONFIG_DIR"), home().ok());
             let parsed: Vec<(PathBuf, Value)> = files
                 .into_iter()
                 .filter_map(|f| {
@@ -642,6 +645,24 @@ fn print(report: &Report) {
 mod tests {
     use super::*;
     use knode_service::SpaceGrant;
+
+    #[test]
+    fn claude_code_reads_only_the_config_dir_when_it_is_set() {
+        let home = Some(PathBuf::from("/home/ada"));
+        assert_eq!(
+            claude_user_file(Some("/cfg".into()), home.clone()),
+            [PathBuf::from("/cfg/.claude.json")]
+        );
+        assert_eq!(
+            claude_user_file(None, home.clone()),
+            [PathBuf::from("/home/ada/.claude.json")]
+        );
+        assert_eq!(
+            claude_user_file(Some("".into()), home),
+            [PathBuf::from("/home/ada/.claude.json")]
+        );
+        assert!(claude_user_file(None, None).is_empty());
+    }
 
     fn entry(args: &[&str]) -> Entry {
         let mut command = vec!["/bin/knode".to_string()];
