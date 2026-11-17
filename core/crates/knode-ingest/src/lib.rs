@@ -37,6 +37,9 @@
 //!
 //! Chats between people come from the exports of the apps they were held in:
 //! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat.
+//!
+//! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
+//! runs them.
 
 mod aider;
 mod amp;
@@ -56,6 +59,7 @@ mod opencode;
 mod reader;
 mod redact;
 mod render;
+pub mod sources;
 mod text;
 mod vscdb;
 mod watch;
