@@ -17,6 +17,7 @@
 //! Times are shown in the time zone of this computer.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 use std::sync::LazyLock;
 
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -66,15 +67,15 @@ const SYSTEM_SUBTYPES: &[&str] = &[
 static ANGLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<([^<>\n]+)>").expect("a regex"));
 
 /// The folder of a Slack export, if the files are one: where `users.json` and `channels.json`
-/// are, the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// are, in `root` (see [`super::in_root`]), the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     if files.single.is_some() {
         return None;
     }
     files
         .names()
         .iter()
-        .filter(|n| file_name(n) == "channels.json")
+        .filter(|n| super::in_root(n, root) && file_name(n) == "channels.json")
         .map(|n| parent(n).to_string())
         .filter(|dir| files.contains(&join(dir, "users.json")))
         .min_by_key(|dir| (dir.matches('/').count(), dir.len()))
@@ -206,6 +207,8 @@ pub(crate) struct Workspace {
     people: BTreeMap<String, String>,
     /// Their nodes, by id.
     nodes: BTreeMap<String, NodeId>,
+    /// The files of the export downloaded into `__uploads/<file id>/<name>`, by id and name.
+    uploads: BTreeMap<(String, String), String>,
 }
 
 impl Workspace {
@@ -216,11 +219,15 @@ impl Workspace {
             channels,
             people: BTreeMap::new(),
             nodes: BTreeMap::new(),
+            uploads: BTreeMap::new(),
         }
     }
 
-    /// What a member is called: the display name chosen in the profile, else the real name,
-    /// else the handle.
+    /// What a member is called: the real name in the profile, else the one on the account,
+    /// else the display name, else the handle. The real name comes first because it is the
+    /// full name a person node is about, the same in every workspace, while a display name is
+    /// often a nickname that is changed more often. A member's node, once written, is found by
+    /// its id and keeps its title.
     pub fn name(&self, id: &str) -> Option<String> {
         let user = self.users.get(id)?;
         let profile = user.profile.as_ref();
@@ -246,6 +253,7 @@ pub(crate) fn import(
 ) -> Result<(), ChatImportError> {
     let users: Vec<User> = read_json(files, &join(dir, "users.json"))?;
     let mut workspace = Workspace::new(users, BTreeMap::new());
+    workspace.uploads = uploads(files);
     let mut conversations = Vec::new();
     for (list, kind, by_id) in LISTS {
         let path = join(dir, list);
@@ -269,10 +277,14 @@ pub(crate) fn import(
     // Every day file of every conversation, read first, so the members can be written before
     // the channels that mention them.
     let mut read = Vec::new();
+    let mut redacted = 0;
     for (conversation, kind, folder) in conversations {
+        // The names are sorted, so the files under a folder are found where they start.
+        let prefix = format!("{folder}/");
         let days: Vec<String> = files
             .names()
-            .iter()
+            .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+            .take_while(|n| n.starts_with(&prefix))
             .filter(|n| parent(n) == folder && is_day_file(file_name(n)))
             .cloned()
             .collect();
@@ -281,11 +293,19 @@ pub(crate) fn import(
             let mut more: Vec<Message> = read_json(files, &day)?;
             messages.append(&mut more);
         }
+        for m in &mut messages {
+            let (text, n) = crate::redact::redact_tokens(&m.text);
+            if n > 0 {
+                m.text = text;
+                redacted += n;
+            }
+        }
         messages.sort_by_key(|m| mark(&m.ts));
         read.push((conversation, kind, messages));
     }
 
     let wanted = wanted(read.iter().flat_map(|(_, _, messages)| messages));
+    super::note_redacted(&mut writer.report, redacted);
     write_people(&mut workspace, &wanted, writer)?;
 
     let threaded = BTreeSet::new();
@@ -467,7 +487,7 @@ pub(crate) fn write_conversation(
             continue;
         }
         started.insert(m.ts.as_str());
-        let Some(mut message) = message(workspace, m, &name, files) else {
+        let Some(mut message) = message(workspace, m, &name) else {
             continue;
         };
         if !replies.contains_key(&m.ts) && threaded.contains(&m.ts) {
@@ -491,7 +511,7 @@ pub(crate) fn write_conversation(
             first.notes.clear();
             thread.messages.push(first);
             for reply in thread_replies {
-                if let Some(reply) = self::message(workspace, reply, &name, files) {
+                if let Some(reply) = self::message(workspace, reply, &name) {
                     thread.messages.push(reply);
                 }
             }
@@ -533,7 +553,7 @@ pub(crate) fn write_conversation(
             "The message that started this thread is not in this export.",
         ));
         for reply in thread_replies {
-            if let Some(reply) = self::message(workspace, reply, &name, files) {
+            if let Some(reply) = self::message(workspace, reply, &name) {
                 thread.messages.push(reply);
                 orphans += 1;
             }
@@ -615,12 +635,7 @@ pub(crate) fn channel_title(name: &str) -> String {
     format!("Slack - {}", name.trim_start_matches('#'))
 }
 
-fn message(
-    workspace: &Workspace,
-    m: &Message,
-    channel: &str,
-    files: &Files,
-) -> Option<ChatMessage> {
+fn message(workspace: &Workspace, m: &Message, channel: &str) -> Option<ChatMessage> {
     let time = time(&m.ts)?;
     let system = m
         .subtype
@@ -651,11 +666,15 @@ fn message(
         sender,
         markdown(workspace, &m.text),
     );
-    message.media = m.files.iter().map(|f| media(f, files)).collect();
+    message.media = m
+        .files
+        .iter()
+        .map(|f| media(f, &workspace.uploads))
+        .collect();
     Some(message)
 }
 
-fn media(file: &SlackFile, files: &Files) -> Media {
+fn media(file: &SlackFile, uploads: &BTreeMap<(String, String), String>) -> Media {
     let name = file
         .name
         .clone()
@@ -667,18 +686,36 @@ fn media(file: &SlackFile, files: &Files) -> Media {
         };
     }
     // Tools that download the files keep them in `__uploads/<id>/<name>`.
-    let entry = files
-        .names()
-        .iter()
-        .find(|n| {
-            file_name(n) == name && file_name(parent(n)) == file.id && n.contains("__uploads/")
-        })
-        .cloned();
-    match (entry, file.permalink.clone().or(file.url_private.clone())) {
+    let entry = uploads.get(&(file.id.clone(), name.clone())).cloned();
+    // A file's private URL carries a token to open it (`?t=xoxe-...`): only the address is
+    // kept.
+    let url = file
+        .permalink
+        .as_deref()
+        .or(file.url_private.as_deref())
+        .map(without_query);
+    match (entry, url) {
         (Some(entry), _) => Media::File { name, entry },
         (None, Some(url)) => Media::Link { name, url },
         (None, None) => Media::Missing { name },
     }
+}
+
+/// The files that tools which download them keep in `__uploads/<file id>/<name>`, by id and
+/// name, the first in the export's order when two are at the same id and name: read once, so
+/// a file sent is found without going through every name of the export.
+fn uploads(files: &Files) -> BTreeMap<(String, String), String> {
+    let mut uploads = BTreeMap::new();
+    for n in files.names().iter().filter(|n| n.contains("__uploads/")) {
+        let key = (file_name(parent(n)).to_string(), file_name(n).to_string());
+        uploads.entry(key).or_insert_with(|| n.clone());
+    }
+    uploads
+}
+
+/// A URL without its query string and fragment.
+fn without_query(url: &str) -> String {
+    url.split(['?', '#']).next().unwrap_or(url).to_string()
 }
 
 /// A name a title can hold: no `[`, `]` or `|`, spaces collapsed.
@@ -806,13 +843,31 @@ fn emphasis(text: &str) -> String {
     pairs(&text, '~', "~~")
 }
 
-/// The longest run of text read as one `*bold*`, `_italic_` or `~struck~`: the search for
-/// the closing marker stops there, and at the end of the line, so it stays linear in the text.
+/// The longest run of text read as one `*bold*`, `_italic_` or `~struck~`, as in Slack, which
+/// does not read a marker that far away as the closing one.
 const MAX_EMPHASIS: usize = 1000;
 
+/// `marker` pairs in `text` as `markdown`. An opening marker pairs with the first closing one
+/// after it on its line, found in a table made in one pass from the end of each line, so every
+/// character is looked at a fixed number of times however many markers stay unpaired.
 fn pairs(text: &str, marker: char, markdown: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let edge = |c: Option<&char>| c.is_none_or(|c| !c.is_alphanumeric());
+    // `next[k]`: the first closing marker at `k` or after it on the same line.
+    let mut next: Vec<Option<usize>> = vec![None; chars.len() + 1];
+    for j in (0..chars.len()).rev() {
+        next[j] = if chars[j] == '\n' {
+            None
+        } else if chars[j] == marker
+            && j > 0
+            && !chars[j - 1].is_whitespace()
+            && edge(chars.get(j + 1))
+        {
+            Some(j)
+        } else {
+            next[j + 1]
+        };
+    }
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
@@ -821,11 +876,7 @@ fn pairs(text: &str, marker: char, markdown: &str) -> String {
             && chars
                 .get(i + 1)
                 .is_some_and(|c| !c.is_whitespace() && *c != marker)
-            && let Some(close) = (i + 1..chars.len().min(i + 1 + MAX_EMPHASIS))
-                .take_while(|&j| chars[j] != '\n')
-                .find(|&j| {
-                    chars[j] == marker && !chars[j - 1].is_whitespace() && edge(chars.get(j + 1))
-                })
+            && let Some(close) = next[i + 1].filter(|&j| j - i <= MAX_EMPHASIS)
         {
             out.push_str(markdown);
             out.extend(&chars[i + 1..close]);
@@ -853,6 +904,7 @@ mod tests {
             channels,
             people,
             nodes: BTreeMap::new(),
+            uploads: BTreeMap::new(),
         }
     }
 
@@ -891,11 +943,55 @@ mod tests {
 
     #[test]
     fn emphasis_stays_linear() {
+        // 100,000 markers that never close: a search of up to MAX_EMPHASIS characters after
+        // each took seconds; read in one pass, it takes milliseconds, even in a debug build.
         let many = "*a ".repeat(100_000);
         let started = std::time::Instant::now();
         assert_eq!(emphasis(&many), many);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
         assert_eq!(emphasis("*one\ntwo*"), "*one\ntwo*");
+    }
+
+    #[test]
+    fn emphasis_pairs_as_before() {
+        assert_eq!(emphasis("*a* *b*"), "**a** **b**");
+        assert_eq!(emphasis("*a *b*"), "**a *b**");
+        assert_eq!(emphasis("x*a* *b"), "x*a* *b");
+        assert_eq!(emphasis("*a\nb* c*"), "*a\nb* c*");
+        assert_eq!(emphasis("_snake_case_ ~x~"), "*snake_case* ~~x~~");
+        let far = format!("*{}*", "a".repeat(MAX_EMPHASIS));
+        assert_eq!(emphasis(&far), far);
+        let near = format!("*{}*", "a".repeat(MAX_EMPHASIS - 2));
+        assert_eq!(
+            emphasis(&near),
+            format!("**{}**", "a".repeat(MAX_EMPHASIS - 2))
+        );
+    }
+
+    #[test]
+    fn names_members_by_their_real_name_first() {
+        let user = |id: &str, real: Option<&str>, display: Option<&str>| User {
+            id: id.into(),
+            team_id: None,
+            name: format!("handle{id}"),
+            real_name: None,
+            profile: Some(Profile {
+                real_name: real.map(str::to_string),
+                display_name: display.map(str::to_string),
+            }),
+        };
+        let mut w = workspace();
+        for u in [
+            user("U1", Some("Ada Lovelace"), Some("ada")),
+            user("U2", None, Some("grace")),
+            user("U3", Some(""), Some("")),
+        ] {
+            w.users.insert(u.id.clone(), u);
+        }
+        assert_eq!(w.name("U1").as_deref(), Some("Ada Lovelace"));
+        assert_eq!(w.name("U2").as_deref(), Some("grace"));
+        assert_eq!(w.name("U3").as_deref(), Some("handleU3"));
     }
 
     #[test]

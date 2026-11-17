@@ -13,7 +13,7 @@ use chrono::{DateTime, NaiveDate};
 use knode_format::Timestamp;
 
 use super::client::{
-    Account, FetchedMessage, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus,
+    Account, ImapConnect, ImapError, ImapSession, Mailbox, MailboxStatus, MessageInfo,
 };
 
 /// How long connecting may take.
@@ -580,56 +580,15 @@ impl<S: Read + Write + Send> ImapSession for Session<S> {
             .collect())
     }
 
-    fn fetch(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<FetchedMessage>, ImapError> {
+    fn fetch_info(&mut self, uids: &[u32], gmail: bool) -> Result<Vec<MessageInfo>, ImapError> {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let set = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        // Sizes first, so a huge message is never read.
-        let sizes = self.command(&[
-            Arg::Raw("UID"),
-            Arg::Raw("FETCH"),
-            Arg::Raw(&set),
-            Arg::Raw("(UID RFC822.SIZE)"),
-        ])?;
-        let mut small = Vec::new();
-        let mut large = Vec::new();
-        for item in fetch_items(&sizes) {
-            let uid = item_value(&item, "UID").and_then(Tok::number);
-            let size = item_value(&item, "RFC822.SIZE").and_then(Tok::number);
-            if let Some(uid) = uid {
-                match size {
-                    Some(size) if size > MAX_MESSAGE => large.push(uid as u32),
-                    _ => small.push(uid as u32),
-                }
-            }
-        }
-        let mut out: Vec<FetchedMessage> = large
-            .into_iter()
-            .map(|uid| FetchedMessage {
-                uid,
-                internal_date: None,
-                bytes: None,
-                gmail_id: None,
-                gmail_labels: Vec::new(),
-            })
-            .collect();
-        if small.is_empty() {
-            return Ok(out);
-        }
-        let set = small
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+        let set = uid_set(uids);
         let items = if gmail {
-            "(UID INTERNALDATE X-GM-MSGID X-GM-LABELS BODY.PEEK[])"
+            "(UID RFC822.SIZE INTERNALDATE X-GM-MSGID X-GM-LABELS)"
         } else {
-            "(UID INTERNALDATE BODY.PEEK[])"
+            "(UID RFC822.SIZE INTERNALDATE)"
         };
         let data = self.command(&[
             Arg::Raw("UID"),
@@ -637,34 +596,60 @@ impl<S: Read + Write + Send> ImapSession for Session<S> {
             Arg::Raw(&set),
             Arg::Raw(items),
         ])?;
-        for item in fetch_items(&data) {
-            let Some(uid) = item_value(&item, "UID").and_then(Tok::number) else {
-                continue;
-            };
-            let bytes = item_value(&item, "BODY[]").and_then(|t| match t {
-                Tok::Bytes(b) => Some(b.clone()),
-                _ => None,
-            });
-            let Some(bytes) = bytes else { continue };
-            out.push(FetchedMessage {
-                uid: uid as u32,
-                internal_date: item_value(&item, "INTERNALDATE")
-                    .and_then(Tok::text)
-                    .and_then(|t| internal_date(&t)),
-                bytes: Some(bytes),
-                gmail_id: item_value(&item, "X-GM-MSGID").and_then(Tok::number),
-                gmail_labels: match item_value(&item, "X-GM-LABELS") {
-                    Some(Tok::List(labels)) => labels.iter().filter_map(Tok::text).collect(),
-                    _ => Vec::new(),
-                },
-            });
+        Ok(fetch_items(&data)
+            .iter()
+            .filter_map(|item| {
+                let uid = item_value(item, "UID").and_then(Tok::number)? as u32;
+                Some(MessageInfo {
+                    uid,
+                    size: item_value(item, "RFC822.SIZE").and_then(Tok::number),
+                    internal_date: item_value(item, "INTERNALDATE")
+                        .and_then(Tok::text)
+                        .and_then(|t| internal_date(&t)),
+                    gmail_id: item_value(item, "X-GM-MSGID").and_then(Tok::number),
+                    gmail_labels: match item_value(item, "X-GM-LABELS") {
+                        Some(Tok::List(labels)) => labels.iter().filter_map(Tok::text).collect(),
+                        _ => Vec::new(),
+                    },
+                })
+            })
+            .collect())
+    }
+
+    fn fetch_bodies(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<u8>)>, ImapError> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        let set = uid_set(uids);
+        let data = self.command(&[
+            Arg::Raw("UID"),
+            Arg::Raw("FETCH"),
+            Arg::Raw(&set),
+            Arg::Raw("(UID BODY.PEEK[])"),
+        ])?;
+        Ok(fetch_items(&data)
+            .iter()
+            .filter_map(|item| {
+                let uid = item_value(item, "UID").and_then(Tok::number)? as u32;
+                match item_value(item, "BODY[]")? {
+                    Tok::Bytes(bytes) => Some((uid, bytes.clone())),
+                    _ => None,
+                }
+            })
+            .collect())
     }
 
     fn logout(&mut self) {
         let _ = self.command(&[Arg::Raw("LOGOUT")]);
     }
+}
+
+/// A UID set: `5,9,12`.
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The item lists of `* <n> FETCH (...)` responses.
@@ -805,14 +790,15 @@ mod tests {
     }
 
     #[test]
-    fn fetches_messages_with_gmail_labels_and_leaves_out_huge_ones() {
+    fn fetches_labels_first_and_bodies_only_when_asked() {
         let body = "Message-ID: <a@x>\r\nSubject: Hi\r\n\r\nHello\r\n";
         let script = format!(
-            "* 1 FETCH (UID 5 RFC822.SIZE {len})\r\n\
-             * 2 FETCH (UID 9 RFC822.SIZE 99999999999)\r\n\
+            "* 1 FETCH (UID 5 RFC822.SIZE {len} INTERNALDATE \"17-Nov-2026 09:30:00 +0100\" \
+             X-GM-MSGID 1278455344230334865 X-GM-LABELS (\\Inbox \"Work/Clients\"))\r\n\
+             * 2 FETCH (UID 9 RFC822.SIZE 99999999999 INTERNALDATE \"17-Nov-2026 09:31:00 +0100\" \
+             X-GM-MSGID 2 X-GM-LABELS ())\r\n\
              k1 OK done\r\n\
-             * 1 FETCH (UID 5 INTERNALDATE \"17-Nov-2026 09:30:00 +0100\" X-GM-MSGID \
-             1278455344230334865 X-GM-LABELS (\\Inbox \"Work/Clients\") BODY[] {{{len}}}\r\n\
+             * 1 FETCH (UID 5 BODY[] {{{len}}}\r\n\
              {body})\r\n\
              k2 OK done\r\n",
             len = body.len(),
@@ -821,19 +807,24 @@ mod tests {
             input: io::Cursor::new(script.into_bytes()),
             sent: Vec::new(),
         });
-        let fetched = s.fetch(&[5, 9], true).unwrap();
-        let huge = fetched.iter().find(|m| m.uid == 9).unwrap();
-        assert!(huge.bytes.is_none());
-        let mail = fetched.iter().find(|m| m.uid == 5).unwrap();
-        assert_eq!(mail.bytes.as_deref(), Some(body.as_bytes()));
-        assert_eq!(mail.gmail_id, Some(1278455344230334865));
-        assert_eq!(mail.gmail_labels, vec!["\\Inbox", "Work/Clients"]);
+        let info = s.fetch_info(&[5, 9], true).unwrap();
+        assert_eq!(info.len(), 2);
+        assert_eq!(info[0].gmail_id, Some(1278455344230334865));
+        assert_eq!(info[0].gmail_labels, vec!["\\Inbox", "Work/Clients"]);
+        assert_eq!(info[0].size, Some(body.len() as u64));
         assert_eq!(
-            mail.internal_date,
+            info[0].internal_date,
             internal_date("17-Nov-2026 09:30:00 +0100")
         );
-        assert!(mail.internal_date.is_some());
-        assert!(sent(&mut s).contains("k2 UID FETCH 5 (UID INTERNALDATE X-GM-MSGID"));
+        assert!(info[0].internal_date.is_some());
+        assert!(info[1].gmail_labels.is_empty());
+        let bodies = s.fetch_bodies(&[5]).unwrap();
+        assert_eq!(bodies, vec![(5, body.as_bytes().to_vec())]);
+        let sent = sent(&mut s);
+        assert!(sent.contains(
+            "k1 UID FETCH 5,9 (UID RFC822.SIZE INTERNALDATE X-GM-MSGID X-GM-LABELS)\r\n"
+        ));
+        assert!(sent.contains("k2 UID FETCH 5 (UID BODY.PEEK[])\r\n"));
     }
 
     #[test]

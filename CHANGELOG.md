@@ -35,6 +35,33 @@ belongs to, newest first.
   connected paused and reads nothing until you start it. A switch pauses and resumes it, **Run
   now** runs it at once, **Sign out** ends its session, and **Disconnect** asks first and keeps
   what it brought in.
+- **Apple Mail connector**: new mail of every account you added to Apple Mail on your Mac
+  (Gmail, iCloud, Outlook, Exchange, any IMAP account, and the mailboxes On My Mac) comes into
+  your space within a minute, through the same mail import, so threads, people and your edits
+  are kept, and mail you imported before from an Apple Mail export or a Gmail Takeout file is
+  not added twice. Every mailbox comes in, new ones too, except spam, trash and the mailboxes you
+  exclude. It reads Mail's files without changing them, needs Full Disk Access and says how to
+  give it, and stops with a clear message if a new version of Mail changes its index.
+  `knode sources connect apple-mail` turns it on.
+- **Messages (iMessage) connector**, on macOS: `knode sources connect imessage` brings every
+  iMessage and SMS conversation of the Mac into one `chat` node each, the same shape as the chat
+  imports, messages grouped by day with their sender and time, and the photos and files sent
+  attached when the Mac has them. It reads a copy of the Messages database, never the database
+  itself, and needs Full Disk Access, which it asks for by name when it is missing. Text that
+  newer versions of Messages keep only in their archived form is read too; reactions are left
+  out, edited messages are marked edited and unsent ones unsent; a message edited or unsent
+  after it was brought in keeps the text it had then. If Messages numbers its messages again (a
+  rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
+  each conversation is missing. People show as their phone number or email address.
+- **Telegram connector**: brings your Telegram chats in as they arrive, through Telegram's
+  official API, as Knode's own client. `knode sources connect telegram` signs in once with your
+  phone number, the code Telegram sends and your password if you set one; the session stays in
+  the system keychain, and `knode sources sign-out telegram` (or disconnecting it from the last
+  space) ends it. While Knode Service runs new messages come in as they happen, and after a
+  restart it catches up from the last message it brought in of each chat. Messages land in the
+  same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
+  message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
+  build of Knode with its Telegram app id.
 - **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
   as threads with their people, like a mail import. **Gmail** signs in with Google in your
   browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
@@ -56,6 +83,10 @@ belongs to, newest first.
 
 #### Added
 
+- **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
+  any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
+  asks you only what needs your judgment, imports a copy, connects itself and moves your
+  instruction files to Knode. `knode onboard prompt` prints the prompt.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -122,12 +153,16 @@ belongs to, newest first.
 - **A project folder adds its project**: adding a project folder, in the Mac app or with
   `knode folders add`, adds the project of the same name to the space, or uses the one of that
   name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
-  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
-  removing the folder keeps the project and its notes. A folder added before this gets its
-  project when it is added again.
+  folder's name become `(`, `)` and `-`. Two different folders of the same name are kept apart:
+  when another folder already holds the project of that name, the new folder gets its own, named
+  after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
+  `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
+  added before this gets its project when it is added again.
 
 #### Changed
 
+- **Guided import report**: links to documents you left out in review are counted apart as
+  expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
   "Imported memory" for every import; the name stays editable.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
@@ -144,6 +179,13 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Long conversations no longer bury short notes in search**: agent conversations, imported chats
+  and imported mail threads are long transcripts that match a query's words and meaning in passing,
+  and could come before the short note that answers it. Hybrid search now counts a transcript half,
+  so it comes first only when it matches clearly better; `--words` and `--meaning` rank as before.
+- **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
+  skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
+  the command line.
 - **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
   including the default space, now appear in the sidebar the next time the app opens, unless you
   took them off the list.
@@ -204,6 +246,10 @@ belongs to, newest first.
 #### Changed
 
 - `knode spaces` shows each space's icon, which one is the default and where capture is off.
+- **The install script** takes `--prefix <dir>` to put `knode` in `<dir>/bin` instead of
+  `~/.local/bin` (`curl -fsSL https://knode.md/install.sh | sh -s -- --prefix /opt/knode`), on
+  a Mac it says that Homebrew and the Mac app also install `knode`, and it says plainly when no
+  release is published yet.
 
 ### v0.1 - You use it
 

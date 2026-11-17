@@ -13,28 +13,35 @@
 //! `media_type` (`voice_message`, `video_file`, `sticker`...). Media not downloaded are named
 //! "(File not included. Change data exporting settings to download.)".
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde::Deserialize;
+use serde::de::{
+    DeserializeSeed, Deserializer, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor,
+};
 use serde_json::Value;
 
-use super::ChatFormat;
 use super::files::{Files, file_name, join, parent};
 use super::model::{Chat, ChatMessage, Media};
 use super::render::escape_text;
+use super::write::ChatWriter;
+use super::{ChatFormat, ChatImportError};
 
 /// How many bytes of `result.json` are read to tell it is a Telegram export.
 const PEEK_BYTES: u64 = 4 * 1024;
 
-/// The `result.json` of a Telegram export, if the files are one: the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// The `result.json` of a Telegram export, if the files are one: in `root` (see
+/// [`super::in_root`]), the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     let candidate = match &files.single {
         Some(single) if single.eq_ignore_ascii_case("result.json") => Some(single.clone()),
         Some(_) => None,
         None => files
             .names()
             .iter()
-            .filter(|n| file_name(n) == "result.json")
+            .filter(|n| super::in_root(n, root) && file_name(n) == "result.json")
             .min_by_key(|n| (n.matches('/').count(), n.len()))
             .cloned(),
     }?;
@@ -46,28 +53,6 @@ pub(crate) fn locate(files: &mut Files) -> Option<String> {
             || head.contains("\"personal_information\"")
             || head.contains("core.telegram.org"));
     telegram.then_some(candidate)
-}
-
-#[derive(Debug, Deserialize)]
-struct Export {
-    #[serde(default)]
-    chats: Option<ChatList>,
-    #[serde(default)]
-    left_chats: Option<ChatList>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    id: Option<Value>,
-    #[serde(default)]
-    messages: Option<Vec<Message>>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ChatList {
-    #[serde(default)]
-    list: Vec<SingleChat>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -159,38 +144,224 @@ struct PollAnswer {
     voters: u64,
 }
 
-/// Reads the chats of the export whose `result.json` is `file`.
-pub(crate) fn read(files: &mut Files, file: &str) -> Result<Vec<Chat>, super::ChatImportError> {
-    let reader = files.open_file(file)?;
-    let export: Export = serde_json::from_reader(reader).map_err(|error| match error.is_io() {
-        true => super::ChatImportError::Io(error.into()),
-        false => super::ChatImportError::Json {
+/// The most bytes of `result.json` read for one chat. An account export is read one chat at a
+/// time, each written before the next is read, so it can be far larger than this; an export
+/// of one chat is one chat.
+pub(crate) const MAX_CHAT_SIZE: u64 = super::files::MAX_FILE_SIZE;
+
+/// Imports the chats of the export whose `result.json` is `file`, read from `source` (the
+/// export opened a second time), with their media from `files`: each chat is written as soon
+/// as it is read, so only one is in memory at a time.
+pub(crate) fn import(
+    source: &mut Files,
+    file: &str,
+    files: &mut Files,
+    writer: &mut ChatWriter<'_>,
+) -> Result<(), ChatImportError> {
+    import_with_limit(source, file, files, writer, MAX_CHAT_SIZE)
+}
+
+fn import_with_limit(
+    source: &mut Files,
+    file: &str,
+    files: &mut Files,
+    writer: &mut ChatWriter<'_>,
+    limit: u64,
+) -> Result<(), ChatImportError> {
+    let dir = parent(file).to_string();
+    let mut redacted = 0;
+    let mut write = |mut single: SingleChat| -> Result<(), ChatImportError> {
+        for m in single.messages.iter_mut().flatten() {
+            redacted += redact(m);
+        }
+        if let Some(chat) = chat(single, &dir, files) {
+            writer.write(&chat, files)?;
+        }
+        Ok(())
+    };
+    let read = Rc::new(Cell::new(0));
+    let reader = std::io::BufReader::new(source.open_file_counted(file, limit, read.clone())?);
+    let mut failed = None;
+    let mut single = None;
+    let mut json = serde_json::Deserializer::from_reader(reader);
+    let parsed = ExportSeed {
+        each: &mut write,
+        failed: &mut failed,
+        single: &mut single,
+        read: &read,
+    }
+    .deserialize(&mut json)
+    .and_then(|()| json.end());
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    parsed.map_err(|error| match error.is_io() {
+        true => ChatImportError::Io(error.into()),
+        false => ChatImportError::Json {
             file: file.to_string(),
             error,
         },
     })?;
-    let dir = parent(file).to_string();
-    let mut chats = Vec::new();
-    let lists = [export.chats, export.left_chats];
-    let mut all: Vec<SingleChat> = lists
-        .into_iter()
-        .flatten()
-        .flat_map(|list| list.list)
-        .collect();
-    if export.messages.is_some() {
-        all.push(SingleChat {
-            name: export.name,
-            kind: export.kind,
-            id: export.id,
-            messages: export.messages,
-        });
+    if let Some(single) = single {
+        write(single)?;
     }
-    for single in all {
-        if let Some(chat) = chat(single, &dir, files) {
-            chats.push(chat);
+    super::note_redacted(&mut writer.report, redacted);
+    Ok(())
+}
+
+/// Reads `result.json`: the chats of `chats.list` and `left_chats.list` are handed to `each`
+/// one by one as they are read, and the chat of an export of one chat is kept in `single`.
+struct ExportSeed<'a, F> {
+    each: &'a mut F,
+    failed: &'a mut Option<ChatImportError>,
+    single: &'a mut Option<SingleChat>,
+    read: &'a Rc<Cell<u64>>,
+}
+
+impl<'de, F> DeserializeSeed<'de> for ExportSeed<'_, F>
+where
+    F: FnMut(SingleChat) -> Result<(), ChatImportError>,
+{
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de, F> Visitor<'de> for ExportSeed<'_, F>
+where
+    F: FnMut(SingleChat) -> Result<(), ChatImportError>,
+{
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a Telegram Desktop export")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let mut chat = SingleChat::default();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "chats" | "left_chats" => map.next_value_seed(ListSeed {
+                    each: &mut *self.each,
+                    failed: &mut *self.failed,
+                    read: self.read,
+                })?,
+                "name" => chat.name = map.next_value()?,
+                "type" => chat.kind = map.next_value()?,
+                "id" => chat.id = map.next_value()?,
+                "messages" => chat.messages = map.next_value()?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if chat.messages.is_some() {
+            *self.single = Some(chat);
+        }
+        Ok(())
+    }
+}
+
+/// `{ "list": [...] }` of chats, each handed to `each` as soon as it is read.
+struct ListSeed<'a, F> {
+    each: &'a mut F,
+    failed: &'a mut Option<ChatImportError>,
+    read: &'a Rc<Cell<u64>>,
+}
+
+impl<'de, F> DeserializeSeed<'de> for ListSeed<'_, F>
+where
+    F: FnMut(SingleChat) -> Result<(), ChatImportError>,
+{
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de, F> Visitor<'de> for ListSeed<'_, F>
+where
+    F: FnMut(SingleChat) -> Result<(), ChatImportError>,
+{
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a list of chats")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while let Some(key) = map.next_key::<String>()? {
+            if key == "list" {
+                map.next_value_seed(ListSeed {
+                    each: &mut *self.each,
+                    failed: &mut *self.failed,
+                    read: self.read,
+                })?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        // The limit is on each chat: the count starts again after every one.
+        self.read.set(0);
+        while let Some(chat) = seq.next_element::<SingleChat>()? {
+            if let Err(error) = (self.each)(chat) {
+                *self.failed = Some(error);
+                return Err(A::Error::custom("the import stopped"));
+            }
+            self.read.set(0);
+        }
+        Ok(())
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+}
+
+/// Replaces the secrets in what a message says (its text, the parts of it, their links and
+/// a poll), and says how many there were: the text and its parts say the same, so the more of
+/// the two counts.
+fn redact(m: &mut Message) -> usize {
+    fn one(text: &mut String) -> usize {
+        let (out, n) = crate::redact::redact_tokens(text);
+        if n > 0 {
+            *text = out;
+        }
+        n
+    }
+    fn value(v: &mut Value) -> usize {
+        match v {
+            Value::String(s) => one(s),
+            Value::Array(parts) => parts.iter_mut().map(value).sum(),
+            Value::Object(fields) => fields
+                .iter_mut()
+                .filter(|(k, _)| matches!(k.as_str(), "text" | "href"))
+                .map(|(_, v)| value(v))
+                .sum(),
+            _ => 0,
         }
     }
-    Ok(chats)
+    let in_text = value(&mut m.text);
+    let mut in_parts = 0;
+    for e in m.text_entities.iter_mut().flatten() {
+        in_parts += one(&mut e.text);
+        in_parts += e.href.as_mut().map_or(0, one);
+    }
+    let mut n = in_text.max(in_parts);
+    if let Some(poll) = &mut m.poll {
+        n += one(&mut poll.question);
+        for answer in &mut poll.answers {
+            n += one(&mut answer.text);
+        }
+    }
+    n
 }
 
 fn chat(single: SingleChat, dir: &str, files: &Files) -> Option<Chat> {
@@ -451,14 +622,22 @@ pub(super) fn entity_markdown(e: &Entity) -> String {
         "italic" => wrap("*"),
         "strikethrough" => wrap("~~"),
         "code" => {
-            let fence = if text.contains('`') { "``" } else { "`" };
-            let pad = if text.contains('`') { " " } else { "" };
+            // A span ends at the first run of as many backticks as opened it: one more than
+            // the longest run in the code cannot be in it. Markdown takes one space off each
+            // end, so the code keeps its own when it starts or ends with a backtick or a space.
+            let fence = "`".repeat(longest_backticks(text) + 1);
+            let pad = if text.contains('`')
+                || (text.starts_with(' ') && text.ends_with(' ') && !text.trim().is_empty())
+            {
+                " "
+            } else {
+                ""
+            };
             format!("{fence}{pad}{text}{pad}{fence}")
         }
         "pre" => {
             // A fence longer than any run of backticks in the code, so the code cannot end it.
-            let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-            let fence = "`".repeat((longest + 1).max(3));
+            let fence = "`".repeat((longest_backticks(text) + 1).max(3));
             let language = e.language.as_deref().unwrap_or("").replace(['`', '\n'], "");
             format!(
                 "\n{fence}{language}\n{}\n{fence}\n",
@@ -485,6 +664,11 @@ pub(super) fn entity_markdown(e: &Entity) -> String {
     }
 }
 
+/// The longest run of backticks in `text`.
+fn longest_backticks(text: &str) -> usize {
+    text.split(|c| c != '`').map(str::len).max().unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +687,10 @@ mod tests {
         assert_eq!(entity_markdown(&entity("bold", " big ")), " **big** ");
         assert_eq!(entity_markdown(&entity("italic", "")), "");
         assert_eq!(entity_markdown(&entity("code", "a`b")), "`` a`b ``");
+        assert_eq!(entity_markdown(&entity("code", "a``b")), "``` a``b ```");
+        assert_eq!(entity_markdown(&entity("code", "`x")), "`` `x ``");
+        assert_eq!(entity_markdown(&entity("code", " x ")), "`  x  `");
+        assert_eq!(entity_markdown(&entity("code", "plain")), "`plain`");
         assert_eq!(entity_markdown(&entity("plain", "[[x]]")), "\\[\\[x\\]\\]");
         assert_eq!(
             entity_markdown(&entity("blockquote", "one\ntwo")),
@@ -527,6 +715,62 @@ mod tests {
         assert_eq!(
             entity_markdown(&link),
             "[the plan](<https://example.com/p>)"
+        );
+    }
+
+    fn account_export(chats: usize, words: usize) -> String {
+        let list: Vec<String> = (1..=chats)
+            .map(|id| {
+                format!(
+                    r#"{{"name":"Chat {id}","type":"personal_chat","id":{id},"messages":[{{"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada","text":"{}"}}]}}"#,
+                    "word ".repeat(words)
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"about":"x","personal_information":{{"first_name":"Ada"}},"chats":{{"about":"y","list":[{}]}},"left_chats":{{"list":[]}}}}"#,
+            list.join(",")
+        )
+    }
+
+    fn import_limited(dir: &std::path::Path, limit: u64) -> Result<usize, ChatImportError> {
+        let mut space = knode_format::Space::create(dir.join("T.knode"), "T").unwrap();
+        let mut writer = ChatWriter {
+            space: &mut space,
+            by: knode_format::Provenance::person("example"),
+            report: super::super::ChatImportReport::new(ChatFormat::Telegram),
+        };
+        let path = dir.join("export");
+        let mut source = Files::open(&path).unwrap();
+        let mut files = Files::open(&path).unwrap();
+        import_with_limit(&mut source, "result.json", &mut files, &mut writer, limit)?;
+        Ok(writer.report.chats.len())
+    }
+
+    #[test]
+    fn reads_an_account_export_one_chat_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("export")).unwrap();
+        // Ten chats of about 2 KB each: the whole file is over the limit, each chat under it.
+        let json = account_export(10, 400);
+        assert!(json.len() > 16 * 1024);
+        std::fs::write(dir.path().join("export/result.json"), &json).unwrap();
+        assert_eq!(import_limited(dir.path(), 16 * 1024).unwrap(), 10);
+
+        // One chat over the limit stops the import and says why.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("export")).unwrap();
+        std::fs::write(
+            dir.path().join("export/result.json"),
+            account_export(1, 8_000),
+        )
+        .unwrap();
+        let error = import_limited(dir.path(), 16 * 1024).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a chat in result.json is larger than"),
+            "{error}"
         );
     }
 

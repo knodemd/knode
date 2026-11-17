@@ -30,6 +30,7 @@ jobs:
       # the permission repository_dispatch needs.
       TAP_DISPATCH_TOKEN: ${{ secrets.TAP_DISPATCH_TOKEN }}
       INPUT_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Send the knode-release event
         run: |
@@ -37,6 +38,18 @@ jobs:
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::notice::$INPUT_VERSION is not a X.Y.Z release, the tap is not updated"
             exit 0
+          fi
+          # A draft made without the Mac job ("Linux only, do not publish") has no Mac
+          # archives, and the formula needs them: never ask the tap to bump to such a release.
+          names="$(gh release view "v$version" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          missing=""
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            asset="knode-v${version}-${target}.tar.gz"
+            grep -Fxq "$asset" <<< "$names" || missing="$missing $asset"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release v$version has no Mac builds (missing:$missing), so the Homebrew tap is not updated. It was probably a Linux-only draft published by mistake: turn it back into a draft (gh release edit v$version --draft=true), re-run the failed jobs of the release workflow's run for v$version with the Mac signing secrets set, and publish it again, which runs this workflow; or release a new patch version."
+            exit 1
           fi
           if [ -z "$TAP_DISPATCH_TOKEN" ]; then
             echo "::warning::TAP_DISPATCH_TOKEN is not set, knodemd/homebrew-tap is not updated; run its bump workflow by hand with $version"

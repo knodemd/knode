@@ -1,8 +1,9 @@
 name: release
 
 # Builds the knode binary for every platform when a version tag is pushed, and
-# creates a draft GitHub Release with the archives and their checksums. Publishing the
-# draft runs homebrew.yml, which asks knodemd/homebrew-tap to update.
+# creates a draft GitHub Release with the archives and their checksums. The Linux builds
+# do not need the Mac signing secrets: without them the draft has the Linux archives only.
+# Publishing the draft runs homebrew.yml, which asks knodemd/homebrew-tap to update.
 # The process is described in the handbook:
 # https://github.com/knodemd/handbook/blob/main/07-releasing.md
 
@@ -54,9 +55,9 @@ jobs:
     name: Build macOS (Apple silicon, Intel, universal)
     needs: version
     runs-on: macos-26
-    # The Linux jobs do not depend on this one: without the Mac credentials they still build,
-    # but this job fails and no draft release is created, so there is never an unsigned Mac
-    # download. Each secret is passed only to the steps that use it.
+    # The Linux jobs do not depend on this one. Without the Mac credentials this job fails
+    # before it builds anything, so there is never an unsigned Mac download, and the draft
+    # release gets the Linux archives only. Each secret is passed only to the steps that use it.
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -347,12 +348,18 @@ jobs:
   release:
     name: Create the draft release
     needs: [version, macos, linux]
+    # Runs when every Linux build passed, whatever happened to the Mac job. A Mac job that
+    # failed uploads nothing, so the draft then has the Linux archives only, and its title and
+    # notes say it must not be published. Re-running the failed jobs once the Mac secrets are
+    # set adds the Mac builds to the same draft.
+    if: ${{ !cancelled() && needs.version.result == 'success' && needs.linux.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      MACOS_RESULT: ${{ needs.macos.result }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -363,39 +370,143 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Check the archives
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          missing=0
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                        x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            for file in "knode-v${VERSION}-${target}.tar.gz" "knode-v${VERSION}-${target}.tar.gz.sha256"; do
+              [ -f "$file" ] || { echo "::error::$file is missing"; missing=1; }
+            done
+          done
+          mac=(knode-v"${VERSION}"-*-apple-darwin.tar.gz* Knode-"${VERSION}".dmg*)
+          if [ "$MACOS_RESULT" = success ]; then
+            for target in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
+              for file in "knode-v${VERSION}-${target}.tar.gz" "knode-v${VERSION}-${target}.tar.gz.sha256"; do
+                [ -f "$file" ] || { echo "::error::$file is missing"; missing=1; }
+              done
+            done
+            for file in "Knode-${VERSION}.dmg" "Knode-${VERSION}.dmg.sha256"; do
+              [ -f "$file" ] || { echo "::error::$file is missing"; missing=1; }
+            done
+          else
+            # Never ship part of a Mac job that did not pass.
+            if [ "${#mac[@]}" -gt 0 ]; then
+              rm -f -- "${mac[@]}"
+            fi
+            echo "::warning::The macOS job did not pass ($MACOS_RESULT): the draft has the Linux builds only. Set the Mac signing secrets and re-run the failed jobs to add the Mac builds."
+          fi
+          [ "$missing" = 0 ]
+          ls -l
+
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum knode-*.tar.gz Knode-*.dmg > SHA256SUMS
+          shopt -s nullglob
+          files=(knode-*.tar.gz Knode-*.dmg)
+          sha256sum "${files[@]}" > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Release notes from the changelog
+      - name: Release notes
+        shell: bash
         run: |
           # The section of CHANGELOG.md for this version, without its heading.
           if [ -f CHANGELOG.md ]; then
             awk -v v="$VERSION" '
               /^## / { if (found) exit; if (index($0, "[" v "]") || $2 == v) { found = 1; next } }
               found { print }
-            ' CHANGELOG.md > dist/NOTES.md
+            ' CHANGELOG.md > dist/CHANGES.md
           fi
-          if [ -s dist/NOTES.md ]; then
+          if [ -s dist/CHANGES.md ]; then
             echo "Using the CHANGELOG.md section for $VERSION"
           else
             echo "::warning::No CHANGELOG.md section for $VERSION, the draft starts from generated notes"
-            rm -f dist/NOTES.md
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" \
+              --jq .body > dist/CHANGES.md
           fi
+          # The warning is kept apart: a re-run puts it on the notes of the existing draft.
+          : > dist/WARNING.md
+          if [ "$MACOS_RESULT" != success ]; then
+            {
+              echo "> [!WARNING]"
+              echo "> This draft has the Linux builds only: the macOS job did not pass. Do not publish it."
+              echo "> Set the Mac signing secrets and re-run the failed jobs of the release workflow; the"
+              echo "> Mac builds are then added to this draft and this warning goes away."
+              echo
+            } > dist/WARNING.md
+          fi
+          cat dist/WARNING.md dist/CHANGES.md > dist/NOTES.md
+          rm dist/CHANGES.md
 
-      - name: Create the draft release
+      - name: Create or update the draft release
         working-directory: dist
+        shell: bash
         run: |
-          flags=(--draft --verify-tag --title "Knode ${VERSION}")
-          if [ -f NOTES.md ]; then
-            flags+=(--notes-file NOTES.md)
+          shopt -s nullglob
+          title="Knode ${VERSION}"
+          if [ "$MACOS_RESULT" != success ]; then
+            title="$title (Linux only, do not publish)"
+          fi
+          assets=(knode-*.tar.gz knode-*.tar.gz.sha256 Knode-*.dmg Knode-*.dmg.sha256 SHA256SUMS)
+          # Only "release not found" means there is none yet: any other error (the API, the
+          # network, the token) stops here, so a second draft is never made for the same tag.
+          view_err="$RUNNER_TEMP/release-view.err"
+          if draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> "$view_err")"; then
+            existing=true
+          elif grep -qi 'release not found' "$view_err"; then
+            existing=false
           else
-            flags+=(--generate-notes)
+            cat "$view_err" >&2
+            echo "::error::Could not check whether release $GITHUB_REF_NAME exists; nothing was created or changed"
+            exit 1
           fi
-          if [ "$PRERELEASE" = "true" ]; then
-            flags+=(--prerelease)
+          if [ "$existing" = true ]; then
+            # A re-run of this workflow: fill the draft it made before, never a published release.
+            if [ "$draft" != true ]; then
+              echo "::error::Release $GITHUB_REF_NAME is already published, it is not changed. If it was published without the Mac builds, turn it back into a draft (gh release edit $GITHUB_REF_NAME --draft=true), re-run the failed jobs of this run with the Mac signing secrets set, and publish it again; or release a new patch version."
+              exit 1
+            fi
+            # Keep the notes of the draft, edited by hand or not: only the Linux-only warning
+            # this workflow wrote is replaced, by the one for this run (none if the Mac job passed).
+            # A failed read stops the step: the notes are never replaced by empty ones.
+            body="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+            # Our warning block is dropped wherever it is in the notes, with the blank line after it,
+            # so it is never doubled; any other block is kept as it is.
+            printf '%s\n' "$body" |
+              awk '
+                function flush() {
+                  if (ours) skipblank = 1
+                  else { printf "%s%s", blanks, block; blanks = "" }
+                  block = ""; inblock = 0; ours = 0
+                }
+                inblock && /^>/ { block = block $0 "\n"; if (/Linux builds only/) ours = 1; next }
+                inblock { flush() }
+                /^> \[!WARNING\]\r?$/ { inblock = 1; block = $0 "\n"; next }
+                skipblank && /^\r?$/ { skipblank = 0; next }
+                { skipblank = 0 }
+                # Blank lines at the end are dropped, so they do not pile up run after run.
+                /^\r?$/ { blanks = blanks $0 "\n"; next }
+                { printf "%s", blanks; blanks = ""; print }
+                END { if (inblock) { flush(); } }
+              ' > BODY.md
+            cat WARNING.md BODY.md > NOTES.md
+            if [ "$MACOS_RESULT" != success ]; then
+              # Mac files from an earlier attempt are not covered by this SHA256SUMS.
+              gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
+                --jq '.assets[].name | select(test("-apple-darwin\\.tar\\.gz|^Knode-.*\\.dmg"))' |
+                while read -r name; do
+                  gh release delete-asset "$GITHUB_REF_NAME" "$name" --repo "$GITHUB_REPOSITORY" --yes
+                done
+            fi
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$title" --notes-file NOTES.md --prerelease="$PRERELEASE"
+          else
+            flags=(--draft --verify-tag --title "$title" --notes-file NOTES.md)
+            if [ "$PRERELEASE" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${flags[@]}" "${assets[@]}"
           fi
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${flags[@]}" \
-            knode-*.tar.gz knode-*.tar.gz.sha256 Knode-*.dmg Knode-*.dmg.sha256 SHA256SUMS

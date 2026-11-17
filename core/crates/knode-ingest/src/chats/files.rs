@@ -9,7 +9,8 @@ use std::path::Path;
 use crate::exports::source::Source;
 
 /// The most bytes read from one file of an export: a chat's text or JSON, or a file to attach
-/// (which the space then limits to 100 MB). A larger file, such as a `.zip` made to unpack to
+/// (which the space then limits to 100 MB). The `result.json` of a Telegram account export,
+/// read one chat at a time, has this limit on each chat instead. A larger file, such as a `.zip` made to unpack to
 /// far more than it holds, fails with a clear error instead of filling the memory or the disk.
 pub(crate) const MAX_FILE_SIZE: u64 = 512 * 1024 * 1024;
 
@@ -72,9 +73,55 @@ impl Files {
         }
     }
 
+    /// The files of a folder, opened by their path inside it, without listing them first: for
+    /// a folder as large as the one Messages keeps its attachments in.
+    pub fn unlisted(dir: &Path) -> Files {
+        Files {
+            source: Source::Dir(dir.to_path_buf()),
+            names: BTreeSet::new(),
+            single: None,
+        }
+    }
+
+    /// A folder whose files are opened by their path without listing them first, such as an
+    /// app's media folder with years of files: [`names`](Self::names) is empty.
+    pub fn unlisted_folder(path: &Path) -> io::Result<Files> {
+        Ok(Files {
+            source: Source::open(path)?,
+            names: BTreeSet::new(),
+            single: None,
+        })
+    }
+
     /// Every file, sorted.
     pub fn names(&self) -> &BTreeSet<String> {
         &self.names
+    }
+
+    /// The folder the export's own files sit in: the top, or, when the top holds one folder
+    /// and nothing else (a `.zip` of the export's folder), that folder. A folder that macOS
+    /// adds to the archives it makes, `__MACOSX`, does not count.
+    pub fn root(&self) -> String {
+        if self.single.is_some() {
+            return String::new();
+        }
+        let mut top = self
+            .names
+            .iter()
+            .filter(|n| !n.starts_with("__MACOSX/"))
+            .map(|n| {
+                n.split_once('/')
+                    .map(|(dir, _)| (dir, true))
+                    .unwrap_or((n, false))
+            });
+        let Some((first, is_dir)) = top.next() else {
+            return String::new();
+        };
+        if is_dir && top.all(|(dir, is_dir)| is_dir && dir == first) {
+            first.to_string()
+        } else {
+            String::new()
+        }
     }
 
     /// Whether the export has this file.
@@ -88,6 +135,24 @@ impl Files {
         Ok(Box::new(Limited {
             inner,
             left: MAX_FILE_SIZE,
+            name: name.to_string(),
+        }))
+    }
+
+    /// A reader over one file that fails once it has given `limit` bytes since `read` was last
+    /// set back to zero, and the count it keeps: for a file read in parts, such as the chats of
+    /// a Telegram account export one by one, where the limit is on each part.
+    pub fn open_file_counted(
+        &mut self,
+        name: &str,
+        limit: u64,
+        read: std::rc::Rc<std::cell::Cell<u64>>,
+    ) -> io::Result<Box<dyn Read + '_>> {
+        let inner = self.source.open_file(name)?;
+        Ok(Box::new(Counted {
+            inner,
+            limit,
+            read,
             name: name.to_string(),
         }))
     }
@@ -133,6 +198,33 @@ impl<R: Read> Read for Limited<R> {
             .min(usize::try_from(self.left).unwrap_or(usize::MAX));
         let n = self.inner.read(&mut buf[..max])?;
         self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+/// A reader that fails once `read` passes `limit`; whoever reads sets `read` back to zero.
+struct Counted<R> {
+    inner: R,
+    limit: u64,
+    read: std::rc::Rc<std::cell::Cell<u64>>,
+    name: String,
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let read = self.read.get() + n as u64;
+        self.read.set(read);
+        if read > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "a chat in {} is larger than {} MB, the most Knode reads of one chat",
+                    self.name,
+                    self.limit / (1024 * 1024)
+                ),
+            ));
+        }
         Ok(n)
     }
 }
