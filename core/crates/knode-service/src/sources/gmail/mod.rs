@@ -60,6 +60,8 @@ pub const POLL_EVERY: Duration = Duration::from_secs(60);
 pub const RESYNC_MAX: usize = 2000;
 /// The most messages one fetch reads, whatever the service asks: a fetch must end soon.
 const MAX_PER_FETCH: usize = 100;
+/// How long one fetch reads messages before it stops and says there is more.
+const TIME_BUDGET: Duration = Duration::from_secs(20);
 /// How many history records one fetch reads.
 const HISTORY_PAGE: usize = 100;
 /// How long `answer` waits for the browser to come back.
@@ -107,6 +109,8 @@ pub struct GmailConnector {
     token: Mutex<Option<(String, Instant)>>,
     /// The sign-in under way.
     pending: Mutex<Option<Pending>>,
+    /// How long one fetch reads messages before it stops and says there is more.
+    time_budget: Duration,
 }
 
 impl std::fmt::Debug for GmailConnector {
@@ -173,7 +177,15 @@ impl GmailConnector {
             endpoints,
             token: Mutex::new(None),
             pending: Mutex::new(None),
+            time_budget: TIME_BUDGET,
         }
+    }
+
+    /// The same connector, reading messages for at most `budget` in one fetch (at least one
+    /// message is always read).
+    pub fn with_time_budget(mut self, budget: Duration) -> Self {
+        self.time_budget = budget;
+        self
     }
 
     fn client(&self) -> Result<&GoogleClient, SourceError> {
@@ -312,8 +324,17 @@ impl GmailConnector {
         Ok((email, history))
     }
 
+    /// The labels and the time of a message without its content (`format=minimal`); `None`
+    /// when it is gone.
+    fn minimal(&self, secrets: &dyn Secrets, id: &str) -> Result<Option<Minimal>, SourceError> {
+        Ok(self
+            .api(secrets, &format!("/messages/{}?format=minimal", encode(id)))?
+            .map(|json| (label_ids(&json), internal_date(&json))))
+    }
+
     /// Reads one message in `raw` format; `None` when it is gone, or left out (spam, trash, an
-    /// excluded label, older than the history chosen).
+    /// excluded label, older than the history chosen). Callers check what they know of it
+    /// first ([`left_out`]), so excluded mail is never downloaded.
     fn message(
         &self,
         secrets: &dyn Secrets,
@@ -324,21 +345,8 @@ impl GmailConnector {
         let Some(json) = self.api(secrets, &format!("/messages/{}?format=raw", encode(id)))? else {
             return Ok(None);
         };
-        let labels: Vec<&str> = json["labelIds"]
-            .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        if labels
-            .iter()
-            .any(|l| is_gmail_junk(l) || request.is_excluded(l))
-        {
-            return Ok(None);
-        }
-        let at = json["internalDate"]
-            .as_str()
-            .and_then(|d| d.parse::<i64>().ok())
-            .map(Timestamp);
-        if at.is_some_and(|at| !request.wants(at)) {
+        let labels = label_ids(&json);
+        if left_out(&labels, internal_date(&json), request) {
             return Ok(None);
         }
         let Some(raw) = json["raw"].as_str() else {
@@ -351,11 +359,50 @@ impl GmailConnector {
             .iter()
             .filter_map(|l| match gmail_system_label(l) {
                 Some(name) => name.map(str::to_string),
-                None => Some(names.get(*l).cloned().unwrap_or_else(|| l.to_string())),
+                None => Some(names.get(l).cloned().unwrap_or_else(|| l.to_string())),
             })
             .collect::<Vec<_>>();
         Ok(Some(RawMail::new(bytes, folders)))
     }
+}
+
+/// The labels of a message and when Gmail received it.
+type Minimal = (Vec<String>, Option<Timestamp>);
+
+fn label_ids(json: &Value) -> Vec<String> {
+    json["labelIds"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn internal_date(json: &Value) -> Option<Timestamp> {
+    json["internalDate"]
+        .as_str()
+        .and_then(|d| d.parse::<i64>().ok())
+        .map(Timestamp)
+}
+
+/// Whether a message with these labels, received at `at`, stays out: spam, trash, an excluded
+/// label, or older than the history chosen.
+fn left_out(labels: &[String], at: Option<Timestamp>, request: &FetchRequest<'_>) -> bool {
+    labels
+        .iter()
+        .any(|l| is_gmail_junk(l) || request.is_excluded(l))
+        || at.is_some_and(|at| !request.wants(at))
+}
+
+/// A message to read, and its labels when the history already said them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Queued {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<String>>,
 }
 
 fn history_id(value: &Value) -> Option<String> {
@@ -396,6 +443,10 @@ struct GmailCursor {
     /// When a run last read everything there was, in milliseconds since 1970.
     #[serde(default)]
     synced_at: i64,
+    /// Messages listed or added but not read yet: a fetch stops after its time and item
+    /// budget, and the next one reads these first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queue: Vec<Queued>,
 }
 
 impl GmailCursor {
@@ -493,7 +544,6 @@ impl Connector for GmailConnector {
             .cursor
             .and_then(|c| serde_json::from_str::<GmailCursor>(c.as_str()).ok())
             .filter(|c| c.account == account && !c.history.is_empty());
-        let mut ids: Vec<String> = Vec::new();
         let mut more = false;
         if cursor.is_none() {
             // The history from before the listing, so nothing that arrives meanwhile is lost.
@@ -511,10 +561,12 @@ impl Connector for GmailConnector {
                     left: None,
                 }),
                 synced_at: 0,
+                queue: Vec::new(),
             });
         }
         let mut cursor = cursor.unwrap_or_default();
-        if cursor.listing.is_none() {
+        let mut ids: Vec<Queued> = Vec::new();
+        if cursor.queue.is_empty() && cursor.listing.is_none() {
             let mut path = format!(
                 "/history?startHistoryId={}&historyTypes=messageAdded&maxResults={HISTORY_PAGE}",
                 encode(&cursor.history)
@@ -535,7 +587,14 @@ impl Connector for GmailConnector {
                             .unwrap_or_default()
                         {
                             if let Some(id) = added["message"]["id"].as_str() {
-                                ids.push(id.to_string());
+                                // The history says the labels: no need to ask again.
+                                let labels = added["message"]["labelIds"]
+                                    .is_array()
+                                    .then(|| label_ids(&added["message"]));
+                                ids.push(Queued {
+                                    id: id.to_string(),
+                                    labels,
+                                });
                             }
                         }
                     }
@@ -570,7 +629,9 @@ impl Connector for GmailConnector {
                 }
             }
         }
-        if let Some(mut listing) = cursor.listing.take() {
+        if cursor.queue.is_empty()
+            && let Some(mut listing) = cursor.listing.take()
+        {
             let wanted = listing.left.map_or(budget, |left| left.min(budget));
             let mut path = format!("/messages?maxResults={wanted}&includeSpamTrash=false");
             if let Some(query) = &listing.query {
@@ -590,29 +651,67 @@ impl Connector for GmailConnector {
             if let Some(left) = &mut listing.left {
                 *left = left.saturating_sub(listed.len());
             }
-            ids.extend(listed);
+            ids.extend(listed.into_iter().map(|id| Queued { id, labels: None }));
             listing.page = json["nextPageToken"].as_str().map(str::to_string);
             if listing.page.is_some() && listing.left != Some(0) {
                 cursor.listing = Some(listing);
                 more = true;
             }
         }
-        let names: BTreeMap<String, String> = if ids.is_empty() {
-            BTreeMap::new()
-        } else {
-            self.labels(secrets)?
-                .into_iter()
-                .map(|l| (l.id, l.name))
-                .collect()
-        };
-        let mut seen = HashSet::new();
+        // What is new, after what an earlier run left to read, each once.
+        let mut queue = std::mem::take(&mut cursor.queue);
+        let mut seen: HashSet<String> = queue.iter().map(|q| q.id.clone()).collect();
+        queue.extend(ids.into_iter().filter(|q| seen.insert(q.id.clone())));
+        let started = Instant::now();
+        let mut names: Option<BTreeMap<String, String>> = None;
+        let mut asked = 0;
         let mut mails = Vec::new();
-        for id in ids {
-            if seen.insert(id.clone())
-                && let Some(mail) = self.message(secrets, &id, &names, request)?
+        let mut queue: std::collections::VecDeque<Queued> = queue.into();
+        // At least one message per fetch, then until the item or time budget is spent.
+        while asked == 0 || (asked < budget && started.elapsed() < self.time_budget) {
+            let Some(queued) = queue.pop_front() else {
+                break;
+            };
+            // Labels first: a message left out (spam, trash, an excluded label, too old) is
+            // never downloaded. The listing leaves spam and trash out already, so labels are
+            // asked for only when something is excluded.
+            let mut at = None;
+            let labels = match queued.labels {
+                Some(labels) => Some(labels),
+                None if !request.excluded.is_empty() => {
+                    asked += 1;
+                    match self.minimal(secrets, &queued.id)? {
+                        Some((labels, time)) => {
+                            at = time;
+                            Some(labels)
+                        }
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
+            if let Some(labels) = &labels
+                && left_out(labels, at, request)
             {
+                continue;
+            }
+            if names.is_none() {
+                names = Some(
+                    self.labels(secrets)?
+                        .into_iter()
+                        .map(|l| (l.id, l.name))
+                        .collect(),
+                );
+            }
+            asked += 1;
+            let names = names.as_ref().expect("the labels were read");
+            if let Some(mail) = self.message(secrets, &queued.id, names, request)? {
                 mails.push(mail);
             }
+        }
+        cursor.queue = queue.into();
+        if !cursor.queue.is_empty() {
+            more = true;
         }
         if !more {
             cursor.synced_at = Timestamp::now().0;
