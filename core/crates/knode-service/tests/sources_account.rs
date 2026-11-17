@@ -21,6 +21,11 @@ struct Account {
     code_sent: bool,
     signed_in: bool,
     sign_outs: usize,
+    /// While set, the next sign-in step waits until a message comes through it, like a slow
+    /// network.
+    hold: Option<std::sync::mpsc::Receiver<()>>,
+    /// Whether a sign-in step is waiting on `hold` now.
+    waiting: bool,
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +63,15 @@ impl Connector for Chatty {
         step: SignInStep,
         _secrets: &dyn Secrets,
     ) -> Result<SignInState, SourceError> {
+        let hold = {
+            let mut a = self.0.lock().unwrap();
+            a.waiting = a.hold.is_some();
+            a.hold.take()
+        };
+        if let Some(hold) = hold {
+            let _ = hold.recv();
+            self.0.lock().unwrap().waiting = false;
+        }
         let mut a = self.0.lock().unwrap();
         match step {
             SignInStep::Start { .. } => {
@@ -188,4 +202,42 @@ fn disconnecting_the_last_space_signs_out() {
     let account = f.fake.0.lock().unwrap();
     assert_eq!(account.sign_outs, 1);
     assert!(!account.signed_in);
+}
+
+#[test]
+fn a_slow_sign_in_step_does_not_block_the_space() {
+    let f = Fixture::new();
+    let (release, hold) = std::sync::mpsc::channel();
+    f.fake.0.lock().unwrap().hold = Some(hold);
+    let socket = f.dir.path().join("home/service.sock");
+    let signing = std::thread::spawn(move || {
+        Client::connect(socket).unwrap().sources_sign_in(
+            ID,
+            SignInStep::Start {
+                account: "+34600000000".into(),
+            },
+        )
+    });
+    let start = std::time::Instant::now();
+    while !f.fake.0.lock().unwrap().waiting {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // While the step waits for its network, the space answers other calls.
+    let (done, answered) = std::sync::mpsc::channel();
+    let socket = f.dir.path().join("home/service.sock");
+    let space = f.space("Personal");
+    std::thread::spawn(move || {
+        let client = Client::connect(socket).unwrap();
+        let listed = client.sources_list(&space).is_ok();
+        let connected = client.sources_connect(&space, ID, None, &me()).is_ok();
+        let _ = done.send(listed && connected);
+    });
+    let ok = answered
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the space answered while a sign-in step was waiting");
+    assert!(ok);
+    release.send(()).unwrap();
+    let sent = signing.join().unwrap().unwrap();
+    assert!(matches!(sent, SignInState::CodeSent { .. }));
 }

@@ -198,6 +198,12 @@ pub struct Config {
     /// Telegram...). On when left out. See [`Config::sources_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<bool>,
+    /// Whether connectors may keep their secrets (a session, a token, an app password) in a
+    /// file only its owner can read in the Knode home, on a system with no credential store
+    /// (Linux without a Secret Service). Off when left out: connectors then refuse to sign in
+    /// there. See [`Config::source_secrets_in_files`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_secrets_in_files: Option<bool>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -214,6 +220,13 @@ impl Config {
     /// itself.
     pub fn sources_enabled(&self) -> bool {
         self.sources.unwrap_or(true) && self.capture_enabled()
+    }
+
+    /// Whether connectors may keep their secrets in a file where the system has no credential
+    /// store: `source_secrets_in_files = true` in `config.toml`, off by default. Secrets belong
+    /// in the system keychain; this is only for a person who chose otherwise.
+    pub fn source_secrets_in_files(&self) -> bool {
+        self.source_secrets_in_files.unwrap_or(false)
     }
 
     /// Whether search by meaning is on: `embeddings` in `config.toml`, on unless it is `"off"`.
@@ -386,6 +399,18 @@ pub fn resolve_space_from_env(flag: Option<&Path>, config: &Config) -> Result<Re
     resolve_space(flag, env.as_deref(), config)
 }
 
+/// Whether `path` is a space put aside by onboarding's archive: `<name>-archive-<digits>.knode`.
+/// Listings show such spaces as archived and leave them out of names and sidebars.
+pub fn is_archived_space(path: &Path) -> bool {
+    path.file_stem()
+        .map(|s| s.to_string_lossy())
+        .and_then(|stem| {
+            stem.rsplit_once("-archive-")
+                .map(|(_, stamp)| !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +520,13 @@ mod tests {
     }
 
     #[test]
+    fn source_secrets_stay_out_of_files_unless_asked() {
+        assert!(!Config::default().source_secrets_in_files());
+        let config: Config = toml::from_str("source_secrets_in_files = true\n").unwrap();
+        assert!(config.source_secrets_in_files());
+    }
+
+    #[test]
     fn capture_settings() {
         assert!(Config::default().capture_enabled());
         let config: Config =
@@ -554,5 +586,20 @@ mod tests {
             paths.spaces_in_dir().unwrap(),
             vec![paths.space_path("A"), paths.space_path("B")]
         );
+    }
+
+    #[test]
+    fn archived_spaces_are_recognised_by_name() {
+        use std::path::Path;
+        assert!(super::is_archived_space(Path::new(
+            "/k/Work-archive-1794871951073089000.knode"
+        )));
+        assert!(!super::is_archived_space(Path::new("/k/Work.knode")));
+        assert!(!super::is_archived_space(Path::new(
+            "/k/Work-archive-notes.knode"
+        )));
+        assert!(!super::is_archived_space(Path::new(
+            "/k/Work-archive-.knode"
+        )));
     }
 }

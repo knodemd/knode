@@ -73,14 +73,15 @@ pub use chunking::{
 };
 pub use embeddings::{
     ChunkVector, DEFAULT_HYBRID_RESULTS, EmbeddingModel, EmbeddingModelSpec, HYBRID_LIST_SIZE,
-    HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, VectorHit, rrf_score,
+    HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, TRANSCRIPT_KINDS,
+    TRANSCRIPT_WEIGHT, VectorHit, rrf_score,
 };
 pub use error::{Error, Result};
 pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNode};
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};
-pub use projects::{AddedFolder, FolderProject, Project, folder_project_name};
+pub use projects::{AddedFolder, FolderProject, PassedOverProject, Project, folder_project_name};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
 pub use types::{

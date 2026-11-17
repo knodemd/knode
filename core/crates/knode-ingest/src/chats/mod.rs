@@ -4,7 +4,7 @@
 //! | --- | --- | --- |
 //! | WhatsApp "Export chat" | `whatsapp` | The `.zip`, its folder, or the `.txt`: `_chat.txt` (iOS) or `WhatsApp Chat with <name>.txt` (Android), in every locale, with the media beside it |
 //! | Slack workspace export | `slack` | The `.zip` or its folder: `users.json`, `channels.json` (and `groups.json`, `mpims.json`, `dms.json`) and a folder of day files per conversation; threads become their own nodes, members `person` nodes |
-//! | Telegram Desktop, JSON | `telegram` | The folder with `result.json` (one chat, or the whole account), or a `.zip` of it, with the media beside it |
+//! | Telegram Desktop, JSON | `telegram` | The folder with `result.json` (one chat, or the whole account, read one chat at a time), or a `.zip` of it, with the media beside it |
 //!
 //! Every chat becomes one node of kind [`CHAT_KIND`]: the messages grouped by day under
 //! `## YYYY-MM-DD` headings, each with its sender and time, and the files of the export
@@ -12,16 +12,24 @@
 //! it and when. Importing the same chat again, or a newer export of it, adds only the messages
 //! after the last one imported: none is written twice.
 //!
+//! What is shaped like a credential in the messages (API keys and tokens in known formats, a
+//! long value of letters and digits after `password:` or `token=`, the password in a URL) is
+//! replaced with `[redacted]`; words people wrote after "Secret:" are kept. The access
+//! token in the private URL of a Slack file is left out, so a credential pasted into a chat is
+//! not stored in the space.
+//!
 //! Everything is read from the files the person gives and written only into the space they
 //! pick; nothing is sent anywhere.
 
 mod files;
+pub mod imessage;
 mod model;
 mod render;
 mod slack;
 mod telegram;
 pub mod telegram_live;
 mod whatsapp;
+pub mod whatsapp_mac;
 mod write;
 
 use std::fmt;
@@ -31,7 +39,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{Provenance, Space};
 
 use crate::exports::{Imported, Skipped};
-use files::Files;
+use files::{Files, file_name};
 use write::ChatWriter;
 
 /// The kind of the node of a chat.
@@ -44,10 +52,18 @@ pub use slack::person_keys;
 
 /// The properties of a chat's node.
 pub mod keys {
-    /// The app: `whatsapp`, `telegram` or `slack`.
+    /// The app: `whatsapp`, `telegram`, `slack` or `imessage`.
     pub const APP: &str = "chat.app";
     /// The chat's id in the app, or, for apps that have none, one made from its name.
     pub const ID: &str = "chat.id";
+    /// The chat's own id in the app, when Knode read it from the app itself: a WhatsApp JID
+    /// (`<number>@s.whatsapp.net`, `<id>@g.us`). Exports carry none; a chat is found by its JID
+    /// first and by [`ID`] when no node has it, and the JID is then stored on that node.
+    pub const JID: &str = "chat.jid";
+    /// Where the last message written arrived in the app, when the app numbers its messages in
+    /// that order (WhatsApp for Mac: the message's `Z_PK`). Messages past it are new, whenever
+    /// they were sent.
+    pub const LAST_SEQ: &str = "chat.last_seq";
     /// What the chat is: `personal`, `group`, `channel`, `private-channel` or `thread`.
     pub const TYPE: &str = "chat.type";
     /// Who wrote in it, separated by `, `.
@@ -78,22 +94,26 @@ pub enum ChatFormat {
     Telegram,
     /// A Slack workspace export.
     Slack,
+    /// iMessage, read live from the Messages database of this Mac ([`imessage`]), not from an
+    /// export.
+    IMessage,
 }
 
 impl ChatFormat {
-    /// Every format.
+    /// Every export format.
     pub const ALL: [ChatFormat; 3] = [
         ChatFormat::WhatsApp,
         ChatFormat::Telegram,
         ChatFormat::Slack,
     ];
 
-    /// Its id: `whatsapp`, `telegram` or `slack`.
+    /// Its id: `whatsapp`, `telegram`, `slack` or `imessage`.
     pub fn id(self) -> &'static str {
         match self {
             ChatFormat::WhatsApp => "whatsapp",
             ChatFormat::Telegram => "telegram",
             ChatFormat::Slack => "slack",
+            ChatFormat::IMessage => imessage::APP,
         }
     }
 }
@@ -104,6 +124,7 @@ impl fmt::Display for ChatFormat {
             ChatFormat::WhatsApp => "WhatsApp export",
             ChatFormat::Telegram => "Telegram Desktop export",
             ChatFormat::Slack => "Slack export",
+            ChatFormat::IMessage => "iMessage database",
         })
     }
 }
@@ -250,30 +271,145 @@ impl Located {
     }
 }
 
+/// Says in the report how many secrets in the messages were replaced, if any.
+pub(crate) fn note_redacted(report: &mut ChatImportReport, n: usize) {
+    if n > 0 {
+        report.notes.push(format!(
+            "{n} {} in the messages (API keys, tokens, passwords) replaced with {}.",
+            if n == 1 { "secret" } else { "secrets" },
+            crate::REDACTED
+        ));
+    }
+}
+
+/// Finds the export in `files`. Told from the files alone (`format` is `None`), an export is
+/// only one when it is what the person gave: its files at the top, or in the one folder at the
+/// top, and no Markdown notes anywhere in it outside the export's own media folders. A folder of
+/// notes that holds a chat export, wherever it is, is a folder of notes, not that chat. Named,
+/// the format is looked for at any depth, the shallowest first.
 fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
+    let root = match format {
+        Some(_) => None,
+        None => Some(files.root()),
+    };
+    let located = locate_in(files, format, root.as_deref())?;
+    if let Some(root) = &root
+        && files.single.is_none()
+        && has_notes(files, root, located.format())
+    {
+        return None;
+    }
+    Some(located)
+}
+
+fn locate_in(files: &mut Files, format: Option<ChatFormat>, root: Option<&str>) -> Option<Located> {
     let wanted = |f: ChatFormat| format.is_none_or(|w| w == f);
     if wanted(ChatFormat::WhatsApp)
-        && let Some(file) = whatsapp::locate(files)
+        && let Some(file) = whatsapp::locate(files, root)
     {
         return Some(Located::WhatsApp(file));
     }
     if wanted(ChatFormat::Telegram)
-        && let Some(file) = telegram::locate(files)
+        && let Some(file) = telegram::locate(files, root)
     {
         return Some(Located::Telegram(file));
     }
     if wanted(ChatFormat::Slack)
-        && let Some(dir) = slack::locate(files)
+        && let Some(dir) = slack::locate(files, root)
     {
         return Some(Located::Slack(dir));
     }
     None
 }
 
-/// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one.
+/// The folders, in an export's own folder, where it keeps the files sent in its chats: a
+/// Markdown file there was sent in a chat, it is not a note.
+fn media_folders(format: ChatFormat) -> &'static [&'static str] {
+    match format {
+        // Media sit beside the chat's text.
+        ChatFormat::WhatsApp => &[],
+        ChatFormat::Telegram => &[
+            "files",
+            "photos",
+            "video_files",
+            "voice_messages",
+            "round_video_messages",
+            "audio_files",
+            "stickers",
+            "animations",
+            "contacts",
+            // An account export keeps each chat's media in `chats/chat_<n>/`.
+            "chats",
+        ],
+        ChatFormat::Slack => &["__uploads"],
+        // Not an export: Messages is read from its database.
+        ChatFormat::IMessage => &[],
+    }
+}
+
+/// Whether Markdown notes are anywhere in the files, outside the media folders an export of
+/// `format` keeps in `root`.
+fn has_notes(files: &Files, root: &str, format: ChatFormat) -> bool {
+    let media: Vec<String> = media_folders(format)
+        .iter()
+        .map(|dir| format!("{}/", files::join(root, dir)))
+        .collect();
+    files.names().iter().any(|n| {
+        let lower = file_name(n).to_ascii_lowercase();
+        (lower.ends_with(".md") || lower.ends_with(".markdown"))
+            && !media.iter().any(|dir| n.starts_with(dir.as_str()))
+    })
+}
+
+/// A chat export somewhere in the folder or `.zip` at `path` that [`detect_chat_export`] does
+/// not take as what `path` is, such as one inside a folder of notes: its format, and the path
+/// to give [`import_chat_export`] with that format to import it (the `.zip` itself for one
+/// inside a `.zip`).
+pub fn chat_export_inside(path: impl AsRef<Path>) -> Option<(ChatFormat, PathBuf)> {
+    let path = path.as_ref();
+    let mut files = Files::open(path).ok()?;
+    if files.single.is_some() {
+        return None;
+    }
+    let located = ChatFormat::ALL
+        .into_iter()
+        .find_map(|format| locate_in(&mut files, Some(format), None))?;
+    if !path.is_dir() {
+        return Some((located.format(), path.to_path_buf()));
+    }
+    let inner = |name: &str| {
+        let mut out = path.to_path_buf();
+        out.extend(name.split('/').filter(|part| !part.is_empty()));
+        out
+    };
+    Some(match located {
+        Located::WhatsApp(file) => (ChatFormat::WhatsApp, inner(&file)),
+        Located::Telegram(file) => (ChatFormat::Telegram, inner(files::parent(&file))),
+        Located::Slack(dir) => (ChatFormat::Slack, inner(&dir)),
+    })
+}
+
+/// Whether `name`, a path inside the export, may be where an export of `root` keeps its
+/// files: anywhere when `root` is `None`.
+fn in_root(name: &str, root: Option<&str>) -> bool {
+    root.is_none_or(|root| files::parent(name) == root)
+}
+
+/// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one:
+/// told from its files at the top (or in the one folder at the top). A folder with Markdown
+/// notes in it is not a chat export, nor one that only holds an export further down: see
+/// [`chat_export_inside`] for those.
 pub fn detect_chat_export(path: impl AsRef<Path>) -> Option<ChatFormat> {
     let mut files = Files::open(path.as_ref()).ok()?;
     locate(&mut files, None).map(|located| located.format())
+}
+
+/// Whether `path` holds an export of `format`, looked for at any depth, as
+/// [`import_chat_export`] does when it is given the format.
+pub fn is_chat_export(path: impl AsRef<Path>, format: ChatFormat) -> bool {
+    Files::open(path.as_ref())
+        .ok()
+        .is_some_and(|mut files| locate(&mut files, Some(format)).is_some())
 }
 
 /// Imports the chats of an export into `space`, written by `by` with `path` as the source:
@@ -332,6 +468,7 @@ pub fn import_chat_export(
                         writer.report.skip(item, reason);
                     }
                     writer.report.notes.extend(read.note);
+                    note_redacted(&mut writer.report, read.redacted);
                     writer.write(&read.chat, &mut files)?;
                 }
                 Err(conflict) => {
@@ -340,9 +477,10 @@ pub fn import_chat_export(
             }
         }
         Located::Telegram(file) => {
-            for chat in telegram::read(&mut files, &file)? {
-                writer.write(&chat, &mut files)?;
-            }
+            // `result.json` is read from a second handle on the export, while its media are
+            // attached from the first.
+            let mut source = Files::open(path)?;
+            telegram::import(&mut source, &file, &mut files, &mut writer)?;
         }
         Located::Slack(dir) => slack::import(&mut files, &dir, &mut writer)?,
     }
