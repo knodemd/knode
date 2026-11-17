@@ -15,6 +15,51 @@ use crate::{
     actions, setting_keys,
 };
 
+/// A folder checked by [`Space::prepare_folder`], ready to write.
+pub(crate) struct FolderWrite {
+    pub(crate) id: String,
+    exists: bool,
+    pub(crate) kind: String,
+    pub(crate) path: String,
+    capture: &'static str,
+    rules: String,
+}
+
+/// Writes a folder checked by [`Space::prepare_folder`], with its change, in `tx`.
+pub(crate) fn write_folder(
+    tx: &Transaction,
+    write: &FolderWrite,
+    by: &Provenance,
+    now: Timestamp,
+) -> Result<()> {
+    let prov = provenance_id(tx, by)?;
+    let FolderWrite {
+        id,
+        kind,
+        path,
+        capture,
+        rules,
+        ..
+    } = write;
+    if write.exists {
+        tx.execute(
+            "UPDATE folders SET kind = ?2, path = ?3, capture = ?4, rules = ?5,
+                                updated_at = ?6, updated_by = ?7
+             WHERE id = ?1",
+            params![id, kind, path, capture, rules, now.0, prov],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO folders (id, kind, path, capture, rules, created_at, created_by,
+                                  updated_at, updated_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?7)",
+            params![id, kind, path, capture, rules, now.0, prov],
+        )?;
+    }
+    add_change(tx, now, prov, actions::FOLDER_SET, id, None)?;
+    Ok(())
+}
+
 impl Space {
     /// A setting of the space, or `None` when it is not set. See
     /// [`setting_keys`](crate::setting_keys).
@@ -77,6 +122,21 @@ impl Space {
     /// Adds a folder, or changes the one with the given id (or with the same kind and path),
     /// records the change and returns the folder. Only a person can change folders.
     pub fn set_folder(&mut self, spec: &FolderSpec, by: &Provenance) -> Result<Folder> {
+        let write = self.prepare_folder(spec, by)?;
+        let tx = self.conn.transaction()?;
+        write_folder(&tx, &write, by, Timestamp::now())?;
+        tx.commit()?;
+        self.folder(&write.id)?
+            .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))
+    }
+
+    /// Checks a folder to add or change and finds its id, writing nothing: with
+    /// [`write_folder`], for writes that change a folder inside a larger transaction.
+    pub(crate) fn prepare_folder(
+        &mut self,
+        spec: &FolderSpec,
+        by: &Provenance,
+    ) -> Result<FolderWrite> {
         person_only(by, "change the folders of a space")?;
         let kind = check_name("folder kind", spec.kind.trim())?;
         let path = spec.path.trim();
@@ -106,32 +166,18 @@ impl Space {
                 )
                 .optional()?,
         };
-        let now = Timestamp::now();
         let id = match &existing {
             Some(id) => id.clone(),
             None => next_ulid(&mut self.ids).to_string(),
         };
-        let tx = self.conn.transaction()?;
-        let prov = provenance_id(&tx, by)?;
-        if existing.is_some() {
-            tx.execute(
-                "UPDATE folders SET kind = ?2, path = ?3, capture = ?4, rules = ?5,
-                                    updated_at = ?6, updated_by = ?7
-                 WHERE id = ?1",
-                params![id, kind, path, capture, rules, now.0, prov],
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO folders (id, kind, path, capture, rules, created_at, created_by,
-                                      updated_at, updated_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?7)",
-                params![id, kind, path, capture, rules, now.0, prov],
-            )?;
-        }
-        add_change(&tx, now, prov, actions::FOLDER_SET, &id, None)?;
-        tx.commit()?;
-        self.folder(&id)?
-            .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))
+        Ok(FolderWrite {
+            id,
+            exists: existing.is_some(),
+            kind,
+            path: path.to_string(),
+            capture,
+            rules,
+        })
     }
 
     /// Removes a folder and records the change. Nothing captured or imported from it is

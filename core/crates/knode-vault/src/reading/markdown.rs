@@ -108,8 +108,142 @@ const BLOCKS: &[&str] = &[
     "caption",
 ];
 
+/// How deep elements are written as Markdown; below that, their text is written as one
+/// paragraph. Walking the tree is recursive, and a page or a mail can nest elements a hundred
+/// thousand deep.
+const MAX_DEPTH: usize = 128;
+
+thread_local! {
+    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one level down while it lives; `None` when the walk is already [`MAX_DEPTH`] deep.
+struct Level;
+
+impl Level {
+    fn enter() -> Option<Level> {
+        DEPTH.with(|d| {
+            if d.get() >= MAX_DEPTH {
+                None
+            } else {
+                d.set(d.get() + 1);
+                Some(Level)
+            }
+        })
+    }
+}
+
+impl Drop for Level {
+    fn drop(&mut self) {
+        DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+/// The text of a node and everything in it, read without recursion.
+fn flat_text(node: &NodeRef<'_>) -> String {
+    escape_inline(&node.text())
+}
+
+/// How deep elements may nest for the HTML to be parsed as a tree. Deeper HTML is read as text
+/// without its tags: parsing it would take time that grows with the square of the depth.
+const MAX_PARSED_DEPTH: usize = 1000;
+
+/// Elements that have no end tag, or whose end tag is often left out.
+const UNCOUNTED: &[&str] = &[
+    "area", "base", "br", "col", "colgroup", "dd", "dt", "embed", "hr", "img", "input", "li",
+    "link", "meta", "option", "p", "param", "source", "tbody", "td", "tfoot", "th", "thead", "tr",
+    "track", "wbr",
+];
+
+/// How deep the elements of `html` nest, counted from its tags without parsing it, stopping
+/// once it is deeper than `limit`.
+fn nesting(html: &str, limit: usize) -> usize {
+    let bytes = html.as_bytes();
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    while let Some(at) = bytes[i..].iter().position(|b| *b == b'<') {
+        i += at + 1;
+        if html[i..].starts_with("!--") {
+            match html[i..].find("-->") {
+                Some(end) => i += end + 3,
+                None => break,
+            }
+            continue;
+        }
+        let closing = bytes.get(i) == Some(&b'/');
+        let start = if closing { i + 1 } else { i };
+        let name: String = html[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if name.is_empty() || UNCOUNTED.contains(&name.as_str()) {
+            continue;
+        }
+        let end = html[start..].find('>').map(|e| start + e);
+        let self_closing = end.is_some_and(|e| e > 0 && bytes[e - 1] == b'/');
+        if closing {
+            depth = depth.saturating_sub(1);
+        } else if !self_closing {
+            depth += 1;
+            deepest = deepest.max(depth);
+            if deepest > limit {
+                return deepest;
+            }
+        }
+    }
+    deepest
+}
+
+/// The text of HTML without its tags, scripts and styles, as paragraphs: for HTML too deep to
+/// parse.
+fn text_without_tags(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut text = String::with_capacity(html.len() / 2);
+    let mut i = 0;
+    while i < html.len() {
+        let Some(at) = html[i..].find('<') else {
+            text.push_str(&html[i..]);
+            break;
+        };
+        text.push_str(&html[i..i + at]);
+        i += at;
+        let skip_to = ["script", "style"].iter().find_map(|tag| {
+            lower[i + 1..]
+                .starts_with(tag)
+                .then(|| lower[i..].find(&format!("</{tag}")).map(|e| i + e + 2))
+                .flatten()
+        });
+        if let Some(to) = skip_to {
+            i = to;
+        }
+        match html[i..].find('>') {
+            Some(end) => {
+                text.push('\n');
+                i += end + 1;
+            }
+            None => break,
+        }
+    }
+    let text = text
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    text.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .map(|l| escape_line_start(&escape_inline(&l)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// The Markdown of an HTML document or fragment.
 pub(crate) fn from_html(html: &str) -> String {
+    if nesting(html, MAX_PARSED_DEPTH) > MAX_PARSED_DEPTH {
+        return text_without_tags(html);
+    }
     let doc = Document::from(html);
     let root = doc
         .select("body")
@@ -138,6 +272,11 @@ fn is_dropped(node: &NodeRef<'_>) -> bool {
 
 /// Writes the blocks of a container: runs of inline content become paragraphs.
 fn blocks(node: &NodeRef<'_>, out: &mut Vec<String>) {
+    let Some(_level) = Level::enter() else {
+        let mut run = flat_text(node);
+        flush(&mut run, out);
+        return;
+    };
     let mut run = String::new();
     for child in node.children() {
         if is_dropped(&child) || child.is_comment() {
@@ -182,6 +321,11 @@ fn finish_inline(text: &str) -> String {
 }
 
 fn block(node: &NodeRef<'_>, out: &mut Vec<String>) {
+    let Some(_level) = Level::enter() else {
+        let mut run = flat_text(node);
+        flush(&mut run, out);
+        return;
+    };
     match name(node).as_str() {
         h @ ("h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
             let level: usize = h[1..].parse().unwrap_or(2);
@@ -336,6 +480,9 @@ fn inline(node: &NodeRef<'_>) -> String {
     if node.is_text() {
         return escape_inline(&node.text());
     }
+    let Some(_level) = Level::enter() else {
+        return flat_text(node);
+    };
     if !node.is_element() || is_dropped(node) {
         return String::new();
     }
@@ -403,6 +550,32 @@ mod tests {
         assert_eq!(
             plain.split_whitespace().collect::<Vec<_>>(),
             text.split_whitespace().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn deeply_nested_html_does_not_overflow_the_stack() {
+        let depth = 100_000;
+        for tag in ["div", "b", "blockquote"] {
+            let html = format!(
+                "<p>Top</p>{}deep text{}",
+                format!("<{tag}>").repeat(depth),
+                format!("</{tag}>").repeat(depth)
+            );
+            let md = from_html(&html);
+            assert!(md.starts_with("Top"), "{tag}: {}", &md[..md.len().min(80)]);
+            assert!(md.contains("deep text"), "{tag}");
+        }
+        // Deep, but parsed: what is below the depth Knode walks is written as text.
+        let html = format!(
+            "{}<b>deep</b> text{}",
+            "<div>".repeat(900),
+            "</div>".repeat(900)
+        );
+        assert_eq!(from_html(&html), "deep text");
+        assert_eq!(
+            nesting("<div><p>a<br><img src=x/><div>b</div></div>", 10),
+            2
         );
     }
 
