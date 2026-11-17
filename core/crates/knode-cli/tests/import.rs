@@ -35,6 +35,10 @@ fn imports_every_source_told_from_its_path() {
         (fx::bear_backup(&files), "Bear"),
         (fx::notion_zip(&files), "Notion export"),
         (fx::enex(&files), "Evernote export"),
+        (
+            fx::ingest("chats/whatsapp-ios/WhatsApp Chat - Book Club"),
+            "WhatsApp export",
+        ),
     ];
     for (path, format) in &cases {
         let out = sb.ok(&["import", s(path)]);
@@ -51,6 +55,9 @@ fn imports_every_source_told_from_its_path() {
     assert!(out.contains("0 new"), "{out}");
     let out = sb.ok(&["import", s(&fx::enex(&files))]);
     assert!(out.contains(": 0 new, 0 updated, 2 unchanged."), "{out}");
+    let chat = fx::ingest("chats/whatsapp-ios/WhatsApp Chat - Book Club");
+    let out = sb.ok(&["import", "--from", "whatsapp", s(&chat)]);
+    assert!(out.contains(": 0 new, 0 updated, 1 unchanged."), "{out}");
 
     // Each kind of node, by the person.
     let space = knode_format::Space::open(sb.space("work")).unwrap();
@@ -263,5 +270,40 @@ fn preview_needs_no_destination_and_keeps_an_existing_space_unchanged() {
     assert_eq!(
         fs::read_to_string(folder.join("Plan.md")).unwrap(),
         "Review [[Missing]]."
+    );
+}
+
+#[test]
+fn imports_a_chat_and_only_its_new_messages_again() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let chat = fx::ingest("chats/whatsapp-ios/WhatsApp Chat - Book Club");
+    let out = sb.ok(&["import", "--from", "whatsapp", s(&chat)]);
+    assert!(
+        out.contains("(WhatsApp export): 1 new, 0 updated, 0 unchanged, 1 file attached."),
+        "{out}"
+    );
+    assert!(out.contains("\n  new: WhatsApp - Book Club"), "{out}");
+    assert!(out.contains("\n8 messages added."), "{out}");
+    assert!(
+        out.contains("\n2 files named in the chats are not in the export, marked as missing."),
+        "{out}"
+    );
+    let out = sb.ok(&["import", s(&chat), "--json"]);
+    let report: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(report["source"], "whatsapp");
+    assert_eq!(report["unchanged"], 1);
+    assert_eq!(report["created"], 0);
+
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    let nodes = space.find_by_title("WhatsApp - Book Club").unwrap();
+    assert_eq!(nodes.len(), 1);
+    let node = space.get_node(&nodes[0].id).unwrap().unwrap();
+    assert_eq!(node.kind, "chat");
+    assert_eq!(node.created_by.actor, "tester");
+    assert!(
+        node.body.contains("**Grace** (09:16): Yes!"),
+        "{}",
+        node.body
     );
 }

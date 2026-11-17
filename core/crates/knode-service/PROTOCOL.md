@@ -278,6 +278,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
+| `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",

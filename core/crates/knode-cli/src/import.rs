@@ -11,7 +11,7 @@ use knode_service::{ImportOutcome, ImportedNode};
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 12] = [
+pub const FROM: [&str; 13] = [
     "export",
     "markdown",
     "session",
@@ -24,6 +24,7 @@ pub const FROM: [&str; 12] = [
     "bear",
     "notion",
     "evernote",
+    "whatsapp",
 ];
 
 /// How many nodes the summary lists one by one.
