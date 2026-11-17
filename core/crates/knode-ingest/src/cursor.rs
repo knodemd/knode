@@ -7,21 +7,31 @@
 //! - `composerData:<composer id>`: one conversation, with `composerId`, `name` (the title),
 //!   `createdAt` and `lastUpdatedAt` (milliseconds), `modelConfig.modelName`,
 //!   `workspaceIdentifier.uri.fsPath` (the project), `trackedGitRepos[]` (`repoPath`,
-//!   `branches[]` with `branchName` and `lastInteractionAt`), `isBestOfNSubcomposer`, and
-//!   `fullConversationHeadersOnly[]`: the turns in order, each a `bubbleId` and a `type`
-//!   (`1` the person, `2` the agent). Older versions keep the turns inline in `conversation[]`.
-//! - `bubbleId:<composer id>:<bubble id>`: one turn, with `type`, `text`, `createdAt`,
+//!   `branches[]` with `branchName` and `lastInteractionAt`) and `isBestOfNSubcomposer`. The
+//!   turns, in order, are listed as headers, each a `bubbleId` and a `type` (`1` the person, `2`
+//!   the agent), in one of three layouts: inline in `fullConversationHeadersOnly[]`; in chunks,
+//!   when the composer has a `headerLog` (`count` headers in `chunkCount` chunks) and the
+//!   chunks are the JSON arrays in `composerConvHeaders:<composer id>:<chunk, six digits>`; or,
+//!   in older versions, the turns themselves inline in `conversation[]`.
+//! - `bubbleId:<composer id>:<bubble id>`: one turn, with `type`, `text`, `createdAt` (RFC 3339),
 //!   `modelInfo.modelName`, `images[]`, and for a tool call `toolFormerData`: `toolCallId`,
-//!   `name`, `rawArgs` (the input, as a JSON string), `params` and `status`.
+//!   `name`, `rawArgs` (the input, as a JSON string), `params` and `status`. Cursor also keeps
+//!   turns no header lists any more (left over from edits and retries); only listed turns are
+//!   read.
 //!
 //! Newer versions also keep a `composerHeaders` table (`composerId`, `workspaceId`,
 //! `isSubagent`, and a `value` with `workspaceIdentifier`), used to leave out subagents and to
 //! find the project; the folder of `workspaceId` in `User/workspaceStorage` names it otherwise.
+//! The `agentKv:` rows hold what was sent to the model, and are not read.
 //!
 //! The tables, the `composerData` fields and the `composerHeaders` table were checked against a
-//! real Cursor database (structure only). The turn rows (`bubbleId:`) could not be: their
-//! format follows public descriptions, and is read tolerantly. Thinking, tool output, code
-//! blocks and file contents are left out.
+//! real Cursor 3.26 database (structure only). The turn rows and header chunks follow Cursor's
+//! layout as other open-source readers describe it, and are read tolerantly. Thinking, tool
+//! output, code blocks and file contents are left out.
+//!
+//! The conversation starts at its first turn: the composer's `createdAt` can be far from its
+//! turns, so it counts only when no turn has a time. `lastUpdatedAt` can lag behind the turns,
+//! so it only moves the end later.
 //!
 //! A conversation is read again whole when its `composerData` value changes, which happens with
 //! every new turn and when a turn finishes; its version is a hash of that value.
@@ -44,6 +54,7 @@ const COMPOSER: &str = "composerData:";
 /// The key just after every `composerData:` key (`;` follows `:`).
 const COMPOSER_END: &str = "composerData;";
 const BUBBLE: &str = "bubbleId:";
+const HEADER_CHUNK: &str = "composerConvHeaders:";
 
 /// The conversations in the database in `root` (Cursor's `User/globalStorage` folder) that
 /// have at least one turn, without subagents. A missing database gives none.
@@ -65,6 +76,7 @@ pub(crate) fn list(root: &Path) -> io::Result<Vec<SessionFile>> {
                    WHERE key >= ?1 AND key < ?2) \
              WHERE json_valid(v) \
                AND (coalesce(json_array_length(v, '$.fullConversationHeadersOnly'), 0) > 0 \
+                    OR coalesce(json_extract(v, '$.headerLog.count'), 0) > 0 \
                     OR coalesce(json_array_length(v, '$.conversation'), 0) > 0) \
                AND coalesce(json_extract(v, '$.isBestOfNSubcomposer'), 0) = 0",
         )
@@ -163,11 +175,6 @@ pub(crate) fn read(path: &Path, conversation: &mut Conversation) -> io::Result<u
             source: TitleSource::Agent,
         });
     }
-    for key in ["createdAt", "lastUpdatedAt"] {
-        if let Some(at) = any_time(data.get(key)) {
-            conversation.saw_time(at);
-        }
-    }
     if let Some(model) = data
         .pointer("/modelConfig/modelName")
         .and_then(Value::as_str)
@@ -179,12 +186,16 @@ pub(crate) fn read(path: &Path, conversation: &mut Conversation) -> io::Result<u
     conversation.project = project(&connection, &database, &id, &data)?;
 
     let bubbles = bubbles(&connection, &id)?;
-    if let Some(headers) = data
+    let headers = match data
         .get("fullConversationHeadersOnly")
         .and_then(Value::as_array)
         .filter(|headers| !headers.is_empty())
     {
-        for header in headers {
+        Some(headers) => headers.clone(),
+        None => header_chunks(&connection, &id, &data)?,
+    };
+    if !headers.is_empty() {
+        for header in &headers {
             let Some(bubble) = str_field(header, "bubbleId").and_then(|b| bubbles.get(b)) else {
                 continue;
             };
@@ -196,7 +207,56 @@ pub(crate) fn read(path: &Path, conversation: &mut Conversation) -> io::Result<u
             apply_bubble(conversation, bubble, None);
         }
     }
+    // The composer's own times: its start only when no turn had a time, its last update only
+    // to move the end later.
+    if conversation.started_at.is_none() {
+        if let Some(at) = any_time(data.get("createdAt")) {
+            conversation.saw_time(at);
+        }
+    }
+    if let Some(at) = any_time(data.get("lastUpdatedAt")) {
+        if conversation.ended_at.is_some_and(|end| at > end) {
+            conversation.ended_at = Some(at);
+        } else if conversation.ended_at.is_none() {
+            conversation.saw_time(at);
+        }
+    }
     Ok(version)
+}
+
+/// The turn headers of a composer that keeps them in chunks: the arrays in its
+/// `composerConvHeaders:<id>:000000`, `...:000001` and on, up to its `headerLog.chunkCount`, in
+/// order. A chunk that is missing or not JSON is left out.
+fn header_chunks(connection: &Connection, id: &str, data: &Value) -> io::Result<Vec<Value>> {
+    let Some(chunks) = data
+        .pointer("/headerLog/chunkCount")
+        .and_then(Value::as_u64)
+        .filter(|chunks| *chunks > 0)
+    else {
+        return Ok(Vec::new());
+    };
+    let prefix = format!("{HEADER_CHUNK}{id}:");
+    let end = format!("{prefix}{chunks:06}");
+    let mut statement = connection
+        .prepare("SELECT key, value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2 ORDER BY key")
+        .map_err(io::Error::other)?;
+    let rows = statement
+        .query_map([&prefix, &end], |row| {
+            Ok((row.get::<_, String>(0)?, vscdb::bytes(row, 1)))
+        })
+        .map_err(io::Error::other)?;
+    let mut headers = Vec::new();
+    for row in rows {
+        let (key, value) = row.map_err(io::Error::other)?;
+        let suffix = &key[prefix.len()..];
+        if suffix.len() != 6 || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(Value::Array(part)) = serde_json::from_slice::<Value>(&value) {
+            headers.extend(part);
+        }
+    }
+    Ok(headers)
 }
 
 /// Every turn row of a composer, by bubble id. The key range stays on the table's index.
@@ -387,13 +447,16 @@ fn summarise(name: &str, tool: &Value) -> String {
             "target_file",
             "targetFile",
             "relative_workspace_path",
+            "relativeWorkspacePath",
             "file_path",
             "filePath",
             "path",
             "query",
             "pattern",
             "glob_pattern",
+            "globPattern",
             "search_term",
+            "searchTerm",
             "url",
             "explanation",
         ],
