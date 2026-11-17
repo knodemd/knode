@@ -84,14 +84,17 @@ enum Command {
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
     /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
     /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, mail
-    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), or a
-    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`) or a Telegram Desktop
-    /// export in JSON (the folder with `result.json`) or a Slack workspace export.
-    /// Knode tells which from the path; --from says it.
+    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), a
+    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`), a Telegram Desktop
+    /// export in JSON (the folder with `result.json`), a Slack workspace export, or the memory
+    /// Claude Code keeps for each folder (`--from claude-code-memory`), each note linked to the
+    /// project of the space its folder belongs to. Knode tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes`,
-        /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, and
-        /// with `--from readwise-api`.
+        /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, with
+        /// `--from readwise-api`, and with `--from claude-code-memory` to read
+        /// `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` (or give the `.claude` folder
+        /// or its `projects` folder).
         #[arg(value_name = "PATH|URL", required_unless_present = "from")]
         target: Option<String>,
         /// What it is, when Knode should not guess.

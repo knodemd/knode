@@ -152,9 +152,20 @@ belongs to, newest first.
   after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
   `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
   added before this gets its project when it is added again.
+- **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
+  Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
+  become notes of the space, each part of the project that folder belongs to: a project folder of
+  the space, a project made by guided import from that folder, or a project named as the folder.
+  No project is made up: notes whose folder matches none are imported on their own and listed.
+  Importing again updates the same notes, skips memory that did not change, and keeps a note
+  edited in Knode as it is.
 
 #### Changed
 
+- **`knode instructions --apply`** also says when the agent reads the file and what it reads with
+  it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
+  `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
+  request and the project's rules come before memory.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
@@ -189,6 +200,10 @@ belongs to, newest first.
 - **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
   label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
   written that way finds its attachment on import.
+- **Importing one Markdown file** reads its frontmatter as properties instead of text, takes its
+  `title` when it has one, and updates the same note when imported again instead of adding a copy
+  (a note an earlier version imported from it included). Files with the same name in other
+  folders stay notes of their own.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
