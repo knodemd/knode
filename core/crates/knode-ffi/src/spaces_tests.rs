@@ -99,6 +99,11 @@ fn adds_changes_and_removes_folders() {
         added.local.as_deref(),
         Some(project.display().to_string().as_str())
     );
+    // Adding a project folder creates the project node named after it.
+    assert_eq!(added.project_title.as_deref(), Some("site"));
+    assert!(added.project_created);
+    let project_id = added.project_id.clone().unwrap();
+    assert_eq!(space.projects().unwrap().len(), 1);
 
     // Turning capture off keeps the rules that are passed back.
     let mut off = draft("project", &project, &added.rules);
@@ -108,12 +113,15 @@ fn adds_changes_and_removes_folders() {
     assert_eq!(changed.id, added.id);
     assert!(!changed.capture);
     assert!(changed.rules.contains("node_modules"));
+    assert_eq!(changed.project_id.as_deref(), Some(project_id.as_str()));
+    assert!(!changed.project_created);
 
     let sessions = dir.path().join("gone");
     let agent_folder = space
         .set_folder(draft("agent", &sessions, r#"{"agent":"codex"}"#), me())
         .unwrap();
     assert!(agent_folder.missing);
+    assert_eq!(agent_folder.project_id, None);
     assert!(matches!(
         space.set_folder(draft("agent", &sessions, "{}"), me()),
         Err(KnodeError::Invalid { .. })
@@ -131,6 +139,13 @@ fn adds_changes_and_removes_folders() {
     assert!(space.remove_folder(added.id.clone(), me()).unwrap());
     assert!(!space.remove_folder(added.id, me()).unwrap());
     assert_eq!(space.folders().unwrap(), [agent_folder]);
+    // The project stays when its folder goes, and adding the folder again finds it.
+    assert_eq!(space.projects().unwrap().len(), 1);
+    let again = space
+        .set_folder(draft("project", &project, "{}"), me())
+        .unwrap();
+    assert_eq!(again.project_id.as_deref(), Some(project_id.as_str()));
+    assert!(!again.project_created);
 }
 
 #[test]

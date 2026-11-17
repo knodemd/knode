@@ -4,12 +4,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use knode_format::{GrantLevel, Provenance, actions, setting_keys};
+use knode_format::{GrantLevel, NewNode, Provenance, actions, kinds, setting_keys};
 use knode_service::keys::{fingerprint, generate_key};
 use knode_service::protocol::codes;
 use knode_service::{
-    Client, Config, Error, Event, FolderInput, ServiceHandle, SpaceEvent, SpaceEventKind,
-    Subscription, start,
+    ChangeKind, Client, Config, Error, Event, FolderInput, ServiceHandle, SpaceEvent,
+    SpaceEventKind, Subscription, start,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -296,6 +296,97 @@ fn folders_are_listed_added_changed_and_removed() {
             .unwrap()
     );
     assert_eq!(f.person.folders(f.space()).unwrap().len(), 2);
+}
+
+#[test]
+fn a_project_folder_creates_or_finds_its_project() {
+    let f = Fixture::new();
+    let events = f.person.subscribe(Some(&f.space())).unwrap();
+    let site = f.folder("work/site");
+    let input = FolderInput {
+        id: None,
+        kind: "project".into(),
+        path: site.display().to_string(),
+        capture: true,
+        rules: json!({}),
+    };
+    let added = f.person.set_folder(f.space(), &input, &me()).unwrap();
+    let project = added
+        .project
+        .clone()
+        .expect("a project folder has a project");
+    assert!(project.created);
+    assert_eq!(project.node.title, "site");
+    assert_eq!(project.node.kind, kinds::PROJECT);
+    // Every client hears about the new project, as about any new node.
+    loop {
+        match events.recv_timeout(WAIT) {
+            Some(Event::Changed(change)) => {
+                assert_eq!(change.node_id, project.node.id);
+                assert_eq!(change.op, ChangeKind::Create);
+                break;
+            }
+            Some(_) => continue,
+            None => panic!("no event for the new project"),
+        }
+    }
+    let projects = f.person.projects(f.space()).unwrap();
+    assert_eq!(projects.len(), 1);
+
+    // Listed, changed or added again, the folder keeps the same project.
+    let listed = f.person.folders(f.space()).unwrap();
+    assert_eq!(
+        listed[0].project.as_ref().map(|p| p.node.id),
+        Some(project.node.id)
+    );
+    assert!(!listed[0].project.as_ref().unwrap().created);
+    let off = FolderInput {
+        id: Some(added.folder.id.clone()),
+        capture: false,
+        ..input.clone()
+    };
+    let changed = f.person.set_folder(f.space(), &off, &me()).unwrap();
+    assert_eq!(changed.project.map(|p| p.node.id), Some(project.node.id));
+
+    // A project the space has, in another case, is found rather than made again.
+    let tools = f
+        .person
+        .create_node(
+            f.space(),
+            NewNode {
+                kind: kinds::PROJECT.into(),
+                title: "Tools".into(),
+                ..Default::default()
+            },
+            &me(),
+        )
+        .unwrap();
+    let tools_folder = FolderInput {
+        path: f.folder("work/tools").display().to_string(),
+        ..input.clone()
+    };
+    let linked = f
+        .person
+        .set_folder(f.space(), &tools_folder, &me())
+        .unwrap();
+    let linked = linked.project.unwrap();
+    assert!(!linked.created);
+    assert_eq!(linked.node.id, tools.id);
+    assert_eq!(f.person.projects(f.space()).unwrap().len(), 2);
+
+    // Removing the folder keeps the project.
+    assert!(
+        f.person
+            .remove_folder(f.space(), &added.folder.id, &me())
+            .unwrap()
+    );
+    assert!(
+        f.person
+            .get_node(f.space(), &project.node.id)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(f.person.projects(f.space()).unwrap().len(), 2);
 }
 
 #[test]
