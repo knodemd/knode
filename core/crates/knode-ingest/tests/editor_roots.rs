@@ -5,7 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use knode_ingest::{Agent, default_root, default_roots};
+use knode_ingest::{Agent, default_root, default_roots, discover, read_session};
+use serde_json::json;
 
 fn set(variable: &str, value: Option<&Path>) {
     // SAFETY: this is the only test in this binary, so no other thread reads the environment.
@@ -91,5 +92,52 @@ fn finds_editor_agents_in_their_default_folders() {
     assert_eq!(
         default_root(Agent::Cursor),
         Some(PathBuf::from("/elsewhere/cursor"))
+    );
+
+    set("KNODE_CLINE_ROOT", None);
+    set("KNODE_CURSOR_ROOT", None);
+
+    // A classic task in an editor's extension folder, resumed into an SDK session in Cline's
+    // data folder: reading either finds the other, through the default folders.
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    set("HOME", Some(&home));
+    set("CLINE_DIR", None);
+    set("CLINE_DATA_DIR", Some(&dir.path().join("cline-data")));
+    let roots = default_roots(Agent::Cline);
+    let id = "1767348000000";
+    let task = roots[0].join(id);
+    std::fs::create_dir_all(&task).unwrap();
+    std::fs::write(
+        task.join("ui_messages.json"),
+        json!([
+            {"ts": 1_767_348_000_000_i64, "type": "say", "say": "task", "text": "Add a toggle"},
+            {"ts": 1_767_348_001_000_i64, "type": "say", "say": "completion_result", "text": "Added."}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let sessions = roots.last().unwrap().clone();
+    let session = sessions.join(id);
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(
+        session.join(format!("{id}.messages.json")),
+        json!({"version": 1, "agent": "lead", "sessionId": id, "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Add a toggle"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Added."}]},
+            {"role": "user", "content": [{"type": "text", "text": "<user_input mode=\"act\">And a test</user_input>"}]},
+            {"role": "assistant", "ts": 1_767_348_100_000_i64, "content": [{"type": "text", "text": "Test added."}]}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let classic = discover(Agent::Cline, &roots[0]).unwrap().remove(0);
+    let sdk = discover(Agent::Cline, &sessions).unwrap().remove(0);
+    let from_classic = read_session(&classic).unwrap();
+    assert_eq!(from_classic, read_session(&sdk).unwrap());
+    let texts: Vec<String> = from_classic.messages.iter().map(|m| m.text()).collect();
+    assert_eq!(
+        texts,
+        ["Add a toggle", "Added.", "And a test", "Test added."]
     );
 }

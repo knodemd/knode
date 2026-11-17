@@ -39,7 +39,8 @@
 //!   and `workspace_root` (the project), `model`, and `metadata.title`.
 //!
 //! Subagents write their messages in the same folder under their own id, and are not captured.
-//! A classic task resumed on the SDK keeps its id, so both layouts write the same node.
+//! A classic task resumed on the SDK keeps its id: reading either file then reads both, and
+//! gives one conversation, the classic turns and then the SDK's newer ones (see `merge`).
 //!
 //! These layouts follow Cline's and Roo Code's public source; they were not checked against
 //! tasks on disk.
@@ -51,7 +52,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::model::{Conversation, Part, Role, Title, TitleSource, ToolCall};
+use crate::model::{Agent, Conversation, Part, Role, Title, TitleSource, ToolCall};
 use crate::text::{SUMMARY_MAX, any_time, first_str, one_line, str_field};
 
 /// The file each task's conversation is read from.
@@ -75,14 +76,54 @@ pub(crate) fn apply_document(
     path: &Path,
     project: Option<PathBuf>,
 ) {
-    let is_sdk = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(SDK_MESSAGES_SUFFIX));
-    if is_sdk {
+    let agent = conversation.agent;
+    let id = conversation.session_id.clone();
+    if is_sdk_messages(path) {
         apply_sdk_document(conversation, messages, path);
+        if agent != Agent::Cline {
+            return;
+        }
+        let Some(classic_path) = classic_counterpart(path, &conversation.session_id) else {
+            return;
+        };
+        let Some(document) = read_json(&classic_path) else {
+            return;
+        };
+        let mut classic = Conversation::new(agent, conversation.session_id.clone());
+        apply_classic(&mut classic, &document, &classic_path, None);
+        let sdk = std::mem::replace(conversation, Conversation::new(agent, id));
+        *conversation = merge(classic, sdk);
         return;
     }
+    apply_classic(conversation, messages, path, project);
+    if agent != Agent::Cline {
+        return;
+    }
+    let Some(sdk_path) = sdk_counterpart(path, &id) else {
+        return;
+    };
+    let Some(document) = read_json(&sdk_path) else {
+        return;
+    };
+    let mut sdk = Conversation::new(agent, id.clone());
+    apply_sdk_document(&mut sdk, &document, &sdk_path);
+    let classic = std::mem::replace(conversation, Conversation::new(agent, id));
+    *conversation = merge(classic, sdk);
+}
+
+fn is_sdk_messages(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(SDK_MESSAGES_SUFFIX))
+}
+
+/// Applies a whole `ui_messages.json` document of a task folder.
+fn apply_classic(
+    conversation: &mut Conversation,
+    messages: &Value,
+    path: &Path,
+    project: Option<PathBuf>,
+) {
     let task = path.parent().unwrap_or(Path::new(""));
     conversation.project = project.or_else(|| find_project(task, &conversation.session_id));
     conversation.model = model(task);
@@ -92,6 +133,94 @@ pub(crate) fn apply_document(
     for (index, message) in messages.iter().enumerate() {
         apply_message(conversation, message, index == 0);
     }
+}
+
+// A classic task resumed on the SDK
+
+/// The task folder of a classic task an SDK session was resumed from: the session keeps the
+/// task's id. It is looked for next to the session (`<data>/tasks/<id>`), then in every Cline
+/// task folder capture reads. The first found wins, so the result does not depend on which file
+/// changed.
+fn classic_counterpart(sdk_path: &Path, id: &str) -> Option<PathBuf> {
+    let data = sdk_path.parent()?.parent()?.parent()?;
+    let mut candidates = vec![data.join("tasks")];
+    candidates.extend(
+        crate::discover::default_roots(Agent::Cline)
+            .into_iter()
+            .filter(|root| root.file_name().is_some_and(|name| name != SDK_SESSIONS)),
+    );
+    candidates
+        .into_iter()
+        .map(|root| root.join(id).join(UI_MESSAGES))
+        .find(|path| path.is_file())
+}
+
+/// The SDK session a classic task was resumed into, if any: next to the task folder
+/// (`<data>/sessions/<id>`), then in every SDK sessions folder capture reads.
+fn sdk_counterpart(classic_path: &Path, id: &str) -> Option<PathBuf> {
+    let tasks = classic_path.parent()?.parent()?;
+    let mut candidates = Vec::new();
+    if let Some(data) = tasks.parent() {
+        candidates.push(data.join(SDK_SESSIONS));
+    }
+    candidates.extend(
+        crate::discover::default_roots(Agent::Cline)
+            .into_iter()
+            .filter(|root| root.file_name().is_some_and(|name| name == SDK_SESSIONS)),
+    );
+    candidates
+        .into_iter()
+        .map(|root| root.join(id).join(format!("{id}{SDK_MESSAGES_SUFFIX}")))
+        .find(|path| path.is_file())
+}
+
+/// One conversation from a classic task and the SDK session it was resumed into: the classic
+/// turns, then the SDK turns written after the classic task ended. An SDK session resumed from
+/// a classic task starts with a copy of that task's turns, converted; those are left out, so no
+/// turn appears twice. The SDK's title, project and model win when it records them. The same
+/// two files always give the same conversation, whichever was read first.
+fn merge(mut classic: Conversation, sdk: Conversation) -> Conversation {
+    if classic.messages.is_empty() {
+        return sdk;
+    }
+    let start = match classic.ended_at {
+        None => 0,
+        Some(end) => sdk
+            .messages
+            .iter()
+            .position(|m| m.role == Role::Assistant && m.timestamp.is_some_and(|at| at > end))
+            .map_or(sdk.messages.len(), |first| {
+                if first > 0 && sdk.messages[first - 1].role == Role::User {
+                    first - 1
+                } else {
+                    first
+                }
+            }),
+    };
+    for message in sdk.messages.into_iter().skip(start) {
+        match classic.messages.last_mut() {
+            Some(last) if last.role == message.role => {
+                if last.timestamp.is_none() {
+                    last.timestamp = message.timestamp;
+                }
+                last.parts.extend(message.parts);
+            }
+            _ => classic.messages.push(message),
+        }
+    }
+    if sdk.project.is_some() {
+        classic.project = sdk.project;
+    }
+    if sdk.model.is_some() {
+        classic.model = sdk.model;
+    }
+    if sdk.recorded_title.is_some() {
+        classic.recorded_title = sdk.recorded_title;
+    }
+    for at in [sdk.started_at, sdk.ended_at].into_iter().flatten() {
+        classic.saw_time(at);
+    }
+    classic
 }
 
 fn apply_message(conversation: &mut Conversation, message: &Value, first: bool) {

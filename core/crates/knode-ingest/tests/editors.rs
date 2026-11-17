@@ -680,24 +680,38 @@ fn reads_cursor_turn_headers_kept_in_chunks() {
             "conversationMap": {}
         }),
     );
+    // The chunks are read by their numbers, whatever they are: here one starts at 1, one is not
+    // padded, and the last, past a gap, repeats a turn already listed.
     put(
         &cursor.connection,
         "cursorDiskKV",
-        "composerConvHeaders:c-chunked:000000",
+        "composerConvHeaders:c-chunked:000001",
         &json!([{"bubbleId": "h1", "type": 1}, {"bubbleId": "h2", "type": 2}]),
     );
     put(
         &cursor.connection,
         "cursorDiskKV",
-        "composerConvHeaders:c-chunked:000001",
+        "composerConvHeaders:c-chunked:3",
         &json!([{"bubbleId": "h3", "type": 2, "serverBubbleId": "s3"}]),
     );
-    // A chunk past the header log, left from an earlier write, is not read.
     put(
         &cursor.connection,
         "cursorDiskKV",
-        "composerConvHeaders:c-chunked:000002",
-        &json!([{"bubbleId": "stale", "type": 1}]),
+        "composerConvHeaders:c-chunked:000010",
+        &json!([{"bubbleId": "h3", "type": 2}]),
+    );
+    // Not chunks of this composer: another name after the composer id, and another composer.
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked:draft",
+        &json!([{"bubbleId": "h-draft", "type": 1}]),
+    );
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked-2:000000",
+        &json!([{"bubbleId": "h-other", "type": 1}]),
     );
     cursor.bubble(
         "c-chunked",
@@ -719,11 +733,12 @@ fn reads_cursor_turn_headers_kept_in_chunks() {
         json!({"_v": 3, "type": 2, "bubbleId": "h3", "text": "The endpoint answers on /health.",
                "createdAt": "2026-01-02T10:02:00.000Z"}),
     );
-    cursor.bubble(
-        "c-chunked",
-        "stale",
-        json!({"type": 1, "text": "a turn no header lists"}),
-    );
+    for (bubble, text) in [
+        ("h-draft", "a draft turn"),
+        ("h-other", "another composer's turn"),
+    ] {
+        cursor.bubble("c-chunked", bubble, json!({"type": 1, "text": text}));
+    }
     // A turn no header lists any more, left from a retry, is not read either.
     cursor.bubble(
         "c-chunked",
@@ -754,7 +769,8 @@ fn reads_cursor_turn_headers_kept_in_chunks() {
     );
     let markdown = to_markdown(conversation);
     assert!(!markdown.contains("never kept"));
-    assert!(!markdown.contains("no header lists") && !markdown.contains("retried"));
+    assert!(!markdown.contains("draft turn") && !markdown.contains("another composer"));
+    assert!(!markdown.contains("retried"));
     // The start is the first turn, not the composer's creation time; the end is the last turn,
     // which the composer's last update lags behind.
     assert_eq!(
@@ -771,7 +787,7 @@ fn reads_cursor_turn_headers_kept_in_chunks() {
     put(
         &cursor.connection,
         "cursorDiskKV",
-        "composerConvHeaders:c-chunked:000001",
+        "composerConvHeaders:c-chunked:3",
         &json!([{"bubbleId": "h3", "type": 2}, {"bubbleId": "h4", "type": 1}]),
     );
     cursor.bubble(
@@ -796,6 +812,43 @@ fn reads_cursor_turn_headers_kept_in_chunks() {
     assert_eq!(reader.poll().unwrap().records, 1);
     assert_eq!(reader.conversation().messages.len(), 3);
     assert_eq!(reader.conversation().messages[2].text(), "Thanks");
+}
+
+#[test]
+fn a_cursor_row_whose_key_is_not_text_does_not_stop_the_listing() {
+    let dir = TempDir::new().unwrap();
+    let cursor = CursorUser::create(&dir.path().join("User"));
+    cursor.fill();
+    // A key in the composer range that is not valid UTF-8, with a value that looks like a
+    // conversation, and a bubble row of the same kind.
+    let value =
+        json!({"composerId": "x", "fullConversationHeadersOnly": [{"bubbleId": "b1", "type": 1}]});
+    cursor
+        .connection
+        .execute(
+            "INSERT INTO cursorDiskKV VALUES (CAST(X'636F6D706F736572446174613AFFFE' AS TEXT), ?1)",
+            [value.to_string()],
+        )
+        .unwrap();
+    cursor
+        .connection
+        .execute(
+            "INSERT INTO cursorDiskKV VALUES (CAST(X'627562626C6549643A632D6167656E743AFFFE' AS TEXT), ?1)",
+            [json!({"type": 1, "text": "odd"}).to_string()],
+        )
+        .unwrap();
+    cursor
+        .connection
+        .execute(
+            "INSERT INTO composerHeaders (composerId, isSubagent) VALUES (CAST(X'FFFE' AS TEXT), 1)",
+            [],
+        )
+        .unwrap();
+    let files = discover(Agent::Cursor, &cursor.root).unwrap();
+    let ids: Vec<&str> = files.iter().map(|f| f.session_id.as_str()).collect();
+    assert_eq!(ids, ["c-agent", "c-chat"]);
+    let conversation = read_session(&files[0]).unwrap();
+    assert_eq!(conversation.messages.len(), 2);
 }
 
 #[test]
@@ -973,71 +1026,151 @@ fn reads_the_newer_cline_task_messages() {
     assert_eq!(texts.len(), 4);
 }
 
+/// The messages of an SDK session resumed from the classic task of [`cline_messages`]: a
+/// converted copy of the classic turns (without times), then the turns written after resuming.
+fn resumed_sdk_messages() -> Value {
+    json!([
+        {"id": "r1", "role": "user", "content": [{"type": "text", "text": "<task>Add a dark mode toggle</task>"}]},
+        {"id": "r2", "role": "assistant", "content": [{"type": "text", "text": "I will look at the settings page first."}]},
+        {"id": "r3", "role": "user", "content": [{"type": "text", "text": "Yes"}]},
+        {"id": "r4", "role": "assistant", "content": [{"type": "text", "text": "The toggle follows the system setting."}]},
+        {"id": "r5", "role": "user", "content": [{"type": "text", "text": "<user_input mode=\"act\">Now add a test</user_input>"}]},
+        {"id": "r6", "role": "assistant", "ts": 1_767_348_300_000_i64,
+         "modelInfo": {"id": "model-newer", "provider": "example"},
+         "content": [{"type": "text", "text": "Added a test for the toggle."}]}
+    ])
+}
+
+#[test]
+fn a_classic_cline_task_resumed_on_the_sdk_is_one_conversation() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join(".cline/data");
+    let id = "1767348000000";
+    let tasks = data.join("tasks");
+    let classic = task(&tasks, id, cline_messages());
+    let sessions = data.join("sessions");
+    let session = cline_sdk_session(&sessions, id, resumed_sdk_messages());
+
+    let classic_file = discover(Agent::Cline, &tasks).unwrap().remove(0);
+    let sdk_file = discover(Agent::Cline, &sessions).unwrap().remove(0);
+    assert_eq!(classic_file.path, classic.join("ui_messages.json"));
+    assert_eq!(sdk_file.path, session.join(format!("{id}.messages.json")));
+    // Either file gives the same conversation.
+    let from_classic = read_session(&classic_file).unwrap();
+    let from_sdk = read_session(&sdk_file).unwrap();
+    assert_eq!(from_classic, from_sdk);
+
+    let texts: Vec<String> = from_sdk.messages.iter().map(|m| m.text()).collect();
+    assert_eq!(texts.len(), 6, "{texts:?}");
+    assert_eq!(texts[0], "Add a dark mode toggle");
+    assert_eq!(texts[3], "The toggle follows the system setting.");
+    assert_eq!(texts[4], "Now add a test");
+    assert_eq!(texts[5], "Added a test for the toggle.");
+    // The converted copy of the classic turns is not added again.
+    let markdown = to_markdown(&from_sdk);
+    assert_eq!(
+        markdown
+            .matches("I will look at the settings page first.")
+            .count(),
+        1
+    );
+    // The classic tool calls are kept; the SDK's title and model win.
+    assert_eq!(tools(&from_sdk, 1).len(), 4);
+    assert_eq!(from_sdk.title(), "Summarise the README");
+    assert_eq!(from_sdk.model.as_deref(), Some("model-newer"));
+    assert_eq!(from_sdk.project.as_deref(), Some(Path::new(PROJECT)));
+    assert_eq!(
+        from_sdk.started_at.unwrap().to_rfc3339(),
+        "2026-01-02T09:59:58+00:00"
+    );
+    assert_eq!(
+        from_sdk.ended_at.unwrap().to_rfc3339(),
+        "2026-01-02T10:05:00+00:00"
+    );
+
+    // An SDK session with nothing after the classic task adds no turns.
+    cline_sdk_session(
+        &sessions,
+        id,
+        json!([{"id": "q1", "role": "user", "content": [{"type": "text", "text": "Add a dark mode toggle"}]}]),
+    );
+    assert_eq!(read_session(&classic_file).unwrap().messages.len(), 4);
+}
+
 #[test]
 fn captures_cline_sdk_sessions_once_and_follows_them() {
-    let dir = TempDir::new().unwrap();
-    let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
-    let data = dir.path().join(".cline/data");
-    let sessions = data.join("sessions");
-    let id = "1767348000000_abcde";
-    let session = cline_sdk_session(&sessions, id, cline_sdk_messages());
-    // The same task, from before Cline moved to its SDK: a resumed task keeps its id.
-    let tasks = data.join("tasks");
-    task(&tasks, id, cline_messages());
-
-    let mut capture = Capture::open(dir.path().join("state.json"))
-        .unwrap()
-        .with_roots([
-            (Agent::Cline, tasks.clone()),
-            (Agent::Cline, sessions.clone()),
-        ]);
-    let report = capture.sync_all(&mut space).unwrap();
-    assert!(report.failed.is_empty(), "{report:?}");
-    // One conversation, one node.
-    let nodes: std::collections::BTreeSet<_> = report.changes.iter().map(|c| c.node_id).collect();
-    assert_eq!(nodes.len(), 1, "{report:?}");
-    let node_id = nodes.into_iter().next().unwrap();
-    for (key, value) in [
-        (property_keys::CONVERSATION_AGENT, "cline"),
-        (property_keys::CONVERSATION_SESSION, id),
-        (property_keys::CONVERSATION_PROJECT, PROJECT),
-    ] {
-        assert_eq!(
-            space.property(&node_id, key).unwrap().as_deref(),
-            Some(value),
-            "{key}"
-        );
-    }
-    assert!(
-        space
-            .property(&node_id, property_keys::CONVERSATION_STARTED_AT)
+    let id = "1767348000000";
+    let capture_in_order = |sessions_first: bool| {
+        let dir = TempDir::new().unwrap();
+        let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
+        let data = dir.path().join(".cline/data");
+        let sessions = data.join("sessions");
+        let session = cline_sdk_session(&sessions, id, resumed_sdk_messages());
+        // The same task, from before Cline moved to its SDK: a resumed task keeps its id.
+        let tasks = data.join("tasks");
+        task(&tasks, id, cline_messages());
+        let mut roots = vec![(Agent::Cline, tasks), (Agent::Cline, sessions)];
+        if sessions_first {
+            roots.reverse();
+        }
+        let mut capture = Capture::open(dir.path().join("state.json"))
             .unwrap()
-            .is_some()
-    );
-    // The SDK session, read last, holds the whole conversation.
-    assert_eq!(
-        space.get_node(&node_id).unwrap().unwrap().title,
-        "Summarise the README"
-    );
+            .with_roots(roots);
+        let report = capture.sync_all(&mut space).unwrap();
+        assert!(report.failed.is_empty(), "{report:?}");
+        // One conversation, one node.
+        let nodes: std::collections::BTreeSet<_> =
+            report.changes.iter().map(|c| c.node_id).collect();
+        assert_eq!(nodes.len(), 1, "{report:?}");
+        let node_id = nodes.into_iter().next().unwrap();
+        for (key, value) in [
+            (property_keys::CONVERSATION_AGENT, "cline"),
+            (property_keys::CONVERSATION_SESSION, id),
+            (property_keys::CONVERSATION_PROJECT, PROJECT),
+        ] {
+            assert_eq!(
+                space.property(&node_id, key).unwrap().as_deref(),
+                Some(value),
+                "{key}"
+            );
+        }
+        assert!(
+            space
+                .property(&node_id, property_keys::CONVERSATION_STARTED_AT)
+                .unwrap()
+                .is_some()
+        );
+        let node = space.get_node(&node_id).unwrap().unwrap();
+        assert_eq!(node.title, "Summarise the README");
+        assert!(node.body.contains("Add a dark mode toggle"));
+        assert!(node.body.contains("Added a test for the toggle."));
 
-    // Nothing new: nothing written.
-    let again = capture.sync_all(&mut space).unwrap();
-    assert!(again.changes.is_empty(), "{again:?}");
+        // Nothing new: nothing written.
+        let again = capture.sync_all(&mut space).unwrap();
+        assert!(again.changes.is_empty(), "{again:?}");
 
-    // The session grows: the same node is updated.
-    let mut messages = cline_sdk_messages();
-    messages.as_array_mut().unwrap().push(json!(
-        {"id": "m6", "role": "assistant", "ts": 1_767_348_020_000_i64,
-         "content": [{"type": "text", "text": "Started a new task."}]}
-    ));
-    let file = session.join(format!("{id}.messages.json"));
-    fs::write(
-        &file,
-        json!({"version": 1, "agent": "lead", "sessionId": id, "messages": messages}).to_string(),
-    )
-    .unwrap();
-    let report = capture.sync_paths(&mut space, &[file]).unwrap();
-    assert_eq!(report.updated().count(), 1, "{report:?}");
-    assert_eq!(report.created().count(), 0, "{report:?}");
-    assert_eq!(report.updated().next().unwrap().node_id, node_id);
+        // The session grows: the same node is updated, and keeps the classic turns.
+        let mut messages = resumed_sdk_messages();
+        messages.as_array_mut().unwrap().push(json!(
+            {"id": "r7", "role": "assistant", "ts": 1_767_348_400_000_i64,
+             "content": [{"type": "text", "text": "The test passes."}]}
+        ));
+        let file = session.join(format!("{id}.messages.json"));
+        fs::write(
+            &file,
+            json!({"version": 1, "agent": "lead", "sessionId": id, "messages": messages})
+                .to_string(),
+        )
+        .unwrap();
+        let report = capture.sync_paths(&mut space, &[file]).unwrap();
+        assert_eq!(report.updated().count(), 1, "{report:?}");
+        assert_eq!(report.created().count(), 0, "{report:?}");
+        assert_eq!(report.updated().next().unwrap().node_id, node_id);
+        let body = space.get_node(&node_id).unwrap().unwrap().body;
+        assert!(body.contains("I will look at the settings page first."));
+        assert!(body.contains("The test passes."));
+        body
+    };
+    // The node is the same whichever layout is read first.
+    assert_eq!(capture_in_order(false), capture_in_order(true));
 }

@@ -11,7 +11,8 @@
 //!   turns, in order, are listed as headers, each a `bubbleId` and a `type` (`1` the person, `2`
 //!   the agent), in one of three layouts: inline in `fullConversationHeadersOnly[]`; in chunks,
 //!   when the composer has a `headerLog` (`count` headers in `chunkCount` chunks) and the
-//!   chunks are the JSON arrays in `composerConvHeaders:<composer id>:<chunk, six digits>`; or,
+//!   chunks are the JSON arrays in `composerConvHeaders:<composer id>:<chunk number, six
+//!   digits>`, read in numeric order whatever numbers are there; or,
 //!   in older versions, the turns themselves inline in `conversation[]`.
 //! - `bubbleId:<composer id>:<bubble id>`: one turn, with `type`, `text`, `createdAt` (RFC 3339),
 //!   `modelInfo.modelName`, `images[]`, and for a tool call `toolFormerData`: `toolCallId`,
@@ -77,6 +78,7 @@ pub(crate) fn list(root: &Path) -> io::Result<Vec<SessionFile>> {
              WHERE json_valid(v) \
                AND (coalesce(json_array_length(v, '$.fullConversationHeadersOnly'), 0) > 0 \
                     OR coalesce(json_extract(v, '$.headerLog.count'), 0) > 0 \
+                    OR coalesce(json_extract(v, '$.headerLog.chunkCount'), 0) > 0 \
                     OR coalesce(json_array_length(v, '$.conversation'), 0) > 0) \
                AND coalesce(json_extract(v, '$.isBestOfNSubcomposer'), 0) = 0",
         )
@@ -84,7 +86,7 @@ pub(crate) fn list(root: &Path) -> io::Result<Vec<SessionFile>> {
     let rows = statement
         .query_map([COMPOSER, COMPOSER_END], |row| {
             Ok((
-                row.get::<_, String>(0)?,
+                vscdb::text(row, 0),
                 vscdb::bytes(row, 1),
                 row.get::<_, Option<i64>>(2).ok().flatten(),
             ))
@@ -92,8 +94,13 @@ pub(crate) fn list(root: &Path) -> io::Result<Vec<SessionFile>> {
         .map_err(io::Error::other)?;
     let mut files = Vec::new();
     for row in rows {
-        let (key, value, updated) = row.map_err(io::Error::other)?;
-        let id = &key[COMPOSER.len()..];
+        // A row whose key is not text is not a conversation: it is skipped, not fatal.
+        let (Some(key), value, updated) = row.map_err(io::Error::other)? else {
+            continue;
+        };
+        let Some(id) = key.strip_prefix(COMPOSER) else {
+            continue;
+        };
         if id.is_empty() || subagents.contains(id) {
             continue;
         }
@@ -118,11 +125,15 @@ fn subagents(connection: &Connection) -> io::Result<BTreeSet<String>> {
     let mut statement = connection
         .prepare("SELECT composerId FROM composerHeaders WHERE isSubagent = 1")
         .map_err(io::Error::other)?;
-    let ids = statement
-        .query_map([], |row| row.get::<_, String>(0))
+    let mut ids = BTreeSet::new();
+    for id in statement
+        .query_map([], |row| Ok(vscdb::text(row, 0)))
         .map_err(io::Error::other)?
-        .collect::<Result<_, _>>()
-        .map_err(io::Error::other)?;
+    {
+        if let Some(id) = id.map_err(io::Error::other)? {
+            ids.insert(id);
+        }
+    }
     Ok(ids)
 }
 
@@ -192,7 +203,7 @@ pub(crate) fn read(path: &Path, conversation: &mut Conversation) -> io::Result<u
         .filter(|headers| !headers.is_empty())
     {
         Some(headers) => headers.clone(),
-        None => header_chunks(&connection, &id, &data)?,
+        None => header_chunks(&connection, &id)?,
     };
     if !headers.is_empty() {
         for header in &headers {
@@ -224,39 +235,47 @@ pub(crate) fn read(path: &Path, conversation: &mut Conversation) -> io::Result<u
     Ok(version)
 }
 
-/// The turn headers of a composer that keeps them in chunks: the arrays in its
-/// `composerConvHeaders:<id>:000000`, `...:000001` and on, up to its `headerLog.chunkCount`, in
-/// order. A chunk that is missing or not JSON is left out.
-fn header_chunks(connection: &Connection, id: &str, data: &Value) -> io::Result<Vec<Value>> {
-    let Some(chunks) = data
-        .pointer("/headerLog/chunkCount")
-        .and_then(Value::as_u64)
-        .filter(|chunks| *chunks > 0)
-    else {
-        return Ok(Vec::new());
-    };
+/// The turn headers of a composer that keeps them in chunks (with a `headerLog`): the arrays in
+/// its `composerConvHeaders:<id>:<n>` rows, in the numeric order of `n` (`000000`, `000001` and
+/// on, as Cursor writes them; any numbering is read, so a gap or another start loses nothing).
+/// A header whose turn was already listed is left out; a chunk that is not JSON is skipped.
+fn header_chunks(connection: &Connection, id: &str) -> io::Result<Vec<Value>> {
     let prefix = format!("{HEADER_CHUNK}{id}:");
-    let end = format!("{prefix}{chunks:06}");
+    let end = format!("{HEADER_CHUNK}{id};");
     let mut statement = connection
-        .prepare("SELECT key, value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2 ORDER BY key")
+        .prepare("SELECT key, value FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([&prefix, &end], |row| {
-            Ok((row.get::<_, String>(0)?, vscdb::bytes(row, 1)))
+            Ok((vscdb::text(row, 0), vscdb::bytes(row, 1)))
         })
         .map_err(io::Error::other)?;
-    let mut headers = Vec::new();
+    let mut chunks = Vec::new();
     for row in rows {
-        let (key, value) = row.map_err(io::Error::other)?;
-        let suffix = &key[prefix.len()..];
-        if suffix.len() != 6 || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        let (Some(key), value) = row.map_err(io::Error::other)? else {
             continue;
-        }
+        };
+        let Some(index) = key
+            .strip_prefix(&prefix)
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|n| n.parse::<u64>().ok())
+        else {
+            continue;
+        };
         if let Ok(Value::Array(part)) = serde_json::from_slice::<Value>(&value) {
-            headers.extend(part);
+            chunks.push((index, part));
         }
     }
-    Ok(headers)
+    chunks.sort_by_key(|(index, _)| *index);
+    let mut seen = std::collections::HashSet::new();
+    Ok(chunks
+        .into_iter()
+        .flat_map(|(_, part)| part)
+        .filter(|header| match str_field(header, "bubbleId") {
+            Some(bubble) => seen.insert(bubble.to_string()),
+            None => true,
+        })
+        .collect())
 }
 
 /// Every turn row of a composer, by bubble id. The key range stays on the table's index.
@@ -268,14 +287,19 @@ fn bubbles(connection: &Connection, id: &str) -> io::Result<HashMap<String, Valu
         .map_err(io::Error::other)?;
     let rows = statement
         .query_map([&prefix, &end], |row| {
-            Ok((row.get::<_, String>(0)?, vscdb::bytes(row, 1)))
+            Ok((vscdb::text(row, 0), vscdb::bytes(row, 1)))
         })
         .map_err(io::Error::other)?;
     let mut bubbles = HashMap::new();
     for row in rows {
-        let (key, value) = row.map_err(io::Error::other)?;
+        let (Some(key), value) = row.map_err(io::Error::other)? else {
+            continue;
+        };
+        let Some(bubble) = key.strip_prefix(&prefix) else {
+            continue;
+        };
         if let Ok(value) = serde_json::from_slice::<Value>(&value) {
-            bubbles.insert(key[prefix.len()..].to_string(), value);
+            bubbles.insert(bubble.to_string(), value);
         }
     }
     Ok(bubbles)
