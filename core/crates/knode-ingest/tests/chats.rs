@@ -1087,3 +1087,41 @@ fn whatsapp_android_french_date_with_a_is_read() {
         "## 2026-03-04\n\n**Ada** (09:15): Bonjour\n\n**Mira** (09:16): Salut\n"
     );
 }
+
+#[test]
+fn code_blocks_keep_their_blank_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("slack");
+    write_file(&root, "users.json", SLACK_USERS);
+    write_file(&root, "channels.json", SLACK_CHANNELS);
+    write_file(
+        &root,
+        "general/2026-03-04.json",
+        r#"[{"type":"message","user":"U01","ts":"1772625600.000100","text":"```\nfn a() {}\n\nfn b() {}\n```"}]"#,
+    );
+    let mut space = self::space(&dir);
+    import_chat_export(&mut space, &root, None, &by()).unwrap();
+    let node = chat_node(&space, "slack", "C01");
+    assert!(
+        node.body.contains("):\n```\nfn a() {}\n\nfn b() {}\n```\n"),
+        "{}",
+        node.body
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ChatExport");
+    write_file(
+        &root,
+        "result.json",
+        r#"{"name":"Ada","type":"personal_chat","id":7,"messages":[
+         {"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada","text":"",
+          "text_entities":[{"type":"pre","text":"x = 1\n\ny = 2","language":"py"}]}]}"#,
+    );
+    let mut space = self::space(&dir);
+    import_chat_export(&mut space, &root, None, &by()).unwrap();
+    let node = chat_node(&space, "telegram", "7");
+    assert_eq!(
+        node.body,
+        "## 2026-03-04\n\n**Ada** (09:00):\n```py\nx = 1\n\ny = 2\n```\n"
+    );
+}

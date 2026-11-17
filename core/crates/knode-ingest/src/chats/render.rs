@@ -88,8 +88,24 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     while lines.first().is_some_and(|l| l.trim().is_empty()) {
         lines.remove(0);
     }
-    // A blank line inside a message would end its paragraph: keep the lines together.
-    let mut lines: Vec<String> = lines.into_iter().filter(|l| !l.trim().is_empty()).collect();
+    // A blank line inside a message would end its paragraph: keep the lines together, except
+    // in fenced code, which keeps its lines as they are.
+    let mut fence = None;
+    let mut lines: Vec<String> = lines
+        .into_iter()
+        .filter(|line| match fence {
+            Some(open) => {
+                if closes(line, open) {
+                    fence = None;
+                }
+                true
+            }
+            None => {
+                fence = opens(line);
+                !line.trim().is_empty()
+            }
+        })
+        .collect();
     lines.extend(shown.iter().map(shown_markdown));
     lines.extend(message.notes.iter().cloned());
 
@@ -105,7 +121,9 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     head.push(')');
     match lines.split_first() {
         Some((first, rest)) => {
-            let mut out = format!("{head}: {first}");
+            // A fence opens a block only at the start of a line.
+            let between = if opens(first).is_some() { ":\n" } else { ": " };
+            let mut out = format!("{head}{between}{first}");
             for line in rest {
                 out.push('\n');
                 out.push_str(line);
@@ -344,6 +362,27 @@ mod tests {
         let m = message(4, 9, Some("Ada"), "see\n```\ncode");
         let body = append("", &[(&m, vec![])]);
         assert!(body.ends_with("```\ncode\n```\n"), "{body}");
+    }
+
+    #[test]
+    fn fenced_code_keeps_its_lines() {
+        let m = message(4, 9, Some("Ada"), "```\nfn a() {}\n\nfn b() {}\n```");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05):\n```\nfn a() {}\n\nfn b() {}\n```"
+        );
+        // Outside the fence, blank lines still go.
+        let m = message(4, 9, Some("Ada"), "see\n\n~~~\na\n\nb\n~~~\n\nafter");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05): see\n~~~\na\n\nb\n~~~\nafter"
+        );
+        // A fence left open keeps its lines up to the end of the message, which closes it.
+        let m = message(4, 9, Some("Ada"), "```\na\n\nb");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05):\n```\na\n\nb\n```"
+        );
     }
 
     #[test]
