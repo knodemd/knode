@@ -10,6 +10,58 @@ No version is released yet. Everything below is on `main`, so the first release 
 It is grouped by the version of the [roadmap](https://knode.md/handbook/roadmap) each change
 belongs to, newest first.
 
+### v0.4 - Capture life (in progress)
+
+#### Added
+
+- **Sources**: one list of everything that brings things into a space, the importers you run once
+  and the connectors that keep bringing in what is new. A connector is off until you connect it
+  to a space, choosing to bring in what happens from today on (the default) or everything it
+  has; you can pause it, exclude chats, channels or folders it will never read again, or
+  disconnect it, and what it brought in stays. Knode Service runs the connected ones when their
+  files change or every few minutes, picks up where it stopped after a restart without writing
+  anything twice, waits longer after each error, and stops and says so when another app's
+  database changed instead of writing wrong data. `knode sources` lists the sources of a space
+  with when each last ran, how much it brought in and its last error, and connects, pauses,
+  resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
+  keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Apple Mail connector**: new mail of every account you added to Apple Mail on your Mac
+  (Gmail, iCloud, Outlook, Exchange, any IMAP account, and the mailboxes On My Mac) comes into
+  your space within a minute, through the same mail import, so threads, people and your edits
+  are kept, and mail you imported before from an Apple Mail export or a Gmail Takeout file is
+  not added twice. Every mailbox comes in, new ones too, except spam, trash and the mailboxes you
+  exclude. It reads Mail's files without changing them, needs Full Disk Access and says how to
+  give it, and stops with a clear message if a new version of Mail changes its index.
+  `knode sources connect apple-mail` turns it on.
+- **Messages (iMessage) connector**, on macOS: `knode sources connect imessage` brings every
+  iMessage and SMS conversation of the Mac into one `chat` node each, the same shape as the chat
+  imports, messages grouped by day with their sender and time, and the photos and files sent
+  attached when the Mac has them. It reads a copy of the Messages database, never the database
+  itself, and needs Full Disk Access, which it asks for by name when it is missing. Text that
+  newer versions of Messages keep only in their archived form is read too; reactions are left
+  out, edited messages are marked edited and unsent ones unsent; a message edited or unsent
+  after it was brought in keeps the text it had then. If Messages numbers its messages again (a
+  rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
+  each conversation is missing. People show as their phone number or email address.
+- **Telegram connector**: brings your Telegram chats in as they arrive, through Telegram's
+  official API, as Knode's own client. `knode sources connect telegram` signs in once with your
+  phone number, the code Telegram sends and your password if you set one; the session stays in
+  the system keychain, and `knode sources sign-out telegram` (or disconnecting it from the last
+  space) ends it. While Knode Service runs new messages come in as they happen, and after a
+  restart it catches up from the last message it brought in of each chat. Messages land in the
+  same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
+  message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
+  build of Knode with its Telegram app id.
+- **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
+  as threads with their people, like a mail import. **Gmail** signs in with Google in your
+  browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
+  (IMAP)** reads any account with an app password (Gmail, iCloud, Fastmail, Yahoo, Outlook or
+  your own server), over TLS only. Every label or mailbox comes in, new ones too, except spam,
+  trash and the ones you exclude. A message already in the space from a Google Takeout export,
+  Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
+  `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
+  removes the secrets from the keychain.
+
 ### v0.3 - Map and import (in progress)
 
 #### Added
@@ -84,9 +136,11 @@ belongs to, newest first.
 - **A project folder adds its project**: adding a project folder, in the Mac app or with
   `knode folders add`, adds the project of the same name to the space, or uses the one of that
   name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
-  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
-  removing the folder keeps the project and its notes. A folder added before this gets its
-  project when it is added again.
+  folder's name become `(`, `)` and `-`. Two different folders of the same name are kept apart:
+  when another folder already holds the project of that name, the new folder gets its own, named
+  after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
+  `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
+  added before this gets its project when it is added again.
 - **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
   Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
   become notes of the space, each part of the project that folder belongs to: a project folder of
@@ -114,6 +168,10 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Long conversations no longer bury short notes in search**: agent conversations, imported chats
+  and imported mail threads are long transcripts that match a query's words and meaning in passing,
+  and could come before the short note that answers it. Hybrid search now counts a transcript half,
+  so it comes first only when it matches clearly better; `--words` and `--meaning` rank as before.
 - **Archived copies** (`knode onboard archive`) are listed as archived and last by `knode spaces`,
   skipped when a space is named, and no longer appear in the Mac sidebar, also when archived from
   the command line.

@@ -180,6 +180,37 @@ pub mod methods {
     /// Imports what is at a path on this machine, or a web page at an `http(s)` URL: a data
     /// export, Markdown, a session, reading or another app's notes. People only.
     pub const IMPORT_RUN: &str = "import.run";
+
+    // Sources: importers and connectors, people only.
+
+    /// What every `sources.*` method starts with.
+    pub const SOURCES_PREFIX: &str = "sources.";
+    /// Every source of a space, importers and connectors, with its status.
+    pub const SOURCES_LIST: &str = "sources.list";
+    /// The connectors connected to one space, or to every space the service knows.
+    pub const SOURCES_STATUS: &str = "sources.status";
+    /// Connects a connector to a space, with the history chosen.
+    pub const SOURCES_CONNECT: &str = "sources.connect";
+    /// Pauses a connector in a space.
+    pub const SOURCES_PAUSE: &str = "sources.pause";
+    /// Resumes a paused connector.
+    pub const SOURCES_RESUME: &str = "sources.resume";
+    /// Excludes a chat, channel or folder of a connector.
+    pub const SOURCES_EXCLUDE: &str = "sources.exclude";
+    /// Includes again a chat, channel or folder excluded before.
+    pub const SOURCES_INCLUDE: &str = "sources.include";
+    /// The chats, channels or folders of a connector, the excluded ones marked.
+    pub const SOURCES_CONTAINERS: &str = "sources.containers";
+    /// Runs a connector now.
+    pub const SOURCES_RUN: &str = "sources.run";
+    /// Disconnects a connector from a space; what it brought in stays.
+    pub const SOURCES_DISCONNECT: &str = "sources.disconnect";
+    /// Whether a connector is signed in to the account it reads, on this machine.
+    pub const SOURCES_ACCOUNT: &str = "sources.account";
+    /// Takes one step of signing a connector in: the account, the code, the password.
+    pub const SOURCES_SIGN_IN: &str = "sources.sign_in";
+    /// Signs a connector out and forgets its session.
+    pub const SOURCES_SIGN_OUT: &str = "sources.sign_out";
 }
 
 /// The JSON-RPC error codes the service answers with.
