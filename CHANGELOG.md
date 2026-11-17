@@ -70,6 +70,17 @@ belongs to, newest first.
   any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
   asks you only what needs your judgment, imports a copy, connects itself and moves your
   instruction files to Knode. `knode onboard prompt` prints the prompt.
+- **Your agent offers to set Knode up**: when the space an agent connects to is not set up yet
+  (no import, no project and almost no notes of yours), the MCP server asks an agent that runs
+  commands (Claude Code, Codex) to offer to set Knode up for you in that space, with the new
+  `setup_guide` tool, which returns the same guide. Other agents, such as Claude Desktop, are
+  asked to point you to Get started in the Knode app. Knode Service answers `space.set_up`.
+- **Set up the space your agent is already connected to**: `knode onboard apply --into <space>`
+  brings a reviewed plan into an existing space that is not set up yet, such as the new default
+  space the app connected your agent to, with the same checks, project nodes and receipt as a new
+  space, and keeps the conversations it already captured. No reconnection or new agent session is
+  needed. A space that is already set up is refused. Knode Service answers
+  `onboarding.apply_into`.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -148,6 +159,9 @@ belongs to, newest first.
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
   request and the project's rules come before memory.
+- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
+  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
+  saying how many tokens the onboarding used.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
