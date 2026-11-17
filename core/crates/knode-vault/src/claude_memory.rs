@@ -33,6 +33,13 @@ pub const TYPE_PROPERTY: &str = "claude-code.type";
 /// The property with the `description` of a memory.
 pub const DESCRIPTION_PROPERTY: &str = "claude-code.description";
 
+/// Why a `MEMORY.md` is left out.
+pub const LEFT_OUT_INDEX: &str = "the index of the other memory files";
+
+/// Why a folder or file that is a symbolic link is left out.
+pub const LEFT_OUT_LINK: &str =
+    "a symbolic link: Claude Code reads it through the folder it points at";
+
 /// The onboarding receipt a space made by onboarding keeps in its package.
 const RECEIPT: &str = "onboarding.json";
 
@@ -78,9 +85,10 @@ pub struct MemoryReport {
     pub unmatched: Vec<String>,
     /// The files that could not be imported, and why.
     pub skipped: Vec<Skipped>,
-    /// What was left out on purpose: the `MEMORY.md` indexes, and folders (or files) that are
-    /// symbolic links to others, which Claude Code reads through the folder they point at.
-    pub left_out: Vec<String>,
+    /// What was left out on purpose, and why: the `MEMORY.md` indexes ([`LEFT_OUT_INDEX`]), and
+    /// folders (or files) that are symbolic links to others ([`LEFT_OUT_LINK`]), which Claude
+    /// Code reads through the folder they point at.
+    pub left_out: Vec<Skipped>,
 }
 
 impl MemoryReport {
@@ -157,12 +165,22 @@ pub fn import_claude_code_memory(
             continue;
         };
         if meta.file_type().is_symlink() {
-            report.left_out.push(folder);
+            report.left_out.push(left_out(folder, LEFT_OUT_LINK));
             continue;
         }
         let memory = dir.join("memory");
-        if !meta.is_dir() || !fs::symlink_metadata(&memory).is_ok_and(|m| m.is_dir()) {
+        if !meta.is_dir() {
             continue;
+        }
+        match fs::symlink_metadata(&memory) {
+            Ok(m) if m.is_dir() => {}
+            Ok(m) if m.file_type().is_symlink() => {
+                report
+                    .left_out
+                    .push(left_out(format!("{folder}/memory"), LEFT_OUT_LINK));
+                continue;
+            }
+            _ => continue,
         }
         let mut files: Vec<String> = fs::read_dir(&memory)
             .map_err(io_error(&memory))?
@@ -177,13 +195,13 @@ pub fn import_claude_code_memory(
             let full = memory.join(&file);
             let shown = format!("{folder}/memory/{file}");
             if file == INDEX_FILE {
-                report.left_out.push(shown);
+                report.left_out.push(left_out(shown, LEFT_OUT_INDEX));
                 continue;
             }
             match fs::symlink_metadata(&full) {
                 Ok(m) if m.is_file() => {}
                 Ok(m) if m.file_type().is_symlink() => {
-                    report.left_out.push(shown);
+                    report.left_out.push(left_out(shown, LEFT_OUT_LINK));
                     continue;
                 }
                 _ => continue,
@@ -256,6 +274,13 @@ pub fn import_claude_code_memory(
             reason: s.reason,
         }));
     Ok(report)
+}
+
+fn left_out(path: impl Into<String>, reason: &str) -> Skipped {
+    Skipped {
+        path: path.into(),
+        reason: reason.into(),
+    }
 }
 
 /// `<folder>/memory/<file>` for the `markdown.path` `claude-code-memory/<folder>/<file>`.

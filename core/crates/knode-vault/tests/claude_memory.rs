@@ -8,7 +8,8 @@ use knode_format::{
     FolderSpec, NewNode, NodeId, Provenance, Space, folder_kinds, kinds, link_kinds,
 };
 use knode_vault::claude_memory::{
-    DESCRIPTION_PROPERTY, MemoryOutcome, TYPE_PROPERTY, import_claude_code_memory,
+    DESCRIPTION_PROPERTY, LEFT_OUT_INDEX, LEFT_OUT_LINK, MemoryOutcome, MemoryReport,
+    TYPE_PROPERTY, import_claude_code_memory,
 };
 use knode_vault::property_keys;
 
@@ -66,6 +67,14 @@ fn parts(space: &Space, id: &NodeId) -> Vec<NodeId> {
         .filter(|l| l.kind == link_kinds::PART_OF)
         .map(|l| l.to)
         .collect()
+}
+
+/// Whether the report left out `path`, for `reason`.
+fn left_out(report: &MemoryReport, path: &str, reason: &str) -> bool {
+    report
+        .left_out
+        .iter()
+        .any(|l| l.path == path && l.reason == reason)
 }
 
 fn node_at(space: &Space, path: &str) -> NodeId {
@@ -139,17 +148,17 @@ fn memory_is_linked_to_the_project_folders_of_the_space() {
     assert_eq!(report.linked.get("Work"), None, "the longest folder wins");
     assert_eq!(report.unmatched, vec!["-Users-ada-Elsewhere-misc"]);
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
-    assert!(
-        report
-            .left_out
-            .contains(&"-Users-ada-Work-web-app/memory/MEMORY.md".to_string())
-    );
+    assert!(left_out(
+        &report,
+        "-Users-ada-Work-web-app/memory/MEMORY.md",
+        LEFT_OUT_INDEX
+    ));
     #[cfg(unix)]
-    assert!(
-        report
-            .left_out
-            .contains(&"-private-Users-ada-Work-web-app".to_string())
-    );
+    assert!(left_out(
+        &report,
+        "-private-Users-ada-Work-web-app",
+        LEFT_OUT_LINK
+    ));
 
     let build = node_at(
         &space,
@@ -458,4 +467,25 @@ fn an_onboarding_receipt_is_read_as_onboarding_reads_it() {
     import_claude_code_memory(&mut space, &projects, &me()).unwrap();
     let p = node_at(&space, "claude-code-memory/-Users-ada-Solo/p.md");
     assert_eq!(parts(&space, &p), vec![solo]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_memory_folder_that_is_a_link_is_left_out_and_said_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    memory(&projects, "-Users-ada-Work", "a.md", "A.\n");
+    fs::create_dir_all(projects.join("-Users-ada-Other")).unwrap();
+    std::os::unix::fs::symlink(
+        projects.join("-Users-ada-Work/memory"),
+        projects.join("-Users-ada-Other/memory"),
+    )
+    .unwrap();
+    let mut space = space_in(dir.path());
+    let report = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert_eq!(report.count(MemoryOutcome::Created), 1, "{report:#?}");
+    assert!(
+        left_out(&report, "-Users-ada-Other/memory", LEFT_OUT_LINK),
+        "{report:#?}"
+    );
 }

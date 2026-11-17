@@ -999,11 +999,29 @@ pub fn run(
                     report.unmatched.join(", ")
                 ));
             }
-            if !report.left_out.is_empty() {
+            let indexes = report
+                .left_out
+                .iter()
+                .filter(|l| l.reason == claude_memory::LEFT_OUT_INDEX)
+                .count();
+            if indexes > 0 {
                 result.notes.push(format!(
-                    "Left out {}: MEMORY.md indexes, and folders that link to other folders.",
-                    plural(report.left_out.len(), "item")
+                    "Left out {}: the index of the other memory files.",
+                    if indexes == 1 {
+                        "1 MEMORY.md".to_string()
+                    } else {
+                        format!("{indexes} MEMORY.md files")
+                    }
                 ));
+            }
+            for l in report
+                .left_out
+                .iter()
+                .filter(|l| l.reason != claude_memory::LEFT_OUT_INDEX)
+            {
+                result
+                    .notes
+                    .push(format!("Left out {}: {}.", l.path, l.reason));
             }
             result.linked = report.linked;
             result.unmatched = report.unmatched;
