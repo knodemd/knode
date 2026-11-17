@@ -63,6 +63,10 @@ belongs to, newest first.
 - **Installing the Mac app**: opened from its disk image, Downloads or any other folder, Knode offers
   to move itself to Applications. When the `knode` command points to another copy of Knode, the app
   names it and offers to point the command to itself, so agents do not keep running an old copy.
+- **Guided import of a vault that holds its repositories**: documents tracked by git in those
+  repositories (`README`, `CHANGELOG`, `AGENTS.md` and the like) are proposed unchecked, since they
+  live with their code and a copy would not follow their changes. Your own notes, including
+  untracked ones inside a repository, stay checked, and you can check any document again.
 
 #### Fixed
 
