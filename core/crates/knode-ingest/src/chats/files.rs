@@ -64,6 +64,16 @@ impl Files {
         })
     }
 
+    /// A folder whose files are opened by their path without listing them first, such as an
+    /// app's media folder with years of files: [`names`](Self::names) is empty.
+    pub fn unlisted_folder(path: &Path) -> io::Result<Files> {
+        Ok(Files {
+            source: Source::open(path)?,
+            names: BTreeSet::new(),
+            single: None,
+        })
+    }
+
     /// Every file, sorted.
     pub fn names(&self) -> &BTreeSet<String> {
         &self.names

@@ -60,7 +60,19 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    Vec::new()
+    #[allow(unused_mut)]
+    let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
+    // in the spaces it is switched on in.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        use knode_ingest::whatsapp_mac::{WhatsAppMac, WhatsAppMacConnector};
+        connectors.push(Arc::new(WhatsAppMacConnector::new(
+            WhatsAppMac::for_home(home),
+            "Me",
+        )));
+    }
+    connectors
 }
 
 /// How Knode Service runs connectors.
@@ -985,6 +997,21 @@ pub fn list_offline(home: &Path, space: &Space) -> knode_format::Result<Vec<Sour
 mod tests {
     use super::*;
     use crate::keys::MemoryKeyStore;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn whatsapp_for_mac_is_built_in() {
+        let connectors = builtin_connectors();
+        let ids: Vec<String> = connectors.iter().map(|c| c.info().id).collect();
+        assert!(ids.iter().any(|id| id == "whatsapp-mac"), "{ids:?}");
+        // No two sources share an id.
+        let mut all: Vec<String> = importers().into_iter().map(|s| s.id).collect();
+        all.extend(ids);
+        let count = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), count);
+    }
 
     #[test]
     fn importers_are_sources_of_kind_importer() {
