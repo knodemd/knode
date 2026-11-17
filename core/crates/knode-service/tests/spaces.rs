@@ -134,13 +134,19 @@ fn settings_are_read_by_all_and_changed_by_the_person() {
     assert_eq!(event.what, SpaceEventKind::Settings);
     assert_eq!(event.key.as_deref(), Some(setting_keys::SPACE_ICON));
 
-    // Capture off is stored; on is the default, so it is stored as no value.
+    // Capture off is stored, and so is on: it is the person's choice, which a new space waits
+    // for. Back to the default, it is stored as no value.
     f.person
         .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, Some("off"), &me())
         .unwrap();
     let settings = f
         .person
         .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, Some("on"), &me())
+        .unwrap();
+    assert_eq!(settings[setting_keys::CAPTURE_ENABLED], "on");
+    let settings = f
+        .person
+        .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, None, &me())
         .unwrap();
     assert!(!settings.contains_key(setting_keys::CAPTURE_ENABLED));
 
@@ -149,7 +155,7 @@ fn settings_are_read_by_all_and_changed_by_the_person() {
         .person
         .changes_of(f.space(), setting_keys::CAPTURE_ENABLED, 10)
         .unwrap();
-    assert_eq!(changes.len(), 2);
+    assert_eq!(changes.len(), 3);
     assert!(changes.iter().all(|c| c.action == actions::SETTINGS_SET));
 
     // Values the format does not allow are refused.
