@@ -30,6 +30,23 @@
 //! service in the system keychain and reached through [`Secrets`]; a connector never writes
 //! them into a space, a settings file or a log.
 //!
+//! # Plugins
+//!
+//! The plugin API ([knode#61](https://github.com/knodemd/knode/issues/61)) exposes this same
+//! interface instead of inventing its own, so a first-party source could later ship as a plugin
+//! and a third-party source looks the same in Settings > Sources:
+//!
+//! - A plugin declares its [`SourceInfo`] and [`Trigger`] in its manifest, and the service
+//!   asks for the permissions it lists when the person connects it, never before.
+//! - The plugin host, sandboxed in WebAssembly, implements [`Connector`] for the plugin:
+//!   [`Connector::fetch`] calls the plugin's `fetch` export with the request as JSON (the cursor,
+//!   the history, `since` and the excluded containers) and reads back the cursor and the items.
+//!   Everything here is plain data and serializes for that boundary; [`Secrets`] becomes a host
+//!   import scoped to the plugin.
+//! - A plugin's items are not written by the plugin: they are written by a built-in importer of
+//!   a known shape (chat messages, mail, notes) chosen in its manifest, through the space API,
+//!   with provenance naming the plugin. A plugin never opens a space.
+//!
 //! See decisions 0010 (sources and plugins) and 0013 (live connectors) of the Knode handbook.
 
 pub mod sqlite;
