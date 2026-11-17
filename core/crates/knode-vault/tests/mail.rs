@@ -625,3 +625,315 @@ fn refuses_what_is_not_mail() {
         Err(MailError::NotRecognized { .. })
     ));
 }
+
+fn write_mbox(dir: &Path, name: &str, messages: &[String]) -> PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    let file = dir.join(name);
+    fs::write(&file, mbox(messages)).unwrap();
+    file
+}
+
+fn simple(id: &str, from: &str, subject: &str, date: &str, extra: &[(&str, &str)]) -> String {
+    let mut headers = vec![
+        ("Message-ID", id),
+        ("From", from),
+        ("To", "Ada Example <ada@example.com>"),
+        ("Subject", subject),
+        ("Date", date),
+    ];
+    headers.extend_from_slice(extra);
+    message(&headers, &format!("Text of {id}.\n"))
+}
+
+/// Every message id in every thread node, to check none is in two.
+fn all_ids(space: &Space) -> Vec<String> {
+    let mut ids: Vec<String> = of_kind(space, kinds::THREAD)
+        .iter()
+        .flat_map(|n| message_ids(&space.get_node(&n.id).unwrap().unwrap()))
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn deeply_nested_html_is_read_without_crashing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let depth = 100_000;
+    let html = format!(
+        "{}Hidden deep{}",
+        "<div>".repeat(depth),
+        "</div>".repeat(depth)
+    );
+    let file = write_mbox(
+        tmp.path(),
+        "deep.mbox",
+        &[message(
+            &[
+                ("Message-ID", "<deep@example.com>"),
+                ("From", "ada@example.com"),
+                ("Subject", "Deep"),
+                ("Date", "Mon, 2 Mar 2026 09:00:00 +0000"),
+                ("Content-Type", "text/html"),
+            ],
+            &html,
+        )],
+    );
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert!(thread(&space, "Deep").body.contains("Hidden deep"));
+}
+
+#[test]
+fn importing_again_keeps_what_was_written_in_knode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = takeout(tmp.path());
+    let mut space = space(tmp.path());
+    let first = MailOptions {
+        until: NaiveDate::from_ymd_opt(2026, 3, 3),
+        ..MailOptions::default()
+    };
+    import(&mut space, MailSource::Mbox, &file, &first);
+    let garden = thread(&space, "Garden plans");
+    // An edit inside the first message, and a note after the last one.
+    let edited = garden.body.replace(
+        "Shall we plant tomatoes",
+        "Shall we plant (my edit) tomatoes",
+    ) + "\nMy own notes on the thread.\n";
+    space
+        .update_node(
+            &garden.id,
+            knode_format::NodeUpdate {
+                body: Some(edited),
+                ..Default::default()
+            },
+            &me(),
+        )
+        .unwrap();
+
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let garden = thread(&space, "Garden plans");
+    assert_eq!(message_ids(&garden).len(), 4, "{}", garden.body);
+    assert!(garden.body.contains("(my edit)"), "{}", garden.body);
+    assert!(
+        garden
+            .body
+            .trim_end()
+            .ends_with("My own notes on the thread."),
+        "the note stays after the last message: {}",
+        garden.body
+    );
+    assert_eq!(garden.body.matches("My own notes").count(), 1);
+    // And once more: nothing changes.
+    let again = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert!(again.updated.is_empty(), "{again:?}");
+}
+
+#[test]
+fn threads_joined_later_keep_each_message_in_one_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = simple(
+        "<a@example.com>",
+        "Bruno Sample <bruno@example.org>",
+        "Budget",
+        "Mon, 2 Mar 2026 09:00:00 +0000",
+        &[],
+    );
+    let x = simple(
+        "<x@example.com>",
+        "Bruno Sample <bruno@example.org>",
+        "Venue",
+        "Tue, 3 Mar 2026 09:00:00 +0000",
+        &[],
+    );
+    let j = simple(
+        "<j@example.com>",
+        "Chloe Test <chloe@example.org>",
+        "Re: Budget",
+        "Wed, 4 Mar 2026 09:00:00 +0000",
+        &[("References", "<a@example.com> <x@example.com>")],
+    );
+    let mut space = space(tmp.path());
+    let first = write_mbox(tmp.path(), "first.mbox", &[a.clone(), x.clone()]);
+    import(
+        &mut space,
+        MailSource::Mbox,
+        &first,
+        &MailOptions::default(),
+    );
+    assert_eq!(of_kind(&space, kinds::THREAD).len(), 2);
+
+    let later = write_mbox(tmp.path(), "later.mbox", std::slice::from_ref(&j));
+    import(
+        &mut space,
+        MailSource::Mbox,
+        &later,
+        &MailOptions::default(),
+    );
+    let all = write_mbox(tmp.path(), "all.mbox", &[a, x, j]);
+    import(&mut space, MailSource::Mbox, &all, &MailOptions::default());
+
+    assert_eq!(of_kind(&space, kinds::THREAD).len(), 2);
+    assert_eq!(
+        all_ids(&space),
+        ["a@example.com", "j@example.com", "x@example.com"],
+        "no message is in two nodes"
+    );
+    let budget = thread(&space, "Budget");
+    assert_eq!(message_ids(&budget), ["a@example.com", "j@example.com"]);
+    let venue = thread(&space, "Venue");
+    assert!(
+        space
+            .links_from(&budget.id)
+            .unwrap()
+            .iter()
+            .any(|l| l.to == venue.id && l.kind == link_kinds::RELATED),
+        "the two nodes are linked"
+    );
+}
+
+#[test]
+fn the_subject_joins_a_thread_already_imported_only_with_its_people_and_soon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = space(tmp.path());
+    let question = simple(
+        "<q@example.com>",
+        "Bruno Sample <bruno@example.org>",
+        "Question",
+        "Fri, 1 May 2020 09:00:00 +0000",
+        &[],
+    );
+    let first = write_mbox(tmp.path(), "2020.mbox", &[question]);
+    import(
+        &mut space,
+        MailSource::Mbox,
+        &first,
+        &MailOptions::default(),
+    );
+
+    let stranger = message(
+        &[
+            ("Message-ID", "<r@example.net>"),
+            ("From", "zoe@example.net"),
+            ("To", "nobody@example.net"),
+            ("Subject", "Re: question"),
+            ("Date", "Fri, 1 May 2026 09:00:00 +0000"),
+        ],
+        "Unrelated.\n",
+    );
+    let soon = simple(
+        "<s@example.org>",
+        "Bruno Sample <bruno@example.org>",
+        "Re: Question",
+        "Sun, 10 May 2020 09:00:00 +0000",
+        &[],
+    );
+    let later = write_mbox(tmp.path(), "later.mbox", &[stranger, soon]);
+    let report = import(
+        &mut space,
+        MailSource::Mbox,
+        &later,
+        &MailOptions::default(),
+    );
+    assert_eq!(report.created.len(), 1, "{report:?}");
+    let threads = of_kind(&space, kinds::THREAD);
+    assert_eq!(threads.len(), 2);
+    let question = thread(&space, "Question");
+    assert_eq!(message_ids(&question), ["q@example.com", "s@example.org"]);
+}
+
+#[test]
+fn files_stay_linked_and_files_not_attached_are_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = takeout(tmp.path());
+    let mut space = space(tmp.path());
+    let with = MailOptions {
+        attachments: true,
+        ..MailOptions::default()
+    };
+    import(&mut space, MailSource::Mbox, &file, &with);
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let invoice = thread(&space, "Your invoice for March");
+    assert!(
+        invoice.body.contains("[[invoice-march.pdf]]"),
+        "{}",
+        invoice.body
+    );
+    assert!(invoice.body.contains("![[logo.png]]"), "{}", invoice.body);
+
+    // A file the space refuses is named, not linked.
+    let odd = message(
+        &[
+            ("Message-ID", "<odd@example.com>"),
+            ("From", "ada@example.com"),
+            ("Subject", "Odd file"),
+            ("Date", "Mon, 2 Mar 2026 09:00:00 +0000"),
+            ("Content-Type", "multipart/mixed; boundary=b"),
+        ],
+        "--b\nContent-Type: text/plain\n\nSee.\n--b\nContent-Type: application/pdf\n\
+Content-Disposition: attachment; filename=\"..\"\nContent-Transfer-Encoding: base64\n\naGk=\n--b--\n",
+    );
+    let odd = write_mbox(tmp.path(), "odd.mbox", &[odd]);
+    let report = import(&mut space, MailSource::Mbox, &odd, &with);
+    let node = thread(&space, "Odd file");
+    assert!(node.body.contains("_[attached: ..]_"), "{}", node.body);
+    assert_eq!(report.skipped.len(), 1, "{report:?}");
+    let attached = space.attachments(&node.id).unwrap();
+    for name in node
+        .body
+        .lines()
+        .filter_map(|l| l.trim_start_matches('!').strip_prefix("[["))
+        .map(|l| l.trim_end_matches("]]"))
+    {
+        assert!(
+            attached.iter().any(|a| a.name == name),
+            "{name:?} is linked but not attached: {report:?}"
+        );
+    }
+}
+
+#[test]
+fn apple_mail_takes_an_exported_mailbox_and_does_not_follow_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut space = space(tmp.path());
+    // Mailbox > Export Mailbox writes `<name>.mbox/mbox`.
+    let exported = tmp.path().join("Trips.mbox");
+    write_mbox(
+        &exported,
+        "mbox",
+        &[simple(
+            "<t@example.com>",
+            "dana@example.com",
+            "Trip",
+            "Mon, 2 Mar 2026 09:00:00 +0000",
+            &[],
+        )],
+    );
+    let report = import(
+        &mut space,
+        MailSource::AppleMail,
+        &exported,
+        &MailOptions::default(),
+    );
+    assert_eq!(report.created.len(), 1);
+    assert_eq!(
+        space
+            .property(&thread(&space, "Trip").id, keys::FOLDERS)
+            .unwrap()
+            .as_deref(),
+        Some("Trips")
+    );
+
+    #[cfg(unix)]
+    {
+        let mail = apple_store(tmp.path());
+        // A link back up the store would make the walk endless if it were followed.
+        std::os::unix::fs::symlink(&mail, mail.join("V10/0F1E2D3C-ACCOUNT/loop")).unwrap();
+        let report = import(
+            &mut space,
+            MailSource::AppleMail,
+            &mail,
+            &MailOptions::default(),
+        );
+        assert_eq!(report.messages, 2);
+    }
+}

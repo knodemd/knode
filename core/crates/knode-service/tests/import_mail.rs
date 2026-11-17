@@ -126,11 +126,27 @@ fn mail_is_told_from_its_path() {
     assert_eq!(ImportSource::from_id("mbox"), Some(ImportSource::Mbox));
     // An mbox needs a path.
     assert!(prepare(None, None, Some(ImportSource::Mbox)).is_err());
-    // A folder of notes is not mail.
-    let notes = tmp.path().join("notes");
-    fs::create_dir_all(&notes).unwrap();
-    fs::write(notes.join("a.md"), "# A\n").unwrap();
-    assert!(prepare(Some(&notes), None, Some(ImportSource::Mbox)).is_err());
+    // A vault with one mailbox in it is still a vault; named as mail, it is read as mail.
+    let vault = tmp.path().join("vault");
+    fs::create_dir_all(vault.join("Archive")).unwrap();
+    fs::write(vault.join("Plan.md"), "# Plan\n").unwrap();
+    fs::copy(&file, vault.join("Archive").join("old.mbox")).unwrap();
+    fs::write(vault.join("Archive").join("1.emlx"), "1\nx").unwrap();
+    assert_eq!(
+        prepare(Some(&vault), None, None).unwrap().source(),
+        ImportSource::Markdown
+    );
+    assert_eq!(
+        prepare(Some(&vault.join("Archive")), None, None)
+            .unwrap()
+            .source(),
+        ImportSource::Markdown
+    );
+    assert!(
+        prepare(Some(&vault), None, Some(ImportSource::Mbox))
+            .unwrap()
+            .is_mail()
+    );
 }
 
 #[test]
