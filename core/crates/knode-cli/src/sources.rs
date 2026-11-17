@@ -288,6 +288,9 @@ fn print_list(list: &[SourceStatus]) {
         if let Some(error) = &s.last_error {
             println!("  {:<14} {}", "", error.message);
         }
+        if let Some(notice) = &s.notice {
+            println!("  {:<14} {}", "", notice);
+        }
     }
     println!();
     println!("Importers (knode import --from <id>)");

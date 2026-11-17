@@ -266,6 +266,9 @@ pub struct RunState {
     /// The error of its last run, if it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// How many runs in a row failed.
     #[serde(default)]
     pub failures: u32,
@@ -339,6 +342,10 @@ pub struct SourceStatus {
     /// The error of its last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well, such
+    /// as what it could not bring in yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// When it runs next, at the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<Timestamp>,
@@ -481,6 +488,7 @@ impl Registry {
             last_items: 0,
             items: 0,
             last_error: None,
+            notice: None,
             next_run: None,
         }));
         Ok(out)
@@ -536,6 +544,7 @@ impl Registry {
             last_items: run.last_items,
             items: run.items,
             last_error: run.last_error,
+            notice: run.notice,
             next_run: run.next_run,
         }
     }
