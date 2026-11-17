@@ -67,6 +67,20 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
         connectors.push(Arc::new(apple_mail));
     }
+    #[cfg(target_os = "macos")]
+    if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
+        connectors.push(Arc::new(imessage));
+    }
+    // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
+    // in the spaces it is switched on in.
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        use knode_ingest::whatsapp_mac::{WhatsAppMac, WhatsAppMacConnector};
+        connectors.push(Arc::new(WhatsAppMacConnector::new(
+            WhatsAppMac::for_home(home),
+            "Me",
+        )));
+    }
     connectors
 }
 
@@ -1001,6 +1015,22 @@ pub fn list_offline(home: &Path, space: &Space) -> knode_format::Result<Vec<Sour
 mod tests {
     use super::*;
     use crate::keys::MemoryKeyStore;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn whatsapp_for_mac_is_built_in() {
+        let connectors = builtin_connectors();
+        let ids: Vec<String> = connectors.iter().map(|c| c.info().id).collect();
+        assert!(ids.iter().any(|id| id == "whatsapp-mac"), "{ids:?}");
+        // No two connectors share an id, and WhatsApp for Mac's is not the export importer's
+        // (a connector may share its id only with the importer of the same source, as
+        // `apple-mail` does).
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
+        assert!(importers().iter().all(|s| s.id != "whatsapp-mac"));
+    }
 
     #[test]
     fn importers_are_sources_of_kind_importer() {

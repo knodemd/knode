@@ -37,10 +37,12 @@
 //!
 //! Chats between people come from the exports of the apps they were held in:
 //! [`import_chat_export`] reads a WhatsApp chat export, a Telegram Desktop export or a Slack
-//! workspace export into one `chat` node per chat.
+//! workspace export into one `chat` node per chat, and
+//! [`whatsapp_mac`] brings in the chats of WhatsApp for Mac as they arrive, as the same nodes.
 //!
 //! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
-//! runs them.
+//! runs them. [`imessage::IMessageConnector`] brings iMessage conversations in live, from a copy
+//! of the Messages database of the Mac, into the same `chat` nodes.
 
 mod aider;
 mod amp;
@@ -68,6 +70,8 @@ mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
+pub use chats::imessage;
+pub use chats::whatsapp_mac;
 pub use chats::{
     CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, PERSON_KIND, chat_export_inside,
     detect_chat_export, import_chat_export, is_chat_export, keys as chat_keys, person_keys,
