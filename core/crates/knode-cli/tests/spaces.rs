@@ -98,7 +98,33 @@ fn folders_are_added_listed_and_removed() {
     assert!(out.contains("Added the project site."), "{out}");
     // The same folder again keeps its project: no second one.
     let out = sb.ok(&["folders", "add", project.to_str().unwrap()]);
-    assert!(out.contains("which the space already had"), "{out}");
+    assert!(
+        out.contains("It already holds the files of the project site."),
+        "{out}"
+    );
+    // Another folder named site is not mixed into that project: it gets its own.
+    let other = sb.home().join("Archive/site");
+    fs::create_dir_all(&other).unwrap();
+    let out = sb.ok(&["folders", "add", other.to_str().unwrap()]);
+    assert!(out.contains("project site (Archive)"), "{out}");
+    assert!(
+        out.contains(
+            "Added the project site (Archive), named after its parent folder too: the project site already holds the files of ~/Developer/site."
+        ),
+        "{out}"
+    );
+    let out = sb.ok(&["folders", "list"]);
+    assert!(
+        out.contains("~/Archive/site  (capture on, project site (Archive))"),
+        "{out}"
+    );
+    let id = out
+        .lines()
+        .find(|line| line.contains("~/Archive/site"))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    sb.ok(&["folders", "remove", &id]);
     // Capture off for a project of another space, named by its name.
     let secret = sb.home().join("Developer/secret");
     let out = sb.ok(&[

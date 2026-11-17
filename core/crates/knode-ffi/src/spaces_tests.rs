@@ -124,6 +124,21 @@ fn adds_changes_and_removes_folders() {
     assert_eq!(changed.project_id.as_deref(), Some(project_id.as_str()));
     assert!(!changed.project_created);
 
+    // Another folder named site gets a project of its own, named after its parent folder.
+    let twin = dir.path().join("archive").join("site");
+    let other = space
+        .set_folder(draft("project", &twin, "{}"), me())
+        .unwrap();
+    assert_eq!(other.project_title.as_deref(), Some("site (archive)"));
+    assert!(other.project_created);
+    assert_eq!(other.project_passed_over.as_deref(), Some("site"));
+    assert_eq!(
+        other.project_passed_over_folders,
+        std::slice::from_ref(&changed.path)
+    );
+    assert!(other.project_shared_with.is_empty());
+    assert!(space.remove_folder(other.id, me()).unwrap());
+
     let sessions = dir.path().join("gone");
     let agent_folder = space
         .set_folder(draft("agent", &sessions, r#"{"agent":"codex"}"#), me())
@@ -147,13 +162,13 @@ fn adds_changes_and_removes_folders() {
     assert!(space.remove_folder(added.id.clone(), me()).unwrap());
     assert!(!space.remove_folder(added.id, me()).unwrap());
     assert_eq!(space.folders().unwrap(), [agent_folder]);
-    // The project stays when its folder goes, and adding the folder again finds it.
-    assert_eq!(space.projects().unwrap().len(), 1);
+    // The projects stay when their folders go, and adding the folder again finds its own.
+    assert_eq!(space.projects().unwrap().len(), 2);
     let again = space
         .set_folder(draft("project", &project, "{}"), me())
         .unwrap();
     assert_eq!(again.project_id.as_deref(), Some(project_id.as_str()));
-    assert!(!again.project_created);
+    assert!(!again.project_created && !again.project_already_held);
 }
 
 #[test]

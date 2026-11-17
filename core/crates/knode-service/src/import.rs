@@ -363,6 +363,8 @@ pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
     input: Input,
+    /// The program that reads the files when it is not one people started: Knode Service.
+    reader: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,6 +451,13 @@ impl Prepared {
     /// Whether it reads mail, which takes [`MailOptions`].
     pub fn is_mail(&self) -> bool {
         matches!(self.input, Input::Mail(..))
+    }
+
+    /// Says that `program` reads the files: Knode Service. When macOS refuses to let it read
+    /// a store that needs Full Disk Access, the error names it as the program to allow.
+    pub fn read_by(mut self, program: impl Into<PathBuf>) -> Self {
+        self.reader = Some(program.into());
+        self
     }
 
     /// Gives the options to read mail with; nothing otherwise.
@@ -567,7 +576,10 @@ pub fn prepare(
             }
         }
     };
-    Ok(Prepared { input })
+    Ok(Prepared {
+        input,
+        reader: None,
+    })
 }
 
 /// What `path` is read as when the person names the kind.
@@ -624,7 +636,7 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         ),
         ImportSource::WhatsApp | ImportSource::Telegram | ImportSource::Slack => {
             let format = source.chat().expect("a chat app");
-            if knode_ingest::detect_chat_export(path) != Some(format) {
+            if !knode_ingest::is_chat_export(path, format) {
                 return not(&format!("a {format}"));
             }
             Input::Chat(format, p)
@@ -832,6 +844,15 @@ pub fn run(
                     if n == 1 { "is" } else { "are" }
                 ));
             }
+            // A chat export among the notes is not imported with them: say how to.
+            if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
+                result.notes.push(format!(
+                    "A {format} is in this folder and was not imported with the notes: import \
+                     it with knode import --from {} \"{}\".",
+                    format.id(),
+                    inner.display()
+                ));
+            }
             if report.created.len() + report.updated.len() + report.unchanged == 0
                 && report.skipped.is_empty()
             {
@@ -891,7 +912,10 @@ pub fn run(
             result.notes.extend(report.limits.iter().cloned());
         }
         Input::Mail(source, path, options) => mail_result(
-            mail::import_mail(space, *source, path, options, by),
+            mail::import_mail(space, *source, path, options, by).map_err(|e| match &what.reader {
+                Some(program) => e.read_by(program),
+                None => e,
+            }),
             &mut result,
         )?,
         Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
@@ -928,6 +952,18 @@ fn mail_result(
             } else {
                 format!("{} people", report.people)
             }
+        ));
+    }
+    if report.people_left_out > 0 {
+        result.notes.push(format!(
+            "{} not added as people: recipients of messages sent to more than {}, and Bcc of \
+             mail that was not sent",
+            if report.people_left_out == 1 {
+                "1 address".to_string()
+            } else {
+                format!("{} addresses", report.people_left_out)
+            },
+            mail::MAX_RECIPIENTS
         ));
     }
     if report.filtered > 0 {

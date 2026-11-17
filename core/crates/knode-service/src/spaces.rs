@@ -32,9 +32,12 @@ pub struct FolderInfo {
     pub local: Option<PathBuf>,
     /// Whether the folder is missing on this machine. A missing folder is kept and skipped.
     pub missing: bool,
-    /// For a project folder, the `project` node of the same name it holds the files of
-    /// (section 15.2): `created` when adding the folder made it. `None` for other folders, and
-    /// for a project folder added before Knode made these, until it is added again.
+    /// For a project folder, the `project` node named after it that it holds the files of: when
+    /// it was just added, `created` when that made the project, `already_held` when the folder
+    /// had been added before, `passed_over` when another folder of the same name holds the
+    /// project of that name, and `shared_with` for the folders it shares the project with. `None`
+    /// for other folders, and for a project folder added before Knode made these, until it is
+    /// added again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<FolderProject>,
 }
@@ -53,10 +56,7 @@ impl FolderInfo {
 
     /// A folder as the space has it, with the project it holds the files of, if any.
     fn read(space: &Space, folder: Folder) -> knode_format::Result<Self> {
-        let project = space.folder_project(&folder)?.map(|node| FolderProject {
-            node,
-            created: false,
-        });
+        let project = space.folder_project(&folder)?.map(FolderProject::found);
         Ok(FolderInfo::of(folder, project))
     }
 }
