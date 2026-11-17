@@ -1126,3 +1126,46 @@ fn code_blocks_keep_their_blank_lines() {
         "## 2026-03-04\n\n**Ada** (09:00):\n```py\nx = 1\n\ny = 2\n```\n"
     );
 }
+
+#[test]
+fn slack_day_files_and_uploads_are_found_by_their_folder() {
+    // "general" and "general-2" sort next to each other; a folder inside one is not its days.
+    let dir = tempfile::tempdir().unwrap();
+    let zipped = dir.path().join("slack.zip");
+    let day = |text: &str, file: &str| {
+        format!(
+            r#"[{{"type":"message","user":"U01","ts":"1772625600.000100","text":"{text}"{file}}}]"#
+        )
+    };
+    let with_file = r#","files":[{"id":"F01","name":"map.png","permalink":"https://example.slack.com/files/U01/F01/map.png"}]"#;
+    let entries: Vec<(String, Vec<u8>)> = [
+        ("users.json", SLACK_USERS.to_string()),
+        (
+            "channels.json",
+            r#"[{"id":"C01","name":"general"},{"id":"C02","name":"general-2"}]"#.to_string(),
+        ),
+        ("general/2026-03-04.json", day("one", with_file)),
+        (
+            "general/old/2026-03-05.json",
+            day("not a day of general", ""),
+        ),
+        ("general-2/2026-03-04.json", day("two", "")),
+        ("__uploads/F01/map.png", "\u{89}PNG synthetic".to_string()),
+    ]
+    .into_iter()
+    .map(|(n, t)| (format!("Example export/{n}"), t.into_bytes()))
+    .collect();
+    zip_entries(&zipped, &entries);
+    let mut space = space(&dir);
+    let report = import_chat_export(&mut space, &zipped, None, &by()).unwrap();
+    assert_eq!(report.attached, 1);
+    let general = chat_node(&space, "slack", "C01");
+    assert!(
+        general.body.contains(": one\n![[map.png]]"),
+        "{}",
+        general.body
+    );
+    assert!(!general.body.contains("not a day"), "{}", general.body);
+    let other = chat_node(&space, "slack", "C02");
+    assert!(other.body.contains(": two"), "{}", other.body);
+}

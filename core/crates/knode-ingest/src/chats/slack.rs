@@ -17,6 +17,7 @@
 //! Times are shown in the time zone of this computer.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 use std::sync::LazyLock;
 
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -188,6 +189,8 @@ struct Workspace {
     people: BTreeMap<String, String>,
     /// Their nodes, by id.
     nodes: BTreeMap<String, NodeId>,
+    /// The files of the export downloaded into `__uploads/<file id>/<name>`, by id and name.
+    uploads: BTreeMap<(String, String), String>,
 }
 
 impl Workspace {
@@ -225,6 +228,7 @@ pub(crate) fn import(
         channels: BTreeMap::new(),
         people: BTreeMap::new(),
         nodes: BTreeMap::new(),
+        uploads: uploads(files),
     };
     let mut conversations = Vec::new();
     for (list, kind, by_id) in LISTS {
@@ -251,9 +255,12 @@ pub(crate) fn import(
     let mut read = Vec::new();
     let mut redacted = 0;
     for (conversation, kind, folder) in conversations {
+        // The names are sorted, so the files under a folder are found where they start.
+        let prefix = format!("{folder}/");
         let days: Vec<String> = files
             .names()
-            .iter()
+            .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+            .take_while(|n| n.starts_with(&prefix))
             .filter(|n| parent(n) == folder && is_day_file(file_name(n)))
             .cloned()
             .collect();
@@ -438,7 +445,7 @@ fn write_conversation(
             continue;
         }
         started.insert(m.ts.as_str());
-        let Some(mut message) = message(workspace, m, &name, files) else {
+        let Some(mut message) = message(workspace, m, &name) else {
             continue;
         };
         if let Some(thread_replies) = replies.get(&m.ts) {
@@ -469,7 +476,7 @@ fn write_conversation(
             first.notes.clear();
             thread.messages.push(first);
             for reply in thread_replies {
-                if let Some(reply) = self::message(workspace, reply, &name, files) {
+                if let Some(reply) = self::message(workspace, reply, &name) {
                     thread.messages.push(reply);
                 }
             }
@@ -511,7 +518,7 @@ fn write_conversation(
             "The message that started this thread is not in this export.",
         ));
         for reply in thread_replies {
-            if let Some(reply) = self::message(workspace, reply, &name, files) {
+            if let Some(reply) = self::message(workspace, reply, &name) {
                 thread.messages.push(reply);
                 orphans += 1;
             }
@@ -572,12 +579,7 @@ fn channel_title(name: &str) -> String {
     format!("Slack - {}", name.trim_start_matches('#'))
 }
 
-fn message(
-    workspace: &Workspace,
-    m: &Message,
-    channel: &str,
-    files: &Files,
-) -> Option<ChatMessage> {
+fn message(workspace: &Workspace, m: &Message, channel: &str) -> Option<ChatMessage> {
     let time = time(&m.ts)?;
     let system = m
         .subtype
@@ -608,11 +610,15 @@ fn message(
         sender,
         markdown(workspace, &m.text),
     );
-    message.media = m.files.iter().map(|f| media(f, files)).collect();
+    message.media = m
+        .files
+        .iter()
+        .map(|f| media(f, &workspace.uploads))
+        .collect();
     Some(message)
 }
 
-fn media(file: &SlackFile, files: &Files) -> Media {
+fn media(file: &SlackFile, uploads: &BTreeMap<(String, String), String>) -> Media {
     let name = file
         .name
         .clone()
@@ -624,13 +630,7 @@ fn media(file: &SlackFile, files: &Files) -> Media {
         };
     }
     // Tools that download the files keep them in `__uploads/<id>/<name>`.
-    let entry = files
-        .names()
-        .iter()
-        .find(|n| {
-            file_name(n) == name && file_name(parent(n)) == file.id && n.contains("__uploads/")
-        })
-        .cloned();
+    let entry = uploads.get(&(file.id.clone(), name.clone())).cloned();
     // A file's private URL carries a token to open it (`?t=xoxe-...`): only the address is
     // kept.
     let url = file
@@ -643,6 +643,18 @@ fn media(file: &SlackFile, files: &Files) -> Media {
         (None, Some(url)) => Media::Link { name, url },
         (None, None) => Media::Missing { name },
     }
+}
+
+/// The files that tools which download them keep in `__uploads/<file id>/<name>`, by id and
+/// name, the first in the export's order when two are at the same id and name: read once, so
+/// a file sent is found without going through every name of the export.
+fn uploads(files: &Files) -> BTreeMap<(String, String), String> {
+    let mut uploads = BTreeMap::new();
+    for n in files.names().iter().filter(|n| n.contains("__uploads/")) {
+        let key = (file_name(parent(n)).to_string(), file_name(n).to_string());
+        uploads.entry(key).or_insert_with(|| n.clone());
+    }
+    uploads
 }
 
 /// A URL without its query string and fragment.
@@ -836,6 +848,7 @@ mod tests {
             channels,
             people,
             nodes: BTreeMap::new(),
+            uploads: BTreeMap::new(),
         }
     }
 

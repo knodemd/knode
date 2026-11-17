@@ -4,7 +4,7 @@
 //! | --- | --- | --- |
 //! | WhatsApp "Export chat" | `whatsapp` | The `.zip`, its folder, or the `.txt`: `_chat.txt` (iOS) or `WhatsApp Chat with <name>.txt` (Android), in every locale, with the media beside it |
 //! | Slack workspace export | `slack` | The `.zip` or its folder: `users.json`, `channels.json` (and `groups.json`, `mpims.json`, `dms.json`) and a folder of day files per conversation; threads become their own nodes, members `person` nodes |
-//! | Telegram Desktop, JSON | `telegram` | The folder with `result.json` (one chat, or the whole account), or a `.zip` of it, with the media beside it |
+//! | Telegram Desktop, JSON | `telegram` | The folder with `result.json` (one chat, or the whole account, read one chat at a time), or a `.zip` of it, with the media beside it |
 //!
 //! Every chat becomes one node of kind [`CHAT_KIND`]: the messages grouped by day under
 //! `## YYYY-MM-DD` headings, each with its sender and time, and the files of the export
@@ -396,11 +396,10 @@ pub fn import_chat_export(
             }
         }
         Located::Telegram(file) => {
-            let (chats, redacted) = telegram::read(&mut files, &file)?;
-            note_redacted(&mut writer.report, redacted);
-            for chat in chats {
-                writer.write(&chat, &mut files)?;
-            }
+            // `result.json` is read from a second handle on the export, while its media are
+            // attached from the first.
+            let mut source = Files::open(path)?;
+            telegram::import(&mut source, &file, &mut files, &mut writer)?;
         }
         Located::Slack(dir) => slack::import(&mut files, &dir, &mut writer)?,
     }
