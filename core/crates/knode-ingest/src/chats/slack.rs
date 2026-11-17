@@ -80,42 +80,47 @@ pub(crate) fn locate(files: &mut Files) -> Option<String> {
         .min_by_key(|dir| (dir.matches('/').count(), dir.len()))
 }
 
-#[derive(Debug, Deserialize)]
-struct User {
-    id: String,
+/// A member of the workspace, as `users.json` of an export and `users.list` of the Web API
+/// have it.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct User {
+    pub id: String,
     #[serde(default)]
-    team_id: Option<String>,
+    pub team_id: Option<String>,
     #[serde(default)]
-    name: String,
+    pub name: String,
     #[serde(default)]
-    real_name: Option<String>,
+    pub real_name: Option<String>,
     #[serde(default)]
-    profile: Option<Profile>,
+    pub profile: Option<Profile>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct Profile {
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct Profile {
     #[serde(default)]
-    real_name: Option<String>,
+    pub real_name: Option<String>,
     #[serde(default)]
-    display_name: Option<String>,
+    pub display_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Conversation {
-    id: String,
+/// A channel, private channel, group message or direct message.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Conversation {
+    pub id: String,
     #[serde(default)]
-    name: Option<String>,
+    pub name: Option<String>,
     #[serde(default)]
-    members: Vec<String>,
+    pub members: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Message {
+/// A message, as the day files of an export and `conversations.history` and
+/// `conversations.replies` of the Web API have it.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Message {
     #[serde(default)]
-    subtype: Option<String>,
+    pub subtype: Option<String>,
     #[serde(default)]
-    user: Option<String>,
+    pub user: Option<String>,
     #[serde(default)]
     username: Option<String>,
     #[serde(default)]
@@ -123,21 +128,34 @@ struct Message {
     #[serde(default)]
     user_profile: Option<Profile>,
     #[serde(default)]
-    text: String,
-    ts: String,
+    pub text: String,
+    pub ts: String,
     #[serde(default)]
-    thread_ts: Option<String>,
+    pub thread_ts: Option<String>,
+    /// How many replies its thread has, for the message that starts one.
+    #[serde(default)]
+    pub reply_count: Option<u64>,
+    /// The `ts` of the last reply of its thread, for the message that starts one.
+    #[serde(default)]
+    pub latest_reply: Option<String>,
     #[serde(default)]
     files: Vec<SlackFile>,
 }
 
-#[derive(Debug, Deserialize)]
+impl Message {
+    /// Whether it is a reply in a thread rather than a message of the channel.
+    pub fn is_reply(&self) -> bool {
+        self.thread_ts.as_ref().is_some_and(|t| t != &self.ts)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct BotProfile {
     #[serde(default)]
     name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SlackFile {
     #[serde(default)]
     id: String,
@@ -180,7 +198,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(
 }
 
 /// What the import knows of the workspace: its members and channels by id.
-struct Workspace {
+pub(crate) struct Workspace {
     users: BTreeMap<String, User>,
     /// Channel names by id.
     channels: BTreeMap<String, String>,
@@ -191,9 +209,19 @@ struct Workspace {
 }
 
 impl Workspace {
+    /// The workspace with these members and these channel names by id.
+    pub fn new(users: impl IntoIterator<Item = User>, channels: BTreeMap<String, String>) -> Self {
+        Workspace {
+            users: users.into_iter().map(|u| (u.id.clone(), u)).collect(),
+            channels,
+            people: BTreeMap::new(),
+            nodes: BTreeMap::new(),
+        }
+    }
+
     /// What a member is called: the display name chosen in the profile, else the real name,
     /// else the handle.
-    fn name(&self, id: &str) -> Option<String> {
+    pub fn name(&self, id: &str) -> Option<String> {
         let user = self.users.get(id)?;
         let profile = user.profile.as_ref();
         [
@@ -217,12 +245,7 @@ pub(crate) fn import(
     writer: &mut ChatWriter<'_>,
 ) -> Result<(), ChatImportError> {
     let users: Vec<User> = read_json(files, &join(dir, "users.json"))?;
-    let mut workspace = Workspace {
-        users: users.into_iter().map(|u| (u.id.clone(), u)).collect(),
-        channels: BTreeMap::new(),
-        people: BTreeMap::new(),
-        nodes: BTreeMap::new(),
-    };
+    let mut workspace = Workspace::new(users, BTreeMap::new());
     let mut conversations = Vec::new();
     for (list, kind, by_id) in LISTS {
         let path = join(dir, list);
@@ -262,23 +285,36 @@ pub(crate) fn import(
         read.push((conversation, kind, messages));
     }
 
+    let wanted = wanted(read.iter().flat_map(|(_, _, messages)| messages));
+    write_people(&mut workspace, &wanted, writer)?;
+
+    let threaded = BTreeSet::new();
+    for (conversation, kind, messages) in read {
+        write_conversation(
+            &workspace,
+            &conversation,
+            kind,
+            messages,
+            &threaded,
+            files,
+            writer,
+        )?;
+    }
+    Ok(())
+}
+
+/// The members who wrote or are mentioned in `messages`.
+pub(crate) fn wanted<'a>(messages: impl IntoIterator<Item = &'a Message>) -> BTreeSet<String> {
     let mut wanted = BTreeSet::new();
-    for (_, _, messages) in &read {
-        for m in messages {
-            wanted.extend(m.user.clone());
-            for c in ANGLE.captures_iter(&m.text) {
-                if let Some(id) = c[1].strip_prefix('@') {
-                    wanted.insert(id.split('|').next().unwrap_or(id).to_string());
-                }
+    for m in messages {
+        wanted.extend(m.user.clone());
+        for c in ANGLE.captures_iter(&m.text) {
+            if let Some(id) = c[1].strip_prefix('@') {
+                wanted.insert(id.split('|').next().unwrap_or(id).to_string());
             }
         }
     }
-    write_people(&mut workspace, &wanted, writer)?;
-
-    for (conversation, kind, messages) in read {
-        write_conversation(&workspace, &conversation, kind, messages, files, writer)?;
-    }
-    Ok(())
+    wanted
 }
 
 fn is_day_file(name: &str) -> bool {
@@ -294,12 +330,12 @@ fn is_day_file(name: &str) -> bool {
 }
 
 /// A `ts` as text that sorts the way the messages do.
-fn mark(ts: &str) -> String {
+pub(crate) fn mark(ts: &str) -> String {
     format!("{ts:0>20}")
 }
 
 /// The time of a `ts`, in the time zone of this computer.
-fn time(ts: &str) -> Option<NaiveDateTime> {
+pub(crate) fn time(ts: &str) -> Option<NaiveDateTime> {
     let (secs, frac) = ts.split_once('.').unwrap_or((ts, "0"));
     let secs: i64 = secs.parse().ok()?;
     let micros: u32 = format!("{frac:0<6}").get(..6)?.parse().ok()?;
@@ -311,7 +347,7 @@ fn time(ts: &str) -> Option<NaiveDateTime> {
 
 /// Writes a node for every member in `wanted` the export knows, or finds the one written
 /// before, and keeps its title for links.
-fn write_people(
+pub(crate) fn write_people(
     workspace: &mut Workspace,
     wanted: &BTreeSet<String>,
     writer: &mut ChatWriter<'_>,
@@ -379,11 +415,16 @@ fn write_people(
     Ok(())
 }
 
-fn write_conversation(
+/// Writes a conversation: its node, with the messages that are not replies, and a node for
+/// every thread whose replies are among `messages`, linked `part-of` it. A message whose `ts`
+/// is in `threaded` starts a thread whose replies are written later: it links to the thread's
+/// node all the same.
+pub(crate) fn write_conversation(
     workspace: &Workspace,
     conversation: &Conversation,
     kind: &str,
     messages: Vec<Message>,
+    threaded: &BTreeSet<String>,
     files: &mut Files,
     writer: &mut ChatWriter<'_>,
 ) -> Result<(), ChatImportError> {
@@ -429,19 +470,12 @@ fn write_conversation(
         let Some(mut message) = message(workspace, m, &name, files) else {
             continue;
         };
+        if !replies.contains_key(&m.ts) && threaded.contains(&m.ts) {
+            let thread_title = thread_title(workspace, &channel.title, m, &message);
+            message.notes.push(format!("Thread: [[{thread_title}]]"));
+        }
         if let Some(thread_replies) = replies.get(&m.ts) {
-            let snippet = crate::text::one_line(&plain(workspace, &m.text), 40);
-            let thread_title = clean_title(&format!(
-                "{} - {} ({})",
-                channel.title,
-                if snippet.is_empty() {
-                    "thread"
-                } else {
-                    &snippet
-                },
-                message.time.format("%Y-%m-%d %H:%M")
-            ))
-            .replace('#', "");
+            let thread_title = thread_title(workspace, &channel.title, m, &message);
             message.notes.push(format!("Thread: [[{thread_title}]]"));
             let mut thread = Chat::new(
                 ChatFormat::Slack,
@@ -555,8 +589,29 @@ fn relate(
     Ok(())
 }
 
+/// The title of the node of the thread `m` starts in the channel titled `channel`.
+fn thread_title(
+    workspace: &Workspace,
+    channel: &str,
+    m: &Message,
+    message: &ChatMessage,
+) -> String {
+    let snippet = crate::text::one_line(&plain(workspace, &m.text), 40);
+    clean_title(&format!(
+        "{} - {} ({})",
+        channel,
+        if snippet.is_empty() {
+            "thread"
+        } else {
+            &snippet
+        },
+        message.time.format("%Y-%m-%d %H:%M")
+    ))
+    .replace('#', "")
+}
+
 /// The title of a channel's node.
-fn channel_title(name: &str) -> String {
+pub(crate) fn channel_title(name: &str) -> String {
     format!("Slack - {}", name.trim_start_matches('#'))
 }
 
@@ -627,7 +682,7 @@ fn media(file: &SlackFile, files: &Files) -> Media {
 }
 
 /// A name a title can hold: no `[`, `]` or `|`, spaces collapsed.
-fn clean_title(name: &str) -> String {
+pub(crate) fn clean_title(name: &str) -> String {
     name.replace(['[', ']', '|'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
