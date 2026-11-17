@@ -191,4 +191,52 @@ import Testing
         #expect(ApplicationMover.replacementNote(existing: nil, this: nil)
             == "The copy of Knode already in Applications will be moved to the Trash and replaced by this one.")
     }
+
+    /// An installer whose `knode` is installed already (with Homebrew), so the first run asks
+    /// nothing and the command is ready at once.
+    @MainActor func installer(_ suite: String) throws -> (CommandLineToolInstaller, UserDefaults) {
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let fileSystem = MemoryFileSystem(executables: ["/opt/homebrew/bin/knode", Self.app])
+        return (CommandLineToolInstaller(tool: tool(fileSystem), defaults: defaults), defaults)
+    }
+
+    @MainActor @Test func readyOnTheFirstRunBeforeAnyoneAsksRunsOnceWhenAsked() throws {
+        let suite = "KnodeTests.firstRunReadyFirst.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        installer.offerOnFirstRun()
+
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 1)
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 1)
+    }
+
+    @MainActor @Test func askingBeforeTheCommandIsReadyRunsOnceItIs() throws {
+        let suite = "KnodeTests.firstRunAskFirst.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        #expect(runs == 0)
+
+        installer.offerOnFirstRun()
+        #expect(runs == 1)
+        installer.offerOnFirstRun()
+        installer.offerOnLaunch()
+        #expect(runs == 1)
+    }
+
+    @MainActor @Test func aLaterRunNeverGoesOnToConnectYourAgents() throws {
+        let suite = "KnodeTests.laterRun.\(UUID().uuidString)"
+        let (installer, defaults) = try installer(suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CommandLineToolInstaller.offeredKey)
+        var runs = 0
+        installer.whenReadyOnFirstRun { runs += 1 }
+        installer.offerOnLaunch()
+        #expect(runs == 0)
+    }
 }
