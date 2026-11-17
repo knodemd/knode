@@ -235,6 +235,31 @@ pub(crate) fn read(
                 .into(),
         });
     }
+    read_files(files, options, collected, report)
+}
+
+/// Reads the `.emlx` files given, each in its mailbox under the store `root` (a `V<n>`
+/// folder), into `collected`: what a connector that knows which messages are new reads.
+pub(crate) fn read_some(
+    root: &Path,
+    files: &[PathBuf],
+    options: &MailOptions,
+    collected: &mut Collector<'_>,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
+    let files = files
+        .iter()
+        .map(|file| (file.clone(), mailbox(root, file)))
+        .collect();
+    read_files(files, options, collected, report)
+}
+
+fn read_files(
+    files: Vec<(PathBuf, String)>,
+    options: &MailOptions,
+    collected: &mut Collector<'_>,
+    report: &mut MailReport,
+) -> Result<(), MailError> {
     for (file, mailbox) in files {
         let raw = match read_emlx(&file) {
             Ok(raw) => raw,
