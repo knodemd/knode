@@ -25,6 +25,13 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Settings > Sources** in the Mac app: every source of a space, with what it reads, the
+  permission it needs, whether it is on, when it last ran, how many items it brought in and its
+  last error, and a clear **Needs an update** when another app's database changed. **Connect**
+  goes step by step: Full Disk Access with a button to its pane of System Settings, the
+  connector's own sign-in, the history (**From today** or **Everything**) and every chat, channel
+  or folder with a switch to leave it out, paused until you start it. A switch pauses and resumes
+  it, **Run now** runs it at once, and **Disconnect** asks first and keeps what it brought in.
 
 ### v0.3 - Map and import (in progress)
 
