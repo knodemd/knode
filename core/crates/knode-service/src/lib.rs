@@ -16,6 +16,9 @@
 //!   web page, Kindle or Readwise highlights, the notes of Apple Notes, Bear, Notion or
 //!   Evernote, or a WhatsApp, Telegram Desktop or Slack chat export) and imports it:
 //!   `import.run`.
+//! - [`sources`] lists the importers and connectors of a space, keeps the settings of each
+//!   connector in the space and what it did on this machine, and runs the connectors switched
+//!   on (see [`SourcesOptions`]): `sources.*`.
 //! - [`start`] runs it on a background thread, for tests and embedding.
 //! - [`Client`] talks to it; [`connect_or_spawn`] starts it first when it is not running.
 //! - [`LoginService`] starts it at login with launchd or systemd; [`stop_service`] stops it.
@@ -55,6 +58,7 @@ pub mod protocol;
 pub mod readwise;
 pub mod search;
 mod server;
+pub mod sources;
 pub mod spaces;
 
 pub use agents::{AgentInfo, Identity, KeyInfo, SpaceGrant};
@@ -83,6 +87,7 @@ pub use protocol::{
 };
 pub use search::{IndexOptions, IndexStatus, ModelState, ModelStatus, SearchResults, SpaceIndex};
 pub use server::{Config, ServiceHandle, run, start};
+pub use sources::{SourceSetting, SourceState, SourceStatus, SourcesOptions};
 pub use spaces::{FolderInfo, FolderInput, SpaceEvent, SpaceEventKind};
 
 /// The version of this crate.

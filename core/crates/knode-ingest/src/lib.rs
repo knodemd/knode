@@ -38,8 +38,10 @@
 //! Chats between people come from the exports of the apps they were held in:
 //! [`import_chat_export`] reads a WhatsApp chat export, a Telegram Desktop export or a Slack
 //! workspace export into one `chat` node per chat.
-//! [`imessage::ImessageConnector`] brings iMessage conversations in live, from a copy of the
-//! Messages database of the Mac, into the same `chat` nodes.
+//!
+//! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
+//! runs them. [`imessage::IMessageConnector`] brings iMessage conversations in live, from a copy
+//! of the Messages database of the Mac, into the same `chat` nodes.
 
 mod aider;
 mod amp;
@@ -59,6 +61,7 @@ mod opencode;
 mod reader;
 mod redact;
 mod render;
+pub mod sources;
 mod text;
 mod vscdb;
 mod watch;
