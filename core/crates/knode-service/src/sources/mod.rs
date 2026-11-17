@@ -26,6 +26,7 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod gmail;
 pub mod imap;
 mod mail_live;
 #[cfg(test)]
@@ -65,6 +66,7 @@ pub const STATE_FILE: &str = "state.json";
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     vec![
+        Arc::new(gmail::GmailConnector::new()),
         Arc::new(imap::ImapConnector::new()),
     ]
 }
