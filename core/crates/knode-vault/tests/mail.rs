@@ -1056,3 +1056,98 @@ fn bcc_recipients_are_never_shown_as_cc() {
         "{both}"
     );
 }
+
+/// The digest the importer keeps of the lines it wrote for a message.
+fn section_digest(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let lines: Vec<&str> = content.lines().map(str::trim_end).collect();
+    Sha256::digest(lines.join("\n").as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..16]
+        .to_string()
+}
+
+#[test]
+fn headings_show_the_offset_and_sections_written_without_it_are_read_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = simple(
+        "<tz-1@example.com>",
+        "Shop <news@shop.example>",
+        "Zones",
+        "Tue, 03 Mar 2026 09:00:00 +0100",
+        &[],
+    );
+    let second = simple(
+        "<tz-2@example.com>",
+        "Bruno Sample <bruno@example.org>",
+        "Re: Zones",
+        "Tue, 03 Mar 2026 09:30:00 -0500",
+        &[("References", "<tz-1@example.com>")],
+    );
+    let file = write_mbox(tmp.path(), "tz.mbox", &[first, second]);
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let node = thread(&space, "Zones");
+    assert!(
+        node.body.contains("## Shop - 2026-03-03 09:00 +01:00\n"),
+        "{}",
+        node.body
+    );
+    assert!(
+        node.body
+            .contains("## Bruno Sample - 2026-03-03 09:30 -05:00\n"),
+        "{}",
+        node.body
+    );
+
+    // A node as an import wrote it before the offset was shown: the first section as Knode
+    // wrote it, the second changed in Knode, and a note after the first.
+    let old = |id: &str, date: &str, content: &str| {
+        format!(
+            "<!-- mail {id} {date} {} {} -->\n{content}",
+            content.lines().count(),
+            section_digest(content)
+        )
+    };
+    let a = old(
+        "tz-1@example.com",
+        "2026-03-03T08:00:00Z",
+        "## Shop - 2026-03-03 09:00\n\n- **From:** Shop <news@shop.example>\n\n- **To:** \
+         Ada Example <ada@example.com>\n\nText of <tz-1@example.com>.",
+    );
+    let b = old(
+        "tz-2@example.com",
+        "2026-03-03T14:30:00Z",
+        "## Bruno Sample - 2026-03-03 09:30\n\nText of <tz-2@example.com>.",
+    )
+    .replace("Text of", "Edited text of");
+    let body = format!("# Zones\n\n{a}\n\nMy note.\n\n{b}\n");
+    space
+        .update_node(
+            &node.id,
+            knode_format::NodeUpdate {
+                body: Some(body),
+                ..Default::default()
+            },
+            &me(),
+        )
+        .unwrap();
+
+    let again = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert!(again.created.is_empty(), "{again:?}");
+    let node = thread(&space, "Zones");
+    assert_eq!(message_ids(&node), ["tz-1@example.com", "tz-2@example.com"]);
+    assert!(
+        node.body.contains("## Shop - 2026-03-03 09:00 +01:00\n"),
+        "{}",
+        node.body
+    );
+    assert!(node.body.contains("My note."), "{}", node.body);
+    assert!(
+        node.body
+            .contains("## Bruno Sample - 2026-03-03 09:30\n\nEdited text of"),
+        "the section changed in Knode is kept: {}",
+        node.body
+    );
+}

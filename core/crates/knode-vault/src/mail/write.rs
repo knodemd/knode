@@ -485,8 +485,9 @@ fn section(mail: &Mail, names: &[String], linked: &[bool]) -> Section {
         .map(|p| escape_inline(p.label()))
         .unwrap_or_else(|| "Unknown sender".to_string());
     let mut text = format!("## {who}");
+    // In the sender's time, with its offset: times of one thread can be from several zones.
     if let Some(sent) = mail.date {
-        text.push_str(&format!(" - {}", sent.format("%Y-%m-%d %H:%M")));
+        text.push_str(&format!(" - {}", sent.format("%Y-%m-%d %H:%M %:z")));
     }
     text.push_str("\n\n");
     for (label, list) in [
