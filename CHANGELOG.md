@@ -25,6 +25,13 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Slack connector**: brings in the channels, private channels, group messages and direct
+  messages you are in on Slack, with their threads and people, into the same nodes a Slack export
+  makes, so an export and the connector never write a message twice. `knode sources sign-in
+  slack` signs in once in the browser (OAuth with PKCE: Knode asks only to read, and keeps no
+  client secret); the sign-in stays in the system keychain and `knode sources sign-out slack`
+  forgets it. Every conversation comes in except the channels you exclude. It reads within
+  Slack's rate limits, spreading what does not fit over the next runs.
 
 ### v0.3 - Map and import (in progress)
 
