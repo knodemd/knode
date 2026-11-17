@@ -227,7 +227,7 @@ fn imports_an_android_export_as_zip_folder_or_text_file() {
 #[test]
 fn reads_every_locale_family() {
     // The same three messages as phones in different languages write them.
-    let families: [(&str, &str); 8] = [
+    let families: [(&str, &str); 10] = [
         (
             "ios-day-month",
             "[04/03/2026, 09:15:02] Ada: one\n[04/03/2026, 21:40:00] Grace: two\n[13/03/2026, 07:05:00] Ada: three\n",
@@ -259,6 +259,14 @@ fn reads_every_locale_family() {
         (
             "android-spanish-12h",
             "4/3/26, 9:15 a. m. - Ada: one\n4/3/26, 9:40 p. m. - Grace: two\n13/3/26, 7:05 a. m. - Ada: three\n",
+        ),
+        (
+            "android-french-a",
+            "04/03/2026 à 09:15 - Ada: one\n04/03/2026 à 21:40 - Grace: two\n13/03/2026 à 07:05 - Ada: three\n",
+        ),
+        (
+            "android-finnish-klo",
+            "4.3.2026 klo 9.15 - Ada: one\n4.3.2026 klo 21.40 - Grace: two\n13.3.2026 klo 7.05 - Ada: three\n",
         ),
     ];
     for (family, text) in families {
@@ -1058,4 +1066,24 @@ fn no_token_in_a_chat_reaches_a_node() {
     import_chat_export(&mut space, &root, None, &by()).unwrap();
     let all = everything(&space);
     assert!(!all.contains("xoxb-") && !all.contains(API_KEY), "{all}");
+}
+
+#[test]
+fn whatsapp_android_french_date_with_a_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("WhatsApp Chat with Ada.txt");
+    fs::write(
+        &file,
+        "04/03/2026 à 09:15 - Ada: Bonjour\n04/03/2026 à 09:16 - Mira: Salut\n",
+    )
+    .unwrap();
+    assert_eq!(detect_chat_export(&file), Some(ChatFormat::WhatsApp));
+    let mut space = space(&dir);
+    let report = import_chat_export(&mut space, &file, Some(ChatFormat::WhatsApp), &by()).unwrap();
+    assert_eq!(report.messages, 2);
+    let node = chat_node(&space, "whatsapp", "ada");
+    assert_eq!(
+        node.body,
+        "## 2026-03-04\n\n**Ada** (09:15): Bonjour\n\n**Mira** (09:16): Salut\n"
+    );
 }
