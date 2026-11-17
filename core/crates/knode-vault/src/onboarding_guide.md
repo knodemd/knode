@@ -1,8 +1,10 @@
 # Moving a person's notes into Knode
 
-You are an agent helping a person bring their existing notes into Knode, the local memory their
-agents share. Follow these steps in order. Work with the `knode` command on this machine. Speak to
-the person in their language, briefly. Ask them only what these steps say to ask.
+You are an agent setting up Knode, the local memory a person's agents share, for that person.
+Do it now, from start to end: do not ask whether they want to. Follow these steps in order with the
+`knode` command on this machine. Speak to the person in their language, briefly. Look things up
+yourself instead of asking; ask only once, in step 3, everything that needs their judgment or
+their consent, then do all of it without stopping again unless a command fails.
 
 Source folder: {source}
 
@@ -13,13 +15,18 @@ Source folder: {source}
   folder. A plan written inside the source changes what it describes.
 - Never store credentials in notes. Knode already leaves out key files and replaces obvious secrets
   in agent conversations; tell the person if you see others.
-- Ask before you change an agent's configuration or a project's instruction file, and back up
-  every file you edit.
+- Change an agent's configuration or a project's instruction file only with the consent given in
+  step 3, and back up every file you edit first (next to it, or in one backup folder you name).
+- Never commit or push in the person's repositories: leave your edits for them to review.
 - If a command fails, show the person the error and stop that step; do not work around it.
 
 ## 0. Find out where the person starts
 
-Ask, unless it is already clear, which of these fits, and follow its path:
+Look before asking. Check `knode spaces`, then where notes and projects usually live: Obsidian
+vaults (folders with a `.obsidian` folder), and git repositories and Markdown folders in the home
+folder, `~/Desktop`, `~/Documents`, `~/Developer`, `~/Projects`, `~/Proyectos`, `~/code`, `~/src`
+(one or two levels deep; do not walk `~/Library` or the whole disk). Then decide which of these
+fits, and follow its path (confirm it in step 3):
 
 - **A folder of notes**, such as an Obsidian vault or a folder that holds their projects: steps 1
   to 8 below, with that folder as the source.
@@ -27,18 +34,22 @@ Ask, unless it is already clear, which of these fits, and follow its path:
   other files, or projects in several places (Desktop, `~/Developer`, `~/Documents`): first
   "Projects spread around", then steps 1 to 8.
 - **Nothing yet**: they want to start using Knode with their agents now. Go to "Starting from
-  nothing", then steps 6 to 8.
+  nothing", asking its questions together with those of step 3 that apply, then steps 6 to 8.
 
 Run `knode spaces`. If the person already has a space (not marked archived), ask whether this
 import should become their memory or stay a separate space; see "If they already have a space".
+A space that only holds captured conversations (kind `conversation`) is not their memory yet:
+treat it as empty.
 
-Also look for memory their agents already keep, and offer to bring it: Claude Code's
+Also look for memory their agents already keep, to bring it in step 4: Claude Code's
 `~/.claude/projects/*/memory/` folders, global instruction files (`~/.claude/CLAUDE.md`,
-`~/.codex/AGENTS.md`), and memory tools or plugins. If another memory tool injects context into
-every session, ask whether to turn it off once Knode is in place, so agents do not keep two
-memories.
+`~/.codex/AGENTS.md`), and memory tools or plugins (for Claude Code, `claude plugin list`; for
+example claude-mem). Once Knode holds that memory, two memories drift apart: in step 3, propose to
+turn off Claude Code's own memory (`"autoMemoryEnabled": false` in `~/.claude/settings.json`) and
+any memory plugin that injects context into every session (`claude plugin disable <plugin>`).
 
-To bring Claude Code's memory: each folder in `~/.claude/projects/` is a working folder whose
+To bring Claude Code's memory, use `knode import --from claude-code-memory` when `knode import
+--help` lists it: it links each memory to its project. Otherwise, by hand: each folder in `~/.claude/projects/` is a working folder whose
 path has every character that is not a letter or digit replaced by `-`
 (`/Users/ada/Work/web.app` is `-Users-ada-Work-web-app`); skip folders that are symbolic links.
 Match each to the project whose folder it is, or that contains it, by encoding the project
@@ -85,16 +96,20 @@ leave a link at the old place until nothing uses it.
 ## Starting from nothing
 
 1. Create the space and make it the default: `knode init "<Name>"` and
-   `knode spaces default "<Name>"`.
+   `knode spaces default "<Name>"`. A new space captures the conversations of every agent from the
+   start: unless the person chose capture in step 3, turn it off right away with
+   `knode spaces capture "<Name>" off`.
 2. Ask which projects they work on now, and where. For each: register its folder
-   (`knode --space "<Name>" folders add <folder> --kind project`), read its `README`, instruction
+   (`knode --space "<Name>" folders add <folder> --kind project`); if that does not report a
+   project node, create one by importing a folder holding a note named after the project whose
+   frontmatter has `kind: project` (a space with projects counts as set up, so agents stop being
+   asked to set it up); then read its `README`, instruction
    files and recent history (`git log --oneline -20`), and save one short context note for it:
    what it is, its goal, its current state, key decisions and the next step, marked as written by
    you from those sources. Ask the person to correct anything you could not verify.
 3. Bring the memory their agents already keep (see step 0): import a folder that holds those
    files, `knode --space "<Name>" import <folder>`, and link each note to its project.
-4. Ask whether Knode should also keep their agent conversations from now on (capture): it is off
-   unless they choose it, per space (`knode spaces capture "<Name>" on`).
+4. Capture, as the person chose in step 3: `knode spaces capture "<Name>" on|off`.
 
 Then continue with steps 6 to 8.
 
@@ -163,13 +178,20 @@ Write a short summary, for example: "I found 40 projects and 380 of your notes. 
 the notes kept inside `crm`, `course` and `finances` (status and session logs), and leave out
 1,200 README, CHANGELOG and similar files of your repositories, which stay with their code. I will
 leave out the map notes, which only list other notes. `team-coaching` builds PDFs from its notes,
-so it stays as files. Shall I go ahead?" List only what is doubtful as questions. Also ask:
+so it stays as files. Shall I go ahead?" List only what is doubtful as questions. In the same
+message, with a recommended answer for each so the person can reply "yes to all":
 
-- the name of the new space (suggest the source folder's name, or "Memory");
+- the name of the new space (suggest "Memory" in their language, or the source folder's name);
 - whether to bring the conversations their agents held in these project folders
-  (`knode onboard sessions --plan /tmp/knode-plan.json` lists them; recommend yes).
+  (`knode onboard sessions --plan /tmp/knode-plan.json` lists them; recommend yes);
+- whether to bring their agents' existing memory (step 0; recommend yes);
+- which agents to connect (those `knode connect --list` detects; recommend the ones they use);
+- whether Knode should keep every agent conversation from now on (capture; recommend off at
+  first: whole transcripts crowd search, and the agents already save what matters);
+- whether to update their projects' instruction files (step 7; recommend yes), and to turn off
+  other memories (step 0; recommend yes).
 
-Wait for the answer.
+Wait for the answer, then do steps 4 to 8 without asking again.
 
 ## 4. Apply
 
@@ -201,7 +223,10 @@ knode --space "$HOME/Knode/<Name>.knode" connect <agent> --print
 knode --space "$HOME/Knode/<Name>.knode" connect <agent>
 ```
 
-The agent needs a new session to see Knode. For Claude Code, also offer one line in its global
+Sessions already open keep their old configuration: tell the person to start a new session of each
+agent you connected. Check the result: for Claude Code, `claude mcp get knode` shows `knode mcp`
+with the new space. If the agent was connected before to another space (for example, a first
+try), connecting again replaces it. For Claude Code, also offer one line in its global
 instruction file (`~/.claude/CLAUDE.md`), with a backup: "Your memory is Knode, space <Name>:
 search it before asking about earlier work, and save decisions there." Global files load in
 every session, so keep it to that line.
@@ -220,6 +245,15 @@ imported:
 - add Knode's short workflow block: `knode instructions <agent> --project <folder> --apply`;
 - move long status sections out of instruction files into a Knode note of that project, keeping
   only rules in the file: instruction files load in every session, Knode notes only when needed.
+  Do it for files over about 4 KB that hold status, dated decisions or history. Rules stay in the
+  file with their details (validation commands and their counts or known warnings, versions in
+  security warnings, compliance and cost rules, who owns what); state, reasoning and history go,
+  verbatim, to one note titled `<project> — context, status and decisions` (in the person's
+  language), part of the project, and the file gets one line pointing to it. Then compare the
+  original with the file and the note line by line: every fact must be in one of the two.
+  Credentials never move to Knode; name variables or files instead of values.
+- with the consent from step 3, turn off the other memories (step 0), after their content is in
+  Knode.
 
 Do not change instruction files of projects you left as files, or of repositories other people
 share, without asking.
@@ -230,6 +264,7 @@ Save one note in the new space with what you did, what you left out and why, and
 part of the project it concerns. With Knode's MCP tools use `write_node`; from the command line,
 import a folder that holds the note: `knode --space "<space>" import <folder>`.
 
-Then tell the person, in a few lines: the space and how many projects and notes it holds, what
+Then tell the person, in a few lines (and to open new agent sessions so they use Knode): the space
+and how many projects and notes it holds, what
 stayed as files, what changed in their agents and instruction files (with the backups), and that
 `knode onboard archive --target "<space>"` puts the copy aside if they want to start again.
