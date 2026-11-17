@@ -19,6 +19,7 @@ mod files;
 mod model;
 mod render;
 mod slack;
+pub mod slack_live;
 mod telegram;
 mod whatsapp;
 mod write;
