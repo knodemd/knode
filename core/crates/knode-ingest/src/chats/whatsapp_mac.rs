@@ -38,14 +38,12 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::{Local, NaiveDateTime, TimeZone};
 use knode_format::{Provenance, Space};
-use rusqlite::backup::{Backup, StepResult};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row};
 
 use super::files::Files;
 use super::model::{Chat, ChatMessage, Media, stable_hash};
@@ -53,6 +51,7 @@ use super::render::{escape_name, escape_text};
 use super::whatsapp::clean_title;
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportError, ChatImportReport};
+use crate::sources::sqlite::DatabaseCopy;
 
 /// WhatsApp for Mac's group container, relative to the home folder.
 pub const CONTAINER: &str = "Library/Group Containers/group.net.whatsapp.WhatsApp.shared";
@@ -282,6 +281,8 @@ pub enum WhatsAppMacError {
         /// The tables, and `table.column`s, missing.
         missing: Vec<String>,
     },
+    /// The file is not a database WhatsApp for Mac writes, or its copy could not be opened.
+    NotADatabase(String),
     /// The database could not be copied or read.
     Database(rusqlite::Error),
     /// A file could not be read or written.
@@ -310,6 +311,11 @@ impl fmt::Display for WhatsAppMacError {
                 "WhatsApp for Mac changed how it keeps its chats ({} not found), so this \
                  connector needs an update. Nothing was written",
                 missing.join(", ")
+            ),
+            WhatsAppMacError::NotADatabase(said) => write!(
+                f,
+                "WhatsApp for Mac's chats could not be read ({said}), so this connector needs an \
+                 update. Nothing was written"
             ),
             WhatsAppMacError::Database(error) => {
                 write!(f, "WhatsApp for Mac's chats could not be read: {error}")
@@ -403,7 +409,7 @@ impl WhatsAppMac {
     /// Every chat on the Mac, by name.
     pub fn chats(&self) -> Result<Vec<ChatSummary>, WhatsAppMacError> {
         let copy = self.copy()?;
-        let names = Names::read(&copy.connection)?;
+        let names = Names::read(copy.conn())?;
         let mut chats: Vec<ChatSummary> = names
             .sessions
             .values()
@@ -442,7 +448,7 @@ impl WhatsAppMac {
     /// copy of the database is gone when this returns.
     pub fn read(&self, cursor: Cursor, options: &Options) -> Result<Pending, WhatsAppMacError> {
         let copy = self.copy()?;
-        let connection = &copy.connection;
+        let connection = &copy.conn();
         let names = Names::read(connection)?;
 
         let newest: Option<i64> =
@@ -544,114 +550,46 @@ impl WhatsAppMac {
         })
     }
 
-    /// A private copy of the database, checked.
-    fn copy(&self) -> Result<DbCopy, WhatsAppMacError> {
+    /// Checks that the database is there and this process may read it, without copying it.
+    /// The schema is checked by every read, before anything is written.
+    pub fn available(&self) -> Result<(), WhatsAppMacError> {
         let database = self.database();
-        let denied = || WhatsAppMacError::NoFullDiskAccess(database.clone());
-        match fs::metadata(&self.container) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(WhatsAppMacError::NotInstalled(database));
-            }
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(denied()),
-            Err(e) => return Err(e.into()),
-        }
-        // Opening the file tells a missing database from one this process may not read, which
-        // SQLite would report alike.
-        match fs::File::open(&database) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(WhatsAppMacError::NotInstalled(database));
-            }
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(denied()),
-            Err(e) => return Err(e.into()),
-        }
-        let source = Connection::open_with_flags(
-            &database,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|e| match e.sqlite_error_code() {
-            Some(
-                rusqlite::ErrorCode::PermissionDenied
-                | rusqlite::ErrorCode::AuthorizationForStatementDenied,
-            ) => denied(),
-            _ => WhatsAppMacError::Database(e),
-        })?;
-        source.busy_timeout(Duration::from_secs(5))?;
-        source.execute_batch("PRAGMA query_only = ON")?;
-
-        let dir = TempDir::new()?;
-        let mut connection = Connection::open(dir.path().join(DATABASE))?;
-        {
-            let backup = Backup::new(&source, &mut connection)?;
-            let mut waits = 0;
-            loop {
-                match backup.step(-1)? {
-                    StepResult::Done => break,
-                    StepResult::More => {}
-                    _ if waits < 50 => {
-                        waits += 1;
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    _ => {
-                        return Err(WhatsAppMacError::Database(rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                            Some("WhatsApp kept the database busy".into()),
-                        )));
-                    }
+        for path in [self.container.as_path(), database.as_path()] {
+            let found = if path == database {
+                fs::File::open(path).map(drop)
+            } else {
+                fs::metadata(path).map(drop)
+            };
+            match found {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(WhatsAppMacError::NotInstalled(database.clone()));
                 }
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    return Err(WhatsAppMacError::NoFullDiskAccess(database.clone()));
+                }
+                Err(e) => return Err(e.into()),
             }
         }
-        drop(source);
-        connection.execute_batch("PRAGMA query_only = ON")?;
-        check_schema(&connection)?;
-        Ok(DbCopy {
-            connection,
-            _dir: dir,
-        })
-    }
-}
-
-/// A copy of the database, deleted with its folder when dropped.
-struct DbCopy {
-    // Closed before the folder is removed: fields drop in order.
-    connection: Connection,
-    _dir: TempDir,
-}
-
-/// A folder only this user may open, removed with what is in it when dropped.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new() -> io::Result<TempDir> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "knode-whatsapp-{}-{nanos}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&path)?;
-        Ok(TempDir(path))
+        Ok(())
     }
 
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+    /// A private copy of the database, checked. The database and its `-wal` and `-shm` files
+    /// are copied as bytes (see [`sqlite::open_copy`](crate::sources::sqlite::open_copy)):
+    /// SQLite never opens the live files, so nothing is created, locked or written beside
+    /// them.
+    fn copy(&self) -> Result<DatabaseCopy, WhatsAppMacError> {
+        use crate::sources::SourceError;
+        self.available()?;
+        let database = self.database();
+        let copy = crate::sources::sqlite::open_copy(&database).map_err(|e| match e {
+            SourceError::Unavailable(_) => WhatsAppMacError::NotInstalled(database.clone()),
+            SourceError::Permission(..) => WhatsAppMacError::NoFullDiskAccess(database.clone()),
+            SourceError::NeedsUpdate(said) => WhatsAppMacError::NotADatabase(said),
+            other => WhatsAppMacError::Io(io::Error::other(other.to_string())),
+        })?;
+        check_schema(copy.conn())?;
+        Ok(copy)
     }
 }
 
@@ -975,6 +913,7 @@ fn to_message(
     let export_key = stable_hash(&[&mark, sender.as_deref().unwrap_or(""), &raw]);
     let mut message = ChatMessage::new(key, mark, time, sender, escape_text(text.trim()));
     message.export_key = Some(export_key);
+    message.seq = Some(row.pk);
     message.media = media;
     if !system && let Some(quoted) = quoted_id(row.metadata.as_deref()) {
         message.reply_to = replies.find(row.session, &quoted, session, names, options)?;
@@ -1101,8 +1040,8 @@ fn text(row: &Row<'_>, index: usize) -> Option<String> {
     }
 }
 
-/// The id of the source: `whatsapp`.
-pub const SOURCE_ID: &str = "whatsapp";
+/// The id of the source: `whatsapp-mac` (`whatsapp` is the export importer's).
+pub const SOURCE_ID: &str = "whatsapp-mac";
 
 /// WhatsApp for Mac as a [`Connector`](crate::sources::Connector) of Knode Service: it runs
 /// when the database or its write-ahead log changes, and at least every minute.
@@ -1133,7 +1072,9 @@ impl From<WhatsAppMacError> for crate::sources::SourceError {
             WhatsAppMacError::NoFullDiskAccess(_) => {
                 SourceError::Permission(Permission::FullDiskAccess, said)
             }
-            WhatsAppMacError::NeedsUpdate { .. } => SourceError::NeedsUpdate(said),
+            WhatsAppMacError::NeedsUpdate { .. } | WhatsAppMacError::NotADatabase(_) => {
+                SourceError::NeedsUpdate(said)
+            }
             WhatsAppMacError::Import(ChatImportError::Space(error)) => SourceError::Space(error),
             _ => SourceError::Failed(said),
         }
@@ -1143,9 +1084,13 @@ impl From<WhatsAppMacError> for crate::sources::SourceError {
 impl crate::sources::Connector for WhatsAppMacConnector {
     fn info(&self) -> crate::sources::SourceInfo {
         use crate::sources::{Permission, SourceInfo};
-        SourceInfo::connector(SOURCE_ID, "WhatsApp", "The chats of WhatsApp for Mac")
-            .needing([Permission::FullDiskAccess])
-            .excluding("chat")
+        SourceInfo::connector(
+            SOURCE_ID,
+            "WhatsApp for Mac",
+            "The chats of WhatsApp for Mac",
+        )
+        .needing([Permission::FullDiskAccess])
+        .excluding("chat")
     }
 
     fn trigger(&self) -> crate::sources::Trigger {
@@ -1156,7 +1101,9 @@ impl crate::sources::Connector for WhatsAppMacConnector {
     }
 
     fn check(&self) -> Result<(), crate::sources::SourceError> {
-        Ok(self.app.check()?)
+        // Only whether it is there and may be read: `fetch` copies the database and checks
+        // its schema before reading, so a run copies it once.
+        Ok(self.app.available()?)
     }
 
     fn containers(
@@ -1273,15 +1220,6 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(media_entry(&dir, "../etc/passwd"), None);
         assert_eq!(media_entry(&dir, "/etc/passwd"), None);
-    }
-
-    #[test]
-    fn removes_its_copy() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_path_buf();
-        fs::write(path.join(DATABASE), b"copy").unwrap();
-        drop(dir);
-        assert!(!path.exists());
     }
 
     #[test]
