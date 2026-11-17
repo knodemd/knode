@@ -27,7 +27,12 @@
 //!
 //! Everyone who sent or received a message of a thread becomes one node of kind
 //! [`kinds::PERSON`], found again by their address ([`keys::PERSON_EMAIL`], in lower case), and
-//! the thread links to them as `related`. A person is named by the first name a message gives
+//! the thread links to them as `related`, with two limits, so that a newsletter or a mailing list
+//! does not fill the space with people: the recipients of a message sent to more than
+//! [`MAX_RECIPIENTS`] addresses do not become people (its sender does), and `Bcc` recipients
+//! become people only in mail that was sent, in a folder such as `Sent` or `Sent Messages`.
+//! Every address is still listed in the thread; [`MailReport::people_left_out`] counts those
+//! that did not become people. A person is named by the first name a message gives
 //! them. A later import leaves a person node as it is, so names and notes added in Knode are
 //! kept; only a title that is the bare address becomes the name once a message gives one.
 //!
@@ -61,6 +66,10 @@ use knode_format::{NodeId, Provenance, Space};
 use serde::{Deserialize, Serialize};
 
 pub use crate::Skipped;
+
+/// The most recipients (`To`, `Cc` and, in sent mail, `Bcc`) a message can have for them to
+/// become people: a message to more is a newsletter or a list, and only its sender does.
+pub const MAX_RECIPIENTS: usize = 20;
 
 /// The kinds of node the mail importer writes.
 pub mod kinds {
@@ -247,6 +256,10 @@ pub struct MailReport {
     pub messages: usize,
     /// How many person nodes were created.
     pub people: usize,
+    /// How many addresses did not become people: recipients of messages sent to more than
+    /// [`MAX_RECIPIENTS`] addresses, and `Bcc` recipients of mail that was not sent.
+    #[serde(default)]
+    pub people_left_out: usize,
     /// How many files were attached.
     pub attached: usize,
     /// How many messages the folder and date filters left out.
@@ -272,6 +285,7 @@ impl MailReport {
             unchanged: 0,
             messages: 0,
             people: 0,
+            people_left_out: 0,
             attached: 0,
             filtered: 0,
             junk: 0,

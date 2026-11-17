@@ -11,7 +11,8 @@ use knode_format::{
 use super::message::{self, Mail, Origin, Person};
 use super::thread::{Thread, addresses, fits_by_subject};
 use super::{
-    ImportedThread, MailError, MailOptions, MailReport, MailSource, apple, keys, kinds, mbox,
+    ImportedThread, MAX_RECIPIENTS, MailError, MailOptions, MailReport, MailSource, apple, keys,
+    kinds, mbox,
 };
 use crate::reading::clean_title;
 use crate::reading::markdown::escape_inline;
@@ -68,17 +69,42 @@ pub(crate) fn write(
     let mut people = People {
         names,
         nodes: HashMap::new(),
+        left_out: HashSet::new(),
     };
     for thread in threads {
         write_thread(space, source, thread, options, by, &mut people, report)?;
     }
+    report.people_left_out += people
+        .left_out
+        .iter()
+        .filter(|a| !people.nodes.contains_key(*a))
+        .count();
     Ok(())
 }
 
-/// The people of the import: the name each address goes by, and the node of each one written.
+/// The people of the import: the name each address goes by, the node of each one written, and
+/// the addresses left out ([`people_of`]).
 struct People {
     names: HashMap<String, String>,
     nodes: HashMap<String, NodeId>,
+    left_out: HashSet<String>,
+}
+
+/// Who of a message becomes a person: its senders, and its recipients when it has at most
+/// [`MAX_RECIPIENTS`], `Bcc` only in sent mail. The others are added to `left_out`.
+fn people_of<'a>(mail: &'a Mail, left_out: &mut HashSet<String>) -> Vec<&'a Person> {
+    let bcc: &[Person] = if mail.is_sent() { &mail.bcc } else { &[] };
+    if !mail.is_sent() {
+        left_out.extend(mail.bcc.iter().map(|p| p.address.clone()));
+    }
+    let recipients: Vec<&Person> = mail.to.iter().chain(&mail.cc).chain(bcc).collect();
+    let mut out: Vec<&Person> = mail.from.iter().collect();
+    if recipients.len() <= MAX_RECIPIENTS {
+        out.extend(recipients);
+    } else {
+        left_out.extend(recipients.iter().map(|p| p.address.clone()));
+    }
+    out
 }
 
 fn write_thread(
@@ -265,7 +291,11 @@ fn write_thread(
     for other in found.iter().skip(1) {
         space.link(&node_id, other, link_kinds::RELATED, by)?;
     }
-    for person in thread.messages.iter().flat_map(Mail::people) {
+    let mut chosen = Vec::new();
+    for mail in &thread.messages {
+        chosen.extend(people_of(mail, &mut people.left_out));
+    }
+    for person in chosen {
         let person = person_node(space, person, by, people, report)?;
         space.link(&node_id, &person, link_kinds::RELATED, by)?;
     }

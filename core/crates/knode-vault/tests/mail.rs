@@ -1151,3 +1151,72 @@ fn headings_show_the_offset_and_sections_written_without_it_are_read_again() {
         node.body
     );
 }
+
+#[test]
+fn a_message_to_many_people_and_bcc_of_mail_received_add_no_people() {
+    let tmp = tempfile::tempdir().unwrap();
+    let many: Vec<String> = (0..500).map(|i| format!("reader{i}@example.org")).collect();
+    let newsletter = message(
+        &[
+            ("Message-ID", "<news@shop.example>"),
+            ("From", "Shop <news@shop.example>"),
+            ("To", &many.join(", ")),
+            ("Bcc", "ada@example.com"),
+            ("Subject", "Weekly deals"),
+            ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+        ],
+        "Deals.\n",
+    );
+    let received = message(
+        &[
+            ("Message-ID", "<blind@example.org>"),
+            ("From", "Bruno Sample <bruno@example.org>"),
+            ("To", "Chloe Test <chloe@example.org>"),
+            ("Bcc", "Ada Example <ada@example.com>"),
+            ("Subject", "A blind copy"),
+            ("Date", "Wed, 04 Mar 2026 09:00:00 +0100"),
+        ],
+        "Hi.\n",
+    );
+    let sent = message(
+        &[
+            ("X-Gmail-Labels", "Sent"),
+            ("Message-ID", "<sent@example.com>"),
+            ("From", "Ada Example <ada@example.com>"),
+            ("To", "Bruno Sample <bruno@example.org>"),
+            ("Bcc", "Dana Sample <dana@example.org>"),
+            ("Subject", "Sent with a blind copy"),
+            ("Date", "Thu, 05 Mar 2026 09:00:00 +0100"),
+        ],
+        "Hi.\n",
+    );
+    let file = write_mbox(tmp.path(), "many.mbox", &[newsletter, received, sent]);
+    let mut space = space(tmp.path());
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+
+    let titles: Vec<String> = of_kind(&space, kinds::PERSON)
+        .into_iter()
+        .map(|p| p.title)
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "Ada Example",
+            "Bruno Sample",
+            "Chloe Test",
+            "Dana Sample",
+            "Shop"
+        ],
+        "the sender of the newsletter, everyone of the mail received but its Bcc, and the Bcc of \
+         the mail sent"
+    );
+    assert_eq!(report.people, 5);
+    // The 500 readers; Ada became a person through the mail she sent.
+    assert_eq!(report.people_left_out, 500);
+    // Every address is still in the thread.
+    assert!(
+        thread(&space, "Weekly deals")
+            .body
+            .contains("reader499@example.org")
+    );
+}

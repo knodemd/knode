@@ -32,6 +32,9 @@ const JUNK: &[&str] = &[
 /// can name tens of thousands.
 pub(crate) const MAX_PARENTS: usize = 100;
 
+/// Folders of mail that was sent, by the last part of their path, in lower case.
+const SENT: &[&str] = &["sent", "sent mail", "sent messages", "sent items"];
+
 /// Where the bytes of a message are, to read its files again when they are attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -116,6 +119,14 @@ impl Mail {
     /// When it was sent, in UTC.
     pub fn utc(&self) -> Option<DateTime<Utc>> {
         self.date.map(|d| d.with_timezone(&Utc))
+    }
+
+    /// Whether it is in a folder of sent mail (`Sent`, `Sent Messages`, `[Gmail]/Sent Mail`).
+    pub fn is_sent(&self) -> bool {
+        self.folders.iter().any(|f| {
+            let f = f.to_lowercase();
+            SENT.contains(&f.rsplit('/').next().unwrap_or(&f))
+        })
     }
 
     /// Everyone it is from or to.

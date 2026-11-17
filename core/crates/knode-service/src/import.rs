@@ -930,6 +930,18 @@ fn mail_result(
             }
         ));
     }
+    if report.people_left_out > 0 {
+        result.notes.push(format!(
+            "{} not added as people: recipients of messages sent to more than {}, and Bcc of \
+             mail that was not sent",
+            if report.people_left_out == 1 {
+                "1 address".to_string()
+            } else {
+                format!("{} addresses", report.people_left_out)
+            },
+            mail::MAX_RECIPIENTS
+        ));
+    }
     if report.filtered > 0 {
         result.notes.push(format!(
             "{} left out by the folder and date filters",
