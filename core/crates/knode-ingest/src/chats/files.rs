@@ -63,6 +63,16 @@ impl Files {
         })
     }
 
+    /// The files of a folder, opened by their path inside it, without listing them first: for
+    /// a folder as large as the one Messages keeps its attachments in.
+    pub fn unlisted(dir: &Path) -> Files {
+        Files {
+            source: Source::Dir(dir.to_path_buf()),
+            names: BTreeSet::new(),
+            single: None,
+        }
+    }
+
     /// Every file, sorted.
     pub fn names(&self) -> &BTreeSet<String> {
         &self.names

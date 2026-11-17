@@ -37,6 +37,8 @@
 //!
 //! Chats between people come from the exports of the apps they were held in:
 //! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat.
+//! [`imessage::sync`] brings iMessage conversations in live, from a copy of the Messages
+//! database of the Mac, into the same `chat` nodes.
 
 mod aider;
 mod amp;
@@ -63,6 +65,7 @@ mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
+pub use chats::imessage;
 pub use chats::{
     CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, detect_chat_export,
     import_chat_export, keys as chat_keys,

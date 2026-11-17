@@ -276,7 +276,10 @@ impl ChatWriter<'_> {
 impl ChatWriter<'_> {
     /// How a file that is not in the export is shown; one missing or left out is counted.
     fn shown_without_file(&mut self, media: &Media) -> Shown {
-        if matches!(media, Media::Missing { .. } | Media::Omitted { .. }) {
+        if matches!(
+            media,
+            Media::Missing { .. } | Media::Omitted { .. } | Media::NotAttached { .. }
+        ) {
             self.report.missing += 1;
         }
         shown(media)
@@ -288,6 +291,10 @@ fn shown(media: &Media) -> Shown {
         Media::File { name, .. } => Shown::Attached(name.clone()),
         Media::Missing { name } => Shown::Missing(name.clone()),
         Media::Omitted { what } => Shown::Omitted(what.clone()),
+        Media::NotAttached { name, reason } => Shown::NotAttached {
+            name: name.clone(),
+            reason: reason.clone(),
+        },
     }
 }
 

@@ -14,6 +14,7 @@
 //! pick; nothing is sent anywhere.
 
 mod files;
+pub mod imessage;
 mod model;
 mod render;
 mod whatsapp;
@@ -34,7 +35,7 @@ pub const CHAT_KIND: &str = "chat";
 
 /// The properties of a chat's node.
 pub mod keys {
-    /// The app: `whatsapp`.
+    /// The app: `whatsapp` or `imessage`.
     pub const APP: &str = "chat.app";
     /// The chat's id in the app, or, for apps that have none, one made from its name.
     pub const ID: &str = "chat.id";
@@ -64,16 +65,20 @@ pub mod keys {
 pub enum ChatFormat {
     /// A WhatsApp chat export.
     WhatsApp,
+    /// iMessage, read live from the Messages database of this Mac ([`imessage`]), not from an
+    /// export.
+    IMessage,
 }
 
 impl ChatFormat {
-    /// Every format.
+    /// Every export format.
     pub const ALL: [ChatFormat; 1] = [ChatFormat::WhatsApp];
 
     /// Its id: `whatsapp`.
     pub fn id(self) -> &'static str {
         match self {
             ChatFormat::WhatsApp => "whatsapp",
+            ChatFormat::IMessage => imessage::APP,
         }
     }
 }
@@ -82,6 +87,7 @@ impl fmt::Display for ChatFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ChatFormat::WhatsApp => "WhatsApp export",
+            ChatFormat::IMessage => "iMessage database",
         })
     }
 }

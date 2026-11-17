@@ -113,6 +113,14 @@ pub(crate) enum Media {
         /// Its file name, or what it was ("photo").
         name: String,
     },
+    /// Known, but not attached, and why: such as a file sent in iMessage that is no longer on
+    /// the Mac.
+    NotAttached {
+        /// Its file name.
+        name: String,
+        /// Why: "not on this Mac".
+        reason: String,
+    },
     /// Left out when the chat was exported, such as a WhatsApp export without media.
     Omitted {
         /// What it was, as the export says: "image", "media"...
