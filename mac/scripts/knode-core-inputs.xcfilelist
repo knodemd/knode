@@ -48,6 +48,7 @@ $(SRCROOT)/../core/crates/knode-ingest/src/chats/model.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/render.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/slack.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/telegram.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/chats/telegram_live.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/whatsapp.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/write.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/claude_code.rs
@@ -110,6 +111,7 @@ $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/sources.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/mod.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/runtime.rs
+$(SRCROOT)/../core/crates/knode-service/src/sources/telegram.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-sync/Cargo.toml
 $(SRCROOT)/../core/crates/knode-sync/src/error.rs

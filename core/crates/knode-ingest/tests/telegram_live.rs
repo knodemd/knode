@@ -41,6 +41,8 @@ struct State {
     files: HashMap<(i64, i64), Vec<u8>>,
     floods: VecDeque<Duration>,
     calls: Vec<String>,
+    /// While set, `history` waits until a message comes through it.
+    hold: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 #[derive(Clone, Default)]
@@ -202,6 +204,10 @@ impl TelegramApi for MockApi {
         limit: usize,
     ) -> Result<Vec<Message>, ApiError> {
         self.call("history")?;
+        let hold = self.state().hold.take();
+        if let Some(hold) = hold {
+            let _ = hold.recv();
+        }
         let s = self.state();
         let mut all = s.history.get(&chat.id).cloned().unwrap_or_default();
         all.sort_by_key(|m| m.id);
@@ -816,5 +822,47 @@ fn shares_the_node_of_a_telegram_desktop_export() {
         run.prop(&node, chat_keys::PARTICIPANTS).as_deref(),
         Some("Ada, Grace, Linus"),
         "the export's participants stay"
+    );
+}
+
+#[test]
+fn signing_out_does_not_wait_for_a_run() {
+    let api = MockApi::new();
+    api.chat(10, "Book Club", ChatKind::Group);
+    api.post(10, 1, T0 + 60, "Ada", "one");
+    let (release, hold) = std::sync::mpsc::channel();
+    api.state().hold = Some(hold);
+    let (c, _) = connector(&api);
+    let c = Arc::new(c);
+    let secrets = Arc::new(signed_in_secrets());
+    let run = {
+        let (c, secrets) = (c.clone(), secrets.clone());
+        std::thread::spawn(move || {
+            let mut run = Run::new(History::Everything);
+            run.run(&c, secrets.as_ref())
+        })
+    };
+    // Wait until the run is inside Telegram's answer.
+    while api.state().hold.is_some() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (done, signed_out) = std::sync::mpsc::channel();
+    {
+        let (c, secrets) = (c.clone(), secrets.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(c.sign_out(secrets.as_ref()).unwrap());
+        });
+    }
+    let was = signed_out
+        .recv_timeout(Duration::from_secs(5))
+        .expect("sign out finished while the run waited for Telegram");
+    assert!(was);
+    assert!(secrets.get(SESSION_SECRET).unwrap().is_none());
+    release.send(()).unwrap();
+    let _ = run.join().unwrap();
+    assert_eq!(
+        c.sign_in_state(secrets.as_ref()).unwrap(),
+        SignInState::SignedOut,
+        "the run that started before does not sign it in again"
     );
 }

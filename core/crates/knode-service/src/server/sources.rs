@@ -124,6 +124,8 @@ fn change(
 
 /// `sources.account`, `sources.sign_in` and `sources.sign_out`: the account a connector
 /// reads belongs to this machine, not to a space. Its session goes only into the keychain.
+/// No space is locked here: a sign-in step can wait on the network as long as it needs
+/// without holding up other calls on any space.
 fn account(state: &State, method: &str, p: SourceParams) -> Result<Value, RpcError> {
     let id = source(&p, method)?;
     let registry = state.registry();
@@ -167,6 +169,8 @@ fn forget_unused_account(state: &State, id: &str) {
     {
         return;
     }
+    // Each space is locked only to read its settings; the connector signs out (on the
+    // network) with none locked.
     let still = known_spaces(state).into_iter().any(|path| {
         let Ok(space) = state.space(&path) else {
             return false;

@@ -407,8 +407,13 @@ enum Pending {
     Password(Option<String>),
 }
 
+/// What the connector keeps between calls. It is locked only to read or change it, never
+/// across a call to Telegram, so signing in or out never waits for a run.
 struct Inner {
     connected: bool,
+    /// Changes every time the connection is dropped, so a call that started before cannot
+    /// mark a newer connection as signed in or caught up.
+    epoch: u64,
     account: Option<Account>,
     pending: Pending,
     /// Telegram is not asked anything before this.
@@ -427,6 +432,7 @@ impl Inner {
     fn new() -> Self {
         Inner {
             connected: false,
+            epoch: 0,
             account: None,
             pending: Pending::None,
             not_before: None,
@@ -440,6 +446,7 @@ impl Inner {
 
     fn disconnected(&mut self) {
         self.connected = false;
+        self.epoch += 1;
         self.account = None;
         self.caught_up.clear();
         self.dialogs = None;
@@ -478,19 +485,19 @@ impl<A: TelegramApi> TelegramConnector<A> {
     }
 
     /// One call to Telegram, sleeping through a short flood wait and remembering a long one.
-    fn call<T>(
-        &self,
-        inner: &mut Inner,
-        f: impl Fn(&A) -> Result<T, ApiError>,
-    ) -> Result<T, ApiError> {
+    /// The state is not locked while Telegram answers.
+    fn call<T>(&self, f: impl Fn(&A) -> Result<T, ApiError>) -> Result<T, ApiError> {
         let mut slept = 0;
         loop {
-            if let Some(until) = inner.not_before {
-                let now = Instant::now();
-                if now < until {
-                    return Err(ApiError::FloodWait(until - now));
+            {
+                let mut inner = self.lock();
+                if let Some(until) = inner.not_before {
+                    let now = Instant::now();
+                    if now < until {
+                        return Err(ApiError::FloodWait(until - now));
+                    }
+                    inner.not_before = None;
                 }
-                inner.not_before = None;
             }
             match f(&self.api) {
                 Err(ApiError::FloodWait(wait))
@@ -500,11 +507,11 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     slept += 1;
                 }
                 Err(ApiError::FloodWait(wait)) => {
-                    inner.not_before = Some(Instant::now() + wait);
+                    self.lock().not_before = Some(Instant::now() + wait);
                     return Err(ApiError::FloodWait(wait));
                 }
                 Err(ApiError::SignedOut) => {
-                    inner.disconnected();
+                    self.lock().disconnected();
                     return Err(ApiError::SignedOut);
                 }
                 other => return other,
@@ -513,21 +520,21 @@ impl<A: TelegramApi> TelegramConnector<A> {
     }
 
     /// Connects with the session in the keychain, if not connected yet.
-    fn ensure_connected(
-        &self,
-        inner: &mut Inner,
-        secrets: &dyn Secrets,
-    ) -> Result<(), SourceError> {
-        if inner.connected {
-            return Ok(());
-        }
+    fn ensure_connected(&self, secrets: &dyn Secrets) -> Result<(), SourceError> {
+        let epoch = {
+            let inner = self.lock();
+            if inner.connected {
+                return Ok(());
+            }
+            inner.epoch
+        };
         let session = secrets.get(SESSION_SECRET)?.ok_or_else(|| {
             SourceError::SignIn(
                 "Telegram is not signed in: run `knode sources connect telegram`".into(),
             )
         })?;
         let signed_in = self
-            .call(inner, |api| api.connect(Some(&session)))
+            .call(|api| api.connect(Some(&session)))
             .map_err(source_error)?;
         if !signed_in {
             return Err(SourceError::SignIn(
@@ -535,25 +542,35 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     .into(),
             ));
         }
-        inner.connected = true;
-        inner.caught_up.clear();
+        let mut inner = self.lock();
+        if inner.epoch != epoch {
+            // Signed out or in again meanwhile: that connection counts, not this one.
+            return Err(SourceError::Failed(
+                "Telegram was signed in or out during the run; it runs again".into(),
+            ));
+        }
+        if !inner.connected {
+            inner.connected = true;
+            inner.caught_up.clear();
+        }
         Ok(())
     }
 
-    fn dialogs(&self, inner: &mut Inner) -> Result<Vec<Dialog>, ApiError> {
-        if let Some((at, list)) = &inner.dialogs
+    fn dialogs(&self) -> Result<Vec<Dialog>, ApiError> {
+        if let Some((at, list)) = &self.lock().dialogs
             && at.elapsed() < self.options.dialogs_ttl
         {
             return Ok(list.clone());
         }
-        let list = self.call(inner, |api| api.dialogs())?;
-        inner.dialogs = Some((Instant::now(), list.clone()));
+        let list = self.call(|api| api.dialogs())?;
+        self.lock().dialogs = Some((Instant::now(), list.clone()));
         Ok(list)
     }
 
     /// Adds what arrived live to the buffer, dropping the oldest when it is full.
-    fn take_live(&self, inner: &mut Inner) {
+    fn take_live(&self) {
         let live = self.api.take_live();
+        let mut inner = self.lock();
         if live.gap {
             // What was missed shows in the chats' last messages: list them again.
             inner.caught_up.clear();
@@ -570,12 +587,14 @@ impl<A: TelegramApi> TelegramConnector<A> {
                 break;
             };
             let messages = inner.buffer.get_mut(&chat).expect("the chat is there");
-            if let Some((id, _)) = messages.pop_first() {
+            let dropped = messages.pop_first().map(|(id, _)| id);
+            let empty = messages.is_empty();
+            if let Some(id) = dropped {
                 let pruned = inner.pruned.entry(chat).or_insert(id);
                 *pruned = (*pruned).max(id);
                 inner.buffered -= 1;
             }
-            if messages.is_empty() {
+            if empty {
                 inner.buffer.remove(&chat);
             }
         }
@@ -585,7 +604,6 @@ impl<A: TelegramApi> TelegramConnector<A> {
     /// at most `budget` messages. Returns them and whether there is more.
     fn read_chat(
         &self,
-        inner: &mut Inner,
         request: &FetchRequest<'_>,
         chat: &ChatRef,
         last: Option<i64>,
@@ -603,7 +621,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
                 (None, History::Everything) => HistoryFrom::After(0),
                 (None, History::FromToday) => HistoryFrom::Since(request.since.0.div_euclid(1000)),
             };
-            let page = self.call(inner, |api| api.history(chat, from, want))?;
+            let page = self.call(|api| api.history(chat, from, want))?;
             let full = page.len() >= want;
             for message in page {
                 if last.is_none_or(|l| message.id > l) {
@@ -617,23 +635,23 @@ impl<A: TelegramApi> TelegramConnector<A> {
         }
     }
 
-    fn fetch_locked(
-        &self,
-        inner: &mut Inner,
-        request: &FetchRequest<'_>,
-    ) -> Result<Fetched, SourceError> {
-        self.ensure_connected(inner, request.secrets)?;
-        self.take_live(inner);
+    fn fetch_now(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
+        self.ensure_connected(request.secrets)?;
+        self.take_live();
         let mut cursor = ChatCursors::read(request.cursor);
-        if request.cursor.is_none() {
-            inner.caught_up.remove(request.space_id);
-        }
+        let (caught_up, epoch) = {
+            let mut inner = self.lock();
+            if request.cursor.is_none() {
+                inner.caught_up.remove(request.space_id);
+            }
+            (inner.caught_up.contains(request.space_id), inner.epoch)
+        };
         let budget = request.max_items.max(1);
         let mut found: Vec<Message> = Vec::new();
         let mut more = false;
 
-        let dialogs = self.dialogs(inner).map_err(source_error)?;
-        if !inner.caught_up.contains(request.space_id) {
+        let dialogs = self.dialogs().map_err(source_error)?;
+        if !caught_up {
             for dialog in &dialogs {
                 let id = dialog.chat.id.to_string();
                 if request.is_excluded(&id) {
@@ -653,7 +671,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     break;
                 }
                 let (messages, rest) = self
-                    .read_chat(inner, request, &dialog.chat, last, room)
+                    .read_chat(request, &dialog.chat, last, room)
                     .map_err(source_error)?;
                 if let Some(top) = messages.iter().map(|m| m.id).max() {
                     cursor.set(dialog.chat.id, top);
@@ -665,65 +683,78 @@ impl<A: TelegramApi> TelegramConnector<A> {
                 }
             }
             if !more {
-                inner.caught_up.insert(request.space_id.to_string());
+                let mut inner = self.lock();
+                if inner.epoch == epoch {
+                    inner.caught_up.insert(request.space_id.to_string());
+                }
             }
         } else {
-            let chats: Vec<i64> = inner
-                .buffer
-                .keys()
-                .chain(inner.pruned.keys())
-                .copied()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            for chat in chats {
-                if request.is_excluded(&chat.to_string()) {
-                    continue;
-                }
+            // What this space has not read yet: copied out of the buffer, so Telegram can be
+            // asked for what was dropped from it without holding the state.
+            struct Pick {
+                chat: i64,
+                buffered: Vec<Message>,
+                chat_ref: Option<ChatRef>,
+                pruned: Option<i64>,
+            }
+            let picks: Vec<Pick> = {
+                let inner = self.lock();
+                inner
+                    .buffer
+                    .keys()
+                    .chain(inner.pruned.keys())
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .filter(|chat| !request.is_excluded(&chat.to_string()))
+                    .map(|chat| {
+                        let last = cursor.get(chat);
+                        let buffered: Vec<Message> = inner
+                            .buffer
+                            .get(&chat)
+                            .map(|m| {
+                                m.values()
+                                    .filter(|m| last.is_none_or(|l| m.id > l))
+                                    .cloned()
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        Pick {
+                            chat,
+                            chat_ref: buffered.first().map(|m| m.chat),
+                            buffered,
+                            pruned: inner.pruned.get(&chat).copied(),
+                        }
+                    })
+                    .collect()
+            };
+            for pick in picks {
+                let chat = pick.chat;
                 let last = cursor.get(chat);
                 let room = budget.saturating_sub(found.len());
                 if room == 0 {
                     more = true;
                     break;
                 }
-                let pruned = inner.pruned.get(&chat).copied();
-                let messages: Vec<Message> = if pruned.is_some_and(|p| p > last.unwrap_or(0)) {
+                let messages: Vec<Message> = if pick.pruned.is_some_and(|p| p > last.unwrap_or(0)) {
                     // Some of what this space has not read was dropped from the buffer.
-                    let chat_ref = inner
-                        .buffer
-                        .get(&chat)
-                        .and_then(|m| m.values().next())
-                        .map(|m| m.chat)
+                    let chat_ref = pick
+                        .chat_ref
                         .or_else(|| dialogs.iter().find(|d| d.chat.id == chat).map(|d| d.chat));
                     let Some(chat_ref) = chat_ref else { continue };
                     let (messages, rest) = self
-                        .read_chat(inner, request, &chat_ref, last, room)
+                        .read_chat(request, &chat_ref, last, room)
                         .map_err(source_error)?;
                     more |= rest;
                     messages
                 } else {
-                    inner
-                        .buffer
-                        .get(&chat)
-                        .map(|m| {
-                            m.values()
-                                .filter(|m| last.is_none_or(|l| m.id > l))
-                                .take(room)
-                                .cloned()
-                                .collect()
-                        })
-                        .unwrap_or_default()
+                    if pick.buffered.len() > room {
+                        more = true;
+                    }
+                    pick.buffered.into_iter().take(room).collect()
                 };
                 if let Some(top) = messages.iter().map(|m| m.id).max() {
                     cursor.set(chat, top);
-                }
-                if found.len() + messages.len() >= budget
-                    && inner
-                        .buffer
-                        .get(&chat)
-                        .is_some_and(|m| m.keys().any(|&id| id > cursor.get(chat).unwrap_or(0)))
-                {
-                    more = true;
                 }
                 found.extend(messages);
             }
@@ -733,14 +764,13 @@ impl<A: TelegramApi> TelegramConnector<A> {
         if found.is_empty() {
             return Ok(Fetched::nothing(next).with_more(more));
         }
-        let batch = self.batch(inner, found, &dialogs)?;
+        let batch = self.batch(found, &dialogs)?;
         Ok(Fetched::batch(batch, next).with_more(more))
     }
 
     /// Groups the messages by chat and downloads their media.
     fn batch(
         &self,
-        inner: &mut Inner,
         messages: Vec<Message>,
         dialogs: &[Dialog],
     ) -> Result<TelegramBatch, SourceError> {
@@ -768,20 +798,23 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     files: BTreeMap::new(),
                 }
             });
-            if let Some(file) = self.download(inner, &message, &mut media)? {
+            if let Some(file) = self.download(&message, &mut media)? {
                 entry.files.insert(message.id, file);
             }
             entry.messages.push(message);
         }
         // What replies refer to, when it is not in the batch: the live buffer.
         let mut replied = BTreeMap::new();
-        for chat in chats.values() {
-            for message in &chat.messages {
-                if let Some(reply) = message.reply_to
-                    && !chat.messages.iter().any(|m| m.id == reply)
-                    && let Some(found) = inner.buffer.get(&chat.id).and_then(|m| m.get(&reply))
-                {
-                    replied.insert((chat.id, reply), found.clone());
+        {
+            let inner = self.lock();
+            for chat in chats.values() {
+                for message in &chat.messages {
+                    if let Some(reply) = message.reply_to
+                        && !chat.messages.iter().any(|m| m.id == reply)
+                        && let Some(found) = inner.buffer.get(&chat.id).and_then(|m| m.get(&reply))
+                    {
+                        replied.insert((chat.id, reply), found.clone());
+                    }
                 }
             }
         }
@@ -795,7 +828,6 @@ impl<A: TelegramApi> TelegramConnector<A> {
     /// Downloads a message's photo or file when it is small enough, into the batch's folder.
     fn download(
         &self,
-        inner: &mut Inner,
         message: &Message,
         dir: &mut MediaDir,
     ) -> Result<Option<Downloaded>, SourceError> {
@@ -813,7 +845,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
         if max == 0 || size.is_some_and(|s| s > max) {
             return Ok(Some(Downloaded::TooLarge(name)));
         }
-        let bytes = match self.call(inner, |api| api.download(&message.chat, message.id, max)) {
+        let bytes = match self.call(|api| api.download(&message.chat, message.id, max)) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return Ok(Some(Downloaded::TooLarge(name))),
             Err(e @ (ApiError::FloodWait(_) | ApiError::SignedOut | ApiError::NoApp)) => {
@@ -826,16 +858,11 @@ impl<A: TelegramApi> TelegramConnector<A> {
         Ok(Some(Downloaded::File { name, entry }))
     }
 
-    fn signed_in(
-        &self,
-        inner: &mut Inner,
-        secrets: &dyn Secrets,
-    ) -> Result<SignInState, SourceError> {
-        let session = self
-            .call(inner, |api| api.session())
-            .map_err(source_error)?;
+    fn signed_in(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
+        let session = self.call(|api| api.session()).map_err(source_error)?;
         secrets.set(SESSION_SECRET, &session)?;
-        let account = self.call(inner, |api| api.me()).map_err(source_error)?;
+        let account = self.call(|api| api.me()).map_err(source_error)?;
+        let mut inner = self.lock();
         inner.connected = true;
         inner.caught_up.clear();
         inner.pending = Pending::None;
@@ -883,9 +910,8 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
     }
 
     fn containers(&self, request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
-        let mut inner = self.lock();
-        self.ensure_connected(&mut inner, request.secrets)?;
-        let dialogs = self.dialogs(&mut inner).map_err(source_error)?;
+        self.ensure_connected(request.secrets)?;
+        let dialogs = self.dialogs().map_err(source_error)?;
         Ok(dialogs
             .into_iter()
             .map(|d| Container::new(d.chat.id.to_string(), d.name))
@@ -893,28 +919,27 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
-        let mut inner = self.lock();
-        self.fetch_locked(&mut inner, request)
+        self.fetch_now(request)
     }
 
     fn sign_in_state(&self, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
-        let mut inner = self.lock();
-        match inner.pending.clone() {
-            Pending::Code => return Ok(SignInState::CodeSent { via: None }),
-            Pending::Password(hint) => return Ok(SignInState::PasswordNeeded { hint }),
-            Pending::None => {}
+        {
+            let inner = self.lock();
+            match inner.pending.clone() {
+                Pending::Code => return Ok(SignInState::CodeSent { via: None }),
+                Pending::Password(hint) => return Ok(SignInState::PasswordNeeded { hint }),
+                Pending::None => {}
+            }
+            if let Some(account) = &inner.account {
+                return Ok(SignInState::SignedIn {
+                    account: account.name.clone(),
+                });
+            }
         }
-        if let Some(account) = &inner.account {
-            return Ok(SignInState::SignedIn {
-                account: account.name.clone(),
-            });
-        }
-        match self.ensure_connected(&mut inner, secrets) {
+        match self.ensure_connected(secrets) {
             Ok(()) => {
-                let account = self
-                    .call(&mut inner, |api| api.me())
-                    .map_err(source_error)?;
-                inner.account = Some(account.clone());
+                let account = self.call(|api| api.me()).map_err(source_error)?;
+                self.lock().account = Some(account.clone());
                 Ok(SignInState::SignedIn {
                     account: account.name,
                 })
@@ -925,7 +950,6 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
     }
 
     fn sign_in(&self, step: SignInStep, secrets: &dyn Secrets) -> Result<SignInState, SourceError> {
-        let mut inner = self.lock();
         match step {
             SignInStep::Start { account } => {
                 let phone: String = account
@@ -938,45 +962,47 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
                             .into(),
                     ));
                 }
-                inner.disconnected();
-                inner.pending = Pending::None;
-                self.call(&mut inner, |api| api.connect(None))
-                    .map_err(source_error)?;
+                {
+                    let mut inner = self.lock();
+                    inner.disconnected();
+                    inner.pending = Pending::None;
+                }
+                self.call(|api| api.connect(None)).map_err(source_error)?;
                 let via = self
-                    .call(&mut inner, |api| api.request_code(&phone))
+                    .call(|api| api.request_code(&phone))
                     .map_err(source_error)?;
-                inner.pending = Pending::Code;
+                self.lock().pending = Pending::Code;
                 Ok(SignInState::CodeSent { via })
             }
             SignInStep::Code { code } => {
-                if inner.pending != Pending::Code {
+                if self.lock().pending != Pending::Code {
                     return Err(SourceError::SignIn(
                         "give the phone number first: no code was asked for".into(),
                     ));
                 }
                 let code = code.trim().to_string();
-                match self.call(&mut inner, |api| api.sign_in(&code)) {
-                    Ok(_) => self.signed_in(&mut inner, secrets),
+                match self.call(|api| api.sign_in(&code)) {
+                    Ok(_) => self.signed_in(secrets),
                     Err(ApiError::PasswordNeeded(hint)) => {
-                        inner.pending = Pending::Password(hint.clone());
+                        self.lock().pending = Pending::Password(hint.clone());
                         Ok(SignInState::PasswordNeeded { hint })
                     }
                     Err(e) => {
                         if e == ApiError::NoCodeRequested {
-                            inner.pending = Pending::None;
+                            self.lock().pending = Pending::None;
                         }
                         Err(source_error(e))
                     }
                 }
             }
             SignInStep::Password { password } => {
-                if !matches!(inner.pending, Pending::Password(_)) {
+                if !matches!(self.lock().pending, Pending::Password(_)) {
                     return Err(SourceError::SignIn(
                         "no password was asked for: give the phone number first".into(),
                     ));
                 }
-                match self.call(&mut inner, |api| api.check_password(&password)) {
-                    Ok(_) => self.signed_in(&mut inner, secrets),
+                match self.call(|api| api.check_password(&password)) {
+                    Ok(_) => self.signed_in(secrets),
                     Err(e) => Err(source_error(e)),
                 }
             }
@@ -984,17 +1010,17 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
     }
 
     fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
-        let mut inner = self.lock();
-        let had = secrets.get(SESSION_SECRET)?.is_some() || inner.connected;
-        if !inner.connected && had {
+        let connected = self.lock().connected;
+        let session = secrets.get(SESSION_SECRET)?;
+        let had = session.is_some() || connected;
+        if !connected && let Some(session) = &session {
             // Connect with the session, so Telegram ends it too.
-            if let Some(session) = secrets.get(SESSION_SECRET)? {
-                let _ = self.call(&mut inner, |api| api.connect(Some(&session)));
-            }
+            let _ = self.call(|api| api.connect(Some(session)));
         }
         // The session is forgotten here even if Telegram cannot be reached now.
-        let _ = self.call(&mut inner, |api| api.sign_out());
+        let _ = self.call(|api| api.sign_out());
         secrets.delete(SESSION_SECRET)?;
+        let mut inner = self.lock();
         inner.disconnected();
         inner.pending = Pending::None;
         inner.buffer.clear();
