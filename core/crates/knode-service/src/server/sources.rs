@@ -17,6 +17,20 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     if method == methods::SOURCES_STATUS {
         return to_value(status(state, &p)?);
     }
+    if method == methods::SOURCES_SIGN_IN {
+        let id = source(&p, method)?;
+        let values = p.values.clone().unwrap_or_default();
+        return to_value(
+            state
+                .registry()
+                .sign_in(&id, p.step.as_deref(), &values)
+                .map_err(rpc)?,
+        );
+    }
+    if method == methods::SOURCES_SIGN_OUT {
+        let id = source(&p, method)?;
+        return to_value(state.registry().sign_out(&id).map_err(rpc)?);
+    }
     let path = p
         .space
         .clone()
@@ -104,6 +118,10 @@ fn change(
                         format!("the state of {id} could not be forgotten: {e}"),
                     )
                 })?;
+                // Disconnecting forgets the account too: its secrets leave the keychain.
+                if state.registry().connector(id).is_some() {
+                    state.registry().sign_out(id).map_err(rpc)?;
+                }
             }
         }
     }

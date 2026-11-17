@@ -490,7 +490,9 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
-| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays |
+| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine, and signs a connector that signed in out of its account; what it brought in stays |
+| `sources.sign_in` | `source`, `step`?, `values`? | `{ "signed_in", "account"?, "step"? }`. Without `step`, the first step of signing the connector in to the account it reads (none when it is signed in); with `step`, the answer to that step with `values` (`{ "<field id>": "<text>" }`) and the next step, until `signed_in` |
+| `sources.sign_out` | `source` | Whether it was signed in. Forgets the connector's secrets and signs it out of its account |
 
 ```json
 { "id": "whatsapp", "name": "WhatsApp", "kind": "connector", "reads": "The chats of WhatsApp for Mac",
@@ -519,6 +521,24 @@ stopped, when it ran, its errors) is kept in `$KNODE_HOME/sources/state.json`, w
 owner can read; it never holds what was read. The cursor is saved only after what was read is
 written, and the importers find what they wrote by the service's own ids, so a restart, a lost
 state file or a second device running the same connector writes nothing twice.
+
+A connector that reads an account (`sign-in` among its permissions, such as `gmail` and `imap`)
+signs in once per machine, for every space, before it is connected. Each step is
+`{ "id", "title", "message"?, "fields"?: [{ "id", "label", "placeholder"?, "secret"?, "code"? }],
+"browser_url"?, "continue_title"? }`: fields to fill in (a `secret` one is hidden as it is typed),
+a page to open in the browser (Sign in with Google), or both. The client shows it, then calls
+`sources.sign_in` with the step's `id` and what the person entered. A wrong answer fails with
+`invalid` and kind `sign-in`, and the step can be answered again. For `gmail`, the browser step
+is answered once the browser has come back to Knode on `http://127.0.0.1:<port>`; the call waits
+up to 30 seconds for it.
+
+```json
+{ "signed_in": false, "step": { "id": "account", "title": "Your mail account",
+  "fields": [{ "id": "username", "label": "Email or user name", "code": true },
+             { "id": "password", "label": "App password", "secret": true },
+             { "id": "server", "label": "IMAP server", "placeholder": "imap.example.com", "code": true }],
+  "continue_title": "Sign in" } }
+```
 
 A connector runs when the files it watches change (a local database and its `-wal`), at its
 interval, and when `sources.run` asks. Connectors that read another app's database read a copy

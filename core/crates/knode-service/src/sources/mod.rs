@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use knode_format::{Provenance, Space, Timestamp};
+pub use knode_ingest::sources::sign_in::{SignIn, SignInField, SignInStep, SignInValues};
 pub use knode_ingest::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, NoSecrets, Permission,
     Secrets, SourceError, SourceInfo, SourceKind, Trigger, Written, is_source_id, provenance,
@@ -380,6 +381,25 @@ pub(crate) struct SourceParams {
     /// Who makes the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<Provenance>,
+    /// The sign-in step answered, for `sources.sign_in`; none to start signing in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// What the person entered in that step, by field id, for `sources.sign_in`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<SignInValues>,
+}
+
+/// Where signing a connector in is, as `sources.sign_in` answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignInStatus {
+    /// Whether the connector is signed in: it can be connected to spaces.
+    pub signed_in: bool,
+    /// The account signed in to, for people (an address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The next step, while not signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<SignInStep>,
 }
 
 /// The connectors a service knows, with what they did on this machine.
@@ -578,12 +598,68 @@ impl Registry {
         Ok(out)
     }
 
+    /// Takes one step of signing the connector `id` in: the first one when `step` is `None`.
+    pub(crate) fn sign_in(
+        &self,
+        id: &str,
+        step: Option<&str>,
+        values: &SignInValues,
+    ) -> Result<SignInStatus, SourceError> {
+        let connector = self.connector(id).ok_or_else(|| {
+            SourceError::Unavailable(format!("no connector {id:?} on this machine"))
+        })?;
+        sign_in_step(
+            connector.as_ref(),
+            &SourceSecrets::new(&self.home, id),
+            step,
+            values,
+        )
+    }
+
+    /// Signs the connector `id` out and forgets its secrets. Returns whether it was signed in.
+    pub(crate) fn sign_out(&self, id: &str) -> Result<bool, SourceError> {
+        let connector = self.connector(id).ok_or_else(|| {
+            SourceError::Unavailable(format!("no connector {id:?} on this machine"))
+        })?;
+        match connector.sign_in() {
+            Some(flow) => flow.sign_out(&SourceSecrets::new(&self.home, id)),
+            None => Ok(false),
+        }
+    }
+
     /// Forgets what the source did in the space on this machine: its cursor and status.
     pub(crate) fn forget(&self, space_id: &str, id: &str) -> io::Result<()> {
         let mut states = self.states();
         states.remove(&state_key(space_id, id));
         states.save(&self.home)
     }
+}
+
+/// Takes one step of signing `connector` in, keeping its secrets in `secrets`: the first step
+/// when `step` is `None`, else the answer to `step` with `values`. For the service and for the
+/// CLI when the service is not running.
+pub fn sign_in_step(
+    connector: &dyn Connector,
+    secrets: &dyn Secrets,
+    step: Option<&str>,
+    values: &SignInValues,
+) -> Result<SignInStatus, SourceError> {
+    let info = connector.info();
+    let flow = connector.sign_in().ok_or_else(|| {
+        SourceError::Unavailable(format!("{} has no account to sign in to", info.name))
+    })?;
+    let next = match step {
+        None => flow.start(secrets)?,
+        Some(step) => flow.answer(step, values, secrets)?,
+    };
+    Ok(SignInStatus {
+        signed_in: next.is_none(),
+        account: match next {
+            None => flow.account(secrets)?,
+            Some(_) => None,
+        },
+        step: next,
+    })
 }
 
 /// The key of a space and source in [`STATE_FILE`]: `<space id>/<source id>`.

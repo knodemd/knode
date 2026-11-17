@@ -205,6 +205,10 @@ pub mod methods {
     pub const SOURCES_RUN: &str = "sources.run";
     /// Disconnects a connector from a space; what it brought in stays.
     pub const SOURCES_DISCONNECT: &str = "sources.disconnect";
+    /// Signs a connector in to the account it reads, one step at a time.
+    pub const SOURCES_SIGN_IN: &str = "sources.sign_in";
+    /// Signs a connector out of its account and forgets its secrets.
+    pub const SOURCES_SIGN_OUT: &str = "sources.sign_out";
 }
 
 /// The JSON-RPC error codes the service answers with.

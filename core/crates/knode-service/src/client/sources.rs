@@ -7,7 +7,9 @@ use knode_format::Provenance;
 use super::{Client, space_path};
 use crate::Result;
 use crate::protocol::methods;
-use crate::sources::{ContainerInfo, History, SourceParams, SourceStatus, SpaceSources};
+use crate::sources::{
+    ContainerInfo, History, SignInStatus, SignInValues, SourceParams, SourceStatus, SpaceSources,
+};
 
 impl Client {
     fn sources_call<T: serde::de::DeserializeOwned>(
@@ -151,5 +153,25 @@ impl Client {
             Some(source),
             |p| p.by = Some(by.clone()),
         )
+    }
+
+    /// Takes one step of signing the connector `source` in to its account: the first one when
+    /// `step` is `None`, else the answer to `step` with what the person entered.
+    pub fn sources_sign_in(
+        &self,
+        source: &str,
+        step: Option<&str>,
+        values: &SignInValues,
+    ) -> Result<SignInStatus> {
+        self.sources_call(methods::SOURCES_SIGN_IN, None, Some(source), |p| {
+            p.step = step.map(str::to_string);
+            p.values = Some(values.clone());
+        })
+    }
+
+    /// Signs the connector `source` out and forgets its secrets. Returns whether it was signed
+    /// in.
+    pub fn sources_sign_out(&self, source: &str) -> Result<bool> {
+        self.sources_call(methods::SOURCES_SIGN_OUT, None, Some(source), |_| {})
     }
 }
