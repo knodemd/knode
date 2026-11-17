@@ -49,6 +49,7 @@
 //!
 //! See decisions 0010 (sources and plugins) and 0013 (live connectors) of the Knode handbook.
 
+pub mod sign_in;
 pub mod sqlite;
 
 use std::fmt;
@@ -558,6 +559,12 @@ pub trait Connector: Send + Sync {
     fn containers(&self, request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
         let _ = request;
         Ok(Vec::new())
+    }
+
+    /// How the connector signs in to the account it reads, for a connector that needs
+    /// [`Permission::SignIn`]: see [`sign_in`]. None unless the connector says otherwise.
+    fn sign_in(&self) -> Option<&dyn sign_in::SignIn> {
+        None
     }
 
     /// Reads what is new after `request.cursor`, at most about `request.max_items` items,
