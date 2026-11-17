@@ -691,12 +691,12 @@ fn long_conversations_do_not_outrank_the_short_note_that_answers() {
     // node is as near as its nearest chunk, so a conversation of many chunks has many chances
     // to have one near the query: here each has one chunk nearer than the note.
     let (_dir, mut space) = new_space();
-    let query = "cloudflare laaabs account id";
+    let query = "northwind hosting account id";
     let answer = note(
         &mut space,
-        "Laaabs Cloudflare account",
-        "The Cloudflare account of laaabs: the account id is 7f3e9a, owned by Ada. Wrangler \
-         reads it from wrangler.toml.",
+        "Northwind hosting account",
+        "The hosting account of Northwind: the account id is a1b2c3, owned by Ada. The deploy \
+         script reads it from deploy.toml.",
     );
     assert_eq!(TRANSCRIPT_KINDS, ["conversation", "chat", "email"]);
     let kinds = ["conversation", "chat", "email", "conversation"];
