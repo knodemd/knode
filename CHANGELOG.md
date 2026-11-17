@@ -77,6 +77,12 @@ belongs to, newest first.
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
   never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+- **A project folder adds its project**: adding a project folder, in the Mac app or with
+  `knode folders add`, adds the project of the same name to the space, or uses the one of that
+  name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
+  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
+  removing the folder keeps the project and its notes. A folder added before this gets its
+  project when it is added again.
 
 #### Changed
 
