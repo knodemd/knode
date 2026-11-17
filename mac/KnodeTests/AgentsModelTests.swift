@@ -219,7 +219,14 @@ import Testing
             throw KnodeCommand.Failure(arguments: arguments, status: 2, output: "error: unexpected argument '--json' found\n")
         }
         await model.load()
-        #expect(model.state == .failed("error: unexpected argument '--json' found"))
+        #expect(model.state == .failed(ConnectAgentsModel.updateKnode))
+        #expect(ConnectAgentsModel.updateKnode.contains("brew upgrade knodemd/tap/knode"))
+
+        let other = ConnectAgentsModel { arguments in
+            throw KnodeCommand.Failure(arguments: arguments, status: 1, output: "error: cannot read config.toml\n")
+        }
+        await other.load()
+        #expect(other.state == .failed("error: cannot read config.toml"))
     }
 
     @Test func connectingOneSaysToOpenANewSession() async {

@@ -240,7 +240,7 @@ final class ConnectAgentsModel {
             agents = AgentOnThisMachine.shown(try AgentOnThisMachine.decodeList(try await run(["connect", "--list", "--json"])))
             state = .loaded
         } catch {
-            state = .failed(Self.message(error))
+            state = .failed(Self.isTooOld(error) ? Self.updateKnode : Self.message(error))
         }
     }
 
@@ -284,6 +284,16 @@ final class ConnectAgentsModel {
     /// What to do next once `agent` is connected.
     static func nextStep(for title: String) -> String {
         "Open a new \(title) session: it will set up your memory."
+    }
+
+    /// What to do when `knode` is older than `knode connect --list --json`.
+    static let updateKnode = "This knode is too old to list your agents. Update it with "
+        + "brew upgrade knodemd/tap/knode (or install the latest Knode), then check again."
+
+    /// Whether `knode` refused `--list --json` because it does not know them yet.
+    private static func isTooOld(_ error: any Error) -> Bool {
+        guard let failure = error as? KnodeCommand.Failure else { return false }
+        return failure.output.contains("unexpected argument '--json'") || failure.output.contains("unexpected argument '--list'")
     }
 
     private static func message(_ error: any Error) -> String {
