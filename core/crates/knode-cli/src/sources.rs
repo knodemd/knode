@@ -5,13 +5,15 @@
 //! and the connectors run the next time the service starts.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use clap::Subcommand;
 use knode_config::Paths;
 use knode_format::{Provenance, Space, Timestamp};
 use knode_service::sources::{
-    self, Container, ContainerInfo, History, SourceKind, SourceState, SourceStatus,
+    self, Container, ContainerInfo, History, SignInStatus, SignInValues, SourceKind, SourceSecrets,
+    SourceState, SourceStatus,
 };
 
 use crate::service;
@@ -76,8 +78,21 @@ pub enum Action {
         source: String,
     },
     /// Disconnect a connector from the space. What it brought in stays; connecting it again
-    /// chooses the history again.
+    /// chooses the history again. A connector signed in to an account is signed out and its
+    /// secrets leave the keychain.
     Disconnect {
+        /// The connector.
+        source: String,
+    },
+    /// Sign a connector in to the account it reads, step by step: Gmail opens Google's
+    /// sign-in page in the browser, Mail (IMAP) asks for the server, the user name and an app
+    /// password. The secrets are kept in the system keychain. `connect` does it when needed.
+    SignIn {
+        /// The connector: `gmail` or `imap`.
+        source: String,
+    },
+    /// Sign a connector out of its account and forget its secrets.
+    SignOut {
         /// The connector.
         source: String,
     },
@@ -99,6 +114,13 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
             }
         }
         Action::Connect { source, history } => {
+            if needs_sign_in(&source) {
+                let flow = SignInFlow::new(client.as_ref(), paths, &source)?;
+                let status = flow.step(None, &SignInValues::default())?;
+                if !status.signed_in {
+                    sign_in(&flow, &source, status)?;
+                }
+            }
             let history = history.as_deref().and_then(History::from_id);
             let status = match &client {
                 Some(client) => client.sources_connect(space, &source, history, by)?,
@@ -194,6 +216,9 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                     let was = sources::disconnect(&mut space, &source, by)?;
                     if was {
                         sources::forget_state(&paths.home, &space.manifest().id, &source)?;
+                        if needs_sign_in(&source) {
+                            SignInFlow::new(None, paths, &source)?.sign_out()?;
+                        }
                     }
                     was
                 }
@@ -204,8 +229,177 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                 println!("{source} was not connected to this space.");
             }
         }
+        Action::SignIn { source } => {
+            let flow = SignInFlow::new(client.as_ref(), paths, &source)?;
+            let status = flow.step(None, &SignInValues::default())?;
+            if status.signed_in {
+                println!(
+                    "{source} is signed in to {} already; `knode sources sign-out {source}` \
+                     signs it out.",
+                    status.account.as_deref().unwrap_or("its account")
+                );
+            } else {
+                sign_in(&flow, &source, status)?;
+            }
+        }
+        Action::SignOut { source } => {
+            if SignInFlow::new(client.as_ref(), paths, &source)?.sign_out()? {
+                println!("Signed {source} out and forgot its secrets.");
+            } else {
+                println!("{source} was not signed in.");
+            }
+        }
     }
     Ok(())
+}
+
+/// Whether the built-in connector `id` signs in to an account.
+fn needs_sign_in(id: &str) -> bool {
+    sources::builtin_connectors().iter().any(|c| {
+        let info = c.info();
+        info.id == id && info.permissions.contains(&sources::Permission::SignIn)
+    })
+}
+
+/// Where the steps of signing in are taken: Knode Service when it runs (it keeps the secrets),
+/// else the connector itself in this process.
+enum SignInFlow<'a> {
+    Service(&'a knode_service::Client, String),
+    Here {
+        connector: Arc<dyn sources::Connector>,
+        secrets: SourceSecrets,
+    },
+}
+
+impl<'a> SignInFlow<'a> {
+    fn new(client: Option<&'a knode_service::Client>, paths: &Paths, source: &str) -> Result<Self> {
+        if let Some(client) = client {
+            return Ok(SignInFlow::Service(client, source.to_string()));
+        }
+        let connector = sources::builtin_connectors()
+            .into_iter()
+            .find(|c| c.info().id == source)
+            .ok_or_else(|| anyhow!("no connector is named {source:?}"))?;
+        Ok(SignInFlow::Here {
+            connector,
+            secrets: SourceSecrets::new(&paths.home, source),
+        })
+    }
+
+    fn step(&self, step: Option<&str>, values: &SignInValues) -> Result<SignInStatus> {
+        match self {
+            SignInFlow::Service(client, source) => {
+                Ok(client.sources_sign_in(source, step, values)?)
+            }
+            SignInFlow::Here { connector, secrets } => Ok(sources::sign_in_step(
+                connector.as_ref(),
+                secrets,
+                step,
+                values,
+            )?),
+        }
+    }
+
+    fn sign_out(&self) -> Result<bool> {
+        match self {
+            SignInFlow::Service(client, source) => Ok(client.sources_sign_out(source)?),
+            SignInFlow::Here { connector, secrets } => match connector.sign_in() {
+                Some(flow) => Ok(flow.sign_out(secrets)?),
+                None => Ok(false),
+            },
+        }
+    }
+}
+
+/// Goes through the steps of signing in from `status`, asking in the terminal.
+fn sign_in(flow: &SignInFlow<'_>, source: &str, mut status: SignInStatus) -> Result<()> {
+    let mut tries = 0;
+    while let Some(step) = status.step.clone() {
+        println!("{}", step.title);
+        if let Some(message) = &step.message {
+            println!("{message}");
+        }
+        if let Some(url) = &step.browser_url {
+            println!("Open this page in your browser to go on:\n\n  {url}\n");
+            open_in_browser(url);
+        }
+        let mut values = SignInValues::default();
+        for field in &step.fields {
+            let label = match field.placeholder.as_str() {
+                "" => format!("{}: ", field.label),
+                example => format!("{} (such as {example}): ", field.label),
+            };
+            values = values.with(field.id.clone(), ask(&label, field.secret)?);
+        }
+        if step.fields.is_empty() {
+            ask(
+                &format!(
+                    "Press Return once you have signed in ({}): ",
+                    step.continue_title.as_deref().unwrap_or("Continue")
+                ),
+                false,
+            )?;
+        }
+        match flow.step(Some(&step.id), &values) {
+            Ok(next) => status = next,
+            Err(error) => {
+                tries += 1;
+                if tries >= 5 {
+                    return Err(error);
+                }
+                eprintln!("{error}");
+                // The same step is asked again (or a new one, if the flow starts over).
+            }
+        }
+    }
+    match status.account {
+        Some(account) => println!("Signed {source} in to {account}."),
+        None => println!("Signed {source} in."),
+    }
+    Ok(())
+}
+
+/// Asks for one line; `secret` ones are not shown as they are typed.
+fn ask(label: &str, secret: bool) -> Result<String> {
+    use std::io::{BufRead, IsTerminal, Write};
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    if terminal {
+        eprint!("{label}");
+        std::io::stderr().flush()?;
+    }
+    let hide = secret && terminal;
+    if hide {
+        let _ = std::process::Command::new("stty").arg("-echo").status();
+    }
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+    if hide {
+        let _ = std::process::Command::new("stty").arg("echo").status();
+        eprintln!();
+    }
+    if read? == 0 {
+        return Err(anyhow!("signing in was stopped"));
+    }
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// Opens `url` in the browser of this machine, when there is one to open.
+fn open_in_browser(url: &str) {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(program)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn set_on(
