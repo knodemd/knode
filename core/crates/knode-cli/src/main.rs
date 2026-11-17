@@ -11,6 +11,7 @@ mod markdown;
 mod onboard;
 mod readwise;
 mod service;
+mod sign_in;
 mod sources;
 mod spaces;
 
@@ -82,14 +83,15 @@ enum Command {
     /// Import into the space: a Claude, ChatGPT or Gemini data export, a folder of Markdown
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
     /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
-    /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, or a
+    /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, mail
+    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), or a
     /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`) or a Telegram Desktop
     /// export in JSON (the folder with `result.json`) or a Slack workspace export.
     /// Knode tells which from the path; --from says it.
     Import {
-        /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes` or
-        /// `--from bear` to read the app's own notes on this Mac, and with
-        /// `--from readwise-api`.
+        /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes`,
+        /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, and
+        /// with `--from readwise-api`.
         #[arg(value_name = "PATH|URL", required_unless_present = "from")]
         target: Option<String>,
         /// What it is, when Knode should not guess.
@@ -104,6 +106,18 @@ enum Command {
         /// Rehearse a Markdown-folder import locally without changing a destination space.
         #[arg(long)]
         preview: bool,
+        /// Mail: only this folder, a Gmail label or an Apple Mail mailbox. Repeat for more.
+        #[arg(long, value_name = "NAME", visible_aliases = ["label", "mailbox"])]
+        folder: Vec<String>,
+        /// Mail: only messages sent on or after this day (YYYY-MM-DD).
+        #[arg(long, value_name = "DAY")]
+        since: Option<String>,
+        /// Mail: only messages sent on or before this day (YYYY-MM-DD).
+        #[arg(long, value_name = "DAY")]
+        until: Option<String>,
+        /// Mail: attach the files of the messages to their threads.
+        #[arg(long)]
+        attachments: bool,
     },
     /// Show the links of a node, going out and coming in, each as it reads from the node.
     Links {
@@ -308,17 +322,24 @@ fn run(cli: Cli) -> Result<()> {
             vault,
             json,
             preview,
+            folder,
+            since,
+            until,
+            attachments,
         } => {
             if preview {
                 return import::preview(target.as_deref(), from.as_deref(), json);
             }
             let space = existing_space(&paths, cli.space.as_deref())?;
+            let mail =
+                import::mail_options(folder, since.as_deref(), until.as_deref(), attachments)?;
             let request = import::Request {
                 target: target.as_deref(),
                 from: from.as_deref(),
                 vault,
                 json,
                 home: &paths.home,
+                mail,
             };
             import::run(&space, request, &person())
         }

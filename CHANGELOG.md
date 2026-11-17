@@ -32,6 +32,22 @@ belongs to, newest first.
   connector's own sign-in, the history (**From today** or **Everything**) and every chat, channel
   or folder with a switch to leave it out, paused until you start it. A switch pauses and resumes
   it, **Run now** runs it at once, and **Disconnect** asks first and keeps what it brought in.
+- **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
+  as threads with their people, like a mail import. **Gmail** signs in with Google in your
+  browser and only asks to read mail; mail goes from Google straight to your machine. **Mail
+  (IMAP)** reads any account with an app password (Gmail, iCloud, Fastmail, Yahoo, Outlook or
+  your own server), over TLS only. Every label or mailbox comes in, new ones too, except spam,
+  trash and the ones you exclude. A message already in the space from a Google Takeout export,
+  Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
+  `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
+  removes the secrets from the keychain.
+- **Slack connector**: brings in the channels, private channels, group messages and direct
+  messages you are in on Slack, with their threads and people, into the same nodes a Slack export
+  makes, so an export and the connector never write a message twice. `knode sources sign-in
+  slack` signs in once in the browser (OAuth with PKCE: Knode asks only to read, and keeps no
+  client secret); the sign-in stays in the system keychain, and signing out or disconnecting
+  the last space revokes it and removes it. Every conversation comes in except the channels you exclude. It reads within
+  Slack's rate limits, spreading what does not fit over the next runs.
 
 ### v0.3 - Map and import (in progress)
 
@@ -70,6 +86,17 @@ belongs to, newest first.
   checked against a real export yet; Perplexity has no export of all threads, so it is not
   supported; Readwise is read from its exports, not its API. The Mac app has no import screen
   yet.
+- **Mail import**: `knode import --from mbox` reads Gmail through a Google Takeout `.mbox` (or any
+  other `mbox` file), and `knode import --from apple-mail` reads the Apple Mail store on the Mac,
+  which needs Full Disk Access (Knode says how to allow it when it is missing). Each thread
+  becomes one node with its messages in order, sender, recipients and date, the text part
+  preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
+  address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
+  folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
+  default). Importing again, or another date range, adds only the new messages, and never
+  overwrites what you changed or added to a thread in Knode. Knode never signs
+  in to a mail account: it reads only the files you point it at. Knode Service does the same with
+  `import.run`.
 - **Chat exports in `knode import`**: WhatsApp chat exports (the `.zip`, its folder or the
   chat's `.txt`, from iOS or Android, in the date formats WhatsApp writes in each language)
   become one `chat` node per
@@ -89,6 +116,12 @@ belongs to, newest first.
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
   never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+- **A project folder adds its project**: adding a project folder, in the Mac app or with
+  `knode folders add`, adds the project of the same name to the space, or uses the one of that
+  name it already has (upper and lower case and accent encoding aside). `[`, `]` and `|` in the
+  folder's name become `(`, `)` and `-`. The folder's row and `knode folders list` name it, and
+  removing the folder keeps the project and its notes. A folder added before this gets its
+  project when it is added again.
 
 #### Changed
 

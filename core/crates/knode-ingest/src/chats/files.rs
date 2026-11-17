@@ -63,6 +63,15 @@ impl Files {
         })
     }
 
+    /// No files at all: for chats read from an API, whose files are links.
+    pub fn empty() -> Files {
+        Files {
+            source: Source::Dir(std::path::PathBuf::new()),
+            names: BTreeSet::new(),
+            single: None,
+        }
+    }
+
     /// Every file, sorted.
     pub fn names(&self) -> &BTreeSet<String> {
         &self.names
