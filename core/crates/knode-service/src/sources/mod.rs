@@ -533,11 +533,32 @@ impl Registry {
         }
     }
 
-    /// The containers of a connected source, with the excluded ones marked; excluded ones the
-    /// source no longer lists are kept at the end, so they can be included again.
-    pub(crate) fn containers(
+    /// What listing the containers of `id` needs from the space: its id and the source's
+    /// settings. Taken with the space locked, so [`containers_of`](Self::containers_of) can
+    /// run without the lock.
+    pub(crate) fn containers_request(
         &self,
         space: &Space,
+        id: &str,
+    ) -> Result<(String, SourceSetting), SourceError> {
+        if self.connector(id).is_none() {
+            return Err(SourceError::Unavailable(format!(
+                "no connector {id:?} on this machine"
+            )));
+        }
+        let setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
+        Ok((space.manifest().id.clone(), setting))
+    }
+
+    /// The containers of `id` in the space `space_id` with these settings, the excluded ones
+    /// marked; excluded ones the source no longer lists are kept at the end, so they can be
+    /// included again. Needs no space:
+    /// connectors may take long to list them (over the network), and the space stays free for
+    /// everyone else meanwhile.
+    pub(crate) fn containers_of(
+        &self,
+        space_id: &str,
+        setting: &SourceSetting,
         id: &str,
     ) -> Result<Vec<ContainerInfo>, SourceError> {
         let connector = self
@@ -546,8 +567,7 @@ impl Registry {
                 SourceError::Unavailable(format!("no connector {id:?} on this machine"))
             })?
             .clone();
-        let setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
-        let space_id = space.manifest().id.clone();
+        let space_id = space_id.to_string();
         let key = state_key(&space_id, id);
         let cursor = self.states().get(&key).and_then(|s| s.cursor.clone());
         let secrets = SourceSecrets::new(&self.home, id);
@@ -652,11 +672,20 @@ impl StateFile {
     }
 }
 
-/// The secrets of one connector, in the credential store agent keys use: the Keychain on
-/// macOS; the Secret Service through `secret-tool` on Linux, or, where there is none, a file
-/// only its owner can read in the Knode home (`agent-keys/`, mode `0600`); files everywhere
-/// with `KNODE_KEY_STORE=file`. Each secret is filed as `_source-<id>-<name>`, which is never
-/// the name of an agent.
+/// What a connector is told when it cannot keep a secret because the system has no credential
+/// store.
+pub const NO_CREDENTIAL_STORE: &str = "this system has no keychain to keep the secrets of \
+     connectors in: install a Secret Service, e.g. GNOME Keyring or KeePassXC, and sign in \
+     again (or set `source_secrets_in_files = true` in config.toml to keep them in a file only \
+     you can read)";
+
+/// The secrets of one connector, in the system's credential store: the Keychain on macOS, the
+/// Secret Service through `secret-tool` on Linux. Unlike agent keys, they never fall back to a
+/// file where Linux has no Secret Service: keeping one fails with [`NO_CREDENTIAL_STORE`],
+/// unless the person set `source_secrets_in_files = true` in `config.toml`, which keeps them
+/// in a file only its owner can read in the Knode home (`agent-keys/`, mode `0600`). Files are
+/// used everywhere with `KNODE_KEY_STORE=file`. Each secret is filed as
+/// `_source-<id>-<name>`, which is never the name of an agent.
 pub struct SourceSecrets {
     store: Box<dyn KeyStore>,
     source: String,
@@ -666,7 +695,7 @@ impl SourceSecrets {
     /// The secrets of the source `source_id` for the Knode home `home`.
     pub fn new(home: &Path, source_id: &str) -> Self {
         SourceSecrets {
-            store: default_key_store(home),
+            store: source_key_store(home),
             source: source_id.to_string(),
         }
     }
@@ -706,11 +735,41 @@ impl Secrets for SourceSecrets {
     }
 
     fn set(&self, name: &str, value: &str) -> io::Result<()> {
-        self.store.set(&self.name(name)?, value)
+        self.store
+            .set(&self.name(name)?, value)
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::Unsupported => {
+                    io::Error::new(io::ErrorKind::Unsupported, NO_CREDENTIAL_STORE)
+                }
+                _ => e,
+            })
     }
 
     fn delete(&self, name: &str) -> io::Result<bool> {
         self.store.delete(&self.name(name)?)
+    }
+}
+
+/// The store of the secrets of connectors for the Knode home `home`: as agent keys', but with
+/// no file to fall back to where Linux has no Secret Service, unless `config.toml` asks for
+/// one.
+fn source_key_store(home: &Path) -> Box<dyn KeyStore> {
+    if std::env::var(crate::keys::KEY_STORE_VAR).is_ok_and(|v| v == "file") {
+        return default_key_store(home);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        default_key_store(home)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let in_files = knode_config::Config::load_from(&home.join(knode_config::CONFIG_FILE))
+            .is_ok_and(|c| c.source_secrets_in_files());
+        if in_files {
+            default_key_store(home)
+        } else {
+            Box::new(crate::keys::SecretToolKeyStore::without_files(home))
+        }
     }
 }
 
@@ -954,6 +1013,58 @@ mod tests {
         assert!(secrets.set("../x", "v").is_err());
         assert!(secrets.delete("session").unwrap());
         assert_eq!(secrets.get("session").unwrap(), None);
+    }
+
+    /// A store with no system credential store behind it.
+    struct NoKeychain;
+
+    impl KeyStore for NoKeychain {
+        fn get(&self, _: &str) -> io::Result<Option<String>> {
+            Ok(None)
+        }
+        fn set(&self, _: &str, _: &str) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::Unsupported, "none"))
+        }
+        fn delete(&self, _: &str) -> io::Result<bool> {
+            Ok(false)
+        }
+        fn describe(&self) -> String {
+            "nothing".into()
+        }
+    }
+
+    #[test]
+    fn without_a_keychain_a_secret_is_refused_with_what_to_do() {
+        let secrets = SourceSecrets::in_store(Box::new(NoKeychain), "telegram");
+        let err = secrets.set("session", "s3cret").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("GNOME Keyring or KeePassXC"), "{message}");
+        assert!(
+            message.contains("source_secrets_in_files = true"),
+            "{message}"
+        );
+        assert!(!message.contains("s3cret"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn on_linux_secrets_go_to_files_only_when_config_asks() {
+        if std::env::var(crate::keys::KEY_STORE_VAR).is_ok() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            source_key_store(dir.path()).describe(),
+            "the Secret Service"
+        );
+        std::fs::write(
+            dir.path().join(knode_config::CONFIG_FILE),
+            "source_secrets_in_files = true\n",
+        )
+        .unwrap();
+        assert!(source_key_store(dir.path()).describe().contains("a file"));
+        // Agent keys keep their fallback.
+        assert!(default_key_store(dir.path()).describe().contains("a file"));
     }
 
     #[test]

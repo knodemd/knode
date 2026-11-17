@@ -198,6 +198,12 @@ pub struct Config {
     /// Telegram...). On when left out. See [`Config::sources_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<bool>,
+    /// Whether connectors may keep their secrets (a session, a token, an app password) in a
+    /// file only its owner can read in the Knode home, on a system with no credential store
+    /// (Linux without a Secret Service). Off when left out: connectors then refuse to sign in
+    /// there. See [`Config::source_secrets_in_files`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_secrets_in_files: Option<bool>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -214,6 +220,13 @@ impl Config {
     /// itself.
     pub fn sources_enabled(&self) -> bool {
         self.sources.unwrap_or(true) && self.capture_enabled()
+    }
+
+    /// Whether connectors may keep their secrets in a file where the system has no credential
+    /// store: `source_secrets_in_files = true` in `config.toml`, off by default. Secrets belong
+    /// in the system keychain; this is only for a person who chose otherwise.
+    pub fn source_secrets_in_files(&self) -> bool {
+        self.source_secrets_in_files.unwrap_or(false)
     }
 
     /// Whether search by meaning is on: `embeddings` in `config.toml`, on unless it is `"off"`.
@@ -504,6 +517,13 @@ mod tests {
         assert!(text.contains("default_space = \"/b.knode\""), "{text}");
         assert!(text.contains("future = 1"), "{text}");
         assert!(text.contains("[later]"), "{text}");
+    }
+
+    #[test]
+    fn source_secrets_stay_out_of_files_unless_asked() {
+        assert!(!Config::default().source_secrets_in_files());
+        let config: Config = toml::from_str("source_secrets_in_files = true\n").unwrap();
+        assert!(config.source_secrets_in_files());
     }
 
     #[test]

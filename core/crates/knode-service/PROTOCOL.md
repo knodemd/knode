@@ -127,7 +127,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
-| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. |
+| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
 | `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
@@ -527,11 +527,17 @@ A connector runs when the files it watches change (a local database and its `-wa
 interval, and when `sources.run` asks. A file event runs it only when the size or modification
 time of the files or their `-wal` changed since its last run, so its own reads of them (which
 macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
-open late, so a connector that watches files also runs at least once a minute. Connectors that read another app's database read a copy
-of it, never the live file, and check its tables and columns first. Their writes are made with
+open late, so a connector that watches files also runs at least once a minute. Connectors that
+read another app's database read a copy of it, never the live file: a copy made while the app
+wrote the database or its `-wal` is made again, and one that fails SQLite's `quick_check` is
+not read (the run fails and is tried again later). They check its tables and columns first. Their writes are made with
 the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
-in the system credential store (the Keychain on macOS), never in a space, a settings file or a
-log. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
+in the system credential store (the Keychain on macOS, the Secret Service on Linux), never in a
+space, a settings file or a log. Where Linux has no Secret Service, a connector that needs a
+secret cannot sign in and says to install one (GNOME Keyring or KeePassXC), unless
+`source_secrets_in_files = true` in `config.toml` lets it keep them in a file only its owner can
+read in `$KNODE_HOME/agent-keys/`. `sources.containers` does not keep the space locked while the
+connector lists its chats, which may take long over the network. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
 stops everything Knode Service brings in by itself.
 
 The `telegram` connector reads Telegram through its official API, as Knode's own client. It is
