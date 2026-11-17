@@ -4,10 +4,11 @@
 //! database and never write to it. [`open_copy`] copies the database with its `-wal` and `-shm`
 //! files into a private temporary folder and opens the copy read-only, so the app is never
 //! locked or changed; the copy is removed when it is dropped. A copy made while the app wrote
-//! the files is made again, and one that is damaged is refused, so a connector never reads a
-//! database and a `-wal` that do not match. [`check_schema`] then checks the
-//! tables and columns the connector reads, and returns [`SourceError::NeedsUpdate`] when they
-//! changed, before anything is read.
+//! the files is made again, so a connector never reads a database and a `-wal` that do not
+//! match, and a copy that had to be made again is checked for damage before it is used.
+//! [`check_schema`] then checks the tables and columns the connector reads, and returns
+//! [`SourceError::NeedsUpdate`] when they changed, before anything is read. Copies left behind
+//! by a process that ended without removing them are removed with [`remove_stale_copies`].
 
 use std::fs;
 use std::io;
@@ -61,7 +62,7 @@ const ATTEMPTS: u32 = 5;
 fn open_copy_with(path: &Path, between: &mut dyn FnMut()) -> Result<DatabaseCopy, SourceError> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "knode-source-{}-{}",
+        "{COPY_PREFIX}{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -80,8 +81,10 @@ fn open_copy_with(path: &Path, between: &mut dyn FnMut()) -> Result<DatabaseCopy
     // checkpointed them meanwhile, the pair may not match. The copy is used only when their
     // sizes and modification times did not change while it was made.
     let mut settled = false;
+    let mut retried = false;
     for attempt in 0..ATTEMPTS {
         if attempt > 0 {
+            retried = true;
             std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
         }
         let before = FileStamp::of(&[path.to_path_buf()]);
@@ -107,25 +110,20 @@ fn open_copy_with(path: &Path, between: &mut dyn FnMut()) -> Result<DatabaseCopy
         conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
         Ok(conn)
     })
-    .map_err(|e| {
-        SourceError::NeedsUpdate(format!(
-            "{} is not a database Knode reads: {e}",
-            Path::new(name).display()
-        ))
-    })?;
-    let check: String = conn
-        .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
-        .map_err(|e| {
-            SourceError::Failed(format!(
-                "the copy of {} could not be checked: {e}",
+    .map_err(|e| open_error(Path::new(name), &e))?;
+    // A copy made while the app wrote its files was made again: it is checked, so a database
+    // and a -wal caught in the middle of a write are never read. A copy made in one go needs
+    // no check, and a database of a gigabyte is not read through on every run.
+    if retried {
+        let check: String = conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+            .map_err(|e| open_error(Path::new(name), &e))?;
+        if check != "ok" {
+            return Err(SourceError::Failed(format!(
+                "the copy of {} is damaged ({check}); trying again later",
                 Path::new(name).display()
-            ))
-        })?;
-    if check != "ok" {
-        return Err(SourceError::Failed(format!(
-            "the copy of {} is damaged ({check}); trying again later",
-            Path::new(name).display()
-        )));
+            )));
+        }
     }
     conn.execute_batch("PRAGMA query_only = ON;")
         .map_err(|e| SourceError::Failed(e.to_string()))?;
@@ -159,6 +157,67 @@ fn copy_files(path: &Path, target: &Path, between: &mut dyn FnMut()) -> Result<(
         }
     }
     Ok(())
+}
+
+/// What an error opening or checking the copy of `name` means: a file that is not a database
+/// (or not one this SQLite reads) needs an update of the connector; a damaged copy, or an
+/// error of the disk, is tried again later.
+fn open_error(name: &Path, error: &rusqlite::Error) -> SourceError {
+    use rusqlite::ErrorCode;
+    match error.sqlite_error_code() {
+        Some(ErrorCode::NotADatabase) => SourceError::NeedsUpdate(format!(
+            "{} is not a database Knode reads: {error}",
+            name.display()
+        )),
+        Some(ErrorCode::DatabaseCorrupt) => SourceError::Failed(format!(
+            "the copy of {} is damaged ({error}); trying again later",
+            name.display()
+        )),
+        _ => SourceError::Failed(format!(
+            "the copy of {} could not be opened: {error}",
+            name.display()
+        )),
+    }
+}
+
+/// The start of the name of the temporary folder of a copy: `knode-source-<pid>-<n>`.
+const COPY_PREFIX: &str = "knode-source-";
+
+/// Removes the temporary copies, in the system's temporary folder, left by processes that are
+/// no longer running (one that crashed, or was killed, while it read a copy). `running` tells
+/// whether a process id is running; copies of this process are always kept. Returns how many
+/// were removed.
+pub fn remove_stale_copies(running: impl Fn(u32) -> bool) -> usize {
+    remove_stale_copies_in(&std::env::temp_dir(), running)
+}
+
+fn remove_stale_copies_in(temp: &Path, running: impl Fn(u32) -> bool) -> usize {
+    let Ok(entries) = fs::read_dir(temp) else {
+        return 0;
+    };
+    let me = std::process::id();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(COPY_PREFIX))
+            .and_then(|rest| rest.split_once('-'))
+            .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == me || running(pid) {
+            continue;
+        }
+        // Only folders: a copy is always one, and a symbolic link is never followed.
+        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+        if is_dir && fs::remove_dir_all(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn private_dir(dir: &Path) -> io::Result<()> {
@@ -205,8 +264,12 @@ fn read_error(path: &Path, error: io::Error) -> SourceError {
 pub fn check_schema(conn: &Connection, expected: &[(&str, &[&str])]) -> Result<(), SourceError> {
     let mut missing: Vec<String> = Vec::new();
     for (table, columns) in expected {
-        let found = table_columns(conn, table)
-            .map_err(|e| SourceError::NeedsUpdate(format!("the database cannot be read: {e}")))?;
+        let found = table_columns(conn, table).map_err(|e| match e.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::NotADatabase) => {
+                SourceError::NeedsUpdate(format!("the database cannot be read: {e}"))
+            }
+            _ => SourceError::Failed(format!("the database could not be read: {e}")),
+        })?;
         if found.is_empty() {
             missing.push(format!("table {table}"));
             continue;
@@ -327,10 +390,9 @@ mod tests {
         assert!(err.to_string().contains("kept changing"), "{err}");
     }
 
-    #[test]
-    fn a_damaged_copy_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("Damaged.sqlite");
+    /// A synthetic database whose pages after the first, where the tables are, are junk.
+    fn damaged(dir: &Path) -> PathBuf {
+        let path = dir.join("Damaged.sqlite");
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
@@ -354,8 +416,100 @@ mod tests {
             *b = 0xA5;
         }
         fs::write(&path, bytes).unwrap();
-        let err = open_copy(&path).unwrap_err();
+        path
+    }
+
+    #[test]
+    fn a_damaged_copy_made_again_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = damaged(dir.path());
+        let mut writes = 0;
+        // The "app" touches the database once while the first copy is made: the copy is made
+        // again, and checked.
+        let err = open_copy_with(&path, &mut || {
+            if writes == 0 {
+                let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(later)
+                    .unwrap();
+            }
+            writes += 1;
+        })
+        .unwrap_err();
+        assert!(writes >= 2);
         assert_eq!(err.kind(), "failed", "{err}");
+        assert!(err.to_string().contains("damaged"), "{err}");
+    }
+
+    #[test]
+    fn a_copy_made_in_one_go_is_not_read_through() {
+        let dir = tempfile::tempdir().unwrap();
+        // Damaged past its first page: only a full check would see it, and none is made.
+        let path = damaged(dir.path());
+        let copy = open_copy(&path).unwrap();
+        // Reading the damaged table fails as an error to try again, not as a schema change.
+        let err = copy
+            .conn()
+            .query_row("SELECT COUNT(*) FROM chat WHERE name > ''", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_err();
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseCorrupt)
+        );
+    }
+
+    #[test]
+    fn only_a_file_that_is_not_a_database_needs_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("NotADatabase.sqlite");
+        fs::write(&path, vec![0x5A; 8192]).unwrap();
+        let err = open_copy(&path).unwrap_err();
+        assert_eq!(err.kind(), "needs-update", "{err}");
+
+        let name = Path::new("Synthetic.sqlite");
+        let io = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            None,
+        );
+        assert_eq!(open_error(name, &io).kind(), "failed");
+        let cannot_open = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            None,
+        );
+        assert_eq!(open_error(name, &cannot_open).kind(), "failed");
+        let corrupt = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+        assert_eq!(open_error(name, &corrupt).kind(), "failed");
+    }
+
+    #[test]
+    fn copies_of_processes_that_ended_are_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let ended = temp.path().join(format!("{COPY_PREFIX}4000001-0"));
+        let running = temp.path().join(format!("{COPY_PREFIX}4000002-3"));
+        let mine = temp.path().join(format!("{COPY_PREFIX}{me}-7"));
+        let other = temp.path().join(format!("{COPY_PREFIX}notes"));
+        for dir in [&ended, &running, &mine, &other] {
+            fs::create_dir(dir).unwrap();
+            fs::write(dir.join("Synthetic.sqlite"), b"x").unwrap();
+        }
+        let file = temp.path().join(format!("{COPY_PREFIX}4000003-1"));
+        fs::write(&file, b"x").unwrap();
+        let removed = remove_stale_copies_in(temp.path(), |pid| pid == 4000002);
+        assert_eq!(removed, 1);
+        assert!(!ended.exists());
+        assert!(running.exists());
+        assert!(mine.exists());
+        assert!(other.exists());
+        assert!(file.exists(), "only folders are removed");
     }
 
     #[test]
