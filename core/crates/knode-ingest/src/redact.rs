@@ -26,8 +26,10 @@ static WHOLE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\bsk-[A-Za-z0-9_\-]{20,}",
         // Stripe keys.
         r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b",
-        // Slack tokens.
-        r"\bxox[abposr]-[A-Za-z0-9\-]{10,}",
+        // Slack tokens: bot, user, app, refresh and the rest (`xoxb-`, `xoxp-`, `xoxa-`,
+        // `xoxr-`, `xoxe-`, `xoxe.xoxp-`...), and app-level tokens.
+        r"\bxox[abeposr](?:\.xox[a-z])?-[A-Za-z0-9\-]{10,}",
+        r"\bxapp-[0-9]-[A-Za-z0-9\-]{10,}",
         // Google API keys.
         r"\bAIza[0-9A-Za-z_\-]{35}",
         // JSON Web Tokens.
@@ -58,6 +60,33 @@ static VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 
 /// The text with each obvious secret replaced by [`REDACTED`], and how many were replaced.
 pub fn redact_secrets(text: &str) -> (String, usize) {
+    redact(text, false)
+}
+
+/// Like [`redact_secrets`], for text people wrote to each other, such as chat messages, where
+/// "Secret: everything went fine" is a sentence: only what is shaped like a credential is
+/// replaced. Known key formats always are; after a name such as `password:` or `token=`, or
+/// `Bearer`, only a value of at least 16 characters with both letters and digits; and the
+/// password in a URL.
+pub(crate) fn redact_tokens(text: &str) -> (String, usize) {
+    redact(text, true)
+}
+
+/// The value rules, in [`VALUES`], that take a value whatever its shape in [`redact_tokens`]:
+/// the password in a URL, the last one.
+fn any_value(rule: usize) -> bool {
+    rule == VALUES.len() - 1
+}
+
+/// Whether a value after a name looks generated rather than written: long, with letters and
+/// digits.
+fn token_shaped(value: &str) -> bool {
+    value.chars().count() >= 16
+        && value.chars().any(|c| c.is_ascii_alphabetic())
+        && value.chars().any(|c| c.is_ascii_digit())
+}
+
+fn redact(text: &str, tokens_only: bool) -> (String, usize) {
     let mut count = 0;
     let mut out = text.to_string();
     for pattern in WHOLE.iter() {
@@ -70,13 +99,15 @@ pub fn redact_secrets(text: &str) -> (String, usize) {
                 .into_owned();
         }
     }
-    for pattern in VALUES.iter() {
+    for (rule, pattern) in VALUES.iter().enumerate() {
         if pattern.is_match(&out) {
             out = pattern
                 .replace_all(&out, |caps: &Captures| {
                     let whole = caps.get(0).expect("match");
                     let secret = caps.name("secret").expect("secret group");
-                    if secret.as_str().contains(REDACTED) {
+                    if secret.as_str().contains(REDACTED)
+                        || (tokens_only && !any_value(rule) && !token_shaped(secret.as_str()))
+                    {
                         return whole.as_str().to_string();
                     }
                     count += 1;
@@ -147,6 +178,55 @@ mod tests {
             assert_eq!(n, 1, "{sample}");
             assert_eq!(out, format!("use {REDACTED} here"), "{sample}");
         }
+    }
+
+    #[test]
+    fn words_after_a_name_are_kept_in_what_people_wrote() {
+        for kept in [
+            "Secret: everything went fine",
+            "The token: a coffee voucher",
+            "password = the usual one",
+            "Bearer of good news, everyone",
+            "--password reset tomorrow please",
+        ] {
+            assert_eq!(redact_tokens(kept), (kept.to_string(), 0), "{kept}");
+        }
+        // The same rule still catches them in agent sessions.
+        assert_eq!(redact_secrets("Secret: everything went fine").1, 1);
+        // Shaped like credentials, they go in chats too.
+        let key = ["sk-", "ant-api03-", "abcdefghijklmnopqrstuvwxyz"].concat();
+        for (text, expected) in [
+            (format!("use {key} now"), format!("use {REDACTED} now")),
+            (
+                "api_key=a1b2c3d4e5f6g7h8i9j0".to_string(),
+                format!("api_key={REDACTED}"),
+            ),
+            (
+                "Authorization: Bearer abcdEFGH1234ijklMNOP".to_string(),
+                format!("Authorization: Bearer {REDACTED}"),
+            ),
+            (
+                "https://ada:hunter2@example.com/x".to_string(),
+                format!("https://ada:{REDACTED}@example.com/x"),
+            ),
+        ] {
+            assert_eq!(redact_tokens(&text).0, expected, "{text}");
+        }
+        let slack = format!("xox{}-1-1234567890-abcdefghij", "b");
+        assert_eq!(redact_tokens(&slack), (REDACTED.to_string(), 1));
+    }
+
+    #[test]
+    fn every_kind_of_slack_token_is_replaced() {
+        // Put together here, so the source holds no whole token.
+        for kind in ["b", "p", "a", "r", "e", "e.xoxp"] {
+            let sample = format!("xox{kind}-1-1234567890-abcdefghij");
+            let (out, n) = redact_secrets(&format!("use {sample}. here"));
+            assert_eq!(n, 1, "{sample}");
+            assert_eq!(out, format!("use {REDACTED}. here"), "{sample}");
+        }
+        let app = format!("x{}-1-A0123456789-abcdefghij", "app");
+        assert_eq!(redact_secrets(&app), (REDACTED.to_string(), 1));
     }
 
     #[test]

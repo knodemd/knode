@@ -210,6 +210,19 @@ import Testing
         #expect(makeModel(settings: settings).sidebarSpaces.map(\.name) == ["Memoria"])
     }
 
+    @Test func aSpaceMadeWhileTheAppIsOpenAppearsWhenItIsActiveAgain() throws {
+        let settings = MemoryKnodeSettings()
+        let model = makeModel(settings: settings)
+        #expect(model.sidebarSpaces.isEmpty)
+        let made = folder.appending(path: "Made.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        try Data(#"{"format":0,"id":"01K83N6V4W5D2XQJ0Y7RZ9T1AD","name":"Made"}"#.utf8).write(to: made.appending(path: "manifest.json"))
+        try settings.setDefaultSpace(made)
+        model.refreshKnownSpaces()
+        #expect(model.sidebarSpaces.map(\.name) == ["Made"])
+        #expect(model.sidebarSpaces.first?.isDefault == true)
+    }
+
     @Test func theFirstLaunchListsTheSpacesKnodeKnows() throws {
         let home = folder.appending(path: "Home.knode", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
