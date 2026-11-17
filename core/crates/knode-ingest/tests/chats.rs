@@ -1,13 +1,15 @@
 //! Importing chat exports. The fixtures in `fixtures/chats` are synthetic: invented chats
 //! between invented people, written by hand in the structure of each export.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use knode_format::{ChangeOp, Node, Provenance, Space};
+use knode_format::{ChangeOp, Node, NodeId, Provenance, Space, link_kinds};
 use knode_ingest::{
-    CHAT_KIND, ChatFormat, ChatImportError, chat_keys, detect_chat_export, import_chat_export,
+    CHAT_KIND, ChatFormat, ChatImportError, PERSON_KIND, chat_keys, detect_chat_export,
+    import_chat_export, person_keys,
 };
 use tempfile::TempDir;
 
@@ -291,7 +293,7 @@ fn refuses_what_is_not_a_chat_export() {
     assert!(
         error
             .to_string()
-            .contains("is not a WhatsApp or Telegram Desktop chat export")
+            .contains("is not a WhatsApp, Telegram Desktop or Slack chat export")
     );
     assert_eq!(space.node_count().unwrap(), 0);
 }
@@ -453,6 +455,210 @@ fn refuses_an_export_of_another_kind() {
     assert!(matches!(error, ChatImportError::Json { .. }), "{error}");
 }
 
+/// A synthetic Slack workspace export: two channels, a direct message, a thread, a file kept as
+/// a link and one downloaded into `__uploads`.
+fn slack_export() -> Vec<(String, Vec<u8>)> {
+    let users = r#"[
+ {"id": "U01", "team_id": "T01", "name": "ada", "real_name": "Ada", "profile": {"real_name": "Ada", "display_name": "ada"}},
+ {"id": "U02", "team_id": "T01", "name": "grace", "real_name": "Grace", "profile": {"real_name": "Grace", "display_name": "grace"}},
+ {"id": "U03", "team_id": "T01", "name": "linus", "real_name": "Linus", "profile": {"real_name": "Linus"}},
+ {"id": "U04", "team_id": "T01", "name": "mira", "real_name": "Mira", "profile": {"real_name": "Mira"}}
+]"#;
+    let channels = r#"[
+ {"id": "C01", "name": "general", "created": 1772600000, "members": ["U01", "U02", "U03"]},
+ {"id": "C02", "name": "random", "created": 1772600000, "members": ["U01"]}
+]"#;
+    let dms = r#"[{"id": "D01", "created": 1772600000, "members": ["U01", "U02"]}]"#;
+    let general_day1 = r#"[
+ {"type": "message", "subtype": "channel_join", "user": "U03", "text": "<@U03> has joined the channel", "ts": "1772622000.000100"},
+ {"type": "message", "user": "U01", "text": "Plan for *Friday*: see <https://example.com/plan|the plan> and <#C02|random>", "ts": "1772625600.000100", "thread_ts": "1772625600.000100", "reply_count": 2},
+ {"type": "message", "user": "U02", "text": "Works for me <@U01>", "ts": "1772625660.000200", "thread_ts": "1772625600.000100", "parent_user_id": "U01"},
+ {"type": "message", "user": "U02", "text": "Here is the map", "ts": "1772625720.000300",
+  "files": [{"id": "F01", "name": "map.png", "title": "map", "mimetype": "image/png", "permalink": "https://example.slack.com/files/U02/F01/map.png"},
+            {"id": "F02", "name": "notes.txt", "title": "notes", "mimetype": "text/plain", "permalink": "https://example.slack.com/files/U02/F02/notes.txt"}]}
+]"#;
+    let general_day2 = r#"[
+ {"type": "message", "user": "U03", "text": "Late reply, sorry", "ts": "1772712000.000100", "thread_ts": "1772625600.000100", "parent_user_id": "U01"},
+ {"type": "message", "user": "U03", "text": "Morning _all_", "ts": "1772712060.000200"}
+]"#;
+    let random_day = r#"[{"type": "message", "user": "U01", "text": "Cake in the kitchen", "ts": "1772625600.000500"}]"#;
+    let dm_day =
+        r#"[{"type": "message", "user": "U02", "text": "Lunch?", "ts": "1772625600.000600"}]"#;
+    [
+        ("users.json", users.as_bytes()),
+        ("channels.json", channels.as_bytes()),
+        ("dms.json", dms.as_bytes()),
+        ("general/2026-03-04.json", general_day1.as_bytes()),
+        ("general/2026-03-05.json", general_day2.as_bytes()),
+        ("random/2026-03-04.json", random_day.as_bytes()),
+        ("D01/2026-03-04.json", dm_day.as_bytes()),
+        (
+            "__uploads/F01/map.png",
+            &b"\x89PNG\r\n\x1a\n synthetic map"[..],
+        ),
+    ]
+    .into_iter()
+    .map(|(n, b)| (n.to_string(), b.to_vec()))
+    .collect()
+}
+
+fn zip_entries(out: &Path, entries: &[(String, Vec<u8>)]) {
+    let borrowed: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_slice()))
+        .collect();
+    zip(out, &borrowed);
+}
+
+/// The time Slack's `ts` shows here, as the importer shows it: in this computer's time zone.
+fn local(secs: i64, format: &str) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(secs, 0)
+        .unwrap()
+        .format(format)
+        .to_string()
+}
+
+#[test]
+fn imports_a_slack_workspace_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let zipped = dir.path().join("Example Slack export.zip");
+    zip_entries(&zipped, &slack_export());
+    assert_eq!(detect_chat_export(&zipped), Some(ChatFormat::Slack));
+
+    let report = import_chat_export(&mut space, &zipped, None, &by()).unwrap();
+    assert_eq!(report.format, ChatFormat::Slack);
+    let titles: Vec<&str> = report.chats.iter().map(|c| c.title.as_str()).collect();
+    let thread_title = format!(
+        "Slack - general - Plan for Friday: see the plan and random ({})",
+        local(1_772_625_600, "%Y-%m-%d %H:%M")
+    );
+    assert_eq!(
+        titles,
+        [
+            "Slack - general",
+            thread_title.as_str(),
+            "Slack - random",
+            "Slack - Ada, Grace"
+        ]
+    );
+    // Only the members who wrote or are mentioned, not Mira.
+    let people: Vec<&str> = report.people.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(people, ["Ada", "Grace", "Linus"]);
+    assert_eq!(report.attached, 1);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+
+    let general = chat_node(&space, "slack", "C01");
+    let t = |secs, f| local(secs, f);
+    let mut expected = format!(
+        "## {}\n\n*({}) [[Linus]] has joined the channel*\n\n\
+         **Ada** ({}): Plan for **Friday**: see [the plan](<https://example.com/plan>) and [[Slack - random]]\n\
+         Thread: [[{thread_title}]]\n\n\
+         **Grace** ({}): Here is the map\n![[map.png]]\n\
+         [notes.txt](<https://example.slack.com/files/U02/F02/notes.txt>) *(not in the export)*\n\n",
+        t(1_772_622_000, "%Y-%m-%d"),
+        t(1_772_622_000, "%H:%M"),
+        t(1_772_625_600, "%H:%M"),
+        t(1_772_625_720, "%H:%M"),
+    );
+    expected.push_str(&format!(
+        "## {}\n\n**Linus** ({}): Morning *all*\n",
+        t(1_772_712_060, "%Y-%m-%d"),
+        t(1_772_712_060, "%H:%M")
+    ));
+    if t(1_772_622_000, "%Y-%m-%d") != t(1_772_625_720, "%Y-%m-%d") {
+        // Far from UTC the first day splits; the rest of the test still holds.
+        eprintln!("time zone splits the first day; body not compared");
+    } else {
+        assert_eq!(general.body, expected);
+    }
+    assert_eq!(prop(&space, &general, chat_keys::TYPE), "channel");
+
+    // The thread: its own node, part of the channel, with the reply from the next day.
+    let thread = chat_node(&space, "slack", "C01/1772625600.000100");
+    assert_eq!(thread.title, thread_title);
+    assert_eq!(prop(&space, &thread, chat_keys::TYPE), "thread");
+    assert!(thread.body.contains("**Grace** ("), "{}", thread.body);
+    assert!(
+        thread.body.contains("Works for me [[Ada]]"),
+        "{}",
+        thread.body
+    );
+    assert!(thread.body.contains("Late reply, sorry"), "{}", thread.body);
+    assert!(!thread.body.contains("Thread: "), "{}", thread.body);
+    let links = space.links_from(&thread.id).unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|l| l.kind == link_kinds::PART_OF && l.to == general.id),
+        "{links:?}"
+    );
+
+    // Members are person nodes; mentions link to them, and chats are related to who wrote.
+    let ada = space
+        .find_by_property(person_keys::USER, "T01/U01")
+        .unwrap();
+    assert_eq!(ada.len(), 1);
+    let ada = space.get_node(&ada[0].id).unwrap().unwrap();
+    assert_eq!(ada.kind, PERSON_KIND);
+    let back = space.backlinks(&ada.id).unwrap();
+    assert!(
+        back.iter()
+            .any(|l| l.kind == link_kinds::MENTIONS && l.from == thread.id),
+        "{back:?}"
+    );
+    let from_general = space.links_from(&general.id).unwrap();
+    let related: BTreeSet<NodeId> = from_general
+        .iter()
+        .filter(|l| l.kind == link_kinds::RELATED)
+        .map(|l| l.to)
+        .collect();
+    assert_eq!(related.len(), 3, "Ada, Grace and Linus wrote in #general");
+
+    let dm = chat_node(&space, "slack", "D01");
+    assert_eq!(prop(&space, &dm, chat_keys::TYPE), "personal");
+
+    // Again: nothing new, no copies of people.
+    let nodes = space.node_count().unwrap();
+    let again = import_chat_export(&mut space, &zipped, Some(ChatFormat::Slack), &by()).unwrap();
+    assert!(again.chats.is_empty(), "{again:?}");
+    assert!(again.people.is_empty());
+    assert_eq!(again.unchanged, 4);
+    assert_eq!(space.node_count().unwrap(), nodes);
+
+    // A newer export, as a folder: one more reply in the thread and a message in #random.
+    let mut entries = slack_export();
+    for (name, bytes) in &mut entries {
+        if name == "random/2026-03-04.json" {
+            *bytes = br#"[{"type": "message", "user": "U01", "text": "Cake in the kitchen", "ts": "1772625600.000500"},
+              {"type": "message", "user": "U04", "text": "Thanks <@U01>!", "ts": "1772625900.000100"}]"#
+                .to_vec();
+        }
+    }
+    entries.push((
+        "general/2026-03-06.json".into(),
+        br#"[{"type": "message", "user": "U02", "text": "Done", "ts": "1772798400.000100", "thread_ts": "1772625600.000100"}]"#
+            .to_vec(),
+    ));
+    let folder = dir.path().join("newer");
+    for (name, bytes) in &entries {
+        let path = folder.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let report = import_chat_export(&mut space, &folder, None, &by()).unwrap();
+    assert_eq!(report.messages, 2);
+    let people: Vec<&str> = report.people.iter().map(|p| p.title.as_str()).collect();
+    assert_eq!(people, ["Mira"]);
+    let thread = chat_node(&space, "slack", "C01/1772625600.000100");
+    assert!(thread.body.trim_end().ends_with("Done"), "{}", thread.body);
+    assert_eq!(prop(&space, &thread, chat_keys::MESSAGES), "4");
+    let general_again = chat_node(&space, "slack", "C01");
+    assert_eq!(general_again.body, general.body);
+}
+
 /// A WhatsApp export folder named as WhatsApp names it, with `text` as its `_chat.txt`.
 fn whatsapp_folder(dir: &Path, name: &str, text: &str) -> PathBuf {
     let folder = dir.join(name).join(format!("WhatsApp Chat - {name}"));
@@ -579,4 +785,78 @@ fn names_every_ios_chat_or_refuses() {
         "{error}"
     );
     assert_eq!(space.node_count().unwrap(), 2);
+}
+
+#[test]
+fn keeps_slack_replies_whose_thread_starts_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let users = br#"[{"id": "U01", "name": "ada", "real_name": "Ada"}, {"id": "U02", "name": "grace", "real_name": "Grace"}]"#;
+    let channels = br#"[{"id": "C01", "name": "general", "members": ["U01", "U02"]}]"#;
+
+    // An export that starts after a thread did: its replies are kept, and counted.
+    let first = dir.path().join("first.zip");
+    zip(
+        &first,
+        &[
+            ("users.json", users),
+            ("channels.json", channels),
+            (
+                "general/2026-03-05.json",
+                br#"[{"type": "message", "user": "U02", "text": "Agreed", "ts": "1772712000.000100", "thread_ts": "1772625600.000100"},
+                     {"type": "message", "user": "U01", "text": "Hello", "ts": "1772712060.000200"}]"#,
+            ),
+        ],
+    );
+    let report = import_chat_export(&mut space, &first, None, &by()).unwrap();
+    assert_eq!(report.messages, 3, "{report:?}");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("1 reply to threads that start before")),
+        "{report:?}"
+    );
+    let general = chat_node(&space, "slack", "C01");
+    let orphan = chat_node(&space, "slack", "C01/1772625600.000100");
+    assert!(
+        orphan.body.contains("is not in this export"),
+        "{}",
+        orphan.body
+    );
+    assert!(orphan.body.contains("**Grace** ("), "{}", orphan.body);
+    let part_of = |space: &Space, thread: &Node| {
+        space
+            .links_from(&thread.id)
+            .unwrap()
+            .iter()
+            .any(|l| l.kind == link_kinds::PART_OF && l.to == general.id)
+    };
+    assert!(part_of(&space, &orphan));
+
+    // A later export where a message imported before gets its first reply: the thread's node
+    // is new, and still linked to its channel.
+    let later = dir.path().join("later.zip");
+    zip(
+        &later,
+        &[
+            ("users.json", users),
+            ("channels.json", channels),
+            (
+                "general/2026-03-05.json",
+                br#"[{"type": "message", "user": "U02", "text": "Agreed", "ts": "1772712000.000100", "thread_ts": "1772625600.000100"},
+                     {"type": "message", "user": "U01", "text": "Hello", "ts": "1772712060.000200", "thread_ts": "1772712060.000200", "reply_count": 1}]"#,
+            ),
+            (
+                "general/2026-03-06.json",
+                br#"[{"type": "message", "user": "U02", "text": "Hi Ada", "ts": "1772798400.000100", "thread_ts": "1772712060.000200"}]"#,
+            ),
+        ],
+    );
+    let report = import_chat_export(&mut space, &later, None, &by()).unwrap();
+    assert_eq!(report.chats.len(), 1, "{report:?}");
+    let thread = chat_node(&space, "slack", "C01/1772712060.000200");
+    assert!(thread.body.contains("Hi Ada"), "{}", thread.body);
+    assert!(part_of(&space, &thread));
+    assert_eq!(chat_node(&space, "slack", "C01").body, general.body);
 }
