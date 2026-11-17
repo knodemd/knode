@@ -6,6 +6,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
+use crate::projects::PROJECT_RULE;
 use crate::space::{
     add_change, add_change_with_detail, check_name, next_ulid, provenance, provenance_id,
 };
@@ -22,7 +23,27 @@ pub(crate) struct FolderWrite {
     pub(crate) kind: String,
     pub(crate) path: String,
     capture: &'static str,
-    rules: String,
+    /// The rules, with the `project` rule of the folder as recorded before (see
+    /// [`Space::add_folder`]): clients cannot set it.
+    pub(crate) rules: serde_json::Value,
+}
+
+/// Records, in `tx`, the project a folder added before Knode recorded it holds (its `rules`, with
+/// the `project` rule set), as a `system` change: the projects of older folders are written down
+/// before a new folder could change which one their name finds.
+pub(crate) fn record_folder_project(
+    tx: &Transaction,
+    id: &str,
+    rules: &serde_json::Value,
+    now: Timestamp,
+) -> Result<()> {
+    let prov = provenance_id(tx, &Provenance::system())?;
+    tx.execute(
+        "UPDATE folders SET rules = ?2, updated_at = ?3, updated_by = ?4 WHERE id = ?1",
+        params![id, rules.to_string(), now.0, prov],
+    )?;
+    add_change(tx, now, prov, actions::FOLDER_SET, id, None)?;
+    Ok(())
 }
 
 /// Writes a folder checked by [`Space::prepare_folder`], with its change, in `tx`.
@@ -41,6 +62,7 @@ pub(crate) fn write_folder(
         rules,
         ..
     } = write;
+    let rules = rules.to_string();
     if write.exists {
         tx.execute(
             "UPDATE folders SET kind = ?2, path = ?3, capture = ?4, rules = ?5,
@@ -148,7 +170,7 @@ impl Space {
                 "the rules of a folder are a JSON object".into(),
             ));
         }
-        let rules = spec.rules.to_string();
+        let mut rules = spec.rules.clone();
         let capture = if spec.capture { "on" } else { "off" };
         let existing: Option<String> = match &spec.id {
             Some(id) => {
@@ -170,6 +192,20 @@ impl Space {
             Some(id) => id.clone(),
             None => next_ulid(&mut self.ids).to_string(),
         };
+        // The project a folder holds is recorded by Knode, never by the client: keep the one
+        // recorded before, whatever the rules passed say.
+        let recorded = match &existing {
+            Some(id) => self
+                .folder(id)?
+                .and_then(|f| f.rules.get(PROJECT_RULE).cloned()),
+            None => None,
+        };
+        if let Some(object) = rules.as_object_mut() {
+            object.remove(PROJECT_RULE);
+            if let Some(project) = recorded {
+                object.insert(PROJECT_RULE.into(), project);
+            }
+        }
         Ok(FolderWrite {
             id,
             exists: existing.is_some(),
