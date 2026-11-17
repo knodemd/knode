@@ -262,7 +262,7 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `include_deleted`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
 file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
@@ -296,8 +296,16 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 - `source` is the `from` it was read as, and `format` what it was, for people.
 - `nodes` lists the nodes created or changed, in order (for reading, every document read), each
   with `outcome` `created`, `updated`, `unchanged` or `edited` (the source changed, but so did the
-  node, in Knode, since the last import, so it was left as it is), and `highlights` added. `id` is
-  missing for the files of a Markdown folder, which are named by their path.
+  node, in Knode, since the last import, so it was left as it is), and `highlights` added. The
+  nodes of a Markdown folder are named by their path.
+- `report`, for a folder of Markdown files only, is the migration report
+  (`knode_vault::migration::MigrationReport`, `version` 1): every file of the folder with its
+  `status` (`created`, `updated`, `unchanged`, `edited`, `attached`, `skipped` or `failed`), its
+  `node` and a `reason`; `counts`; `unresolved_links`, `ambiguous_links`, `missing_attachments`
+  and `failed_links`; and `limits`, what it does not check. A note imported before whose node
+  was deleted in Knode is not imported again: it is `skipped`, with the deleted `node` and a
+  reason saying so, and counted in `counts.deleted`. `include_deleted: true`, only for a folder
+  of Markdown files, imports such notes again as new nodes.
 - `skipped` lists `{ "item", "reason" }` for what could not be imported; the rest was. `notes`
   lists what else is worth knowing, such as files left out or parts of a note read only in part.
 - `linked` (`{ "<project title>": <count> }`) and `unmatched` (a list), only when not empty, say

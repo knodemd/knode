@@ -31,6 +31,31 @@ impl Client {
             by: by.clone(),
             token: None,
             mail: None,
+            include_deleted: false,
+        };
+        self.request(methods::IMPORT_RUN, params)
+    }
+
+    /// Imports a folder of Markdown files, such as an Obsidian vault, as
+    /// [`import_path`](Self::import_path) does; with `include_deleted`, the notes deleted in
+    /// Knode since they were imported are imported again. People only.
+    pub fn import_folder(
+        &self,
+        space: impl AsRef<Path>,
+        path: &Path,
+        from: Option<ImportSource>,
+        include_deleted: bool,
+        by: &Provenance,
+    ) -> Result<ImportResult> {
+        let params = ImportRunParams {
+            space: space_path(space.as_ref())?,
+            path: Some(absolute(path)?),
+            url: None,
+            from,
+            by: by.clone(),
+            token: None,
+            mail: None,
+            include_deleted,
         };
         self.request(methods::IMPORT_RUN, params)
     }
@@ -56,6 +81,7 @@ impl Client {
             by: by.clone(),
             token: None,
             mail: Some(options.clone()),
+            include_deleted: false,
         };
         self.request(methods::IMPORT_RUN, params)
     }
@@ -75,6 +101,7 @@ impl Client {
             by: by.clone(),
             token: None,
             mail: None,
+            include_deleted: false,
         };
         self.request(methods::IMPORT_RUN, params)
     }
@@ -96,6 +123,7 @@ impl Client {
             by: by.clone(),
             token: token.map(|t| Secret(t.to_string())),
             mail: None,
+            include_deleted: false,
         };
         self.request(methods::IMPORT_RUN, params)
     }

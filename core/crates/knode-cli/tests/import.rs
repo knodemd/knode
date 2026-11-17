@@ -311,6 +311,128 @@ fn imports_a_chat_and_only_its_new_messages_again() {
 }
 
 #[test]
+fn a_vault_import_writes_a_report_and_an_export_compares_with_the_vault() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let vault = sb.path("Vault");
+    let put = |rel: &str, bytes: &[u8]| {
+        let path = vault.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    };
+    put(
+        "Welcome.md",
+        b"See [[Plan]], [[Missing]] and ![[shared.png]].\n",
+    );
+    put("Projects/Plan.md", b"---\ntags: [project]\n---\nShip.\n");
+    put("assets/shared.png", &[1, 2, 3]);
+    put(".obsidian/app.json", b"{}");
+
+    // Not for anything but a folder.
+    let file = vault.join("Welcome.md");
+    let err = sb.fails(&["import", s(&file), "--report", "r.json"]);
+    assert!(err.contains("--report is for a folder"), "{err}");
+
+    let report_file = sb.path("report.json");
+    let out = sb.ok(&["import", "--vault", s(&vault), "--report", s(&report_file)]);
+    assert!(out.contains("Report: 2 new, 0 updated"), "{out}");
+    assert!(
+        out.contains("unresolved link in Welcome.md: [[Missing]]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("missing attachment in Welcome.md: shared.png"),
+        "{out}"
+    );
+    let report: Value = serde_json::from_str(&fs::read_to_string(&report_file).unwrap()).unwrap();
+    assert_eq!(report["version"], 1);
+    assert_eq!(report["counts"]["created"], 2);
+    let files = report["files"].as_array().unwrap();
+    let welcome = files.iter().find(|f| f["path"] == "Welcome.md").unwrap();
+    assert_eq!(welcome["status"], "created");
+    assert_eq!(welcome["node"].as_str().unwrap().len(), 26);
+    let obsidian = files.iter().find(|f| f["path"] == ".obsidian").unwrap();
+    assert_eq!(obsidian["status"], "skipped");
+
+    // The report is in --json too.
+    let json: Value = serde_json::from_str(&sb.ok(&["import", s(&vault), "--json"])).unwrap();
+    assert_eq!(json["report"]["counts"]["unchanged"], 2);
+
+    // Export and compare: the notes keep their text, with an id added.
+    let out_dir = sb.path("Export");
+    let out = sb.ok(&["export", s(&out_dir), "--compare", s(&vault)]);
+    assert!(
+        out.contains("0 identical, 2 with only frontmatter changes, 0 changed, 0 moved, 1 missing"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Frontmatter keys that differ: id (2)."),
+        "{out}"
+    );
+    assert!(out.contains("missing: assets/shared.png"), "{out}");
+    assert!(out.contains("not imported: .obsidian"), "{out}");
+    let json: Value =
+        serde_json::from_str(&sb.ok(&["export", s(&out_dir), "--compare", s(&vault), "--json"]))
+            .unwrap();
+    assert_eq!(json["counts"]["metadata"], 2);
+
+    // Never into the vault, inside it or around it: the vault is left as it was.
+    let before = fs::read_to_string(vault.join("Welcome.md")).unwrap();
+    for (out_dir, says) in [
+        (vault.clone(), "the same folder as"),
+        (vault.join("Export"), "inside"),
+        (sb.path(""), "a folder that contains"),
+    ] {
+        let err = sb.fails(&["export", s(&out_dir), "--compare", s(&vault)]);
+        assert!(err.contains(says), "{err}");
+        assert!(err.contains("export to a folder apart from it"), "{err}");
+    }
+    assert!(!vault.join("Export").exists());
+    assert_eq!(
+        fs::read_to_string(vault.join("Welcome.md")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_note_deleted_in_knode_stays_deleted_unless_asked_for() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let vault = sb.path("Vault");
+    fs::create_dir_all(&vault).unwrap();
+    fs::write(vault.join("Keep.md"), "Kept.\n").unwrap();
+    fs::write(vault.join("Gone.md"), "Deleted in Knode.\n").unwrap();
+    sb.ok(&["import", s(&vault)]);
+    {
+        let mut space = knode_format::Space::open(sb.space("work")).unwrap();
+        let gone = space.find_by_title("Gone").unwrap()[0].id;
+        space
+            .delete_node(&gone, &knode_format::Provenance::person("Ada"))
+            .unwrap();
+    }
+
+    let out = sb.ok(&["import", s(&vault)]);
+    assert!(out.contains("0 new"), "{out}");
+    assert!(
+        out.contains("deleted in Knode, not imported again: Gone.md"),
+        "{out}"
+    );
+    assert!(out.contains("--include-deleted"), "{out}");
+    let json: Value = serde_json::from_str(&sb.ok(&["import", s(&vault), "--json"])).unwrap();
+    assert_eq!(json["report"]["counts"]["deleted"], 1);
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert!(space.find_by_title("Gone").unwrap().is_empty());
+    drop(space);
+
+    let err = sb.fails(&["import", s(&vault.join("Keep.md")), "--include-deleted"]);
+    assert!(err.contains("--include-deleted is for a folder"), "{err}");
+    let out = sb.ok(&["import", s(&vault), "--include-deleted"]);
+    assert!(out.contains("1 new"), "{out}");
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert_eq!(space.find_by_title("Gone").unwrap().len(), 1);
+}
+
+#[test]
 fn claude_code_memory_comes_from_claude_config_dir_into_its_projects() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);

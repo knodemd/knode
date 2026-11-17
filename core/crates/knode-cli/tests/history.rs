@@ -246,7 +246,8 @@ fn without_the_service_the_commands_open_the_space_directly() {
     assert!(err.contains("warning: Knode Service cannot run"), "{err}");
     let out = sb.ok(&["history"]);
     assert!(out.contains("\"Direct\""), "{out}");
-    let change = number_after(&out, "change");
+    // The import also records the notes it read in a setting: undo the note's own change.
+    let change = number_after(line_with(&out, "\"Direct\""), "change");
     sb.ok(&["undo", &change]);
     sb.ok(&["export", sb.path("out").to_str().unwrap()]);
     let out = sb.ok(&["markdown", "folder", sb.path("Live").to_str().unwrap()]);

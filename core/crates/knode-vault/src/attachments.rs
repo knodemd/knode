@@ -66,7 +66,7 @@ pub(crate) fn wiki_names(body: &str) -> BTreeSet<String> {
 }
 
 /// The source ranges of the inline links and images of `body`, with their destinations.
-fn links(body: &str) -> Vec<(Range<usize>, String)> {
+pub(crate) fn links(body: &str) -> Vec<(Range<usize>, String)> {
     Parser::new_ext(body, knode_md::options())
         .into_offset_iter()
         .filter_map(|(event, range)| match event {

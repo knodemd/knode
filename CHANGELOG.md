@@ -165,8 +165,24 @@ belongs to, newest first.
   Importing again updates the same notes, skips memory that did not change, and keeps a note
   edited in Knode as it is.
 
+- **Migration report for a vault import**: `knode import <folder> --report report.json` writes
+  where every file of a Markdown folder or Obsidian vault went (the node of each note), what was
+  created, updated, unchanged, attached, skipped or failed and why, and the links that name no
+  note or several, embedded files that were not attached and typed links that could not be made.
+  Without `--report`, the summary lists those when there are any. `--json` and Knode Service's
+  `import.run` carry the same report.
+- **Compare an export with the vault**: `knode export <dir> --compare <vault>` lists the notes
+  whose text changed, moved or is missing, the frontmatter keys Knode added, files only in the
+  export and what import never reads (such as `.obsidian/`); `--json` for all of it.
+
 #### Changed
 
+- **Importing a Markdown folder again keeps your edits in Knode**: a note edited in Knode since
+  it was imported is left as it is; when its file changed too, the import says so (`edited`) for
+  you to merge by hand, instead of overwriting the note with the file. Notes imported before this
+  version take the file once, as before, and keep Knode's version in their history. A note you
+  deleted in Knode stays deleted: the import and its report say it was not imported again, and
+  `knode import <folder> --include-deleted` brings such notes back.
 - **`knode instructions --apply`** also says when the agent reads the file and what it reads with
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your

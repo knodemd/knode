@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use knode_format::{Provenance, Space};
 use knode_service::import::{self, ImportResult, ImportSource};
 use knode_service::{ImportOutcome, ImportedNode};
 use knode_vault::mail::MailOptions;
+use knode_vault::migration::{DELETED_REASON, FileStatus, MigrationReport};
 
 use crate::service;
 
@@ -51,6 +52,10 @@ pub struct Request<'a> {
     pub home: &'a Path,
     /// `--folder`, `--since`, `--until` and `--attachments`, for mail.
     pub mail: MailOptions,
+    /// `--report`: the file to write the migration report of a Markdown folder to.
+    pub report: Option<&'a Path>,
+    /// `--include-deleted`: import again the notes of a Markdown folder deleted in Knode.
+    pub include_deleted: bool,
 }
 
 /// The mail options of `knode import`.
@@ -84,6 +89,10 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
         Some(t) => (Some(crate::absolute(Path::new(t))?), None),
         None => (None, None),
     };
+    let report_file = request.report.map(crate::absolute).transpose()?;
+    if report_file.is_some() && !path.as_deref().is_some_and(Path::is_dir) {
+        bail!("--report is for a folder of Markdown files, such as an Obsidian vault");
+    }
     if request.vault {
         match &path {
             Some(dir) if dir.is_dir() => from = Some(ImportSource::Markdown),
@@ -95,6 +104,9 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
     }
     // Checked here first, without the space: a wrong kind or a missing file fails at once.
     let mut what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    if request.include_deleted && !what.is_markdown_folder() {
+        bail!("--include-deleted is for a folder of Markdown files, such as an Obsidian vault");
+    }
     let mail = !request.mail.is_default();
     if mail && !what.is_mail() {
         bail!(
@@ -120,6 +132,13 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             } else {
                 match url {
                     Some(url) => client.import_url(space, url, by),
+                    None if request.include_deleted => client.import_folder(
+                        space,
+                        path.as_deref().expect("a Markdown folder has a path"),
+                        from,
+                        true,
+                        by,
+                    ),
                     None if mail => {
                         client.import_mail(space, path.as_deref(), from, &request.mail, by)
                     }
@@ -135,17 +154,29 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             let mut space = Space::open(space)?;
             what = what
                 .with_readwise_token(token)
-                .with_mail_options(request.mail.clone());
+                .with_mail_options(request.mail.clone())
+                .with_include_deleted(request.include_deleted);
             import::run(&mut space, &what, by).map_err(|e| anyhow!("{e}"))?
         }
     };
     if request.vault {
         result.format = "Obsidian vault".into();
     }
+    if let Some(file) = &report_file {
+        let report = result
+            .report
+            .as_ref()
+            .ok_or_else(|| anyhow!("--report is for a folder of Markdown files"))?;
+        std::fs::write(file, serde_json::to_string_pretty(report)? + "\n")
+            .with_context(|| format!("cannot write {}", file.display()))?;
+    }
     if request.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print(&result);
+        if let Some(report) = &result.report {
+            print_report(report, report_file.as_deref());
+        }
     }
     if result.read() == 0 && !result.skipped.is_empty() {
         bail!("nothing could be imported");
@@ -210,6 +241,83 @@ fn print(result: &ImportResult) {
     }
     for note in &result.notes {
         println!("{note}");
+    }
+}
+
+/// Prints the migration report of a Markdown folder: its counts and what did not come through,
+/// one line each. Without a report file, nothing when everything came through.
+fn print_report(report: &MigrationReport, file: Option<&Path>) {
+    let n = &report.counts;
+    let mut lines: Vec<String> = Vec::new();
+    for f in &report.files {
+        let label = match f.status {
+            FileStatus::Edited => "edited in both, Knode's kept",
+            FileStatus::Failed => "failed",
+            FileStatus::Skipped if f.reason.as_deref() == Some(DELETED_REASON) => {
+                lines.push(format!("deleted in Knode, not imported again: {}", f.path));
+                continue;
+            }
+            _ => continue,
+        };
+        lines.push(format!(
+            "{label}: {} - {}",
+            f.path,
+            f.reason.as_deref().unwrap_or("")
+        ));
+    }
+    for l in &report.unresolved_links {
+        lines.push(format!("unresolved link in {}: [[{}]]", l.path, l.target));
+    }
+    for l in &report.ambiguous_links {
+        lines.push(format!(
+            "ambiguous link in {}: [[{}]] -> {} of {}",
+            l.path,
+            l.target,
+            l.resolved.as_deref().unwrap_or("?"),
+            l.candidates.join(", ")
+        ));
+    }
+    for m in &report.missing_attachments {
+        lines.push(format!(
+            "missing attachment in {}: {} - {}",
+            m.path, m.target, m.reason
+        ));
+    }
+    for l in &report.failed_links {
+        lines.push(format!("failed typed link in {}: {}", l.path, l.reason));
+    }
+    // Without --report, only what needs a look.
+    if file.is_none() && lines.is_empty() {
+        return;
+    }
+    println!(
+        "Report: {} new, {} updated, {} unchanged ({} edited only in Knode), {} edited in both, {} attached, {} skipped, {} failed; {}, {}, {}.",
+        n.created,
+        n.updated,
+        n.unchanged,
+        n.kept,
+        n.edited,
+        n.attached,
+        n.skipped,
+        n.failed,
+        plural(report.unresolved_links.len(), "unresolved link"),
+        plural(report.ambiguous_links.len(), "ambiguous link"),
+        plural(report.missing_attachments.len(), "missing attachment"),
+    );
+    for line in lines.iter().take(LISTED) {
+        println!("  {line}");
+    }
+    if lines.len() > LISTED {
+        println!("  and {} more", lines.len() - LISTED);
+    }
+    match file {
+        Some(file) => println!(
+            "The full report, with the node of every file, is in {}.",
+            file.display()
+        ),
+        None => {
+            println!("Use --report <file.json> for the full report, with the node of every file.")
+        }
     }
 }
 

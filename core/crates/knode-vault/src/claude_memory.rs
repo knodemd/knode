@@ -298,6 +298,9 @@ pub fn import_claude_code_memory(
                     Outcome::Created => MemoryOutcome::Created,
                     Outcome::Updated => MemoryOutcome::Updated,
                     Outcome::Unchanged => MemoryOutcome::Unchanged,
+                    // Edited in Knode: left as it is, whether or not the file changed.
+                    Outcome::Kept => MemoryOutcome::Unchanged,
+                    Outcome::Edited => MemoryOutcome::Kept,
                 },
                 project: project.as_ref().map(|(_, t)| t.clone()),
             });

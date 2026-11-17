@@ -257,6 +257,10 @@ pub struct ImportResult {
     /// What else is worth knowing: what was left out or read only in part.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// For a folder of Markdown files, such as an Obsidian vault: where each file went, what was
+    /// left out and why, and the links and attachments that did not come through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<knode_vault::migration::MigrationReport>,
     /// How many nodes were linked `part-of` each project, by project title, for imports that
     /// link what they read to projects (Claude Code memory).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -282,6 +286,7 @@ impl ImportResult {
             nodes: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
+            report: None,
             linked: BTreeMap::new(),
             unmatched: Vec::new(),
         }
@@ -357,6 +362,10 @@ pub(crate) struct ImportRunParams {
     /// files. Left out: everything but spam and trash, without attachments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailOptions>,
+    /// For a folder of Markdown files: import again the notes deleted in Knode since they were
+    /// imported. Left out, they stay deleted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_deleted: bool,
 }
 
 /// A token: sent where it is needed, never printed.
@@ -385,6 +394,8 @@ pub struct Prepared {
     input: Input,
     /// The program that reads the files when it is not one people started: Knode Service.
     reader: Option<PathBuf>,
+    /// For a folder of Markdown files: import again the notes deleted in Knode.
+    include_deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,6 +491,18 @@ impl Prepared {
     /// a store that needs Full Disk Access, the error names it as the program to allow.
     pub fn read_by(mut self, program: impl Into<PathBuf>) -> Self {
         self.reader = Some(program.into());
+        self
+    }
+
+    /// Whether it reads a folder of Markdown files.
+    pub fn is_markdown_folder(&self) -> bool {
+        matches!(self.input, Input::MarkdownFolder(_))
+    }
+
+    /// For a folder of Markdown files, imports again the notes deleted in Knode since they were
+    /// imported, as new notes; nothing otherwise.
+    pub fn with_include_deleted(mut self, include: bool) -> Self {
+        self.include_deleted = include && self.is_markdown_folder();
         self
     }
 
@@ -618,6 +641,7 @@ pub fn prepare(
     Ok(Prepared {
         input,
         reader: None,
+        include_deleted: false,
     })
 }
 
@@ -869,12 +893,19 @@ pub fn run(
             }
         }
         Input::MarkdownFolder(dir) => {
-            let report = knode_vault::import(space, dir, by).map_err(vault_error)?;
+            let options = knode_vault::ImportOptions {
+                include_deleted: what.include_deleted,
+            };
+            let report = knode_vault::import_with(space, dir, by, &options).map_err(vault_error)?;
+            let id = |file: &String| report.nodes.get(file).copied();
             for file in &report.created {
-                result.node(None, file.clone(), ImportOutcome::Created);
+                result.node(id(file), file.clone(), ImportOutcome::Created);
             }
             for file in &report.updated {
-                result.node(None, file.clone(), ImportOutcome::Updated);
+                result.node(id(file), file.clone(), ImportOutcome::Updated);
+            }
+            for file in &report.edited {
+                result.node(id(file), file.clone(), ImportOutcome::Edited);
             }
             result.unchanged += report.unchanged;
             result.attached = report.attached.len();
@@ -889,6 +920,17 @@ pub fn run(
                     if n == 1 { "is" } else { "are" }
                 ));
             }
+            if !report.deleted.is_empty() {
+                let n = report.deleted.len();
+                result.notes.push(format!(
+                    "{} deleted in Knode since {} imported {} not imported again: import with \
+                     --include-deleted to bring {} back.",
+                    plural(n, "note"),
+                    if n == 1 { "it was" } else { "they were" },
+                    if n == 1 { "was" } else { "were" },
+                    if n == 1 { "it" } else { "them" }
+                ));
+            }
             // A chat export among the notes is not imported with them: say how to.
             if let Some((format, inner)) = knode_ingest::chat_export_inside(dir) {
                 result.notes.push(format!(
@@ -898,8 +940,12 @@ pub fn run(
                     inner.display()
                 ));
             }
+            result.report =
+                Some(knode_vault::migration::report(space, dir, &report).map_err(vault_error)?);
             if report.created.len() + report.updated.len() + report.unchanged == 0
+                && report.edited.is_empty()
                 && report.skipped.is_empty()
+                && report.deleted.is_empty()
             {
                 return Err(ImportError::Unknown(format!(
                     "{} has no Markdown (.md) files",
