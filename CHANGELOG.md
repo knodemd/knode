@@ -54,8 +54,11 @@ belongs to, newest first.
   marked in the text. Importing the same chat again, or a newer export of it, adds only the new
   messages. Telegram Desktop exports in JSON (one chat, or the whole account with every chat in
   it) are read the same way, with bold, italic, code, links and quotes kept as Markdown and
-  replies naming the message they answer. `--from whatsapp` or `--from telegram` says what it is;
-  Knode Service imports them through `import.run`.
+  replies naming the message they answer. Slack workspace exports become one node per channel
+  and direct message, each thread its own node linked to its channel, and the members who wrote
+  or were mentioned `person` nodes that mentions link to; files are kept as links, or attached
+  when the export includes them. `--from whatsapp`, `--from telegram` or `--from slack` says what
+  it is; Knode Service imports them through `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
