@@ -66,6 +66,8 @@ pub const STATE_FILE: &str = "state.json";
 /// The connectors built into this version of Knode, for this system.
 ///
 /// Each connector adds itself here once it implements [`Connector`].
+// Off macOS the connectors of the Mac are left out, and the first push follows `Vec::new()`.
+#[allow(clippy::vec_init_then_push)]
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
     #[cfg(target_os = "macos")]
