@@ -19,6 +19,8 @@ pub(crate) enum Shown {
     Missing(String),
     /// Left out of the export: what it was.
     Omitted(String),
+    /// Not on this device, read from an app's own database: its name or what it was.
+    NotOnDevice(String),
     /// Only a link to it.
     Link { name: String, url: String },
 }
@@ -75,6 +77,114 @@ pub(crate) fn append(body: &str, messages: &[(&ChatMessage, Vec<Shown>)]) -> Str
     out
 }
 
+/// `body` with messages that arrived late (sent before the last one in it) added each at the
+/// end of its own day section, or in a new day section placed among the others by date.
+pub(crate) fn insert_late(body: &str, messages: &mut [(&ChatMessage, Vec<Shown>)]) -> String {
+    messages.sort_by_key(|(m, _)| m.time);
+    let mut lines: Vec<String> = body.trim_end().lines().map(str::to_string).collect();
+    for (message, shown) in messages.iter() {
+        let heading = day_heading(message);
+        let days = day_lines(&lines);
+        let paragraph: Vec<String> = message_markdown(message, shown)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let at = days.iter().position(|(_, day)| *day == heading);
+        let mut insert: Vec<String> = Vec::new();
+        let index = match at {
+            Some(i) => {
+                let start = days[i].0 + 1;
+                let end = days.get(i + 1).map_or(lines.len(), |(next, _)| *next);
+                let time = message.time.format("%H:%M").to_string();
+                // Before the first message of the day sent after it.
+                let before = (start..end).find(|&l| {
+                    l > 0
+                        && lines[l - 1].trim().is_empty()
+                        && paragraph_time(&lines[l]).is_some_and(|t| t > time.as_str())
+                });
+                if let Some(l) = before {
+                    insert.extend(paragraph);
+                    insert.push(String::new());
+                    lines.splice(l..l, insert);
+                    continue;
+                }
+                // Else at the end of the section: the next day heading, or the end of the body.
+                match days.get(i + 1) {
+                    Some((next, _)) => {
+                        insert.extend(paragraph);
+                        insert.push(String::new());
+                        *next
+                    }
+                    None => {
+                        insert.push(String::new());
+                        insert.extend(paragraph);
+                        lines.len()
+                    }
+                }
+            }
+            None => match days.iter().find(|(_, day)| day.as_str() > heading.as_str()) {
+                Some((next, _)) => {
+                    insert.push(format!("## {heading}"));
+                    insert.push(String::new());
+                    insert.extend(paragraph);
+                    insert.push(String::new());
+                    *next
+                }
+                None => {
+                    if !lines.is_empty() {
+                        insert.push(String::new());
+                    }
+                    insert.push(format!("## {heading}"));
+                    insert.push(String::new());
+                    insert.extend(paragraph);
+                    lines.len()
+                }
+            },
+        };
+        lines.splice(index..index, insert);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The time a message paragraph starts with: `**Ada** (09:15...` or `*(09:15) ...`.
+fn paragraph_time(line: &str) -> Option<&str> {
+    let rest = if let Some(rest) = line.strip_prefix("*(") {
+        rest
+    } else {
+        let rest = line.strip_prefix("**")?;
+        let close = rest.find("** (")?;
+        &rest[close + 4..]
+    };
+    let time = rest.get(..5)?;
+    let b = time.as_bytes();
+    (b[2] == b':' && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())).then_some(time)
+}
+
+/// The day section headings of a body, outside fenced code: their line and day.
+fn day_lines(lines: &[String]) -> Vec<(usize, String)> {
+    let mut fence = None;
+    let mut days = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        match fence {
+            Some(open) => {
+                if closes(line, open) {
+                    fence = None;
+                }
+            }
+            None => {
+                if let Some(open) = opens(line) {
+                    fence = Some(open);
+                } else if let Some(heading) = line.strip_prefix("## ") {
+                    days.push((i, heading.trim().to_string()));
+                }
+            }
+        }
+    }
+    days
+}
+
 /// One message as Markdown.
 pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String {
     let time = message.time.format("%H:%M");
@@ -88,8 +198,24 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     while lines.first().is_some_and(|l| l.trim().is_empty()) {
         lines.remove(0);
     }
-    // A blank line inside a message would end its paragraph: keep the lines together.
-    let mut lines: Vec<String> = lines.into_iter().filter(|l| !l.trim().is_empty()).collect();
+    // A blank line inside a message would end its paragraph: keep the lines together, except
+    // in fenced code, which keeps its lines as they are.
+    let mut fence = None;
+    let mut lines: Vec<String> = lines
+        .into_iter()
+        .filter(|line| match fence {
+            Some(open) => {
+                if closes(line, open) {
+                    fence = None;
+                }
+                true
+            }
+            None => {
+                fence = opens(line);
+                !line.trim().is_empty()
+            }
+        })
+        .collect();
     lines.extend(shown.iter().map(shown_markdown));
     lines.extend(message.notes.iter().cloned());
 
@@ -105,7 +231,9 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     head.push(')');
     match lines.split_first() {
         Some((first, rest)) => {
-            let mut out = format!("{head}: {first}");
+            // A fence opens a block only at the start of a line.
+            let between = if opens(first).is_some() { ":\n" } else { ": " };
+            let mut out = format!("{head}{between}{first}");
             for line in rest {
                 out.push('\n');
                 out.push_str(line);
@@ -125,6 +253,7 @@ fn shown_markdown(shown: &Shown) -> String {
         }
         Shown::Missing(name) => format!("*[missing from the export: {}]*", escape_name(name)),
         Shown::Omitted(what) => format!("*[{} left out of the export]*", escape_name(what)),
+        Shown::NotOnDevice(name) => format!("*[not on this Mac: {}]*", escape_name(name)),
         Shown::Link { name, url } => format!(
             "[{}](<{}>) *(not in the export)*",
             escape_name(name),
@@ -344,6 +473,27 @@ mod tests {
         let m = message(4, 9, Some("Ada"), "see\n```\ncode");
         let body = append("", &[(&m, vec![])]);
         assert!(body.ends_with("```\ncode\n```\n"), "{body}");
+    }
+
+    #[test]
+    fn fenced_code_keeps_its_lines() {
+        let m = message(4, 9, Some("Ada"), "```\nfn a() {}\n\nfn b() {}\n```");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05):\n```\nfn a() {}\n\nfn b() {}\n```"
+        );
+        // Outside the fence, blank lines still go.
+        let m = message(4, 9, Some("Ada"), "see\n\n~~~\na\n\nb\n~~~\n\nafter");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05): see\n~~~\na\n\nb\n~~~\nafter"
+        );
+        // A fence left open keeps its lines up to the end of the message, which closes it.
+        let m = message(4, 9, Some("Ada"), "```\na\n\nb");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05):\n```\na\n\nb\n```"
+        );
     }
 
     #[test]

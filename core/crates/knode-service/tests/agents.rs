@@ -598,3 +598,47 @@ fn a_burst_of_reads_never_crowds_out_changes() {
         "{activity} activity notices for {reads} reads"
     );
 }
+
+#[test]
+fn agents_never_see_the_settings_of_sources() {
+    let f = Fixture::new();
+    let key = f.agent("claude-code");
+    f.grant("claude-code", "Work", GrantLevel::Read);
+    // A connector connected by the person, with a chat excluded.
+    let setting = json!({
+        "on": true,
+        "history": "from-today",
+        "connected_at": 0,
+        "since": 0,
+        "exclude": [{ "id": "15550000000@s.whatsapp.net", "name": "Family" }],
+    })
+    .to_string();
+    Space::open(f.space("Work"))
+        .unwrap()
+        .set_setting("source.whatsapp", Some(&setting), &me())
+        .unwrap();
+
+    // The person sees them.
+    let settings = f.person.settings(f.space("Work")).unwrap();
+    assert!(settings.contains_key("source.whatsapp"));
+    let changes = f.person.changes(f.space("Work"), 50, None).unwrap();
+    let set = changes
+        .iter()
+        .find(|c| c.subject == "source.whatsapp")
+        .unwrap();
+    assert!(set.detail.to_string().contains("Family"));
+
+    // An agent that reads the space sees neither the setting nor its value in the history.
+    let agent = f.connect(&key);
+    let settings = agent.settings(f.space("Work")).unwrap();
+    assert!(!settings.contains_key("source.whatsapp"));
+    assert!(settings.contains_key("space.id"));
+    let changes = agent.changes(f.space("Work"), 50, None).unwrap();
+    let seen = changes
+        .iter()
+        .find(|c| c.subject == "source.whatsapp")
+        .unwrap();
+    assert!(!seen.detail.to_string().contains("whatsapp.net"));
+    let one = agent.change(f.space("Work"), set.id).unwrap().unwrap();
+    assert!(!serde_json::to_string(&one).unwrap().contains("Family"));
+}

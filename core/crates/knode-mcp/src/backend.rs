@@ -280,6 +280,10 @@ pub trait Backend: Send + Sync + 'static {
     fn is_set_up(&self) -> BackendResult<bool> {
         Ok(true)
     }
+    /// The folder of the space this backend serves, when it has one.
+    fn space_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// A folder that feeds the space, as this machine sees it.
@@ -651,6 +655,10 @@ impl Backend for DirectBackend {
             knode_vault::onboarding::is_set_up(s).map_err(|e| BackendError::Failed(e.to_string()))
         })
     }
+
+    fn space_path(&self) -> Option<PathBuf> {
+        self.path().map(Path::to_path_buf)
+    }
 }
 
 /// A boxed backend is a backend, so the backend can be picked at run time.
@@ -801,5 +809,9 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn is_set_up(&self) -> BackendResult<bool> {
         (**self).is_set_up()
+    }
+
+    fn space_path(&self) -> Option<PathBuf> {
+        (**self).space_path()
     }
 }

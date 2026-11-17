@@ -418,13 +418,58 @@ fn agent_call(
     }
     log.record(Some(&agent.id), id, method, Outcome::Allowed);
     let asked = raw.get("id").and_then(Value::as_str).map(str::to_owned);
-    let result = call(state, method, raw);
+    let mut result = call(state, method, raw);
+    if let Ok(value) = &mut result {
+        hide_source_settings(method, value);
+    }
     if needs == GrantLevel::Read
         && let Ok(value) = &result
     {
         announce_reading(state, agent, method, &path, asked, value);
     }
     result
+}
+
+/// Whether the setting `key` is the person's settings of a source (`source.<id>`). Agents never
+/// see them: their exclusions name chats, channels and mailboxes, such as a WhatsApp chat's id,
+/// which is a phone number.
+fn is_source_setting(key: &str) -> bool {
+    key.starts_with(crate::sources::SETTING_PREFIX)
+}
+
+/// Takes the settings of sources out of what an agent is answered: the settings `settings.get`
+/// lists, and the values `changes` and `change` record for them (the change itself stays,
+/// without its value).
+fn hide_source_settings(method: &str, value: &mut Value) {
+    fn hide_value(change: &mut Value) {
+        let is_source = change.get("action").and_then(Value::as_str)
+            == Some(knode_format::actions::SETTINGS_SET)
+            && change
+                .get("subject")
+                .and_then(Value::as_str)
+                .is_some_and(is_source_setting);
+        if is_source && let Some(change) = change.as_object_mut() {
+            change.insert("detail".into(), serde_json::json!({}));
+        }
+    }
+    match method {
+        methods::SETTINGS_GET => {
+            if let Some(settings) = value.as_object_mut() {
+                settings.retain(|key, _| !is_source_setting(key));
+            }
+        }
+        methods::CHANGES => {
+            if let Some(changes) = value.as_array_mut() {
+                changes.iter_mut().for_each(hide_value);
+            }
+        }
+        methods::CHANGE => {
+            if let Some(change) = value.get_mut("change") {
+                hide_value(change);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Tells the person which nodes an agent just read: the node it asked for by id, and the nodes a

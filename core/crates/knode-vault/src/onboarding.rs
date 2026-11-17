@@ -1738,6 +1738,37 @@ mod tests {
         );
     }
 
+    /// The section of the guide that starts with `heading`, up to the next `## ` heading.
+    fn guide_section(guide: &str, heading: &str) -> String {
+        let start = guide.find(heading).expect(heading);
+        let rest = &guide[start + heading.len()..];
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        rest[..end].to_owned()
+    }
+
+    #[test]
+    fn starting_from_nothing_sets_up_the_space_the_agent_is_connected_to() {
+        let guide = agent_guide(None);
+        let section = guide_section(&guide, "## Starting from nothing");
+        let first = section
+            .split("\n2. ")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            first.contains("Set up the space you are connected to"),
+            "{first}"
+        );
+        assert!(first.contains("do not create another one"), "{first}");
+        // `knode init` only when there is no space at all, after being told to use the one
+        // connected.
+        let init = first.find("knode init").unwrap();
+        let only = first.find("Only when there is no space at all").unwrap();
+        assert!(only < init, "{first}");
+    }
+
     #[test]
     fn a_space_is_set_up_by_a_receipt_a_project_or_a_few_notes_of_a_person() {
         use knode_format::kinds;
