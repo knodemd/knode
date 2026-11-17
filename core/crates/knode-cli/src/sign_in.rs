@@ -30,8 +30,23 @@ pub fn run(client: &Client, source: &str) -> Result<()> {
                 return Ok(());
             }
             SignInState::SignedOut => SignInStep::Start {
-                account: ask("Phone number of the account, in international format (+34...)")?,
+                account: match source {
+                    "gmail" => {
+                        ask_optional("Your Gmail address (Return to choose it on Google's page)")?
+                    }
+                    "imap" => ask(
+                        "Your mail address, then the IMAP server unless it is Gmail, iCloud, \
+                         Outlook, Yahoo or Fastmail (you@example.com imap.example.com)",
+                    )?,
+                    _ => ask("Phone number of the account, in international format (+34...)")?,
+                },
             },
+            SignInState::OpenBrowser { url } => {
+                println!("Sign in on this page, in your browser:\n\n  {url}\n");
+                open_in_browser(url);
+                ask_optional("Press Return once the browser says you are signed in")?;
+                SignInStep::Browser
+            }
             SignInState::CodeSent { via } => SignInStep::Code {
                 code: ask(&match via {
                     Some(via) => format!("The code sent to {via}"),
@@ -40,6 +55,7 @@ pub fn run(client: &Client, source: &str) -> Result<()> {
             },
             SignInState::PasswordNeeded { hint } => SignInStep::Password {
                 password: ask_hidden(&match hint {
+                    Some(hint) if source == "imap" => format!("App password ({hint})"),
                     Some(hint) if !hint.is_empty() => format!("Password (hint: {hint})"),
                     _ => "Password".to_string(),
                 })?,
@@ -47,6 +63,34 @@ pub fn run(client: &Client, source: &str) -> Result<()> {
         };
         state = client.sources_sign_in(source, step)?;
     }
+}
+
+/// Asks for a line that may be empty.
+fn ask_optional(prompt: &str) -> Result<String> {
+    eprint!("{prompt}: ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        bail!("signing in stopped: nothing was given");
+    }
+    Ok(line.trim().to_string())
+}
+
+/// Opens `url` in the browser of this machine, when the command runs in a terminal.
+fn open_in_browser(url: &str) {
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(program)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn ask(prompt: &str) -> Result<String> {

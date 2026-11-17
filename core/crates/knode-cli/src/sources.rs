@@ -83,7 +83,9 @@ pub enum Action {
         source: String,
     },
     /// Sign a connector in to the account it reads, such as Telegram: it asks for the phone
-    /// number, the code and the password, if the account has one. `connect` does it too.
+    /// number, the code and the password, if the account has one. Gmail opens Google's
+    /// sign-in page in the browser; Mail (IMAP) asks for the account and an app password.
+    /// `connect` does it too.
     SignIn {
         /// The connector.
         source: String,
