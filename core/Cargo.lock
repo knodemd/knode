@@ -2128,6 +2128,7 @@ name = "knode-service"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "flate2",
  "knode-config",
  "knode-embed",
@@ -2139,7 +2140,10 @@ dependencies = [
  "lopdf",
  "md5",
  "notify",
+ "percent-encoding",
+ "ring",
  "rusqlite",
+ "rustls",
  "security-framework",
  "serde",
  "serde_json",
@@ -2149,6 +2153,8 @@ dependencies = [
  "tokio",
  "ulid",
  "unicode-normalization",
+ "ureq",
+ "webpki-roots",
  "zip",
 ]
 

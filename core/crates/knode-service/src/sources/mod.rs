@@ -26,6 +26,10 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod imap;
+mod mail_live;
+#[cfg(test)]
+mod mail_test_support;
 pub(crate) mod runtime;
 
 use std::collections::BTreeMap;
@@ -60,7 +64,9 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    Vec::new()
+    vec![
+        Arc::new(imap::ImapConnector::new()),
+    ]
 }
 
 /// How Knode Service runs connectors.
