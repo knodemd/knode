@@ -1826,6 +1826,32 @@ mod tests {
     }
 
     #[test]
+    fn starting_from_nothing_sets_capture_first_and_from_now_on() {
+        let guide = agent_guide(None);
+        let section = guide_section(&guide, "## Starting from nothing")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        // A new space waits for setup instead of capturing from the start, and capture is set
+        // before folders and notes end that wait.
+        assert!(!section.contains("from the start"), "{section}");
+        assert!(
+            section.contains("captures nothing until it is set up"),
+            "{section}"
+        );
+        let capture = section.find("knode spaces capture").unwrap();
+        let folders = section.find("folders add").unwrap();
+        assert!(capture < folders, "{section}");
+        assert!(
+            section.contains("from now on (earlier ones stay out)"),
+            "{section}"
+        );
+        // The question the person answers matches what `capture on` does.
+        let step3 = guide_section(&guide, "## 3. Ask the person once");
+        assert!(step3.contains("from now on"), "{step3}");
+    }
+
+    #[test]
     fn a_space_is_set_up_by_a_receipt_a_project_or_a_few_notes_of_a_person() {
         use knode_format::kinds;
         let dir = tempfile::tempdir().unwrap();
