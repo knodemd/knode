@@ -18,6 +18,8 @@ semantic = ["dep:knode-embed"]
 
 [dependencies]
 base64 = "=0.23.1"
+# The Telegram connector's client: MTProto, Telegram's official API, in pure Rust.
+grammers-client = { version = "=0.11.0", default-features = false }
 knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-embed = { path = "../knode-embed", version = "=0.0.0", optional = true }
 knode-format = { path = "../knode-format", version = "=0.0.0" }

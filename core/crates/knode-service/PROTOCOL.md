@@ -475,7 +475,10 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
-| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays |
+| `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected |
+| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
+| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
+| `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
 
 ```json
 { "id": "whatsapp", "name": "WhatsApp", "kind": "connector", "reads": "The chats of WhatsApp for Mac",
@@ -512,6 +515,17 @@ the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connector
 in the system credential store (the Keychain on macOS), never in a space, a settings file or a
 log. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
 stops everything Knode Service brings in by itself.
+
+The `telegram` connector reads Telegram through its official API, as Knode's own client. It is
+signed in once with `sources.sign_in`; while the service runs it keeps a connection open and
+brings in new messages as they arrive, and when the service starts it catches up from the last
+message it brought in of each chat. Messages go through the Telegram Desktop export importer
+and find the same `chat` nodes by Telegram's chat id. Chats are excluded by that id (as
+`sources.containers` lists them); secret chats never reach the API and are not read. Photos and
+files up to 20 MB are attached; larger ones are named in the text. When Telegram asks to wait
+(a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
+until the wait is over. A build of Knode without a Telegram app id lists the connector, which
+reports `unavailable`.
 
 ## Search
 
