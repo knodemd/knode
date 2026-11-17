@@ -81,9 +81,11 @@ enum Command {
     /// Import into the space: a Claude, ChatGPT or Gemini data export, a folder of Markdown
     /// files (an export or an Obsidian vault), a Markdown file, a Claude Code or Codex session, a
     /// PDF, a saved web page or an http(s) URL, Kindle highlights, a Readwise export or Readwise
-    /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, or
-    /// mail: an .mbox file such as Gmail's Google Takeout export, or Apple Mail. Knode tells
-    /// which from the path; --from says it.
+    /// itself (`--from readwise-api`), the notes of Apple Notes, Bear, Notion or Evernote, mail
+    /// (an .mbox file such as Gmail's Google Takeout export, or Apple Mail), or a
+    /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`) or a Telegram Desktop
+    /// export in JSON (the folder with `result.json`) or a Slack workspace export.
+    /// Knode tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes`,
         /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, and

@@ -13,13 +13,15 @@
 //! - mail, with [`knode_vault::mail`]: an `.mbox` file (Gmail through Google Takeout) or the
 //!   Apple Mail store, with the folder, date and attachment options of
 //!   [`MailOptions`](knode_vault::mail::MailOptions).
+//! - chat exports, with [`knode_ingest::import_chat_export`]: WhatsApp, Telegram Desktop and
+//!   Slack.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use knode_format::{NewNode, NodeId, NodeUpdate, Provenance, Space, kinds};
-use knode_ingest::{Agent, SessionReader, to_markdown};
+use knode_ingest::{Agent, ChatFormat, SessionReader, to_markdown};
 use knode_vault::apps::{self, NoteApp};
 use knode_vault::mail::{self, MailOptions, MailSource};
 use knode_vault::reading::{self, Outcome, ReadingReport};
@@ -60,11 +62,19 @@ pub enum ImportSource {
     Mbox,
     /// Apple Mail: its store on this Mac, or a folder of `.emlx` files.
     AppleMail,
+    /// A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt`.
+    #[serde(rename = "whatsapp")]
+    WhatsApp,
+    /// A Telegram Desktop export in JSON: the folder with `result.json`, a `.zip` of it, or the
+    /// `result.json`.
+    Telegram,
+    /// A Slack workspace export: the `.zip` or its folder.
+    Slack,
 }
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 14] = [
+    pub const ALL: [ImportSource; 17] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -79,11 +89,14 @@ impl ImportSource {
         ImportSource::Evernote,
         ImportSource::Mbox,
         ImportSource::AppleMail,
+        ImportSource::WhatsApp,
+        ImportSource::Telegram,
+        ImportSource::Slack,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
     /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `mbox`,
-    /// `apple-mail`.
+    /// `apple-mail`, `whatsapp`, `telegram`, `slack`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -100,6 +113,9 @@ impl ImportSource {
             ImportSource::Evernote => "evernote",
             ImportSource::Mbox => "mbox",
             ImportSource::AppleMail => "apple-mail",
+            ImportSource::WhatsApp => "whatsapp",
+            ImportSource::Telegram => "telegram",
+            ImportSource::Slack => "slack",
         }
     }
 
@@ -127,10 +143,28 @@ impl ImportSource {
         }
     }
 
+    fn chat(self) -> Option<ChatFormat> {
+        match self {
+            ImportSource::WhatsApp => Some(ChatFormat::WhatsApp),
+            ImportSource::Telegram => Some(ChatFormat::Telegram),
+            ImportSource::Slack => Some(ChatFormat::Slack),
+            _ => None,
+        }
+    }
+
     fn of_mail(source: MailSource) -> ImportSource {
         match source {
             MailSource::Mbox => ImportSource::Mbox,
             _ => ImportSource::AppleMail,
+        }
+    }
+
+    fn of_chat(format: ChatFormat) -> ImportSource {
+        match format {
+            ChatFormat::WhatsApp => ImportSource::WhatsApp,
+            ChatFormat::Telegram => ImportSource::Telegram,
+            ChatFormat::Slack => ImportSource::Slack,
+            _ => ImportSource::WhatsApp,
         }
     }
 
@@ -322,7 +356,8 @@ pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of 
      a .md file, a Claude Code or Codex session (.jsonl), a PDF, a saved web page (.html), an \
      http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
      Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, \
-     an .mbox file (Gmail through Google Takeout) or Apple Mail's store";
+     an .mbox file (Gmail through Google Takeout), Apple Mail's store, \
+     a WhatsApp chat export, a Telegram Desktop export (JSON) or a Slack workspace export";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +381,7 @@ enum Input {
     ReadwiseApi(Option<Secret>),
     App(NoteApp, PathBuf),
     Mail(MailSource, PathBuf, MailOptions),
+    Chat(ChatFormat, PathBuf),
 }
 
 impl Prepared {
@@ -362,6 +398,7 @@ impl Prepared {
             Input::ReadwiseApi(_) => ImportSource::ReadwiseApi,
             Input::App(app, _) => ImportSource::of_app(*app),
             Input::Mail(source, ..) => ImportSource::of_mail(*source),
+            Input::Chat(format, _) => ImportSource::of_chat(*format),
         }
     }
 
@@ -392,6 +429,7 @@ impl Prepared {
                 MailSource::Mbox => "mbox".into(),
                 _ => "Apple Mail".into(),
             },
+            Input::Chat(format, _) => format.to_string(),
         }
     }
 
@@ -437,7 +475,8 @@ impl Prepared {
             | Input::ReadwiseCsv(p)
             | Input::ReadwiseMarkdown(p)
             | Input::App(_, p)
-            | Input::Mail(_, p, _) => p.display().to_string(),
+            | Input::Mail(_, p, _)
+            | Input::Chat(_, p) => p.display().to_string(),
         }
     }
 }
@@ -583,6 +622,13 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
             p,
             MailOptions::default(),
         ),
+        ImportSource::WhatsApp | ImportSource::Telegram | ImportSource::Slack => {
+            let format = source.chat().expect("a chat app");
+            if knode_ingest::detect_chat_export(path) != Some(format) {
+                return not(&format!("a {format}"));
+            }
+            Input::Chat(format, p)
+        }
     })
 }
 
@@ -626,6 +672,9 @@ fn detect(path: &Path) -> Result<Input, ImportError> {
     }
     if let Some(source) = mail::detect(path) {
         return Ok(Input::Mail(source, p, MailOptions::default()));
+    }
+    if let Some(format) = knode_ingest::detect_chat_export(path) {
+        return Ok(Input::Chat(format, p));
     }
     if let Some(app) = apps::detect(path) {
         return Ok(Input::App(app, p));
@@ -845,6 +894,7 @@ pub fn run(
             mail::import_mail(space, *source, path, options, by),
             &mut result,
         )?,
+        Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
     }
     Ok(result)
 }
@@ -911,6 +961,65 @@ fn mail_error(error: mail::MailError) -> ImportError {
         e @ (mail::MailError::NotRecognized { .. } | mail::MailError::Invalid(_)) => {
             ImportError::Unknown(e.to_string())
         }
+        other => ImportError::Unreadable(other.to_string()),
+    }
+}
+
+/// Imports a chat export: one node per chat, given only its new messages when imported again.
+fn chats(
+    space: &mut Space,
+    format: ChatFormat,
+    path: &Path,
+    by: &Provenance,
+    result: &mut ImportResult,
+) -> Result<(), ImportError> {
+    let report =
+        knode_ingest::import_chat_export(space, path, Some(format), by).map_err(chat_error)?;
+    for chat in &report.chats {
+        let outcome = match chat.op {
+            knode_format::ChangeOp::Create => ImportOutcome::Created,
+            _ => ImportOutcome::Updated,
+        };
+        result.node(Some(chat.node_id), chat.title.clone(), outcome);
+    }
+    result.unchanged += report.unchanged;
+    result.attached = report.attached;
+    for s in &report.skipped {
+        result.skip(s.item.clone(), s.reason.clone());
+    }
+    result.notes.extend(report.notes.iter().cloned());
+    if report.messages > 0 {
+        result
+            .notes
+            .push(format!("{} added.", plural(report.messages, "message")));
+    }
+    if report.missing > 0 {
+        result.notes.push(format!(
+            "{} named in the chats {} not in the export, marked as missing.",
+            plural(report.missing, "file"),
+            if report.missing == 1 { "is" } else { "are" }
+        ));
+    }
+    if !report.people.is_empty() {
+        result.notes.push(format!(
+            "{} written for the members who wrote or were mentioned.",
+            plural(report.people.len(), "person node")
+        ));
+    }
+    if report.empty > 0 {
+        result.notes.push(format!(
+            "{} with no messages left out.",
+            plural(report.empty, "chat")
+        ));
+    }
+    Ok(())
+}
+
+fn chat_error(error: knode_ingest::ChatImportError) -> ImportError {
+    match error {
+        knode_ingest::ChatImportError::Space(error) => ImportError::Space(error),
+        e @ (knode_ingest::ChatImportError::NotRecognized { .. }
+        | knode_ingest::ChatImportError::NoChatName(_)) => ImportError::Unknown(e.to_string()),
         other => ImportError::Unreadable(other.to_string()),
     }
 }

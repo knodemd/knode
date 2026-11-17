@@ -12,7 +12,7 @@ use knode_vault::mail::MailOptions;
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 14] = [
+pub const FROM: [&str; 17] = [
     "export",
     "markdown",
     "session",
@@ -27,6 +27,9 @@ pub const FROM: [&str; 14] = [
     "evernote",
     "mbox",
     "apple-mail",
+    "whatsapp",
+    "telegram",
+    "slack",
 ];
 
 /// How many nodes the summary lists one by one.

@@ -1,16 +1,19 @@
 //! Windsurf chats, in the SQLite database `state.vscdb` of each folder in Windsurf's
 //! `User/workspaceStorage` folder.
 //!
-//! Unverified format: no Windsurf data was available to check this reader against, so it
-//! follows public descriptions and reads tolerantly. Each workspace database is read as
-//! described in [`crate::vscdb`]; its `ItemTable` holds the chats of that window under
-//! `workbench.panel.aichat.view.aichat.chatdata` (or `aiChat.chatdata`), a JSON object with
-//! `tabs[]`: `tabId`, `chatTitle`, `lastSendTime` (milliseconds) and `bubbles[]`, each with a
-//! `type` (`user` or `ai`, or `1` and `2`) and its text in `text`, `rawText` or `initText`. The
-//! folder's `workspace.json` names the project.
+//! Cascade, Windsurf's agent, is not captured. It keeps each conversation in
+//! `~/.codeium/windsurf/cascade/<conversation id>.pb`, a file that is encrypted and whose format
+//! is not public, and Windsurf has no export or other readable copy of it. Knode does not try to
+//! decrypt these files.
 //!
-//! Cascade, Windsurf's agent, keeps its conversations in `~/.codeium/windsurf/cascade` as
-//! binary `.pb` files whose format is not public; they are not read.
+//! What this reader takes is the chats a window keeps in plain JSON, if Windsurf wrote any: the
+//! workspace database is read as described in [`crate::vscdb`], and its `ItemTable` holds them
+//! under `workbench.panel.aichat.view.aichat.chatdata` (or `aiChat.chatdata`), a JSON object
+//! with `tabs[]`: `tabId`, `chatTitle`, `lastSendTime` (milliseconds) and `bubbles[]`, each with
+//! a `type` (`user` or `ai`, or `1` and `2`) and its text in `text`, `rawText` or `initText`. The
+//! folder's `workspace.json` names the project. This layout is the one VS Code forks used for
+//! chat panels, as other open-source readers describe it; it was not checked against a Windsurf
+//! install, and is read tolerantly.
 //!
 //! A chat is read again whole when its tab changes; its version is a hash of the tab.
 

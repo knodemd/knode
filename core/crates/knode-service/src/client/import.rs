@@ -12,8 +12,8 @@ use knode_vault::mail::MailOptions;
 
 impl Client {
     /// Imports what is at `path` on this machine into the space: a data export, Markdown, a
-    /// session, a PDF, a saved web page, Kindle or Readwise highlights, or the notes of Apple
-    /// Notes, Bear, Notion or Evernote. `from` names the kind; without it, the service tells it
+    /// session, a PDF, a saved web page, Kindle or Readwise highlights, the notes of Apple
+    /// Notes, Bear, Notion or Evernote, or a WhatsApp, Telegram Desktop or Slack chat export. `from` names the kind; without it, the service tells it
     /// from the path. With `from` Apple Notes or Bear and no path, the app's own notes on this
     /// Mac are read. People only.
     pub fn import_path(
