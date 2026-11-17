@@ -33,14 +33,26 @@ pub struct SpaceFolder {
     pub created_at: i64,
     /// When it last changed, ms UTC.
     pub updated_at: i64,
-    /// For a project folder, the id of the `project` node of the same name it holds the files
-    /// of. `None` for other folders, and for a project folder added before Knode made these.
+    /// For a project folder, the id of the `project` node named after it that it holds the
+    /// files of. `None` for other folders, and for a project folder added before Knode made
+    /// these.
     pub project_id: Option<String>,
     /// The title of that project node.
     pub project_title: Option<String>,
     /// Whether adding the folder just created that project node, rather than finding the one
     /// the space had. Always `false` in a list of folders.
     pub project_created: bool,
+    /// Whether the folder had been added before and already held that project. Always `false`
+    /// in a list of folders.
+    pub project_already_held: bool,
+    /// When adding the folder created a project named after its parent folders too, such as
+    /// `api (b)`, the title of the project of its own name that another folder holds.
+    pub project_passed_over: Option<String>,
+    /// The folders, as recorded, that hold the files of that passed-over project.
+    pub project_passed_over_folders: Vec<String>,
+    /// The other folders, as recorded, that hold the files of this folder's project too. Empty
+    /// in a list of folders.
+    pub project_shared_with: Vec<String>,
 }
 
 impl From<knode_service::FolderInfo> for SpaceFolder {
@@ -57,7 +69,18 @@ impl From<knode_service::FolderInfo> for SpaceFolder {
             updated_at: info.folder.updated_at.0,
             project_id: info.project.as_ref().map(|p| p.node.id.to_string()),
             project_title: info.project.as_ref().map(|p| p.node.title.clone()),
-            project_created: info.project.is_some_and(|p| p.created),
+            project_created: info.project.as_ref().is_some_and(|p| p.created),
+            project_already_held: info.project.as_ref().is_some_and(|p| p.already_held),
+            project_passed_over: info
+                .project
+                .as_ref()
+                .and_then(|p| p.passed_over.as_ref().map(|o| o.title.clone())),
+            project_passed_over_folders: info
+                .project
+                .as_ref()
+                .and_then(|p| p.passed_over.as_ref().map(|o| o.folders.clone()))
+                .unwrap_or_default(),
+            project_shared_with: info.project.map(|p| p.shared_with).unwrap_or_default(),
         }
     }
 }
@@ -150,8 +173,9 @@ impl KnodeSpace {
     }
 
     /// Adds a folder, or changes one, and returns it. Adding a project folder also creates the
-    /// `project` node named after it, or finds the one the space has. Only a person can change
-    /// folders.
+    /// `project` node named after it, or finds the one the space has; a project another folder
+    /// of the same name holds is not joined, a new one named after the parent folder is made
+    /// instead. Only a person can change folders.
     pub fn set_folder(&self, folder: FolderDraft, by: Provenance) -> Result<SpaceFolder> {
         let rules_value: serde_json::Value = if folder.rules.trim().is_empty() {
             serde_json::Value::Object(Default::default())
