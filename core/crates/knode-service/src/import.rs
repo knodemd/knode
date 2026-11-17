@@ -1127,22 +1127,83 @@ fn markdown_file(
     by: &Provenance,
     result: &mut ImportResult,
 ) -> Result<(), ImportError> {
+    // The same reader as a folder: frontmatter as properties and the file as its identity, so
+    // importing it again updates its node instead of making a copy. Titled by the `title` of
+    // its frontmatter, else its first heading, else its file name.
     let text = fs::read_to_string(file)
         .map_err(|e| ImportError::Unreadable(format!("{}: {e}", file.display())))?;
-    let title = markdown_title(&text, file);
-    // Importing the same file again does not make a copy.
-    for found in space.find_by_title(&title)? {
-        if let Some(node) = space.get_node(&found.id)?
-            && node.body == text
+    let title = frontmatter_title(&text).unwrap_or_else(|| markdown_title(&text, file));
+    // The file is known by where it is, recorded as folders are, so files with the same name
+    // in two folders are two notes.
+    let key = crate::markdown::record_path(file);
+    adopt_older_import(space, file, &text, &key, by)?;
+    let report = knode_vault::import_file(space, file, &key, Some(title.clone()), by)
+        .map_err(vault_error)?;
+    // One file, one note: the report names it by its title, as before.
+    if !report.created.is_empty() {
+        result.node(None, title.clone(), ImportOutcome::Created);
+    }
+    if !report.updated.is_empty() {
+        result.node(None, title, ImportOutcome::Updated);
+    }
+    result.unchanged += report.unchanged;
+    result.attached = report.attached.len();
+    for s in report.skipped.iter().chain(&report.unlinked) {
+        result.skip(s.path.clone(), s.reason.clone());
+    }
+    Ok(())
+}
+
+/// Gives the key of `file` to the node an earlier version of Knode made from it, so importing
+/// it now updates that node instead of making a second one. That version named the note by its
+/// first heading or file name, kept the file as its body and recorded the file as the source of
+/// the note; a node with that title that has the same body or that source, and was not imported
+/// by the folder reader, is it.
+fn adopt_older_import(
+    space: &mut Space,
+    file: &Path,
+    text: &str,
+    key: &str,
+    by: &Provenance,
+) -> Result<(), ImportError> {
+    use knode_vault::property_keys as keys;
+    if !space.find_by_property(keys::FILE, key)?.is_empty() {
+        return Ok(());
+    }
+    let source = file.display().to_string();
+    for found in space.find_by_title(&markdown_title(text, file))? {
+        let Some(node) = space.get_node(&found.id)? else {
+            continue;
+        };
+        if space.property(&node.id, keys::PATH)?.is_some()
+            || space.property(&node.id, keys::FILE)?.is_some()
         {
-            result.node(Some(node.id), title, ImportOutcome::Unchanged);
+            continue;
+        }
+        if node.body == text || node.created_by.source.as_deref() == Some(source.as_str()) {
+            space.set_property(&node.id, keys::FILE, key, by)?;
             return Ok(());
         }
     }
-    let source = by.clone().with_source(file.display().to_string());
-    let node = space.create_node(NewNode::note(title.clone(), text), &source)?;
-    result.node(Some(node.id), title, ImportOutcome::Created);
     Ok(())
+}
+
+/// The `title:` of a Markdown file's frontmatter, when it has one.
+fn frontmatter_title(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    for line in lines {
+        if line.trim_end() == "---" {
+            return None;
+        }
+        if let Some(value) = line.strip_prefix("title:") {
+            let value = value.trim().trim_matches(['"', '\'']).trim();
+            return (!value.is_empty()).then(|| value.to_owned());
+        }
+    }
+    None
 }
 
 /// The title of a Markdown note: its first heading, else the file name without extension.
