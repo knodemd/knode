@@ -255,11 +255,12 @@ final class ApplicationMover {
     }
 
     /// Asks, and moves the app if the person agrees. Returns true when the moved copy is opening
-    /// and this one is about to quit.
-    func offerToMove(bundle: URL = Bundle.main.bundleURL) -> Bool {
+    /// and this one is about to quit. With `evenIfDeclined`, because the person asked, it asks
+    /// even when they chose to keep Knode where it is before.
+    func offerToMove(bundle: URL = Bundle.main.bundleURL, evenIfDeclined: Bool = false) -> Bool {
         let location = ApplicationLocation(bundle: bundle, home: manager.homeDirectoryForCurrentUser)
         let path = bundle.path(percentEncoded: false)
-        guard location.shouldOfferMove, defaults.string(forKey: Self.keptLocationKey) != path else { return false }
+        guard location.shouldOfferMove, evenIfDeclined || defaults.string(forKey: Self.keptLocationKey) != path else { return false }
         let destination = URL(filePath: "/Applications").appending(path: bundle.lastPathComponent)
         let replaces = manager.fileExists(atPath: destination.path(percentEncoded: false))
         let alert = NSAlert()

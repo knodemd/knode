@@ -313,7 +313,12 @@ struct ConnectAgentsPanel: View {
     @State private var space: URL?
 
     init() {
-        _connect = State(initialValue: ConnectAgentsModel { arguments in
+        let refusal = ConnectAgentsModel.moveFirst(
+            executable: CommandLineTool.forThisApp.executable().resolvingSymlinksInPath(),
+            bundle: Bundle.main.bundleURL.resolvingSymlinksInPath(),
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
+        _connect = State(initialValue: ConnectAgentsModel(refusal: refusal) { arguments in
             try await KnodeCommand.withShellPath().run(arguments)
         })
     }
@@ -323,6 +328,13 @@ struct ConnectAgentsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: KSpace.x3) {
             KExplanation("Connecting gives an agent a key of its own, kept in your Keychain, and adds Knode to its settings. The first time, it can read and write only this space.")
+            if let refusal = connect.refusal {
+                KBanner(.warning, title: "Knode is not in Applications", message: refusal, actions: {
+                    KButton("Move to Applications", icon: .folder, kind: .primary, size: .small) {
+                        _ = ApplicationMover().offerToMove(evenIfDeclined: true)
+                    }
+                })
+            }
             if spaces.isEmpty {
                 KExplanation("You have no space yet: your agent will make one when it sets up your memory.")
             } else {
@@ -347,7 +359,7 @@ struct ConnectAgentsPanel: View {
                     KButton("Connect all detected", icon: .connect, kind: .primary, size: .small) {
                         Task { await connect.connectAllDetected(space: space, defaultSpace: model.defaultSpaceURL) }
                     }
-                    .disabled(connect.isBusy || connect.detectedNotConnected.isEmpty)
+                    .disabled(connect.isBusy || connect.refusal != nil || connect.detectedNotConnected.isEmpty)
                 }
             }
         }
@@ -369,7 +381,7 @@ struct ConnectAgentsPanel: View {
                     KButton("Connect", icon: .connect, size: .small) {
                         Task { await connect.connect(agent, space: space, defaultSpace: model.defaultSpaceURL) }
                     }
-                    .disabled(connect.isBusy)
+                    .disabled(connect.isBusy || connect.refusal != nil)
                 }
             }
             if connect.connectedNow.contains(agent.agent) {

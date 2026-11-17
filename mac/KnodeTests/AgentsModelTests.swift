@@ -229,6 +229,33 @@ import Testing
         #expect(other.state == .failed("error: cannot read config.toml"))
     }
 
+    @Test func refusesToConnectFromADiskImageDownloadsOrATemporaryCopy() async {
+        let home = URL(filePath: "/Users/ada", directoryHint: .isDirectory)
+        func refusal(_ app: String, executable: String? = nil) -> String? {
+            let bundle = URL(filePath: app, directoryHint: .isDirectory)
+            let knode = executable.map { URL(filePath: $0) } ?? bundle.appending(path: "Contents/Helpers/knode")
+            return ConnectAgentsModel.moveFirst(executable: knode, bundle: bundle, home: home)
+        }
+        #expect(refusal("/Volumes/Knode/Knode.app") != nil)
+        #expect(refusal("/private/var/folders/x/AppTranslocation/1234/d/Knode.app") != nil)
+        #expect(refusal("/Users/ada/Downloads/Knode.app") != nil)
+        #expect(refusal("/private/var/folders/x/T/Knode.app") != nil)
+        #expect(refusal("/Applications/Knode.app") == nil)
+        #expect(refusal("/Users/ada/Projects/knode/mac/build/Release/Knode.app") == nil)
+        // A knode installed another way stays where it is: nothing points into the app.
+        #expect(refusal("/Volumes/Knode/Knode.app", executable: "/opt/homebrew/Cellar/knode/0.3.0/bin/knode") == nil)
+
+        let fake = FakeKnode(Self.everyAgent)
+        let model = ConnectAgentsModel(refusal: refusal("/Volumes/Knode/Knode.app")) { try await fake.run($0) }
+        await model.load()
+        #expect(model.state == .loaded)
+        await model.connect(model.agents[0], space: nil, defaultSpace: nil)
+        await model.connectAllDetected(space: nil, defaultSpace: nil)
+        #expect(fake.calls == [["connect", "--list", "--json"]])
+        #expect(model.outcomes["codex"] == .failed(refusal("/Volumes/Knode/Knode.app")!))
+        #expect(model.connectedNow.isEmpty)
+    }
+
     @Test func connectingOneSaysToOpenANewSession() async {
         let fake = FakeKnode(Self.everyAgent)
         let model = model(fake)

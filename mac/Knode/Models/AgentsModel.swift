@@ -219,11 +219,39 @@ final class ConnectAgentsModel {
     /// The agents connected in this step, which the person still has to open a session of.
     private(set) var connectedNow: [String] = []
 
+    /// Why agents cannot be connected from where the app runs (see `moveFirst`), if so.
+    let refusal: String?
+
     @ObservationIgnored private let run: @MainActor ([String]) async throws -> String
 
-    /// - Parameter run: runs `knode` with these arguments and returns what it printed.
-    init(run: @escaping @MainActor ([String]) async throws -> String) {
+    /// - Parameters:
+    ///   - refusal: why connecting is refused; listing still works.
+    ///   - run: runs `knode` with these arguments and returns what it printed.
+    init(refusal: String? = nil, run: @escaping @MainActor ([String]) async throws -> String) {
+        self.refusal = refusal
         self.run = run
+    }
+
+    /// Why agents must not be connected yet: `executable` (symbolic links resolved) is the `knode`
+    /// inside this app while it runs from its disk image, from where macOS moved it aside, from
+    /// Downloads or from a temporary folder. Agents' settings would point at a copy that goes
+    /// away, so the person moves Knode to Applications first.
+    static func moveFirst(executable: URL, bundle: URL, home: URL) -> String? {
+        let app = bundle.standardizedFileURL.path(percentEncoded: false)
+        let folder = app.hasSuffix("/") ? app : app + "/"
+        guard executable.standardizedFileURL.path(percentEncoded: false).hasPrefix(folder) else { return nil }
+        let temporary = [home.appending(path: "Downloads").path(percentEncoded: false), "/private/var/folders", "/var/folders", "/private/tmp", "/tmp"]
+            .map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        switch ApplicationLocation(bundle: bundle, home: home) {
+        case .installed:
+            return nil
+        case .diskImage, .translocated:
+            break
+        case .elsewhere:
+            guard temporary.contains(where: { folder.hasPrefix($0) }) else { return nil }
+        }
+        return "Move Knode to the Applications folder first. Agents run the knode command inside Knode, "
+            + "and this copy goes away when its disk image is ejected or its folder is cleaned."
     }
 
     var isBusy: Bool { outcomes.values.contains(.connecting) }
@@ -257,6 +285,10 @@ final class ConnectAgentsModel {
     /// Runs `knode connect <agent>`, then reads again which agents are connected: the core says
     /// whether it worked, not the exit status alone.
     func connect(_ agent: AgentOnThisMachine, space: URL?, defaultSpace: URL?) async {
+        if let refusal {
+            outcomes[agent.agent] = .failed(refusal)
+            return
+        }
         outcomes[agent.agent] = .connecting
         let output: String
         do {
@@ -276,6 +308,7 @@ final class ConnectAgentsModel {
 
     /// Connects every shown agent on this machine that is not connected yet, one after another.
     func connectAllDetected(space: URL?, defaultSpace: URL?) async {
+        guard refusal == nil else { return }
         for agent in detectedNotConnected {
             await connect(agent, space: space, defaultSpace: defaultSpace)
         }
