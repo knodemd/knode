@@ -475,8 +475,6 @@ fn write_conversation(
                 .collect();
             let mut first = message.clone();
             first.notes.clear();
-            // Its secrets are counted once, with the channel.
-            first.redacted = 0;
             thread.messages.push(first);
             for reply in thread_replies {
                 if let Some(reply) = self::message(workspace, reply, &name) {

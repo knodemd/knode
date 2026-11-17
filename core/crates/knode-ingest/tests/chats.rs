@@ -1292,3 +1292,39 @@ fn markdown_anywhere_makes_a_folder_of_notes() {
     self::vault(&notes);
     assert_eq!(knode_ingest::chat_export_inside(&notes), None);
 }
+
+#[test]
+fn a_secret_in_a_thread_written_later_is_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("slack");
+    write_file(&root, "users.json", SLACK_USERS);
+    write_file(&root, "channels.json", SLACK_CHANNELS);
+    let first = format!(
+        r#"{{"type":"message","user":"U01","ts":"1772625600.000100","thread_ts":"1772625600.000100",
+            "text":"the bot token is {BOT_TOKEN}"}}"#
+    );
+    write_file(&root, "general/2026-03-04.json", &format!("[{first}]"));
+    let mut space = self::space(&dir);
+    let report = import_chat_export(&mut space, &root, None, &by()).unwrap();
+    assert!(
+        report.notes.iter().any(|n| n.starts_with("1 secret ")),
+        "{:?}",
+        report.notes
+    );
+    // A reply starts the thread's node, which holds the first message again: its secret is
+    // written there, and counted once.
+    write_file(
+        &root,
+        "general/2026-03-04.json",
+        &format!(
+            r#"[{first},
+               {{"type":"message","user":"U01","ts":"1772625660.000100","thread_ts":"1772625600.000100","text":"ok"}}]"#
+        ),
+    );
+    let again = import_chat_export(&mut space, &root, None, &by()).unwrap();
+    assert!(
+        again.notes.iter().any(|n| n.starts_with("1 secret ")),
+        "{:?}",
+        again.notes
+    );
+}

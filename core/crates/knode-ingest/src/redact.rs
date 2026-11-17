@@ -44,12 +44,17 @@ static WHOLE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// `API_KEY=...`.
 static VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
+        // `password: ...` and the like: the value runs to the next space, or to its closing
+        // quote when it starts with one.
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*"(?P<secret>[^"]{8,})""#,
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*'(?P<secret>[^']{8,})'"#,
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*(?P<secret>[^\s"']\S{7,})"#,
         // `Authorization: Bearer ...`.
         r"(?i)\bbearer\s+(?P<secret>[A-Za-z0-9._~+/=\-]{16,})",
         // `password = ...`, `API_KEY: "..."` and the like.
         r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd|secret|token|api[_\-]?key|access[_\-]?key|private[_\-]?key)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*["']?(?P<secret>[^\s"',;]{8,})"#,
         // `--password ...`, `--api-key=...` and the like on a command line.
-        r"(?i)--[a-z0-9\-]*(?:password|token|secret|api-key)[= ](?P<secret>[^\s\-][^\s]{7,})",
+        r"(?i)--[a-z0-9\-]*(?:password|passwd|pwd|token|secret|api-key)[= ](?P<secret>[^\s\-][^\s]{7,})",
         // The password in `scheme://user:password@host`.
         r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:(?P<secret>[^\s/@]+)@",
     ]
@@ -238,6 +243,19 @@ mod tests {
                 "DB_PASSWORD = \"correcthorse\"",
                 format!("DB_PASSWORD = \"{REDACTED}\""),
             ),
+        ] {
+            assert_eq!(redact_tokens(text), (expected, 1), "{text}");
+        }
+        // The value runs to the next space, or to its closing quote.
+        for (text, expected) in [
+            ("password: hunter2;hunter2", format!("password: {REDACTED}")),
+            ("password: abc,defghijk", format!("password: {REDACTED}")),
+            (
+                "\"password\": \"correct horse\", next",
+                format!("\"password\": \"{REDACTED}\", next"),
+            ),
+            ("--pwd hunter2hunter2", format!("--pwd {REDACTED}")),
+            ("--passwd hunter2hunter2", format!("--passwd {REDACTED}")),
         ] {
             assert_eq!(redact_tokens(text), (expected, 1), "{text}");
         }

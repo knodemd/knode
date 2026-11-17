@@ -32,6 +32,7 @@ mod whatsapp;
 pub mod whatsapp_mac;
 mod write;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -250,6 +251,8 @@ pub struct ChatImportReport {
     pub notes: Vec<String>,
     /// Secrets replaced in the messages written, said in [`ChatImportReport::notes`] at the end.
     pub(crate) redacted: usize,
+    /// The messages counted in `redacted`: app, chat id up to its first `/`, message key.
+    pub(crate) redacted_seen: BTreeSet<String>,
 }
 
 impl ChatImportReport {
@@ -266,6 +269,7 @@ impl ChatImportReport {
             skipped: Vec::new(),
             notes: Vec::new(),
             redacted: 0,
+            redacted_seen: BTreeSet::new(),
         }
     }
 
