@@ -216,6 +216,19 @@ impl History {
     }
 }
 
+/// The start of today in the local time of this machine, in milliseconds since 1970: the
+/// [`FetchRequest::since`] of a connector connected now with [`History::FromToday`].
+pub fn start_of_today() -> Timestamp {
+    use chrono::{Local, TimeZone};
+    let now = Local::now();
+    let midnight = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| Local.from_local_datetime(&t).earliest())
+        .unwrap_or(now);
+    Timestamp(midnight.timestamp_millis())
+}
+
 /// Where a connector stopped in its source, for one space: an opaque text only the connector
 /// reads (a row id, a timestamp, an API's page token, JSON...). It must not hold a secret or
 /// the content of what was read.
@@ -578,6 +591,14 @@ mod tests {
             ..request
         };
         assert!(everything.wants(Timestamp(0)));
+    }
+
+    #[test]
+    fn today_starts_before_now() {
+        let start = start_of_today();
+        let now = Timestamp::now();
+        assert!(start <= now);
+        assert!(now.0 - start.0 <= 25 * 3600 * 1000);
     }
 
     #[test]
