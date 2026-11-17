@@ -8,10 +8,10 @@ use knode_format::{
     Provenance, Space, Timestamp, link_kinds,
 };
 
-use super::message::{self, Mail, Origin, Person};
+use super::message::{self, Mail, Person};
 use super::thread::{Thread, addresses, fits_by_subject};
 use super::{
-    ImportedThread, MailError, MailOptions, MailReport, MailSource, apple, keys, kinds, mbox,
+    ImportedThread, MAX_RECIPIENTS, MailError, MailOptions, MailReport, MailSource, keys, kinds,
 };
 use crate::reading::clean_title;
 use crate::reading::markdown::escape_inline;
@@ -68,17 +68,42 @@ pub(crate) fn write(
     let mut people = People {
         names,
         nodes: HashMap::new(),
+        left_out: HashSet::new(),
     };
     for thread in threads {
         write_thread(space, source, thread, options, by, &mut people, report)?;
     }
+    report.people_left_out += people
+        .left_out
+        .iter()
+        .filter(|a| !people.nodes.contains_key(*a))
+        .count();
     Ok(())
 }
 
-/// The people of the import: the name each address goes by, and the node of each one written.
+/// The people of the import: the name each address goes by, the node of each one written, and
+/// the addresses left out ([`people_of`]).
 struct People {
     names: HashMap<String, String>,
     nodes: HashMap<String, NodeId>,
+    left_out: HashSet<String>,
+}
+
+/// Who of a message becomes a person: its senders, and its recipients when it has at most
+/// [`MAX_RECIPIENTS`], `Bcc` only in sent mail. The others are added to `left_out`.
+fn people_of<'a>(mail: &'a Mail, left_out: &mut HashSet<String>) -> Vec<&'a Person> {
+    let bcc: &[Person] = if mail.is_sent() { &mail.bcc } else { &[] };
+    if !mail.is_sent() {
+        left_out.extend(mail.bcc.iter().map(|p| p.address.clone()));
+    }
+    let recipients: Vec<&Person> = mail.to.iter().chain(&mail.cc).chain(bcc).collect();
+    let mut out: Vec<&Person> = mail.from.iter().collect();
+    if recipients.len() <= MAX_RECIPIENTS {
+        out.extend(recipients);
+    } else {
+        left_out.extend(recipients.iter().map(|p| p.address.clone()));
+    }
+    out
 }
 
 fn write_thread(
@@ -107,6 +132,19 @@ fn write_thread(
     thread
         .messages
         .retain(|m| mine.contains(&m.id) || !elsewhere.contains(&m.id));
+    // The text of the thread's messages, read again now: one thread at a time is in memory.
+    let kept = thread.messages.len();
+    thread.messages.retain_mut(|mail| match mail.read_body() {
+        Ok(()) => true,
+        Err(reason) => {
+            report.skip(mail.subject.clone(), reason);
+            false
+        }
+    });
+    let unreadable = kept - thread.messages.len();
+    if unreadable > 0 && thread.messages.is_empty() {
+        return Ok(());
+    }
 
     let files = if options.attachments {
         read_files(&thread, report)
@@ -271,12 +309,16 @@ fn write_thread(
     for other in found.iter().skip(1) {
         space.link(&node_id, other, link_kinds::RELATED, by)?;
     }
-    for person in thread.messages.iter().flat_map(Mail::people) {
+    let mut chosen = Vec::new();
+    for mail in &thread.messages {
+        chosen.extend(people_of(mail, &mut people.left_out));
+    }
+    for person in chosen {
         let person = person_node(space, person, by, people, report)?;
         space.link(&node_id, &person, link_kinds::RELATED, by)?;
     }
 
-    report.messages += read;
+    report.messages += read - unreadable;
     let imported = ImportedThread {
         node_id,
         thread: current
@@ -451,10 +493,8 @@ fn read_files(thread: &Thread, report: &mut MailReport) -> Files {
             if mail.attachments.is_empty() {
                 return Vec::new();
             }
-            let raw = match &mail.origin {
-                Origin::Mbox { file, offset, len } => mbox::read_at(file, *offset, *len),
-                Origin::Emlx(path) => apple::read_emlx(path),
-                Origin::Elsewhere => return Vec::new(),
+            let Some(raw) = mail.origin.read_again() else {
+                return Vec::new();
             };
             match raw {
                 Ok(raw) => message::attachment_bytes(&raw),
@@ -491,19 +531,25 @@ fn section(mail: &Mail, names: &[String], linked: &[bool]) -> Section {
         .map(|p| escape_inline(p.label()))
         .unwrap_or_else(|| "Unknown sender".to_string());
     let mut text = format!("## {who}");
+    // In the sender's time, with its offset: times of one thread can be from several zones.
     if let Some(sent) = mail.date {
-        text.push_str(&format!(" - {}", sent.format("%Y-%m-%d %H:%M")));
+        text.push_str(&format!(" - {}", sent.format("%Y-%m-%d %H:%M %:z")));
     }
     text.push_str("\n\n");
-    for (label, list) in [("From", &mail.from), ("To", &mail.to), ("Cc", &mail.cc)] {
+    for (label, list) in [
+        ("From", &mail.from),
+        ("To", &mail.to),
+        ("Cc", &mail.cc),
+        ("Bcc", &mail.bcc),
+    ] {
         if !list.is_empty() {
             let list: Vec<String> = list.iter().map(address).collect();
             text.push_str(&format!("- **{label}:** {}\n", list.join(", ")));
         }
     }
-    if !mail.body.is_empty() {
+    if let Some(body) = mail.body.as_deref().filter(|b| !b.is_empty()) {
         text.push('\n');
-        text.push_str(&mail.body);
+        text.push_str(body);
         text.push('\n');
     }
     if !names.is_empty() {

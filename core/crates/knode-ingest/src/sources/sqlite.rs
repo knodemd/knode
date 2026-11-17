@@ -3,7 +3,9 @@
 //! Connectors to local apps (WhatsApp for Mac, Messages, Mail) never open the app's live
 //! database and never write to it. [`open_copy`] copies the database with its `-wal` and `-shm`
 //! files into a private temporary folder and opens the copy read-only, so the app is never
-//! locked or changed; the copy is removed when it is dropped. [`check_schema`] then checks the
+//! locked or changed; the copy is removed when it is dropped. A copy made while the app wrote
+//! the files is made again, and one that is damaged is refused, so a connector never reads a
+//! database and a `-wal` that do not match. [`check_schema`] then checks the
 //! tables and columns the connector reads, and returns [`SourceError::NeedsUpdate`] when they
 //! changed, before anything is read.
 
@@ -14,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::{Permission, SourceError};
+use super::{FileStamp, Permission, SourceError};
 
 /// A read-only copy of another app's database, removed when dropped.
 #[derive(Debug)]
@@ -48,6 +50,15 @@ impl Drop for DatabaseCopy {
 /// A missing database is [`SourceError::Unavailable`]; one macOS keeps Knode from reading is
 /// [`SourceError::Permission`] with [`Permission::FullDiskAccess`].
 pub fn open_copy(path: &Path) -> Result<DatabaseCopy, SourceError> {
+    open_copy_with(path, &mut || {})
+}
+
+/// How many times a copy is made before giving up on a database that keeps changing.
+const ATTEMPTS: u32 = 5;
+
+/// [`open_copy`], calling `between` after the database is copied and before its `-wal` is, so
+/// tests can change the files during a copy.
+fn open_copy_with(path: &Path, between: &mut dyn FnMut()) -> Result<DatabaseCopy, SourceError> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "knode-source-{}-{}",
@@ -65,18 +76,27 @@ pub fn open_copy(path: &Path) -> Result<DatabaseCopy, SourceError> {
     }
     let mut copy = DatabaseCopy { conn: None, dir };
     let target = copy.dir.join(name);
-    fs::copy(path, &target).map_err(|e| read_error(path, e))?;
-    for suffix in ["-wal", "-shm"] {
-        let mut side = path.as_os_str().to_os_string();
-        side.push(suffix);
-        let side = PathBuf::from(side);
-        let mut to = target.as_os_str().to_os_string();
-        to.push(suffix);
-        match fs::copy(&side, PathBuf::from(to)) {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(read_error(&side, e)),
+    // The database and its -wal are copied one after the other: if the app wrote or
+    // checkpointed them meanwhile, the pair may not match. The copy is used only when their
+    // sizes and modification times did not change while it was made.
+    let mut settled = false;
+    for attempt in 0..ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
         }
+        let before = FileStamp::of(&[path.to_path_buf()]);
+        copy_files(path, &target, between)?;
+        let after = FileStamp::of(&[path.to_path_buf()]);
+        if before.is_some() && before == after {
+            settled = true;
+            break;
+        }
+    }
+    if !settled {
+        return Err(SourceError::Failed(format!(
+            "{} kept changing while it was copied; trying again later",
+            Path::new(name).display()
+        )));
     }
     // Opened read-write first, so the copy takes in its -wal, then used read-only.
     let conn = Connection::open_with_flags(
@@ -85,7 +105,6 @@ pub fn open_copy(path: &Path) -> Result<DatabaseCopy, SourceError> {
     )
     .and_then(|conn| {
         conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
-        conn.execute_batch("PRAGMA query_only = ON;")?;
         Ok(conn)
     })
     .map_err(|e| {
@@ -94,8 +113,52 @@ pub fn open_copy(path: &Path) -> Result<DatabaseCopy, SourceError> {
             Path::new(name).display()
         ))
     })?;
+    let check: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+        .map_err(|e| {
+            SourceError::Failed(format!(
+                "the copy of {} could not be checked: {e}",
+                Path::new(name).display()
+            ))
+        })?;
+    if check != "ok" {
+        return Err(SourceError::Failed(format!(
+            "the copy of {} is damaged ({check}); trying again later",
+            Path::new(name).display()
+        )));
+    }
+    conn.execute_batch("PRAGMA query_only = ON;")
+        .map_err(|e| SourceError::Failed(e.to_string()))?;
     copy.conn = Some(conn);
     Ok(copy)
+}
+
+/// Copies the database at `path` to `target`, then its `-wal` and `-shm` beside it. A side file
+/// that is not there is removed from the copy too, so an earlier attempt's is never used.
+fn copy_files(path: &Path, target: &Path, between: &mut dyn FnMut()) -> Result<(), SourceError> {
+    fs::copy(path, target).map_err(|e| read_error(path, e))?;
+    between();
+    for suffix in ["-wal", "-shm"] {
+        let mut side = path.as_os_str().to_os_string();
+        side.push(suffix);
+        let side = PathBuf::from(side);
+        let mut to = target.as_os_str().to_os_string();
+        to.push(suffix);
+        let to = PathBuf::from(to);
+        match fs::copy(&side, &to) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match fs::remove_file(&to) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                    return Err(SourceError::Failed(format!(
+                        "a temporary copy could not be made: {e}"
+                    )));
+                }
+                _ => {}
+            },
+            Err(e) => return Err(read_error(&side, e)),
+        }
+    }
+    Ok(())
 }
 
 fn private_dir(dir: &Path) -> io::Result<()> {
@@ -210,6 +273,89 @@ mod tests {
         drop(copy);
         assert!(!held.exists());
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    fn append(path: &Path, bytes: &[u8]) {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+    }
+
+    fn wal(path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}-wal", path.display()))
+    }
+
+    #[test]
+    fn a_copy_made_while_the_files_changed_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = synthetic(dir.path());
+        let mut writes = 0;
+        // The app writes to the database once, while the first copy is made.
+        let copy = open_copy_with(&path, &mut || {
+            if writes == 0 {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute("INSERT INTO chat (name) VALUES ('Later')", [])
+                    .unwrap();
+                std::mem::forget(conn);
+            }
+            writes += 1;
+        })
+        .unwrap();
+        assert!(writes >= 2);
+        let names: i64 = copy
+            .conn()
+            .query_row("SELECT COUNT(*) FROM chat", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(names, 2);
+    }
+
+    #[test]
+    fn a_database_that_never_settles_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = synthetic(dir.path());
+        let wal = wal(&path);
+        let err = open_copy_with(&path, &mut || {
+            // Every copy, the -wal grows between the database and its copy.
+            append(&wal, &[0; 512]);
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), "failed");
+        assert!(err.to_string().contains("kept changing"), "{err}");
+    }
+
+    #[test]
+    fn a_damaged_copy_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Damaged.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA page_size = 4096;
+                 CREATE TABLE chat (id INTEGER PRIMARY KEY, name TEXT);
+                 CREATE INDEX chat_name ON chat (name);",
+            )
+            .unwrap();
+            for i in 0..200 {
+                conn.execute(
+                    "INSERT INTO chat (name) VALUES (?1)",
+                    [format!("n{i}-{}", "x".repeat(100))],
+                )
+                .unwrap();
+            }
+        }
+        // Junk over the pages after the first, where the tables are.
+        let mut bytes = fs::read(&path).unwrap();
+        assert!(bytes.len() > 3 * 4096);
+        for b in &mut bytes[4096 + 100..3 * 4096] {
+            *b = 0xA5;
+        }
+        fs::write(&path, bytes).unwrap();
+        let err = open_copy(&path).unwrap_err();
+        assert_eq!(err.kind(), "failed", "{err}");
     }
 
     #[test]
