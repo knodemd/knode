@@ -94,10 +94,7 @@ fn private_dir() -> io::Result<PathBuf> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "knode-imessage-{}-{nanos}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("knode-imessage-{}-{nanos}", std::process::id()));
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {

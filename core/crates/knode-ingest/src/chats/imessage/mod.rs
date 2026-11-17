@@ -223,7 +223,10 @@ impl fmt::Display for IMessageError {
                 write!(f, "the Messages database could not be copied: {error}")
             }
             IMessageError::Sqlite(error) => {
-                write!(f, "the copy of the Messages database could not be read: {error}")
+                write!(
+                    f,
+                    "the copy of the Messages database could not be read: {error}"
+                )
             }
             IMessageError::Write(error) => error.fmt(f),
         }
@@ -429,7 +432,10 @@ fn start_of_today(now: Option<DateTime<Utc>>, offset: Option<FixedOffset>) -> i6
 fn local_time(date: i64, offset: Option<FixedOffset>) -> NaiveDateTime {
     // Before macOS 10.13 times were in seconds; since then, in nanoseconds.
     let (secs, nanos) = if date.abs() >= 1_000_000_000_000 {
-        (date.div_euclid(1_000_000_000), date.rem_euclid(1_000_000_000))
+        (
+            date.div_euclid(1_000_000_000),
+            date.rem_euclid(1_000_000_000),
+        )
     } else {
         (date, 0)
     };
@@ -484,7 +490,10 @@ fn title(chat: &ChatRow, participants: &[String]) -> String {
         .chars()
         .map(|c| if matches!(c, '[' | ']' | '|') { ' ' } else { c })
         .collect();
-    format!("iMessage - {}", name.split_whitespace().collect::<Vec<_>>().join(" "))
+    format!(
+        "iMessage - {}",
+        name.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
 }
 
 /// The text of a message: its `text`, or the text archived in `attributedBody`, without the
@@ -501,7 +510,9 @@ fn text_of(message: &MessageRow) -> String {
                 .and_then(typedstream::attributed_string_text)
         })
         .unwrap_or_default();
-    text.replace(['\u{FFFC}', '\u{FFFD}'], "").trim().to_string()
+    text.replace(['\u{FFFC}', '\u{FFFD}'], "")
+        .trim()
+        .to_string()
 }
 
 fn sender(message: &MessageRow, chat: &ChatRow, options: &SyncOptions<'_>) -> String {
@@ -716,10 +727,7 @@ mod tests {
             display_name: String::new(),
             handles: vec!["+15550100".into()],
         };
-        assert_eq!(
-            title(&chat, &people(&chat, None)),
-            "iMessage - +15550100"
-        );
+        assert_eq!(title(&chat, &people(&chat, None)), "iMessage - +15550100");
         chat.display_name = "Trip [2026]".into();
         assert_eq!(title(&chat, &[]), "iMessage - Trip 2026");
     }
