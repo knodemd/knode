@@ -108,7 +108,10 @@ struct SpaceFoldersForm: View {
                 .disabled(!folders.isLoaded || folders.isBusy)
             } content: {
                 if folders.isLoaded, folders.folders.isEmpty {
-                    KExplanation("Add the folder where a project's files live, then repeat for your other projects. Importing notes and connecting an agent are separate steps.", size: 13)
+                    KExplanation("Add the folder where a project's files live, then repeat for your other projects. Each project folder adds the project of the same name to this space. Importing notes and connecting an agent are separate steps.", size: 13)
+                }
+                if let notice = folders.notice {
+                    KExplanation(notice, size: 13)
                 }
                 ForEach(Array(folders.folders.enumerated()), id: \.element.id) { offset, folder in
                     if offset > 0 { KHairline() }
@@ -137,10 +140,19 @@ struct SpaceFoldersForm: View {
     private func confirmRemove(_ folder: SpaceFolder) {
         overlays?.confirmation = KConfirmation(
             title: "Remove \(FolderRow.displayPath(folder))?",
-            message: "The space stops being fed by it. Nothing already captured or imported from it is removed.",
+            message: Self.removeMessage(for: folder),
             confirmTitle: "Remove folder",
             isDestructive: true
         ) { [folders] in Task { await folders.remove(folder) } }
+    }
+}
+
+extension SpaceFoldersForm {
+    /// What removing a folder keeps: everything captured or imported, and a project folder's project.
+    static func removeMessage(for folder: SpaceFolder) -> String {
+        let kept = "The space stops being fed by it. Nothing already captured or imported from it is removed."
+        guard let project = folder.project else { return kept }
+        return kept + " The project \u{201C}\(project.title)\u{201D} and its notes stay."
     }
 }
 
@@ -195,11 +207,16 @@ struct FolderRow: View {
 
     private var kindLabel: String {
         switch folder.knownKind {
-        case .project: folder.capture ? "Project, captured" : "Project, capture off: nothing of it is kept"
+        case .project: "\(projectName), \(folder.capture ? "captured" : "capture off: nothing of it is kept")"
         case .notes: folder.capture ? "Notes" : "Notes, not read"
         case .agent: "Sessions of \(folder.agent.map(CaptureAgent.name(of:)) ?? "an agent")\(folder.capture ? "" : ", not read")"
         case nil: "\(folder.kind.capitalized) folder, from a newer version of Knode"
         }
+    }
+
+    /// The project a project folder holds, by name, when the space has it.
+    private var projectName: String {
+        folder.project.map { "Project \u{201C}\($0.title)\u{201D}" } ?? "Project"
     }
 
     private var captureLabel: String {
@@ -277,6 +294,7 @@ struct AddProjectSheet: View {
             KSheetTitle(kicker: "Project folder", title: "Add to \(project.spaceName)", close: close)
             Text(project.url.path(percentEncoded: false)).font(KFont.mono(12)).textSelection(.enabled)
             KExplanation("The folder where this project's files live. Knode does not move its files or import its notes.")
+            KExplanation(Self.projectExplanation(for: project.url))
             KToggle("Capture conversations held in this folder", isOn: $capture)
             KExplanation(capture
                 ? "Conversations agents hold in this folder, or in any folder inside it, are captured into this space while capture is on for the space and for Knode Service."
@@ -294,5 +312,13 @@ struct AddProjectSheet: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+    }
+
+    /// What adding the folder does to the projects of the space.
+    static func projectExplanation(for url: URL) -> String {
+        guard let name = SpaceFolder.projectName(for: url) else {
+            return "This folder has no name of its own, so no project is added for it."
+        }
+        return "Adds the project \u{201C}\(name)\u{201D} to this space, or uses the one of that name it already has. If another folder named \u{201C}\(name)\u{201D} holds that project, this one gets its own, named after its parent folder too. Removing the folder later keeps the project and its notes."
     }
 }

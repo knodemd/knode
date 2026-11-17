@@ -94,6 +94,37 @@ fn folders_are_added_listed_and_removed() {
     ]);
     assert!(out.contains("project  ~/Developer/site"), "{out}");
     assert!(out.contains("exclude node_modules/**"), "{out}");
+    assert!(out.contains("project site"), "{out}");
+    assert!(out.contains("Added the project site."), "{out}");
+    // The same folder again keeps its project: no second one.
+    let out = sb.ok(&["folders", "add", project.to_str().unwrap()]);
+    assert!(
+        out.contains("It already holds the files of the project site."),
+        "{out}"
+    );
+    // Another folder named site is not mixed into that project: it gets its own.
+    let other = sb.home().join("Archive/site");
+    fs::create_dir_all(&other).unwrap();
+    let out = sb.ok(&["folders", "add", other.to_str().unwrap()]);
+    assert!(out.contains("project site (Archive)"), "{out}");
+    assert!(
+        out.contains(
+            "Added the project site (Archive), named after its parent folder too: the project site already holds the files of ~/Developer/site."
+        ),
+        "{out}"
+    );
+    let out = sb.ok(&["folders", "list"]);
+    assert!(
+        out.contains("~/Archive/site  (capture on, project site (Archive))"),
+        "{out}"
+    );
+    let id = out
+        .lines()
+        .find(|line| line.contains("~/Archive/site"))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    sb.ok(&["folders", "remove", &id]);
     // Capture off for a project of another space, named by its name.
     let secret = sb.home().join("Developer/secret");
     let out = sb.ok(&[
@@ -131,10 +162,17 @@ fn folders_are_added_listed_and_removed() {
     assert_eq!(list.as_array().unwrap().len(), 2, "{out}");
     assert_eq!(list[0]["path"], "~/Developer/site");
     assert_eq!(list[0]["capture"], true);
+    assert_eq!(list[0]["project"]["node"]["title"], "site", "{out}");
+    assert_eq!(list[0]["project"]["node"]["kind"], "project", "{out}");
+    assert!(list[1].get("project").is_none(), "{out}");
 
     let out = sb.ok(&["folders", "remove", project.to_str().unwrap()]);
     assert!(
         out.contains("Removed the project folder ~/Developer/site"),
+        "{out}"
+    );
+    assert!(
+        out.contains("The project site and its notes stay."),
         "{out}"
     );
     let out = sb.ok(&["folders", "list"]);

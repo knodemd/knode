@@ -18,6 +18,10 @@ final class SpaceFoldersModel {
     /// A change is being made.
     private(set) var isBusy = false
     var errorMessage: String?
+    /// What adding the last project folder did to its project, for the screen to say.
+    private(set) var notice: String?
+    /// Called when adding a folder created a project, so the sidebar lists it.
+    @ObservationIgnored var projectsChanged: (@MainActor () async -> Void)?
 
     @ObservationIgnored private let store: any SpaceStore
     @ObservationIgnored private var changesTask: Task<Void, Never>?
@@ -67,18 +71,47 @@ final class SpaceFoldersModel {
         await change { _ = try await self.store.setFolder(folder.draft(capture: capture), in: self.spaceID) }
     }
 
-    /// Adds a folder; an agent folder names the agent whose sessions it holds.
+    /// Adds a folder; an agent folder names the agent whose sessions it holds. A project folder
+    /// also adds the project named after it, or finds the one the space has (the core does it).
     func addFolder(_ kind: SpaceFolder.Kind, at url: URL, agent: String? = nil, capture: Bool = true) async {
+        notice = nil
+        var added: SpaceFolder?
         await change {
             var draft = FolderDraft.adding(kind, at: url, agent: agent)
             draft.capture = capture
-            _ = try await self.store.setFolder(draft, in: self.spaceID)
+            added = try await self.store.setFolder(draft, in: self.spaceID)
         }
+        guard let project = added?.project else { return }
+        notice = Self.notice(for: project)
+        if project.created { await projectsChanged?() }
     }
 
-    /// Removes a folder. Nothing captured from it is removed.
+    /// Removes a folder. Nothing captured from it is removed, and a project folder's project stays.
     func remove(_ folder: SpaceFolder) async {
+        notice = nil
         await change { try await self.store.removeFolder(folder.id, from: self.spaceID) }
+    }
+
+    /// What adding a project folder did, in one sentence.
+    static func notice(for project: SpaceFolder.Project) -> String {
+        let title = "\u{201C}\(project.title)\u{201D}"
+        var notice: String
+        if let other = project.passedOver {
+            let holder = "\u{201C}\(other)\u{201D} already holds the files of \(project.passedOverFolders.joined(separator: ", "))."
+            notice = project.created
+                ? "Added the project \(title), named after its parent folder too: \(holder) Removing the folder later keeps the project and its notes."
+                : "This folder holds the files of \(title), the project this space already had: \(holder)"
+        } else if project.created {
+            notice = "Added the project \(title). Removing the folder later keeps the project and its notes."
+        } else if project.alreadyHeld {
+            notice = "This folder already holds the files of \(title)."
+        } else {
+            notice = "This folder holds the files of \(title), the project this space already had."
+        }
+        if !project.sharedWith.isEmpty {
+            notice += " \(title) also holds the files of \(project.sharedWith.joined(separator: ", "))."
+        }
+        return notice
     }
 
     /// Makes a change, then reads the folders again.

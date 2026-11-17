@@ -28,6 +28,18 @@ pub(super) fn run(state: &State, raw: Value) -> Result<Value, RpcError> {
         };
         what = what.with_readwise_token(token);
     }
+    if let Some(options) = p.mail {
+        if !what.is_mail() {
+            return Err(RpcError::invalid_params(
+                "mail options only go with mbox and apple-mail",
+            ));
+        }
+        what = what.with_mail_options(options);
+    }
+    // macOS asks Knode Service itself, by its path, for Full Disk Access to what it reads.
+    if let Ok(program) = std::env::current_exe() {
+        what = what.read_by(program);
+    }
     let space = state.space(&p.space)?;
     let mut space = lock_ignoring_poison(&space);
     let mark = last_change(&space)?;

@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use knode_format::{ActorKind, Folder, FolderSpec, Provenance, Space, folder_kinds, setting_keys};
+use knode_format::{
+    ActorKind, Folder, FolderProject, FolderSpec, Provenance, Space, folder_kinds, setting_keys,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -30,17 +32,32 @@ pub struct FolderInfo {
     pub local: Option<PathBuf>,
     /// Whether the folder is missing on this machine. A missing folder is kept and skipped.
     pub missing: bool,
+    /// For a project folder, the `project` node named after it that it holds the files of: when
+    /// it was just added, `created` when that made the project, `already_held` when the folder
+    /// had been added before, `passed_over` when another folder of the same name holds the
+    /// project of that name, and `shared_with` for the folders it shares the project with. `None`
+    /// for other folders, and for a project folder added before Knode made these, until it is
+    /// added again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<FolderProject>,
 }
 
 impl FolderInfo {
-    fn of(folder: Folder) -> Self {
+    fn of(folder: Folder, project: Option<FolderProject>) -> Self {
         let local = resolve_path(&folder.path);
         let missing = !local.as_deref().is_some_and(Path::exists);
         FolderInfo {
             folder,
             local,
             missing,
+            project,
         }
+    }
+
+    /// A folder as the space has it, with the project it holds the files of, if any.
+    fn read(space: &Space, folder: Folder) -> knode_format::Result<Self> {
+        let project = space.folder_project(&folder)?.map(FolderProject::found);
+        Ok(FolderInfo::of(folder, project))
     }
 }
 
@@ -219,11 +236,20 @@ fn check_icon(icon: &str) -> knode_format::Result<&str> {
 
 /// The folders that feed the space, oldest first, with where each one is on this machine.
 pub fn folders(space: &Space) -> knode_format::Result<Vec<FolderInfo>> {
-    Ok(space.folders()?.into_iter().map(FolderInfo::of).collect())
+    space
+        .folders()?
+        .into_iter()
+        .map(|folder| FolderInfo::read(space, folder))
+        .collect()
 }
 
 /// Adds a folder to the space, or changes one, and records the change. Only a person can
 /// change folders.
+///
+/// Adding a project folder (no `id`) also creates the `project` node named after it, or finds
+/// the one the space has ([`Space::add_folder`]), so every client that adds folders gets the same
+/// project; it is returned in [`FolderInfo::project`]. Changing a folder by its id creates
+/// nothing.
 pub fn set_folder(
     space: &mut Space,
     input: &FolderInput,
@@ -256,11 +282,17 @@ pub fn set_folder(
         capture: input.capture,
         rules: input.rules.clone(),
     };
-    space.set_folder(&spec, by).map(FolderInfo::of)
+    if spec.id.is_some() {
+        let folder = space.set_folder(&spec, by)?;
+        return FolderInfo::read(space, folder);
+    }
+    let added = space.add_folder(&spec, by)?;
+    Ok(FolderInfo::of(added.folder, added.project))
 }
 
 /// Removes a folder from the space and records the change. Nothing captured or imported from
-/// it is removed. Returns whether there was one. Only a person can change folders.
+/// it is removed, and the `project` node of a project folder stays with everything part of it.
+/// Returns whether there was one. Only a person can change folders.
 pub fn remove_folder(space: &mut Space, id: &str, by: &Provenance) -> knode_format::Result<bool> {
     person(by, "change the folders of a space")?;
     space.remove_folder(id, by)

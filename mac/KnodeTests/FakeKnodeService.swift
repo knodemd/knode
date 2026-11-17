@@ -354,7 +354,12 @@ final class FakeKnodeService: @unchecked Sendable {
             let folders = try space().folders
             let index = folders.firstIndex { $0["id"] as? String == params["id"] as? String || ($0["kind"] as? String == kind && $0["path"] as? String == folderPath) }
             let id = index.flatMap { folders[$0]["id"] as? String } ?? nextID()
-            let saved = folder(id: id, kind: kind, path: folderPath, capture: params["capture"] as? Bool ?? true, rules: rules)
+            var saved = folder(id: id, kind: kind, path: folderPath, capture: params["capture"] as? Bool ?? true, rules: rules)
+            if kind == "project" {
+                // As the core answers: the project named after the folder, made the first time.
+                let name = URL(filePath: folderPath).lastPathComponent
+                saved["project"] = ["node": ["id": "project-\(name)", "kind": "project", "title": name], "created": index == nil] as [String: Any]
+            }
             if let index { spaces[path]?.folders[index] = saved } else { spaces[path]?.folders.append(saved) }
             spaceEvents.append(["space": path, "what": "folders", "folder": id])
             return (saved, nil)

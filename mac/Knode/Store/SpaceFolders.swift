@@ -23,8 +23,38 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
     public var localURL: URL?
     /// The folder does not exist on this machine: it is kept and skipped.
     public var isMissing: Bool
+    /// For a project folder, the project named after it that it holds the files of.
+    /// `nil` for other folders, and for a project folder added before Knode made these.
+    public var project: Project?
 
-    public init(id: String, kind: String, path: String, capture: Bool, rules: String = "{}", localURL: URL? = nil, isMissing: Bool = false) {
+    /// The project a project folder holds the files of.
+    public struct Project: Hashable, Sendable {
+        public var id: Node.ID
+        public var title: String
+        /// Adding the folder just created it, rather than finding the one the space had.
+        public var created: Bool
+        /// The folder had been added before and already held this project.
+        public var alreadyHeld: Bool
+        /// When adding the folder gave it a project named after its parent folder too, such as
+        /// "api (b)", the project of its own name that another folder holds.
+        public var passedOver: String?
+        /// The folders, as recorded, that hold the files of `passedOver`.
+        public var passedOverFolders: [String]
+        /// The other folders, as recorded, that hold the files of this project too.
+        public var sharedWith: [String]
+
+        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], sharedWith: [String] = []) {
+            self.id = id
+            self.title = title
+            self.created = created
+            self.alreadyHeld = alreadyHeld
+            self.passedOver = passedOver
+            self.passedOverFolders = passedOverFolders
+            self.sharedWith = sharedWith
+        }
+    }
+
+    public init(id: String, kind: String, path: String, capture: Bool, rules: String = "{}", localURL: URL? = nil, isMissing: Bool = false, project: Project? = nil) {
         self.id = id
         self.kind = kind
         self.path = path
@@ -32,6 +62,14 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         self.rules = rules
         self.localURL = localURL
         self.isMissing = isMissing
+        self.project = project
+    }
+
+    /// The title of the project adding a project folder at `url` makes or finds, from the core so
+    /// it is the one the core creates: the folder's name, in NFC, with `[`, `]` and `|` replaced.
+    /// `nil` for the home folder and the root of a disk, which have none.
+    static func projectName(for url: URL) -> String? {
+        KnodeCore.folderProjectTitle(path: ServiceSpaceStore.path(of: url))
     }
 
     public var knownKind: Kind? { Kind(rawValue: kind) }

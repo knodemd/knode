@@ -260,10 +260,11 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `mail`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
-file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
+file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read;
+with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`).
 
 | `from` | What `path` is |
 | --- | --- |
@@ -278,9 +279,23 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
+| `mbox` | An `.mbox` file (Gmail through Google Takeout, or a mailbox another app exported), or a folder of them: one `email` node per thread and one `person` node per address |
+| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, a folder of `.emlx` files, or a mailbox Apple Mail exported (`<name>.mbox`): as for `mbox` |
 | `whatsapp` | A WhatsApp chat export: the `.zip`, its folder, or the chat's `.txt` (`_chat.txt` on iOS, `WhatsApp Chat with <name>.txt` on Android) with the media beside it. One `chat` node per chat, its messages grouped by day; the media attached to it. Importing it again adds only the new messages |
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
 | `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
+
+`mail`, for `mbox` and `apple-mail` only, keeps the import to some messages and turns on
+attachments; every field is optional:
+
+```json
+{ "folders": ["Work", "INBOX"], "since": "2026-01-01", "until": "2026-03-31", "attachments": true }
+```
+
+`folders` are Gmail labels or Apple Mail mailboxes, compared without case, matching a whole
+folder path or its last part; `since` and `until` are days in UTC, both included; `attachments`
+attaches the files of the messages to their thread (off by default). Spam and trash are left out
+unless `folders` names them. `mail` with any other source fails with `invalid_params`.
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -302,7 +317,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
   part way.
 - A path that is not something Knode imports, or not the kind `from` names, fails with
   `invalid`; files that cannot be read fail with `folder`; another app's notes that macOS keeps
-  from Knode Service fail with `no_access`.
+  from Knode Service fail with `no_access`, as does Apple Mail's store without Full Disk Access.
 
 ## Changes
 
@@ -531,7 +546,9 @@ reciprocal rank fusion, as section 19 of the
 `{ "node", "snippet", "score", "word_rank", "meaning_rank" }`: the node summary, the text around
 the words found (matches in `**bold**`) or the start of its nearest passage, the fusion score
 (higher is better) and its place in the words and meaning lists, from 1, or `null` when it is
-not in one.
+not in one. In `hybrid`, the score of a transcript (a node of kind `conversation`, `chat` or
+`email`) is halved, so a long transcript that matches in passing comes after the short note that
+answers the query.
 
 Search by meaning runs on this machine, with a small embedding model
 (`multilingual-e5-small`, about 490 MB, around 100 languages). Nothing is sent anywhere:

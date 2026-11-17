@@ -6,6 +6,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
+use crate::projects::PROJECT_RULE;
 use crate::space::{
     add_change, add_change_with_detail, check_name, next_ulid, provenance, provenance_id,
 };
@@ -14,6 +15,72 @@ use crate::{
     Agent, AgentKey, Error, Folder, FolderSpec, GrantLevel, Provenance, Result, Space, Timestamp,
     actions, setting_keys,
 };
+
+/// A folder checked by [`Space::prepare_folder`], ready to write.
+pub(crate) struct FolderWrite {
+    pub(crate) id: String,
+    pub(crate) exists: bool,
+    pub(crate) kind: String,
+    pub(crate) path: String,
+    capture: &'static str,
+    /// The rules, with the `project` rule of the folder as recorded before (see
+    /// [`Space::add_folder`]): clients cannot set it.
+    pub(crate) rules: serde_json::Value,
+}
+
+/// Records, in `tx`, the project a folder added before Knode recorded it holds (its `rules`, with
+/// the `project` rule set), as a `system` change: the projects of older folders are written down
+/// before a new folder could change which one their name finds.
+pub(crate) fn record_folder_project(
+    tx: &Transaction,
+    id: &str,
+    rules: &serde_json::Value,
+    now: Timestamp,
+) -> Result<()> {
+    let prov = provenance_id(tx, &Provenance::system())?;
+    tx.execute(
+        "UPDATE folders SET rules = ?2, updated_at = ?3, updated_by = ?4 WHERE id = ?1",
+        params![id, rules.to_string(), now.0, prov],
+    )?;
+    add_change(tx, now, prov, actions::FOLDER_SET, id, None)?;
+    Ok(())
+}
+
+/// Writes a folder checked by [`Space::prepare_folder`], with its change, in `tx`.
+pub(crate) fn write_folder(
+    tx: &Transaction,
+    write: &FolderWrite,
+    by: &Provenance,
+    now: Timestamp,
+) -> Result<()> {
+    let prov = provenance_id(tx, by)?;
+    let FolderWrite {
+        id,
+        kind,
+        path,
+        capture,
+        rules,
+        ..
+    } = write;
+    let rules = rules.to_string();
+    if write.exists {
+        tx.execute(
+            "UPDATE folders SET kind = ?2, path = ?3, capture = ?4, rules = ?5,
+                                updated_at = ?6, updated_by = ?7
+             WHERE id = ?1",
+            params![id, kind, path, capture, rules, now.0, prov],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO folders (id, kind, path, capture, rules, created_at, created_by,
+                                  updated_at, updated_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?7)",
+            params![id, kind, path, capture, rules, now.0, prov],
+        )?;
+    }
+    add_change(tx, now, prov, actions::FOLDER_SET, id, None)?;
+    Ok(())
+}
 
 impl Space {
     /// A setting of the space, or `None` when it is not set. See
@@ -77,6 +144,21 @@ impl Space {
     /// Adds a folder, or changes the one with the given id (or with the same kind and path),
     /// records the change and returns the folder. Only a person can change folders.
     pub fn set_folder(&mut self, spec: &FolderSpec, by: &Provenance) -> Result<Folder> {
+        let write = self.prepare_folder(spec, by)?;
+        let tx = self.conn.transaction()?;
+        write_folder(&tx, &write, by, Timestamp::now())?;
+        tx.commit()?;
+        self.folder(&write.id)?
+            .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))
+    }
+
+    /// Checks a folder to add or change and finds its id, writing nothing: with
+    /// [`write_folder`], for writes that change a folder inside a larger transaction.
+    pub(crate) fn prepare_folder(
+        &mut self,
+        spec: &FolderSpec,
+        by: &Provenance,
+    ) -> Result<FolderWrite> {
         person_only(by, "change the folders of a space")?;
         let kind = check_name("folder kind", spec.kind.trim())?;
         let path = spec.path.trim();
@@ -88,7 +170,7 @@ impl Space {
                 "the rules of a folder are a JSON object".into(),
             ));
         }
-        let rules = spec.rules.to_string();
+        let mut rules = spec.rules.clone();
         let capture = if spec.capture { "on" } else { "off" };
         let existing: Option<String> = match &spec.id {
             Some(id) => {
@@ -106,32 +188,32 @@ impl Space {
                 )
                 .optional()?,
         };
-        let now = Timestamp::now();
         let id = match &existing {
             Some(id) => id.clone(),
             None => next_ulid(&mut self.ids).to_string(),
         };
-        let tx = self.conn.transaction()?;
-        let prov = provenance_id(&tx, by)?;
-        if existing.is_some() {
-            tx.execute(
-                "UPDATE folders SET kind = ?2, path = ?3, capture = ?4, rules = ?5,
-                                    updated_at = ?6, updated_by = ?7
-                 WHERE id = ?1",
-                params![id, kind, path, capture, rules, now.0, prov],
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO folders (id, kind, path, capture, rules, created_at, created_by,
-                                      updated_at, updated_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6, ?7)",
-                params![id, kind, path, capture, rules, now.0, prov],
-            )?;
+        // The project a folder holds is recorded by Knode, never by the client: keep the one
+        // recorded before, whatever the rules passed say.
+        let recorded = match &existing {
+            Some(id) => self
+                .folder(id)?
+                .and_then(|f| f.rules.get(PROJECT_RULE).cloned()),
+            None => None,
+        };
+        if let Some(object) = rules.as_object_mut() {
+            object.remove(PROJECT_RULE);
+            if let Some(project) = recorded {
+                object.insert(PROJECT_RULE.into(), project);
+            }
         }
-        add_change(&tx, now, prov, actions::FOLDER_SET, &id, None)?;
-        tx.commit()?;
-        self.folder(&id)?
-            .ok_or_else(|| Error::Invalid("the folder could not be read back".into()))
+        Ok(FolderWrite {
+            id,
+            exists: existing.is_some(),
+            kind,
+            path: path.to_string(),
+            capture,
+            rules,
+        })
     }
 
     /// Removes a folder and records the change. Nothing captured or imported from it is

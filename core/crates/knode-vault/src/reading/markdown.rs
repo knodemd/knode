@@ -108,8 +108,197 @@ const BLOCKS: &[&str] = &[
     "caption",
 ];
 
-/// The Markdown of an HTML document or fragment.
+/// How deep elements are written as Markdown; below that, their text is written as one
+/// paragraph. Walking the tree is recursive, and a page or a mail can nest elements a hundred
+/// thousand deep.
+const MAX_DEPTH: usize = 128;
+
+thread_local! {
+    static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one level down while it lives; `None` when the walk is already [`MAX_DEPTH`] deep.
+struct Level;
+
+impl Level {
+    fn enter() -> Option<Level> {
+        DEPTH.with(|d| {
+            if d.get() >= MAX_DEPTH {
+                None
+            } else {
+                d.set(d.get() + 1);
+                Some(Level)
+            }
+        })
+    }
+}
+
+impl Drop for Level {
+    fn drop(&mut self) {
+        DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+/// The text of a node and everything in it, read without recursion.
+fn flat_text(node: &NodeRef<'_>) -> String {
+    escape_inline(&node.text())
+}
+
+/// How deep elements may nest for the HTML to be parsed as a tree. Deeper HTML is read as text
+/// without its tags: parsing it would take time that grows with the square of the depth.
+const MAX_PARSED_DEPTH: usize = 1000;
+
+/// Elements that have no end tag, or whose end tag is often left out.
+const UNCOUNTED: &[&str] = &[
+    "area", "base", "br", "col", "colgroup", "dd", "dt", "embed", "hr", "img", "input", "li",
+    "link", "meta", "option", "p", "param", "source", "tbody", "td", "tfoot", "th", "thead", "tr",
+    "track", "wbr",
+];
+
+/// How deep the elements of `html` nest, counted from its tags without parsing it, stopping
+/// once it is deeper than `limit`.
+fn nesting(html: &str, limit: usize) -> usize {
+    let bytes = html.as_bytes();
+    let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
+    while let Some(at) = bytes[i..].iter().position(|b| *b == b'<') {
+        i += at + 1;
+        if html[i..].starts_with("!--") {
+            match html[i..].find("-->") {
+                Some(end) => i += end + 3,
+                None => break,
+            }
+            continue;
+        }
+        let closing = bytes.get(i) == Some(&b'/');
+        let start = if closing { i + 1 } else { i };
+        let name: String = html[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if name.is_empty() || UNCOUNTED.contains(&name.as_str()) {
+            continue;
+        }
+        let end = html[start..].find('>').map(|e| start + e);
+        let self_closing = end.is_some_and(|e| e > 0 && bytes[e - 1] == b'/');
+        if closing {
+            depth = depth.saturating_sub(1);
+        } else if !self_closing {
+            depth += 1;
+            deepest = deepest.max(depth);
+            if deepest > limit {
+                return deepest;
+            }
+        }
+    }
+    deepest
+}
+
+/// The text of HTML without its tags, scripts and styles, as paragraphs: for HTML too deep to
+/// parse.
+fn text_without_tags(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut text = String::with_capacity(html.len() / 2);
+    let mut i = 0;
+    while i < html.len() {
+        let Some(at) = html[i..].find('<') else {
+            text.push_str(&html[i..]);
+            break;
+        };
+        text.push_str(&html[i..i + at]);
+        i += at;
+        let skip_to = ["script", "style"].iter().find_map(|tag| {
+            lower[i + 1..]
+                .starts_with(tag)
+                .then(|| lower[i..].find(&format!("</{tag}")).map(|e| i + e + 2))
+                .flatten()
+        });
+        if let Some(to) = skip_to {
+            i = to;
+        }
+        match html[i..].find('>') {
+            Some(end) => {
+                text.push('\n');
+                i += end + 1;
+            }
+            None => break,
+        }
+    }
+    let text = text
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    text.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .map(|l| escape_line_start(&escape_inline(&l)))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// How [`from_html_with`] writes the images of the HTML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Images {
+    /// As Markdown images (`![alt](url)`), which a viewer loads: for web pages.
+    Shown,
+    /// As links a viewer loads only when they are followed (`[image: alt](url)`, or the host
+    /// when there is no alt text), and tracking pixels (1x1 or hidden) dropped: for mail, where
+    /// loading a remote image tells the sender the mail was opened, and by whom.
+    Linked,
+}
+
+thread_local! {
+    static IMAGES: std::cell::Cell<Images> = const { std::cell::Cell::new(Images::Shown) };
+    /// How many links the walk is inside: an image there is written as text, not as a link in
+    /// a link.
+    static IN_LINK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Sets how images are written while it lives.
+struct WithImages(Images);
+
+impl WithImages {
+    fn set(images: Images) -> Self {
+        WithImages(IMAGES.with(|i| i.replace(images)))
+    }
+}
+
+impl Drop for WithImages {
+    fn drop(&mut self) {
+        IMAGES.with(|i| i.set(self.0));
+    }
+}
+
+/// Counts one link deeper while it lives.
+struct InLink;
+
+impl InLink {
+    fn enter() -> Self {
+        IN_LINK.with(|l| l.set(l.get() + 1));
+        InLink
+    }
+}
+
+impl Drop for InLink {
+    fn drop(&mut self) {
+        IN_LINK.with(|l| l.set(l.get() - 1));
+    }
+}
+
+/// The Markdown of an HTML document or fragment, its images as [`Images::Shown`].
 pub(crate) fn from_html(html: &str) -> String {
+    from_html_with(html, Images::Shown)
+}
+
+/// The Markdown of an HTML document or fragment, its images written as `images` says.
+pub(crate) fn from_html_with(html: &str, images: Images) -> String {
+    let _images = WithImages::set(images);
+    if nesting(html, MAX_PARSED_DEPTH) > MAX_PARSED_DEPTH {
+        return text_without_tags(html);
+    }
     let doc = Document::from(html);
     let root = doc
         .select("body")
@@ -138,6 +327,11 @@ fn is_dropped(node: &NodeRef<'_>) -> bool {
 
 /// Writes the blocks of a container: runs of inline content become paragraphs.
 fn blocks(node: &NodeRef<'_>, out: &mut Vec<String>) {
+    let Some(_level) = Level::enter() else {
+        let mut run = flat_text(node);
+        flush(&mut run, out);
+        return;
+    };
     let mut run = String::new();
     for child in node.children() {
         if is_dropped(&child) || child.is_comment() {
@@ -182,6 +376,11 @@ fn finish_inline(text: &str) -> String {
 }
 
 fn block(node: &NodeRef<'_>, out: &mut Vec<String>) {
+    let Some(_level) = Level::enter() else {
+        let mut run = flat_text(node);
+        flush(&mut run, out);
+        return;
+    };
     match name(node).as_str() {
         h @ ("h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
             let level: usize = h[1..].parse().unwrap_or(2);
@@ -336,6 +535,9 @@ fn inline(node: &NodeRef<'_>) -> String {
     if node.is_text() {
         return escape_inline(&node.text());
     }
+    let Some(_level) = Level::enter() else {
+        return flat_text(node);
+    };
     if !node.is_element() || is_dropped(node) {
         return String::new();
     }
@@ -354,7 +556,10 @@ fn inline(node: &NodeRef<'_>) -> String {
             format!("{fence}{text}{fence}")
         }
         "a" => {
-            let text = inline_children(node);
+            let text = {
+                let _link = InLink::enter();
+                inline_children(node)
+            };
             match node.attr("href").and_then(|h| safe_url(&h)) {
                 Some(url) if text.trim().is_empty() => {
                     format!("<{}>", url.trim_matches(['<', '>']))
@@ -381,13 +586,72 @@ fn inline(node: &NodeRef<'_>) -> String {
                 .attr("alt")
                 .map(|a| escape_inline(a.trim()))
                 .unwrap_or_default();
-            match node.attr("src").and_then(|s| safe_url(&s)) {
-                Some(url) if !url.starts_with("mailto:") => format!("![{alt}]({url})"),
-                _ => alt,
+            let src = node.attr("src").map(|s| s.trim().to_string());
+            let url = src
+                .as_deref()
+                .and_then(safe_url)
+                .filter(|u| !u.starts_with("mailto:"));
+            match (url, IMAGES.with(|i| i.get())) {
+                (Some(url), Images::Shown) => format!("![{alt}]({url})"),
+                (Some(_), Images::Linked) if is_tracking_pixel(node) => String::new(),
+                (Some(url), Images::Linked) => {
+                    let label = if alt.is_empty() {
+                        escape_inline(&host(src.as_deref().unwrap_or_default()))
+                    } else {
+                        alt
+                    };
+                    if IN_LINK.with(|l| l.get()) > 0 {
+                        format!("image: {label}")
+                    } else {
+                        format!("[image: {label}]({url})")
+                    }
+                }
+                (None, _) => alt,
             }
         }
         _ => inline_children(node),
     }
+}
+
+/// Whether an image is there only to tell the sender the mail was opened: 1x1 or smaller, or
+/// hidden.
+fn is_tracking_pixel(node: &NodeRef<'_>) -> bool {
+    let tiny = |value: &str| {
+        let digits: String = value
+            .trim()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        !digits.is_empty() && digits.parse::<u64>().is_ok_and(|n| n <= 1)
+    };
+    if ["width", "height"]
+        .iter()
+        .any(|a| node.attr(a).is_some_and(|v| tiny(&v)))
+    {
+        return true;
+    }
+    let style: String = node
+        .attr("style")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    style.split(';').any(|rule| match rule.split_once(':') {
+        Some(("display", "none")) | Some(("visibility", "hidden")) => true,
+        Some(("width" | "height" | "max-width" | "max-height", value)) => tiny(value),
+        _ => false,
+    })
+}
+
+/// The host of a URL: what is between `://` and the path, without a user name.
+fn host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -403,6 +667,60 @@ mod tests {
         assert_eq!(
             plain.split_whitespace().collect::<Vec<_>>(),
             text.split_whitespace().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn deeply_nested_html_does_not_overflow_the_stack() {
+        let depth = 100_000;
+        for tag in ["div", "b", "blockquote"] {
+            let html = format!(
+                "<p>Top</p>{}deep text{}",
+                format!("<{tag}>").repeat(depth),
+                format!("</{tag}>").repeat(depth)
+            );
+            let md = from_html(&html);
+            assert!(md.starts_with("Top"), "{tag}: {}", &md[..md.len().min(80)]);
+            assert!(md.contains("deep text"), "{tag}");
+        }
+        // Deep, but parsed: what is below the depth Knode walks is written as text.
+        let html = format!(
+            "{}<b>deep</b> text{}",
+            "<div>".repeat(900),
+            "</div>".repeat(900)
+        );
+        assert_eq!(from_html(&html), "deep text");
+        assert_eq!(
+            nesting("<div><p>a<br><img src=x/><div>b</div></div>", 10),
+            2
+        );
+    }
+
+    #[test]
+    fn mail_images_are_links_and_tracking_pixels_are_dropped() {
+        let html = r#"<p>Deals this week</p>
+            <img src="https://tracker.shop.example/open.gif?u=42&amp;t=abc" width="1" height="1">
+            <img src="https://t.example/p.gif" style="display: none">
+            <img src="https://t.example/q.gif" style="width:0px;height:0px">
+            <p><img src="https://cdn.shop.example/banner.png" width="600"></p>
+            <p><img src="https://user@cdn.shop.example:8080/logo.png?x=1" alt="Shop logo"></p>
+            <p><a href="https://shop.example/buy"><img src="https://cdn.shop.example/b.png" alt="Buy"></a></p>
+            <p><img src="cid:part1@shop.example" alt="Inline"></p>"#;
+        let md = from_html_with(html, Images::Linked);
+        assert_eq!(
+            md,
+            "Deals this week\n\n\
+             [image: cdn.shop.example](https://cdn.shop.example/banner.png)\n\n\
+             [image: Shop logo](https://user@cdn.shop.example:8080/logo.png?x=1)\n\n\
+             [image: Buy](https://shop.example/buy)\n\n\
+             Inline"
+        );
+        assert!(!md.contains("!["), "{md}");
+        assert!(!md.contains("tracker") && !md.contains("t.example"), "{md}");
+        // Web pages keep their images, and the mode does not leak into the next call.
+        assert_eq!(
+            from_html(r#"<img src="https://example.com/a.png" alt="A">"#),
+            "![A](https://example.com/a.png)"
         );
     }
 

@@ -273,7 +273,18 @@ extension SpaceFolder {
             capture: folder.capture,
             rules: folder.rules,
             localURL: folder.local.map { URL(filePath: $0, directoryHint: .isDirectory) },
-            isMissing: folder.missing
+            isMissing: folder.missing,
+            project: folder.projectId.map {
+                Project(
+                    id: $0,
+                    title: folder.projectTitle ?? "",
+                    created: folder.projectCreated,
+                    alreadyHeld: folder.projectAlreadyHeld,
+                    passedOver: folder.projectPassedOver,
+                    passedOverFolders: folder.projectPassedOverFolders,
+                    sharedWith: folder.projectSharedWith
+                )
+            }
         )
     }
 }

@@ -99,6 +99,11 @@ fn adds_changes_and_removes_folders() {
         added.local.as_deref(),
         Some(project.display().to_string().as_str())
     );
+    // Adding a project folder creates the project node named after it.
+    assert_eq!(added.project_title.as_deref(), Some("site"));
+    assert!(added.project_created);
+    let project_id = added.project_id.clone().unwrap();
+    assert_eq!(space.projects().unwrap().len(), 1);
 
     // Turning capture off keeps the rules that are passed back.
     let mut off = draft("project", &project, &added.rules);
@@ -108,12 +113,30 @@ fn adds_changes_and_removes_folders() {
     assert_eq!(changed.id, added.id);
     assert!(!changed.capture);
     assert!(changed.rules.contains("node_modules"));
+    assert_eq!(changed.project_id.as_deref(), Some(project_id.as_str()));
+    assert!(!changed.project_created);
+
+    // Another folder named site gets a project of its own, named after its parent folder.
+    let twin = dir.path().join("archive").join("site");
+    let other = space
+        .set_folder(draft("project", &twin, "{}"), me())
+        .unwrap();
+    assert_eq!(other.project_title.as_deref(), Some("site (archive)"));
+    assert!(other.project_created);
+    assert_eq!(other.project_passed_over.as_deref(), Some("site"));
+    assert_eq!(
+        other.project_passed_over_folders,
+        std::slice::from_ref(&changed.path)
+    );
+    assert!(other.project_shared_with.is_empty());
+    assert!(space.remove_folder(other.id, me()).unwrap());
 
     let sessions = dir.path().join("gone");
     let agent_folder = space
         .set_folder(draft("agent", &sessions, r#"{"agent":"codex"}"#), me())
         .unwrap();
     assert!(agent_folder.missing);
+    assert_eq!(agent_folder.project_id, None);
     assert!(matches!(
         space.set_folder(draft("agent", &sessions, "{}"), me()),
         Err(KnodeError::Invalid { .. })
@@ -131,6 +154,13 @@ fn adds_changes_and_removes_folders() {
     assert!(space.remove_folder(added.id.clone(), me()).unwrap());
     assert!(!space.remove_folder(added.id, me()).unwrap());
     assert_eq!(space.folders().unwrap(), [agent_folder]);
+    // The projects stay when their folders go, and adding the folder again finds its own.
+    assert_eq!(space.projects().unwrap().len(), 2);
+    let again = space
+        .set_folder(draft("project", &project, "{}"), me())
+        .unwrap();
+    assert_eq!(again.project_id.as_deref(), Some(project_id.as_str()));
+    assert!(!again.project_created && !again.project_already_held);
 }
 
 #[test]
@@ -184,4 +214,20 @@ fn remembers_and_forgets_spaces_in_the_config() {
     ));
     let text = std::fs::read_to_string(paths.config_file()).unwrap();
     assert!(text.contains("capture = false"), "{text}");
+}
+
+#[test]
+fn names_the_project_a_folder_adds() {
+    use crate::spaces::folder_project_title;
+    assert_eq!(
+        folder_project_title("/Volumes/Work/site [old]".into()).as_deref(),
+        Some("site (old)")
+    );
+    assert_eq!(
+        folder_project_title("/Volumes/Cafe\u{301}/".into()).as_deref(),
+        Some("Caf\u{e9}")
+    );
+    let home = std::env::var("HOME").unwrap();
+    assert_eq!(folder_project_title(home), None);
+    assert_eq!(folder_project_title("/".into()), None);
 }

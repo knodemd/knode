@@ -790,7 +790,9 @@ fn set_default_space_in(paths: &knode_config::Paths, path: Option<String>) -> Re
 }
 
 fn spaces_in_folder_of(paths: &knode_config::Paths) -> Result<Vec<String>> {
-    let spaces = paths.spaces_in_dir().map_err(config_error)?;
+    let mut spaces = paths.spaces_in_dir().map_err(config_error)?;
+    // Archived copies are kept for recovery, not listed in the sidebar.
+    spaces.retain(|p| !knode_config::is_archived_space(p));
     Ok(spaces.iter().map(|p| p.display().to_string()).collect())
 }
 
