@@ -63,6 +63,7 @@ mod windsurf;
 
 pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
+pub use chats::whatsapp_mac;
 pub use chats::{
     CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, detect_chat_export,
     import_chat_export, keys as chat_keys,
