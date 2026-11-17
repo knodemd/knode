@@ -1,0 +1,183 @@
+{
+ "name": "Book Club",
+ "type": "private_supergroup",
+ "id": 1000000001,
+ "messages": [
+  {
+   "id": 1,
+   "type": "service",
+   "date": "2026-03-04T09:14:00",
+   "date_unixtime": "1772615640",
+   "actor": "Ada",
+   "actor_id": "user101",
+   "action": "create_group",
+   "title": "Book Club",
+   "members": [
+    "Ada",
+    "Grace"
+   ],
+   "text": "",
+   "text_entities": []
+  },
+  {
+   "id": 2,
+   "type": "message",
+   "date": "2026-03-04T09:15:02",
+   "date_unixtime": "1772615702",
+   "from": "Ada",
+   "from_id": "user101",
+   "text": [
+    "Shall we read ",
+    {
+     "type": "bold",
+     "text": "the lighthouse novel"
+    },
+    " next? Notes are ",
+    {
+     "type": "text_link",
+     "text": "here",
+     "href": "https://example.com/notes"
+    },
+    "."
+   ],
+   "text_entities": [
+    {
+     "type": "plain",
+     "text": "Shall we read "
+    },
+    {
+     "type": "bold",
+     "text": "the lighthouse novel"
+    },
+    {
+     "type": "plain",
+     "text": " next? Notes are "
+    },
+    {
+     "type": "text_link",
+     "text": "here",
+     "href": "https://example.com/notes"
+    },
+    {
+     "type": "plain",
+     "text": "."
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "message",
+   "date": "2026-03-04T09:16:10",
+   "date_unixtime": "1772615770",
+   "from": "Grace",
+   "from_id": "user102",
+   "reply_to_message_id": 2,
+   "text": [
+    {
+     "type": "mention",
+     "text": "@ada"
+    },
+    " yes! Run ",
+    {
+     "type": "code",
+     "text": "make list"
+    },
+    " first."
+   ],
+   "text_entities": [
+    {
+     "type": "mention",
+     "text": "@ada"
+    },
+    {
+     "type": "plain",
+     "text": " yes! Run "
+    },
+    {
+     "type": "code",
+     "text": "make list"
+    },
+    {
+     "type": "plain",
+     "text": " first."
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "type": "message",
+   "date": "2026-03-04T09:17:00",
+   "date_unixtime": "1772615820",
+   "from": "Ada",
+   "from_id": "user101",
+   "photo": "photos/photo_1@04-03-2026_09-17-00.jpg",
+   "width": 800,
+   "height": 600,
+   "text": "The cover",
+   "text_entities": [
+    {
+     "type": "plain",
+     "text": "The cover"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "message",
+   "date": "2026-03-04T09:18:00",
+   "date_unixtime": "1772615880",
+   "from": "Grace",
+   "from_id": "user102",
+   "file": "voice_messages/audio_1@04-03-2026_09-18-00.ogg",
+   "media_type": "voice_message",
+   "mime_type": "audio/ogg",
+   "duration_seconds": 4,
+   "text": "",
+   "text_entities": []
+  },
+  {
+   "id": 6,
+   "type": "message",
+   "date": "2026-03-05T20:00:00",
+   "date_unixtime": "1772740800",
+   "from": "Grace",
+   "from_id": "user102",
+   "file": "(File not included. Change data exporting settings to download.)",
+   "file_name": "reading-list.pdf",
+   "mime_type": "application/pdf",
+   "text": "",
+   "text_entities": []
+  },
+  {
+   "id": 7,
+   "type": "message",
+   "date": "2026-03-05T20:01:00",
+   "date_unixtime": "1772740860",
+   "from": "Linus",
+   "from_id": "user103",
+   "reply_to_message_id": 2,
+   "text": [
+    {
+     "type": "italic",
+     "text": "Finally "
+    },
+    {
+     "type": "pre",
+     "text": "fn main() {}",
+     "language": "rust"
+    }
+   ],
+   "text_entities": [
+    {
+     "type": "italic",
+     "text": "Finally "
+    },
+    {
+     "type": "pre",
+     "text": "fn main() {}",
+     "language": "rust"
+    }
+   ]
+  }
+ ]
+}

@@ -33,6 +33,14 @@ pub struct SpaceFolder {
     pub created_at: i64,
     /// When it last changed, ms UTC.
     pub updated_at: i64,
+    /// For a project folder, the id of the `project` node of the same name it holds the files
+    /// of. `None` for other folders, and for a project folder added before Knode made these.
+    pub project_id: Option<String>,
+    /// The title of that project node.
+    pub project_title: Option<String>,
+    /// Whether adding the folder just created that project node, rather than finding the one
+    /// the space had. Always `false` in a list of folders.
+    pub project_created: bool,
 }
 
 impl From<knode_service::FolderInfo> for SpaceFolder {
@@ -47,6 +55,9 @@ impl From<knode_service::FolderInfo> for SpaceFolder {
             missing: info.missing,
             created_at: info.folder.created_at.0,
             updated_at: info.folder.updated_at.0,
+            project_id: info.project.as_ref().map(|p| p.node.id.to_string()),
+            project_title: info.project.as_ref().map(|p| p.node.title.clone()),
+            project_created: info.project.is_some_and(|p| p.created),
         }
     }
 }
@@ -74,6 +85,15 @@ pub struct CaptureAgent {
     pub id: String,
     /// Its name for people, such as `Claude Code`.
     pub name: String,
+}
+
+/// The title of the project a project folder at `path` (absolute) holds, as adding it names the
+/// project: the folder's name in NFC, with `[`, `]` and `|` replaced. `None` for the home folder
+/// and the root of a disk, which add no project.
+#[uniffi::export]
+pub fn folder_project_title(path: String) -> Option<String> {
+    let recorded = knode_service::markdown::record_path(Path::new(path.trim()));
+    knode_format::folder_project_name(&recorded)
 }
 
 /// The agents capture reads, in the order Knode lists them.
@@ -129,7 +149,9 @@ impl KnodeSpace {
         Ok(folders.into_iter().map(SpaceFolder::from).collect())
     }
 
-    /// Adds a folder, or changes one, and returns it. Only a person can change folders.
+    /// Adds a folder, or changes one, and returns it. Adding a project folder also creates the
+    /// `project` node named after it, or finds the one the space has. Only a person can change
+    /// folders.
     pub fn set_folder(&self, folder: FolderDraft, by: Provenance) -> Result<SpaceFolder> {
         let rules_value: serde_json::Value = if folder.rules.trim().is_empty() {
             serde_json::Value::Object(Default::default())
@@ -149,8 +171,8 @@ impl KnodeSpace {
         Ok(info.into())
     }
 
-    /// Removes a folder. Nothing captured or imported from it is removed. Returns whether there
-    /// was one. Only a person can change folders.
+    /// Removes a folder. Nothing captured or imported from it is removed, and a project folder's
+    /// `project` node stays. Returns whether there was one. Only a person can change folders.
     pub fn remove_folder(&self, id: String, by: Provenance) -> Result<bool> {
         Ok(rules::remove_folder(&mut self.lock(), &id, &by.into())?)
     }

@@ -317,9 +317,14 @@ fn routes_conversations_by_the_folders_of_every_space() {
     thread::sleep(Duration::from_millis(500));
     assert_eq!(conversations(&client, &work), vec!["Plan the work release"]);
     assert_eq!(conversations(&client, &personal), vec!["Plan a holiday"]);
-    // Capture off for a project, or excluded by its rules: stored nowhere at all.
+    // Capture off for a project, or excluded by its rules: stored nowhere at all. Only the
+    // project node the person made by adding the secret folder is found.
     for space in [&work, &personal] {
-        assert!(client.search(space, "secret", 10).unwrap().is_empty());
+        let found = client.search(space, "secret", 10).unwrap();
+        assert!(
+            found.iter().all(|hit| hit.node.kind == "project"),
+            "{found:?}"
+        );
         assert!(client.search(space, "scratch", 10).unwrap().is_empty());
     }
     let state = fs::read_to_string(fixture.home().join("capture/state.json")).unwrap();
