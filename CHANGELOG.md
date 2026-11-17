@@ -25,6 +25,14 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Apple Mail connector**: new mail of every account you added to Apple Mail on your Mac
+  (Gmail, iCloud, Outlook, Exchange, any IMAP account, and the mailboxes On My Mac) comes into
+  your space within a minute, through the same mail import, so threads, people and your edits
+  are kept, and mail you imported before from an Apple Mail export or a Gmail Takeout file is
+  not added twice. Every mailbox comes in, new ones too, except spam, trash and the mailboxes you
+  exclude. It reads Mail's files without changing them, needs Full Disk Access and says how to
+  give it, and stops with a clear message if a new version of Mail changes its index.
+  `knode sources connect apple-mail` turns it on.
 
 ### v0.3 - Map and import (in progress)
 
