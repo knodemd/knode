@@ -1136,6 +1136,7 @@ fn markdown_file(
     // The file is known by where it is, recorded as folders are, so files with the same name
     // in two folders are two notes.
     let key = crate::markdown::record_path(file);
+    adopt_older_import(space, file, &text, &key, by)?;
     let report = knode_vault::import_file(space, file, &key, Some(title.clone()), by)
         .map_err(vault_error)?;
     // One file, one note: the report names it by its title, as before.
@@ -1149,6 +1150,40 @@ fn markdown_file(
     result.attached = report.attached.len();
     for s in report.skipped.iter().chain(&report.unlinked) {
         result.skip(s.path.clone(), s.reason.clone());
+    }
+    Ok(())
+}
+
+/// Gives the key of `file` to the node an earlier version of Knode made from it, so importing
+/// it now updates that node instead of making a second one. That version named the note by its
+/// first heading or file name, kept the file as its body and recorded the file as the source of
+/// the note; a node with that title that has the same body or that source, and was not imported
+/// by the folder reader, is it.
+fn adopt_older_import(
+    space: &mut Space,
+    file: &Path,
+    text: &str,
+    key: &str,
+    by: &Provenance,
+) -> Result<(), ImportError> {
+    use knode_vault::property_keys as keys;
+    if !space.find_by_property(keys::FILE, key)?.is_empty() {
+        return Ok(());
+    }
+    let source = file.display().to_string();
+    for found in space.find_by_title(&markdown_title(text, file))? {
+        let Some(node) = space.get_node(&found.id)? else {
+            continue;
+        };
+        if space.property(&node.id, keys::PATH)?.is_some()
+            || space.property(&node.id, keys::FILE)?.is_some()
+        {
+            continue;
+        }
+        if node.body == text || node.created_by.source.as_deref() == Some(source.as_str()) {
+            space.set_property(&node.id, keys::FILE, key, by)?;
+            return Ok(());
+        }
     }
     Ok(())
 }
