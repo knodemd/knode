@@ -51,6 +51,12 @@ belongs to, newest first.
   space as edits of the folder's owner, new files become notes, renamed or moved files rename or
   move their note, and edits made while Knode was not running come in at start. A deleted file
   never deletes its note: the note is marked and kept, and the Mac app does not ask about it yet.
+- **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
+  Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
+  become notes of the space, each part of the project that folder belongs to: a project folder of
+  the space, a project made by guided import from that folder, or a project named as the folder.
+  No project is made up: notes whose folder matches none are imported on their own and listed.
+  Importing again updates the same notes.
 
 #### Changed
 

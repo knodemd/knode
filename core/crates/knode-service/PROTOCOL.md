@@ -278,6 +278,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
+| `claude-code-memory` | Claude Code's `.claude` folder or its `projects` folder; without `path`, `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`, of the service. Each `<folder>/memory/*.md` but `MEMORY.md` becomes a note (`markdown.path` `claude-code-memory/<folder>/<file>`), `part-of` the project its folder belongs to; folders that are symbolic links are left out |
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -294,6 +295,9 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
   missing for the files of a Markdown folder, which are named by their path.
 - `skipped` lists `{ "item", "reason" }` for what could not be imported; the rest was. `notes`
   lists what else is worth knowing, such as files left out or parts of a note read only in part.
+- `linked` (`{ "<project title>": <count> }`) and `unmatched` (a list), only when not empty, say
+  how many nodes were linked `part-of` each project and what matched no project, for
+  `claude-code-memory`, where `unmatched` lists the encoded folders whose notes have no project.
 - Importing the same thing again finds the same nodes: it writes only what changed.
 - Every node written is announced with `changed`, as for any write, even when the import fails
   part way.

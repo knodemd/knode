@@ -109,6 +109,7 @@
 
 pub mod apps;
 mod attachments;
+pub mod claude_memory;
 mod frontmatter;
 mod import;
 mod live;

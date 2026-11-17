@@ -11,7 +11,7 @@ use knode_service::{ImportOutcome, ImportedNode};
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 12] = [
+pub const FROM: [&str; 13] = [
     "export",
     "markdown",
     "session",
@@ -24,6 +24,7 @@ pub const FROM: [&str; 12] = [
     "bear",
     "notion",
     "evernote",
+    "claude-code-memory",
 ];
 
 /// How many nodes the summary lists one by one.
@@ -31,7 +32,8 @@ const LISTED: usize = 20;
 
 /// What `knode import` was asked for.
 pub struct Request<'a> {
-    /// A path, or an http(s) URL; none for `--from apple-notes` or `--from bear`.
+    /// A path, or an http(s) URL; none for `--from apple-notes`, `--from bear` or
+    /// `--from claude-code-memory`.
     pub target: Option<&'a str>,
     /// The kind named with `--from`.
     pub from: Option<&'a str>,
@@ -65,6 +67,11 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
     }
     // Checked here first, without the space: a wrong kind or a missing file fails at once.
     let mut what = import::prepare(path.as_deref(), url, from).map_err(|e| anyhow!("{e}"))?;
+    // Claude Code's memory of this person, where their environment says, not the service's.
+    let path = match (&path, what.source()) {
+        (None, ImportSource::ClaudeCodeMemory) => Some(PathBuf::from(what.from())),
+        _ => path,
+    };
     // The token of this machine; without one, Knode Service reads its own.
     let token = if what.needs_readwise_token() {
         knode_service::readwise::token(request.home)?

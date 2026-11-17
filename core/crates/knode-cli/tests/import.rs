@@ -265,3 +265,68 @@ fn preview_needs_no_destination_and_keeps_an_existing_space_unchanged() {
         "Review [[Missing]]."
     );
 }
+
+#[test]
+fn claude_code_memory_comes_from_claude_config_dir_into_its_projects() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    // The sandbox points CLAUDE_CONFIG_DIR at `claude`.
+    let projects = sb.path("claude/projects");
+    for (folder, file, text) in [
+        (
+            "-Users-ada-Work-web-app",
+            "build.md",
+            "---\nname: Build steps\ndescription: How to build\nmetadata:\n  type: project\n---\n\nRun make.\n",
+        ),
+        (
+            "-Users-ada-Work-web-app",
+            "MEMORY.md",
+            "- [Build steps](build.md)\n",
+        ),
+        ("-Users-ada-Elsewhere", "loose.md", "Loose.\n"),
+    ] {
+        let dir = projects.join(folder).join("memory");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(file), text).unwrap();
+    }
+    {
+        let mut space = knode_format::Space::open(sb.space("work")).unwrap();
+        space
+            .create_node(
+                knode_format::NewNode {
+                    kind: "project".into(),
+                    title: "web.app".into(),
+                    ..Default::default()
+                },
+                &knode_format::Provenance::person("tester"),
+            )
+            .unwrap();
+    }
+
+    let out = sb.ok(&["import", "--from", "claude-code-memory", "--json"]);
+    let report: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(report["source"], "claude-code-memory");
+    assert_eq!(report["format"], "Claude Code memory");
+    assert_eq!(report["created"], 2, "{out}");
+    assert_eq!(report["linked"]["web.app"], 1, "{out}");
+    assert_eq!(report["unmatched"][0], "-Users-ada-Elsewhere", "{out}");
+
+    let out = sb.ok(&[
+        "import",
+        "--from",
+        "claude-code-memory",
+        s(&sb.path("claude")),
+    ]);
+    assert!(
+        out.contains("(Claude Code memory): 0 new, 0 updated, 2 unchanged."),
+        "{out}"
+    );
+    assert!(out.contains("1 note part of web.app"), "{out}");
+    let out = sb.fails(&[
+        "import",
+        "--from",
+        "claude-code-memory",
+        s(&sb.path("nowhere")),
+    ]);
+    assert!(out.contains("does not exist"), "{out}");
+}

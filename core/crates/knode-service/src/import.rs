@@ -9,8 +9,11 @@
 //! - reading, with [`knode_vault::reading`]: a PDF, a saved web page, a web page fetched from
 //!   an `http` or `https` URL the person gave, Kindle clippings or a Kindle notebook, and
 //!   Readwise CSV and Markdown exports;
-//! - notes from other apps, with [`knode_vault::apps`]: Apple Notes, Bear, Notion and Evernote.
+//! - notes from other apps, with [`knode_vault::apps`]: Apple Notes, Bear, Notion and Evernote;
+//! - the memory Claude Code keeps for each folder, with [`knode_vault::claude_memory`], each note
+//!   `part-of` the project of the space its folder belongs to.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -18,6 +21,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{NewNode, NodeId, NodeUpdate, Provenance, Space, kinds};
 use knode_ingest::{Agent, SessionReader, to_markdown};
 use knode_vault::apps::{self, NoteApp};
+use knode_vault::claude_memory::{self, MemoryOutcome};
 use knode_vault::reading::{self, Outcome, ReadingReport};
 use serde::{Deserialize, Serialize};
 
@@ -52,11 +56,14 @@ pub enum ImportSource {
     Notion,
     /// Evernote: `.enex` files, or a folder of them.
     Evernote,
+    /// The memory Claude Code keeps for each folder it works in: its `.claude` folder or the
+    /// `projects` folder inside, by default the one of this machine.
+    ClaudeCodeMemory,
 }
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 12] = [
+    pub const ALL: [ImportSource; 13] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -69,10 +76,12 @@ impl ImportSource {
         ImportSource::Bear,
         ImportSource::Notion,
         ImportSource::Evernote,
+        ImportSource::ClaudeCodeMemory,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
-    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`.
+    /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`,
+    /// `claude-code-memory`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -87,6 +96,7 @@ impl ImportSource {
             ImportSource::Bear => "bear",
             ImportSource::Notion => "notion",
             ImportSource::Evernote => "evernote",
+            ImportSource::ClaudeCodeMemory => "claude-code-memory",
         }
     }
 
@@ -186,6 +196,14 @@ pub struct ImportResult {
     /// What else is worth knowing: what was left out or read only in part.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// How many nodes were linked `part-of` each project, by project title, for imports that
+    /// link what they read to projects (Claude Code memory).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub linked: BTreeMap<String, usize>,
+    /// What matched no project of the space and was imported without one: for Claude Code
+    /// memory, the encoded folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unmatched: Vec<String>,
 }
 
 impl ImportResult {
@@ -203,6 +221,8 @@ impl ImportResult {
             nodes: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
+            linked: BTreeMap::new(),
+            unmatched: Vec::new(),
         }
     }
 
@@ -289,7 +309,8 @@ impl std::fmt::Debug for Secret {
 pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of Markdown files, \
      a .md file, a Claude Code or Codex session (.jsonl), a PDF, a saved web page (.html), an \
      http(s) URL, Kindle's My Clippings.txt or notebook, a Readwise CSV or Markdown export, \
-     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export or an Evernote .enex file";
+     Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file \
+     or Claude Code's memory";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +333,7 @@ enum Input {
     ReadwiseMarkdown(PathBuf),
     ReadwiseApi(Option<Secret>),
     App(NoteApp, PathBuf),
+    ClaudeCodeMemory(PathBuf),
 }
 
 impl Prepared {
@@ -327,6 +349,7 @@ impl Prepared {
             Input::ReadwiseCsv(_) | Input::ReadwiseMarkdown(_) => ImportSource::Readwise,
             Input::ReadwiseApi(_) => ImportSource::ReadwiseApi,
             Input::App(app, _) => ImportSource::of_app(*app),
+            Input::ClaudeCodeMemory(_) => ImportSource::ClaudeCodeMemory,
         }
     }
 
@@ -353,6 +376,7 @@ impl Prepared {
                 NoteApp::Notion => "Notion export".into(),
                 _ => "Evernote export".into(),
             },
+            Input::ClaudeCodeMemory(_) => "Claude Code memory".into(),
         }
     }
 
@@ -384,7 +408,8 @@ impl Prepared {
             | Input::KindleNotebook(p)
             | Input::ReadwiseCsv(p)
             | Input::ReadwiseMarkdown(p)
-            | Input::App(_, p) => p.display().to_string(),
+            | Input::App(_, p)
+            | Input::ClaudeCodeMemory(p) => p.display().to_string(),
         }
     }
 }
@@ -397,7 +422,8 @@ pub fn is_url(text: &str) -> bool {
 
 /// Tells what to import: the page at `url` (only `http` and `https`, fetched when [`run`]
 /// runs), or what is at `path`, as `from` names it or as found from the path and its content.
-/// For Apple Notes and Bear, no path means the app's own notes on this Mac. `path` must be
+/// For Apple Notes and Bear, no path means the app's own notes on this Mac; for Claude Code
+/// memory, the `projects` folder of `CLAUDE_CONFIG_DIR`, else of `~/.claude`. `path` must be
 /// absolute.
 pub fn prepare(
     path: Option<&Path>,
@@ -427,6 +453,20 @@ pub fn prepare(
             }
         }
         (None, None) if from == Some(ImportSource::ReadwiseApi) => Input::ReadwiseApi(None),
+        (None, None) if from == Some(ImportSource::ClaudeCodeMemory) => {
+            let Some(location) = claude_memory::default_location(|name| std::env::var_os(name))
+            else {
+                return Err(ImportError::Unknown(
+                    "cannot tell where Claude Code keeps its memory: give the path of its \
+                     .claude folder"
+                        .into(),
+                ));
+            };
+            if !location.is_dir() {
+                return Err(ImportError::NotFound(location));
+            }
+            Input::ClaudeCodeMemory(location)
+        }
         (None, None) => match from.and_then(ImportSource::app) {
             Some(app @ (NoteApp::AppleNotes | NoteApp::Bear)) => {
                 let Some(location) = app.default_location() else {
@@ -509,6 +549,12 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         | ImportSource::Bear
         | ImportSource::Notion
         | ImportSource::Evernote => Input::App(source.app().expect("a note app"), p),
+        ImportSource::ClaudeCodeMemory if path.is_dir() => {
+            Input::ClaudeCodeMemory(claude_memory::projects_folder(path))
+        }
+        ImportSource::ClaudeCodeMemory => {
+            return not("Claude Code's .claude folder or the projects folder inside it");
+        }
     })
 }
 
@@ -755,6 +801,50 @@ pub fn run(
                 result.skip(s.path.clone(), s.reason.clone());
             }
             result.notes.extend(report.limits.iter().cloned());
+        }
+        Input::ClaudeCodeMemory(path) => {
+            let report =
+                claude_memory::import_claude_code_memory(space, path, by).map_err(vault_error)?;
+            for n in &report.notes {
+                let outcome = match n.outcome {
+                    MemoryOutcome::Created => ImportOutcome::Created,
+                    MemoryOutcome::Updated => ImportOutcome::Updated,
+                    MemoryOutcome::Unchanged => ImportOutcome::Unchanged,
+                };
+                result.node(Some(n.id), n.title.clone(), outcome);
+                result.nodes.last_mut().expect("just added").note = Some(match &n.project {
+                    Some(project) => format!("part of {project}"),
+                    None => format!("no project matches {}", n.folder),
+                });
+            }
+            for s in &report.skipped {
+                result.skip(s.path.clone(), s.reason.clone());
+            }
+            for (project, n) in &report.linked {
+                result
+                    .notes
+                    .push(format!("{} part of {project}", plural(*n, "note")));
+            }
+            if !report.unmatched.is_empty() {
+                result.notes.push(format!(
+                    "{} matched no project of the space and {} imported without one: {}",
+                    plural(report.unmatched.len(), "folder"),
+                    if report.unmatched.len() == 1 {
+                        "was"
+                    } else {
+                        "were"
+                    },
+                    report.unmatched.join(", ")
+                ));
+            }
+            if !report.left_out.is_empty() {
+                result.notes.push(format!(
+                    "Left out {}: MEMORY.md indexes, and folders that link to other folders.",
+                    plural(report.left_out.len(), "item")
+                ));
+            }
+            result.linked = report.linked;
+            result.unmatched = report.unmatched;
         }
     }
     Ok(result)
