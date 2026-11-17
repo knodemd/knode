@@ -47,6 +47,7 @@ $(SRCROOT)/../core/crates/knode-ingest/src/chats/mod.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/model.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/render.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/whatsapp.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/chats/whatsapp_mac.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/write.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/claude_code.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/cline.rs
@@ -68,6 +69,8 @@ $(SRCROOT)/../core/crates/knode-ingest/src/opencode.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/reader.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/redact.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/render.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/sources/mod.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/sources/sqlite.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/text.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/vscdb.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/watch.rs
