@@ -196,6 +196,44 @@ enum Order {
     MonthDay,
 }
 
+impl Order {
+    /// How the order is kept in [`keys::DATE_ORDER`](super::keys::DATE_ORDER).
+    fn id(self) -> &'static str {
+        match self {
+            Order::DayMonth => "day-month",
+            Order::MonthDay => "month-day",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Order> {
+        match id {
+            "day-month" => Some(Order::DayMonth),
+            "month-day" => Some(Order::MonthDay),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Order::DayMonth => "day/month",
+            Order::MonthDay => "month/day",
+        }
+    }
+}
+
+/// What told the order of day and month.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Basis {
+    /// Every date has its year first: nothing to tell.
+    YearFirst,
+    /// A number over 12.
+    Numbers,
+    /// Only one order keeps the messages in time.
+    Chronology,
+    /// Nothing in the dates: the locale's habit.
+    Habit,
+}
+
 fn date(header: &Header, order: Order) -> Option<NaiveDate> {
     let n = |i: usize| header.date[i].parse::<i32>().ok();
     let year = |s: &str, v: i32| if s.len() <= 2 { 2000 + v } else { v };
@@ -220,10 +258,26 @@ fn time(header: &Header, order: Order) -> Option<NaiveDateTime> {
     date(header, order)?.and_hms_opt(hour, header.minute, header.second)
 }
 
+/// Whether the dates can be read in `order`: none has a month over 12 in it. (A date that
+/// is not one either way, such as 31/02, does not count.)
+fn possible(headers: &[Header], order: Order) -> bool {
+    let month = match order {
+        Order::DayMonth => 1,
+        Order::MonthDay => 0,
+    };
+    headers
+        .iter()
+        .filter(|h| h.date[0].len() != 4)
+        .all(|h| h.date[month].parse::<u32>().is_ok_and(|m| m <= 12))
+}
+
 /// The order of day and month: a number over 12 tells, else the order that keeps the messages
 /// in time, else the locale's habit: `/` with `AM` and `PM` is the United States.
-fn order(headers: &[Header]) -> Order {
+fn order(headers: &[Header]) -> (Order, Basis) {
     let last_year = headers.iter().filter(|h| h.date[0].len() != 4);
+    if last_year.clone().next().is_none() {
+        return (Order::DayMonth, Basis::YearFirst);
+    }
     let mut first_big = false;
     let mut second_big = false;
     for h in last_year.clone() {
@@ -231,8 +285,8 @@ fn order(headers: &[Header]) -> Order {
         second_big |= h.date[1].parse::<u32>().is_ok_and(|n| n > 12);
     }
     match (first_big, second_big) {
-        (true, false) => return Order::DayMonth,
-        (false, true) => return Order::MonthDay,
+        (true, false) => return (Order::DayMonth, Basis::Numbers),
+        (false, true) => return (Order::MonthDay, Basis::Numbers),
         _ => {}
     }
     let backwards = |order: Order| {
@@ -243,18 +297,19 @@ fn order(headers: &[Header]) -> Order {
     };
     let (dm, md) = (backwards(Order::DayMonth), backwards(Order::MonthDay));
     if dm != md {
-        return if dm < md {
+        let order = if dm < md {
             Order::DayMonth
         } else {
             Order::MonthDay
         };
+        return (order, Basis::Chronology);
     }
     let twelve_hours = headers.iter().any(|h| h.plain_am_pm);
     let slash = last_year.clone().next().is_some_and(|h| h.separator == '/');
     if slash && twelve_hours {
-        Order::MonthDay
+        (Order::MonthDay, Basis::Habit)
     } else {
-        Order::DayMonth
+        (Order::DayMonth, Basis::Habit)
     }
 }
 
@@ -267,8 +322,29 @@ fn without_bidi(text: &str) -> String {
     text.chars().filter(|c| !is_bidi(*c)).collect()
 }
 
-/// Reads the chat in `chat_file` of the export at `path`.
-pub(crate) fn read(files: &mut Files, path: &Path, chat_file: &str) -> std::io::Result<Chat> {
+/// A chat read from an export, and what is worth knowing about how.
+pub(crate) struct Read {
+    pub chat: Chat,
+    /// Said when the dates could be read either way.
+    pub note: Option<String>,
+    /// Lines that start like a message but whose date is not one, with why.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// Why a chat cannot be imported into the node it was imported into before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrderConflict(pub String);
+
+/// Reads the chat in `chat_file`, named `name` (see [`name`]). `stored` is the order of day and
+/// month this chat was imported with before, kept on its node: it is used again, so the same
+/// chat always reads its dates the same way. When the new export cannot be read in that order,
+/// nothing is read and the conflict says why.
+pub(crate) fn read(
+    files: &mut Files,
+    chat_file: &str,
+    name: &str,
+    stored: Option<&str>,
+) -> std::io::Result<Result<Read, OrderConflict>> {
     let text = files.read_to_string(chat_file)?;
     let text = text.trim_start_matches('\u{feff}');
 
@@ -286,13 +362,46 @@ pub(crate) fn read(files: &mut Files, path: &Path, chat_file: &str) -> std::io::
         }
     }
     let headers: Vec<Header> = entries.iter().map(|(h, _)| h.clone()).collect();
-    let order = order(&headers);
+    let (found, basis) = order(&headers);
+    let title = format!("WhatsApp - {name}");
+    let mut note = None;
+    let order = match stored.and_then(Order::from_id) {
+        Some(stored) if basis == Basis::YearFirst || possible(&headers, stored) => stored,
+        Some(stored) => {
+            return Ok(Err(OrderConflict(format!(
+                "this export writes its dates {}, but the chat was imported before reading them \
+                 {}, when its dates could be read either way: the messages imported then have \
+                 the wrong dates. Delete the node \"{title}\" and import this export again",
+                found.name(),
+                stored.name()
+            ))));
+        }
+        None => {
+            if basis == Basis::Habit {
+                note = Some(format!(
+                    "{title}: every date could be day/month or month/day; they were read as {}, \
+                     and later imports of this chat read them the same way.",
+                    found.name()
+                ));
+            }
+            found
+        }
+    };
 
     let dir = parent(chat_file).to_string();
-    let mut chat = Chat::new(ChatFormat::WhatsApp, String::new(), String::new());
+    let mut chat = Chat::new(ChatFormat::WhatsApp, name.to_lowercase(), title);
+    if basis != Basis::YearFirst {
+        chat.properties
+            .insert(super::keys::DATE_ORDER.into(), order.id().into());
+    }
+    let mut skipped = Vec::new();
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (h, more) in entries {
         let Some(time) = time(&h, order) else {
+            skipped.push((
+                format!("{} ({})", chat.title, crate::text::one_line(&h.rest, 40)),
+                format!("its date is not a date read {}", order.name()),
+            ));
             continue;
         };
         let mut raw = h.rest.clone();
@@ -322,15 +431,6 @@ pub(crate) fn read(files: &mut Files, path: &Path, chat_file: &str) -> std::io::
     }
     chat.collect_participants();
 
-    let name = chat_name(chat_file, path).unwrap_or_else(|| {
-        if chat.participants.is_empty() {
-            "chat".to_string()
-        } else {
-            chat.participants.join(", ")
-        }
-    });
-    chat.id = name.to_lowercase();
-    chat.title = format!("WhatsApp - {name}");
     let group_line = chat.messages.iter().any(|m| {
         m.sender.is_none() && {
             let text = m.text.to_lowercase();
@@ -345,7 +445,11 @@ pub(crate) fn read(files: &mut Files, path: &Path, chat_file: &str) -> std::io::
         "personal"
     }
     .to_string();
-    Ok(chat)
+    Ok(Ok(Read {
+        chat,
+        note,
+        skipped,
+    }))
 }
 
 /// The sender and the text of a message, or no sender for what WhatsApp wrote itself.
@@ -433,36 +537,62 @@ fn take_media(text: &mut String, find: impl Fn(&str) -> Option<String>) -> Vec<M
     media
 }
 
-/// The chat's name, from the export's file names: `WhatsApp Chat - Ada.zip`,
-/// `WhatsApp Chat with Ada.txt`, `WhatsApp-Chat mit Ada.txt`...
-fn chat_name(chat_file: &str, path: &Path) -> Option<String> {
+/// The chat's name, from the export's file names: `WhatsApp Chat with Ada.txt` on Android;
+/// for `_chat.txt` (iOS), the folder it is in or the `.zip`: `WhatsApp Chat - Ada.zip`. A
+/// loose `_chat.txt` takes its folder's name only when the folder is named as WhatsApp names
+/// it. `None` when no name is found: a chat is found again by its name, so none is guessed.
+pub(crate) fn name(files: &Files, path: &Path, chat_file: &str) -> Option<String> {
+    chat_name(chat_file, path, files.single.is_some())
+}
+
+fn chat_name(chat_file: &str, path: &Path, single: bool) -> Option<String> {
     let file = file_name(chat_file);
     let file = file
         .strip_suffix(".txt")
         .or_else(|| file.strip_suffix(".TXT"))
         .unwrap_or(file);
-    let candidates = [
-        (file != "_chat").then(|| file.to_string()),
-        Some(file_name(parent(chat_file)).to_string()).filter(|d| !d.is_empty()),
-        Some(stem(path)).filter(|s| !s.is_empty()),
-    ];
-    let candidates: Vec<String> = candidates.into_iter().flatten().collect();
-    candidates
-        .iter()
-        .find_map(|c| after_whatsapp(c))
-        .or_else(|| candidates.first().map(|c| clean_title(c)))
-        .filter(|name| !name.is_empty())
+    let usable =
+        |name: String| Some(name).filter(|n| !n.is_empty() && !n.eq_ignore_ascii_case("_chat"));
+    if !file.eq_ignore_ascii_case("_chat") {
+        return after_whatsapp(file).or_else(|| usable(clean_title(file)));
+    }
+    let inside = file_name(parent(chat_file)).to_string();
+    let outside = if single {
+        path.parent()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        stem(path)
+    };
+    for candidate in [&inside, &outside] {
+        if let Some(name) = after_whatsapp(candidate) {
+            return Some(name);
+        }
+    }
+    if single && inside.is_empty() {
+        return None;
+    }
+    let container = if inside.is_empty() { outside } else { inside };
+    usable(clean_title(&container))
 }
 
 /// The name after "WhatsApp Chat" (and a preposition) in a file name.
 fn after_whatsapp(name: &str) -> Option<String> {
-    let lower = name.to_lowercase();
-    let at = lower.find("whatsapp")?;
-    let mut rest =
-        name[at + "whatsapp".len()..].trim_start_matches(|c: char| c == '-' || c.is_whitespace());
-    let lower = rest.to_lowercase();
-    if lower.starts_with("chat") {
-        rest = rest["chat".len()..].trim_start_matches(|c: char| c == '-' || c.is_whitespace());
+    let at = (0..name.len()).find(|&i| {
+        name.is_char_boundary(i)
+            && name
+                .as_bytes()
+                .get(i..i + "whatsapp".len())
+                .is_some_and(|b| b.eq_ignore_ascii_case(b"whatsapp"))
+    })?;
+    let separator = |c: char| c == '-' || c.is_whitespace();
+    let mut rest = name[at + "whatsapp".len()..].trim_start_matches(separator);
+    if rest
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("chat"))
+    {
+        rest = rest[4..].trim_start_matches(separator);
     }
     if let Some((word, after)) = rest.split_once(' ')
         && NAME_WORDS.contains(&word.to_lowercase().as_str())
@@ -492,7 +622,7 @@ mod tests {
 
     fn times(lines: &[&str]) -> Vec<String> {
         let hs = headers(lines);
-        let order = order(&hs);
+        let (order, _) = order(&hs);
         hs.iter()
             .map(|h| {
                 time(h, order)
@@ -606,6 +736,24 @@ mod tests {
     }
 
     #[test]
+    fn says_what_told_the_order() {
+        let basis = |lines: &[&str]| order(&headers(lines));
+        assert_eq!(
+            basis(&["13/03/2026, 10:00 - Ada: a"]),
+            (Order::DayMonth, Basis::Numbers)
+        );
+        assert_eq!(basis(&["2026-03-13 10:00 - Ada: a"]).1, Basis::YearFirst);
+        // A United States export on a 24-hour clock with no day over 12 cannot be told.
+        assert_eq!(
+            basis(&["3/4/26, 10:00 - Ada: a", "3/5/26, 10:00 - Ada: b"]),
+            (Order::DayMonth, Basis::Habit)
+        );
+        let hs = headers(&["3/14/26, 10:00 - Ada: a"]);
+        assert!(!possible(&hs, Order::DayMonth));
+        assert!(possible(&hs, Order::MonthDay));
+    }
+
+    #[test]
     fn rejects_other_lines() {
         assert!(header("Hello there").is_none());
         assert!(header("[04/03/2026, 09:15:02 - Ada: no").is_none());
@@ -684,24 +832,47 @@ mod tests {
     #[test]
     fn names_chats_after_their_export() {
         let p = Path::new("/x/WhatsApp Chat - Book Club.zip");
-        assert_eq!(chat_name("_chat.txt", p).as_deref(), Some("Book Club"));
+        assert_eq!(
+            chat_name("_chat.txt", p, false).as_deref(),
+            Some("Book Club")
+        );
         let p = Path::new("/x/export.zip");
         assert_eq!(
-            chat_name("WhatsApp Chat with Ada Lovelace.txt", p).as_deref(),
+            chat_name("WhatsApp Chat with Ada Lovelace.txt", p, false).as_deref(),
             Some("Ada Lovelace")
         );
         assert_eq!(
-            chat_name("WhatsApp-Chat mit Grace.txt", p).as_deref(),
+            chat_name("WhatsApp-Chat mit Grace.txt", p, false).as_deref(),
             Some("Grace")
         );
         assert_eq!(
-            chat_name("Chat de WhatsApp con Linus.txt", p).as_deref(),
+            chat_name("Chat de WhatsApp con Linus.txt", p, false).as_deref(),
             Some("Linus")
         );
         assert_eq!(
-            chat_name("WhatsApp Chat - Team [old]/_chat.txt", p).as_deref(),
+            chat_name("WhatsApp Chat - Team [old]/_chat.txt", p, false).as_deref(),
             Some("Team old")
         );
-        assert_eq!(chat_name("_chat.txt", p).as_deref(), Some("export"));
+        assert_eq!(chat_name("_chat.txt", p, false).as_deref(), Some("export"));
+
+        // A loose `_chat.txt` takes its folder's name only when WhatsApp named the folder.
+        let loose = Path::new("/x/WhatsApp Chat - Ada/_chat.txt");
+        assert_eq!(chat_name("_chat.txt", loose, true).as_deref(), Some("Ada"));
+        let loose = Path::new("/Users/example/Downloads/_chat.txt");
+        assert_eq!(chat_name("_chat.txt", loose, true), None);
+        let zipped = Path::new("/x/_chat.zip");
+        assert_eq!(chat_name("_chat.txt", zipped, false), None);
+
+        // Not ASCII: no byte offsets across strings of different lengths.
+        let p = Path::new("/x/İİİ WhatsApp Chat - İzmir Ekibi.zip");
+        assert_eq!(
+            chat_name("_chat.txt", p, false).as_deref(),
+            Some("İzmir Ekibi")
+        );
+        assert_eq!(after_whatsapp("İ").as_deref(), None);
+        assert_eq!(
+            after_whatsapp("WHATSAPP CHAT WITH Ada").as_deref(),
+            Some("Ada")
+        );
     }
 }

@@ -452,3 +452,131 @@ fn refuses_an_export_of_another_kind() {
     let error = import_chat_export(&mut space, &broken, None, &by()).unwrap_err();
     assert!(matches!(error, ChatImportError::Json { .. }), "{error}");
 }
+
+/// A WhatsApp export folder named as WhatsApp names it, with `text` as its `_chat.txt`.
+fn whatsapp_folder(dir: &Path, name: &str, text: &str) -> PathBuf {
+    let folder = dir.join(name).join(format!("WhatsApp Chat - {name}"));
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("_chat.txt"), text).unwrap();
+    folder
+}
+
+#[test]
+fn keeps_the_date_order_of_a_chat() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+
+    // A United States export on a 24-hour clock with no day over 12: it reads either way. It
+    // is read day first, the report says so, and the order is kept on the node.
+    let first = whatsapp_folder(
+        &dir.path().join("1"),
+        "Porch",
+        "3/4/26, 10:00 - Ada: a\n3/5/26, 10:00 - Grace: b\n",
+    );
+    let report = import_chat_export(&mut space, &first, None, &by()).unwrap();
+    assert_eq!(report.messages, 2);
+    assert_eq!(report.notes.len(), 1, "{report:?}");
+    assert!(report.notes[0].contains("could be day/month or month/day"));
+    let node = chat_node(&space, "whatsapp", "porch");
+    assert_eq!(prop(&space, &node, chat_keys::DATE_ORDER), "day-month");
+
+    // A later export that can only be month first: nothing is written, and the report says
+    // why and what to do, instead of dropping its messages.
+    let later = whatsapp_folder(
+        &dir.path().join("2"),
+        "Porch",
+        "3/4/26, 10:00 - Ada: a\n3/5/26, 10:00 - Grace: b\n3/14/26, 10:00 - Ada: c\n",
+    );
+    let report = import_chat_export(&mut space, &later, None, &by()).unwrap();
+    assert_eq!((report.messages, report.chats.len()), (0, 0));
+    assert_eq!(report.skipped.len(), 1, "{report:?}");
+    assert!(
+        report.skipped[0]
+            .reason
+            .contains("writes its dates month/day")
+    );
+    assert!(
+        report.skipped[0]
+            .reason
+            .contains("Delete the node \"WhatsApp - Porch\"")
+    );
+    assert_eq!(chat_node(&space, "whatsapp", "porch").body, node.body);
+
+    // The order kept is used again where the new export alone would be read the other way.
+    let day_first = whatsapp_folder(
+        &dir.path().join("3"),
+        "Shed",
+        "13/03/26, 9:00 AM - Ada: a\n",
+    );
+    import_chat_export(&mut space, &day_first, None, &by()).unwrap();
+    let shed = chat_node(&space, "whatsapp", "shed");
+    assert_eq!(prop(&space, &shed, chat_keys::DATE_ORDER), "day-month");
+    let truncated = whatsapp_folder(
+        &dir.path().join("4"),
+        "Shed",
+        "01/04/26, 9:00 AM - Ada: b\n02/04/26, 9:00 AM - Grace: c\n",
+    );
+    let report = import_chat_export(&mut space, &truncated, None, &by()).unwrap();
+    assert_eq!(report.messages, 2);
+    assert!(report.notes.is_empty(), "{report:?}");
+    let shed = chat_node(&space, "whatsapp", "shed");
+    assert!(shed.body.contains("## 2026-04-01"), "{}", shed.body);
+    assert!(shed.body.contains("## 2026-04-02"), "{}", shed.body);
+}
+
+#[test]
+fn reports_what_is_not_added() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    // First an export of the last messages only, then one with older messages too.
+    let recent = whatsapp_folder(
+        &dir.path().join("1"),
+        "Lab",
+        "13/03/2026, 10:00 - Ada: c\n14/03/2026, 10:00 - Grace: d\n",
+    );
+    import_chat_export(&mut space, &recent, None, &by()).unwrap();
+    let full = whatsapp_folder(
+        &dir.path().join("2"),
+        "Lab",
+        "11/03/2026, 10:00 - Ada: a\n12/03/2026, 10:00 - Grace: b\n\
+         13/03/2026, 10:00 - Ada: c\n14/03/2026, 10:00 - Grace: d\n\
+         31/02/2026, 10:00 - Ada: not a date\n15/03/2026, 10:00 - Ada: e\n",
+    );
+    let report = import_chat_export(&mut space, &full, None, &by()).unwrap();
+    assert_eq!(report.messages, 1, "{report:?}");
+    let reasons: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
+    assert_eq!(
+        reasons,
+        [
+            "its date is not a date read day/month",
+            "2 messages older than the last one imported were not added"
+        ]
+    );
+}
+
+#[test]
+fn names_every_ios_chat_or_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let text = "[04/03/2026, 09:15:02] Ada: Hello\n";
+    // Two iOS exports, each `_chat.txt` in a .zip named after its chat: two nodes.
+    for name in ["Book Club", "Garden"] {
+        let zipped = dir.path().join(format!("WhatsApp Chat - {name}.zip"));
+        zip(&zipped, &[("_chat.txt", text.as_bytes())]);
+        import_chat_export(&mut space, &zipped, None, &by()).unwrap();
+    }
+    chat_node(&space, "whatsapp", "book club");
+    chat_node(&space, "whatsapp", "garden");
+
+    // A loose `_chat.txt` in a folder WhatsApp did not name has no name: refused.
+    let loose = dir.path().join("Downloads");
+    fs::create_dir_all(&loose).unwrap();
+    fs::write(loose.join("_chat.txt"), text).unwrap();
+    let error = import_chat_export(&mut space, loose.join("_chat.txt"), None, &by()).unwrap_err();
+    assert!(matches!(error, ChatImportError::NoChatName(_)), "{error}");
+    assert!(
+        error.to_string().contains("WhatsApp Chat - <name>.zip"),
+        "{error}"
+    );
+    assert_eq!(space.node_count().unwrap(), 2);
+}
