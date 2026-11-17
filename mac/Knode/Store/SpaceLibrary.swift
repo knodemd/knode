@@ -24,6 +24,14 @@ struct SpaceLibrary {
         self.key = key
     }
 
+    /// `<name>-archive-<digits>.knode`: a copy onboarding put aside (`knode onboard archive`).
+    static func isArchive(_ url: URL) -> Bool {
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard let range = stem.range(of: "-archive-", options: .backwards) else { return false }
+        let stamp = stem[range.upperBound...]
+        return !stamp.isEmpty && stamp.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     /// False until the list is first saved: the app then fills it from the spaces it knows.
     var hasBeenSaved: Bool {
         defaults.object(forKey: key) != nil
@@ -40,6 +48,9 @@ struct SpaceLibrary {
                     url = resolved.standardizedFileURL
                 }
             }
+            // A space archived from the command line moved; its bookmark followed it to the
+            // archive. Archives are kept for recovery, not listed: drop it from the sidebar.
+            if Self.isArchive(url) && !Self.isArchive(URL(filePath: path)) { return nil }
             let exists = FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
             let name = item["name"] as? String ?? url.deletingPathExtension().lastPathComponent
             return Entry(url: url, name: name, icon: item["icon"] as? String, isMissing: !exists)
@@ -58,13 +69,41 @@ struct SpaceLibrary {
             entries.append(Entry(url: url, name: name, icon: icon ?? nil))
         }
         save(entries)
+        // Opening or creating a space the person took off the list puts it back for good.
+        let path = url.path(percentEncoded: false)
+        if removed.contains(path) {
+            defaults.set(Array(removed.subtracting([path])).sorted(), forKey: removedKey)
+        }
     }
 
-    /// Takes a space off the list. Its files stay where they are.
+    /// Takes a space off the list. Its files stay where they are, and it is not added back by
+    /// `addKnown` until the person opens or creates it again.
     func remove(_ url: URL) {
         let url = url.standardizedFileURL
-        save(entries.filter { $0.url.standardizedFileURL.path(percentEncoded: false) != url.path(percentEncoded: false) })
+        let path = url.path(percentEncoded: false)
+        save(entries.filter { $0.url.standardizedFileURL.path(percentEncoded: false) != path })
+        defaults.set(Array(removed.union([path])).sorted(), forKey: removedKey)
     }
+
+    /// Paths of the spaces the person took off the list.
+    var removed: Set<String> {
+        Set(defaults.stringArray(forKey: removedKey) ?? [])
+    }
+
+    /// Adds the spaces Knode knows that the list does not have yet, such as one made from the
+    /// command line, by an agent or by an import, unless the person took it off the list.
+    func addKnown(_ urls: [URL]) {
+        let removed = self.removed
+        var listed = Set(entries.map { $0.url.standardizedFileURL.path(percentEncoded: false) })
+        for url in urls {
+            let path = url.standardizedFileURL.path(percentEncoded: false)
+            guard !listed.contains(path), !removed.contains(path), FileManager.default.fileExists(atPath: path) else { continue }
+            add(url)
+            listed.insert(path)
+        }
+    }
+
+    private var removedKey: String { key + "Removed" }
 
     /// Saves the list as it is, empty or not, so it is no longer filled automatically.
     func markSaved() {

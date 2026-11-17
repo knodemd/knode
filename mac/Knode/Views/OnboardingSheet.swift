@@ -17,6 +17,8 @@ private struct ImportDocument: Codable, Equatable, Identifiable {
     var project: String
     var include: Bool
     var digest: String
+    /// The repository inside the source that tracks this document, when it starts unchecked for that reason.
+    var repository: String?
     var id: String { path }
 }
 private struct ImportSourceFile: Codable, Equatable {
@@ -49,6 +51,8 @@ private struct ImportResult: Decodable {
     var destination: String
     var contexts: [String: String]
     var unresolved: [String: [String]]
+    /// Links to documents left out in review: expected, shown as a count.
+    var leftOut: [String: [String]]?
     var report: Report
     var plan: ImportPlan
     var conversations: BroughtSessions?
@@ -59,7 +63,7 @@ private struct ImportResult: Decodable {
         var unlinked: [Skipped]
     }
     struct Skipped: Decodable { var path: String; var reason: String }
-    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan, conversations; case report = "import"; case conversationsError = "conversations_error" }
+    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan, conversations; case leftOut = "left_out"; case report = "import"; case conversationsError = "conversations_error" }
 }
 
 struct OnboardingSheet: View {
@@ -67,9 +71,15 @@ struct OnboardingSheet: View {
     init(existing: URL? = nil) { self.existing = existing }
     @Environment(AppModel.self) private var model
     @State private var step = 0
+    /// Whether an agent does the import, the default, or the person does it in this sheet.
+    @State private var byAgent = true
+    @State private var agentPrompt: String?
+    @State private var copied = false
     @State private var mode = "vault"
     @State private var source: URL?
-    @State private var name = "Imported memory"
+    /// The suggested name before a source is chosen, and for an empty start.
+    static let defaultName = "Imported memory"
+    @State private var name = OnboardingSheet.defaultName
     @State private var destinationFolder: URL?
     @State private var plan = ImportPlan()
     @State private var result: ImportResult?
@@ -105,7 +115,7 @@ struct OnboardingSheet: View {
 
     var body: some View {
         KSheetSurface(width: 760) {
-            KSheetTitle(kicker: "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
+            KSheetTitle(kicker: step == 0 && byAgent ? "Get started" : "Get started · Step \(step + 1) of 3", title: step == 0 ? "Bring your projects" : step == 1 ? "Review your new memory" : "Try your imported copy", close: { if !busy { model.sheet = nil } })
             if step == 0 { startingPoint }
             if step == 1 { review }
             if step == 2 {
@@ -143,6 +153,54 @@ struct OnboardingSheet: View {
     }
 
     private var startingPoint: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("Who brings your notes in?", selection: $byAgent) {
+                Text("Let your agent do it").tag(true)
+                Text("Do it yourself").tag(false)
+            }
+            .pickerStyle(.segmented)
+            if byAgent { agentStart } else { manualStart }
+        }
+    }
+
+    /// The agent reads the guide that comes with Knode (`knode onboard guide`), decides what needs
+    /// judgment with the person and runs the same commands this sheet runs.
+    private var agentStart: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            KExplanation("Your agent reads a guide that comes with Knode, looks at your folders and asks you only what needs your judgment: which notes are yours, which stay with their code, which projects keep their files. Then it imports them, connects itself and moves your instruction files to Knode, showing you each change first. Your files are never changed: Knode imports a copy.")
+            HStack {
+                Text(source?.path(percentEncoded: false) ?? "No folder chosen: your agent will ask").font(KFont.mono(12)).lineLimit(2)
+                Spacer()
+                KButton("Choose folder", icon: .folder) {
+                    source = SpacePanels.chooseFolder(title: "Where are your notes?", message: "Read only: your agent imports a copy into a separate space.")
+                }
+            }
+            Text("Paste this into Claude Code, Codex or any agent that can run commands on this Mac:").font(KFont.ui(13))
+            ScrollView {
+                Text(agentPrompt ?? "…").font(KFont.mono(12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 76)
+            HStack {
+                KButton("Not now") { model.sheet = nil }
+                Spacer()
+                KButton(copied ? "Copied" : "Copy prompt", icon: copied ? .done : .copy, kind: .primary) {
+                    guard let agentPrompt else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(agentPrompt, forType: .string)
+                    copied = true
+                }
+                .disabled(agentPrompt == nil)
+            }
+        }
+        .task(id: source) {
+            copied = false
+            var args = ["onboard", "prompt"]
+            if let source { args += ["--source", source.path(percentEncoded: false)] }
+            agentPrompt = try? await command.run(args).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private var manualStart: some View {
         VStack(alignment: .leading, spacing: 14) {
             KExplanation("Knode creates a separate copy. Your current notes, project files and Obsidian settings stay where they are. You can review the organization, archive the copy and start again.")
             Picker("How do you work today?", selection: $mode) {
@@ -194,6 +252,10 @@ struct OnboardingSheet: View {
                     }
                     KButton("Add project", icon: .add, size: .small) { plan.groups.append(ImportGroup(id: UUID().uuidString, name: "New project")) }
                     Divider()
+                    if !trackedRepositories.isEmpty {
+                        repositoryDocuments
+                        Divider()
+                    }
                     Text("\(included) of \(plan.documents.count) Markdown documents selected").font(KFont.ui(12))
                     bulkAssignment
                     Text("\(matchingDocuments.count) documents match this path filter").font(KFont.ui(11))
@@ -264,6 +326,38 @@ struct OnboardingSheet: View {
         }
     }
 
+    /// Repositories whose tracked documents start unchecked, with how many and how many are brought.
+    private var trackedRepositories: [(name: String, total: Int, brought: Int)] {
+        var counts: [String: (total: Int, brought: Int)] = [:]
+        for document in plan.documents {
+            guard let repository = document.repository else { continue }
+            counts[repository, default: (0, 0)].total += 1
+            if document.include { counts[repository, default: (0, 0)].brought += 1 }
+        }
+        return counts.keys.sorted().map { (name: $0, total: counts[$0]!.total, brought: counts[$0]!.brought) }
+    }
+
+    private var repositoryDocuments: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Documentation tracked in your repositories").font(KFont.ui(13))
+            KExplanation("These start unchecked: they live with their code, where agents read them, and a copy here would not follow their changes. Turn a repository on if it keeps your own notes, such as a status note or session logs.")
+            ForEach(trackedRepositories, id: \.name) { repository in
+                Toggle(isOn: Binding(
+                    get: { repository.brought == repository.total },
+                    set: { on in
+                        for index in plan.documents.indices where plan.documents[index].repository == repository.name {
+                            plan.documents[index].include = on
+                        }
+                        acknowledged = false
+                    }
+                )) {
+                    let partly = repository.brought > 0 && repository.brought < repository.total ? ", \(repository.brought) brought" : ""
+                    Text("\(repository.name), \(repository.total) \(repository.total == 1 ? "document" : "documents")\(partly)").font(KFont.mono(11))
+                }
+            }
+        }
+    }
+
     private var bulkAssignment: some View {
         HStack {
             KTextField("Filter paths, e.g. Projects/Knode/", text: $documentFilter)
@@ -289,6 +383,10 @@ struct OnboardingSheet: View {
                 if let message = result.conversationsError {
                     KErrorText(message).textSelection(.enabled)
                     KButton("Try bringing conversations again", icon: .chat, size: .small) { Task { await retrySessions() } }
+                }
+                if let leftOut = result.leftOut, !leftOut.isEmpty {
+                    let count = leftOut.values.reduce(0) { $0 + $1.count }
+                    KExplanation("\(count) \(count == 1 ? "link points" : "links point") to documents you left out. That is expected: they stay as written.")
                 }
                 if !result.unresolved.isEmpty || !result.report.attachments.isEmpty || !result.report.unlinked.isEmpty {
                     ScrollView {
@@ -348,6 +446,8 @@ struct OnboardingSheet: View {
             if mode != "empty", let source { args += ["--source", source.path(percentEncoded: false)] }
             let text = try await command.run(args)
             plan = try JSONDecoder().decode(ImportPlan.self, from: Data(text.utf8))
+            // Name the new space after its source, unless the person already typed a name.
+            if name == Self.defaultName, mode != "empty", let source { name = source.lastPathComponent }
             acknowledged = false; step = 1
         }
     }

@@ -78,6 +78,82 @@ fn links_to_a_shared_name_go_to_the_nearest_note() {
     assert_eq!(targets(&space, "Beta/Sprint/Plan.md"), sprint);
 }
 
+/// Obsidian's "relative path to file" setting writes `[[../folder/note]]`: such a link goes to
+/// that file, whether it is imported before or after the note that links to it.
+#[test]
+fn relative_links_go_to_the_file_they_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    // `Course` is imported before `Research`: the first link waits for its file.
+    put(
+        &vault,
+        "OFM/Course/Plan.md",
+        "See [[../Research/Insights]], [[./Glossary]] and [[../../Index.md|the index]].\n",
+    );
+    put(&vault, "OFM/Course/Glossary.md", "Words.\n");
+    put(&vault, "OFM/Research/Insights.md", "Findings.\n");
+    put(
+        &vault,
+        "Other/Research/Insights.md",
+        "Another project's findings.\n",
+    );
+    put(&vault, "Index.md", "Everything.\n");
+    put(
+        &vault,
+        "OFM/Research/Notes.md",
+        "Back to [[../Course/Plan]].\n",
+    );
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+    import(&mut space, &vault, &me()).unwrap();
+    let id = |path: &str| space.find_by_property(property_keys::PATH, path).unwrap()[0].id;
+    let targets = |path: &str| {
+        let mut to: Vec<_> = space
+            .links_from(&id(path))
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.kind == "mentions")
+            .map(|l| l.to)
+            .collect();
+        to.sort();
+        to
+    };
+    let mut plan = vec![
+        id("OFM/Research/Insights.md"),
+        id("OFM/Course/Glossary.md"),
+        id("Index.md"),
+    ];
+    plan.sort();
+    assert_eq!(targets("OFM/Course/Plan.md"), plan);
+    assert_eq!(
+        targets("OFM/Research/Notes.md"),
+        vec![id("OFM/Course/Plan.md")]
+    );
+}
+
+/// Inside a table, Obsidian escapes a label's `|` as `\|`; the link still goes to its note.
+#[test]
+fn links_in_tables_with_an_escaped_pipe_find_their_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    put(&vault, "Start/web/README.md", "The website.\n");
+    put(
+        &vault,
+        "Index.md",
+        "| Project | Notes |\n|---|---|\n| Web | [[Start/web/README\\|web]] |\n",
+    );
+    let mut space = Space::create(dir.path().join("Space.knode"), "Space").unwrap();
+    import(&mut space, &vault, &me()).unwrap();
+    let id = |path: &str| space.find_by_property(property_keys::PATH, path).unwrap()[0].id;
+    let to: Vec<_> = space
+        .links_from(&id("Index.md"))
+        .unwrap()
+        .into_iter()
+        .filter(|l| l.kind == "mentions")
+        .map(|l| l.to)
+        .collect();
+    assert_eq!(to, vec![id("Start/web/README.md")]);
+}
+
 /// One file is read like a folder of one: its frontmatter kept as properties rather than text,
 /// named by the title given, and importing it again updates the same note.
 #[test]

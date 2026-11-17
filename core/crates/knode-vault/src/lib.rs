@@ -10,6 +10,8 @@
 //!   Knode are written to the folder, and edits made to the files come back in, with history;
 //! - [`reading`] brings in what a person reads: PDFs, web pages, Kindle highlights and Readwise
 //!   exports.
+//! - [`mail`] reads mail from local files, a Google Takeout `.mbox` or the Apple Mail store,
+//!   one node per thread and one per person.
 //!
 //! ```
 //! use knode_format::{NewNode, Provenance, Space};
@@ -112,6 +114,7 @@ mod attachments;
 mod frontmatter;
 mod import;
 mod live;
+pub mod mail;
 mod mirror;
 mod names;
 pub mod onboarding;
