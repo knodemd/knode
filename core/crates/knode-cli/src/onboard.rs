@@ -12,6 +12,17 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Print the step-by-step guide an agent follows to bring your notes into Knode.
+    Guide {
+        /// The folder the notes are in, written into the guide's commands.
+        #[arg(long)]
+        source: Option<PathBuf>,
+    },
+    /// Print the short prompt to paste into an agent: it asks the agent to follow the guide.
+    Prompt {
+        #[arg(long)]
+        source: Option<PathBuf>,
+    },
     /// Analyze a source folder without changing it; print a reviewable JSON proposal.
     Analyze {
         #[arg(long)]
@@ -75,6 +86,14 @@ pub enum Action {
 }
 pub fn run(paths: &Paths, action: Action) -> Result<()> {
     match action {
+        Action::Guide { source } => {
+            let source = source.map(|s| crate::absolute(&s)).transpose()?;
+            print!("{}", onboarding::agent_guide(source.as_deref()));
+        }
+        Action::Prompt { source } => {
+            let source = source.map(|s| crate::absolute(&s)).transpose()?;
+            println!("{}", onboarding::agent_prompt(source.as_deref()));
+        }
         Action::Analyze { source, mode } => {
             let mode = match mode.as_str() {
                 "vault" => Mode::Vault,
