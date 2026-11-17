@@ -146,6 +146,13 @@ belongs to, newest first.
   after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
   `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
   added before this gets its project when it is added again.
+- **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
+  Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
+  become notes of the space, each part of the project that folder belongs to: a project folder of
+  the space, a project made by guided import from that folder, or a project named as the folder.
+  No project is made up: notes whose folder matches none are imported on their own and listed.
+  Importing again updates the same notes, skips memory that did not change, and keeps a note
+  edited in Knode as it is.
 
 #### Changed
 

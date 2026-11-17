@@ -203,7 +203,8 @@ impl Space {
     ) -> Result<Node> {
         let (id, content) = self.prepare_node(new, properties)?;
         let tx = self.conn.transaction()?;
-        write_new_node(&tx, &id, content, properties, by, Timestamp::now())?;
+        // The id carries the creation time, so the node takes the same instant.
+        write_new_node(&tx, &id, content, properties, by, id.created_at())?;
         tx.commit()?;
         self.require_node(&id)
     }
