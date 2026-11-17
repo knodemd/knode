@@ -429,7 +429,7 @@ pub(crate) fn read(
             });
         }
 
-        let (message_text, n) = crate::redact::redact_secrets(&message_text);
+        let (message_text, n) = crate::redact::redact_tokens(&message_text);
         redacted += n;
 
         let mark = time.format("%Y-%m-%dT%H:%M").to_string();

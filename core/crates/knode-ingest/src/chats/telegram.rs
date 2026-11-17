@@ -328,7 +328,7 @@ where
 /// the two counts.
 fn redact(m: &mut Message) -> usize {
     fn one(text: &mut String) -> usize {
-        let (out, n) = crate::redact::redact_secrets(text);
+        let (out, n) = crate::redact::redact_tokens(text);
         if n > 0 {
             *text = out;
         }

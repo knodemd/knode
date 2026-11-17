@@ -12,8 +12,9 @@
 //! it and when. Importing the same chat again, or a newer export of it, adds only the messages
 //! after the last one imported: none is written twice.
 //!
-//! Secrets that look obvious in the messages (API keys, tokens, passwords, see
-//! [`redact_secrets`](crate::redact_secrets)) are replaced with `[redacted]`, and the access
+//! What is shaped like a credential in the messages (API keys and tokens in known formats, a
+//! long value of letters and digits after `password:` or `token=`, the password in a URL) is
+//! replaced with `[redacted]`; words people wrote after "Secret:" are kept. The access
 //! token in the private URL of a Slack file is left out, so a credential pasted into a chat is
 //! not stored in the space.
 //!

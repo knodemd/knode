@@ -270,7 +270,7 @@ pub(crate) fn import(
             messages.append(&mut more);
         }
         for m in &mut messages {
-            let (text, n) = crate::redact::redact_secrets(&m.text);
+            let (text, n) = crate::redact::redact_tokens(&m.text);
             if n > 0 {
                 m.text = text;
                 redacted += n;
