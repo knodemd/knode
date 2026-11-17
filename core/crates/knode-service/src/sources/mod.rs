@@ -523,11 +523,32 @@ impl Registry {
         }
     }
 
-    /// The containers of a connected source, with the excluded ones marked; excluded ones the
-    /// source no longer lists are kept at the end, so they can be included again.
-    pub(crate) fn containers(
+    /// What listing the containers of `id` needs from the space: its id and the source's
+    /// settings. Taken with the space locked, so [`containers_of`](Self::containers_of) can
+    /// run without the lock.
+    pub(crate) fn containers_request(
         &self,
         space: &Space,
+        id: &str,
+    ) -> Result<(String, SourceSetting), SourceError> {
+        if self.connector(id).is_none() {
+            return Err(SourceError::Unavailable(format!(
+                "no connector {id:?} on this machine"
+            )));
+        }
+        let setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
+        Ok((space.manifest().id.clone(), setting))
+    }
+
+    /// The containers of `id` in the space `space_id` with these settings, the excluded ones
+    /// marked; excluded ones the source no longer lists are kept at the end, so they can be
+    /// included again. Needs no space:
+    /// connectors may take long to list them (over the network), and the space stays free for
+    /// everyone else meanwhile.
+    pub(crate) fn containers_of(
+        &self,
+        space_id: &str,
+        setting: &SourceSetting,
         id: &str,
     ) -> Result<Vec<ContainerInfo>, SourceError> {
         let connector = self
@@ -536,8 +557,7 @@ impl Registry {
                 SourceError::Unavailable(format!("no connector {id:?} on this machine"))
             })?
             .clone();
-        let setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
-        let space_id = space.manifest().id.clone();
+        let space_id = space_id.to_string();
         let key = state_key(&space_id, id);
         let cursor = self.states().get(&key).and_then(|s| s.cursor.clone());
         let secrets = SourceSecrets::new(&self.home, id);

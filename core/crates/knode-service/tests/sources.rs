@@ -45,6 +45,8 @@ struct Store {
     requests: Vec<(Option<String>, Vec<String>)>,
     /// A synthetic database each fetch reads a copy of, as connectors to local apps do.
     reads: Option<PathBuf>,
+    /// How long listing the containers takes, as over the network.
+    slow_containers: Duration,
 }
 
 #[derive(Clone)]
@@ -89,6 +91,8 @@ impl Connector for Fake {
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
+        let slow = self.store().slow_containers;
+        thread::sleep(slow);
         Ok(vec![
             Container::new("family", "Family"),
             Container::new("work", "Work"),
@@ -675,4 +679,31 @@ fn a_source_connected_paused_reads_nothing_until_resumed() {
     assert_eq!(f.written(), vec!["work 2"]);
     // The first fetch already left the excluded chat out.
     assert_eq!(f.fake.store().requests[0].1, vec!["family".to_string()]);
+}
+
+#[test]
+fn listing_containers_slowly_does_not_hold_up_the_space() {
+    let f = Fixture::new();
+    f.fake.store().slow_containers = Duration::from_secs(2);
+    f.client()
+        .sources_connect_paused(f.space(), ID, None, &me())
+        .unwrap();
+    let listing = {
+        let client = f.client();
+        let space = f.space();
+        thread::spawn(move || client.sources_containers(space, ID).unwrap())
+    };
+    thread::sleep(Duration::from_millis(200));
+    // Other calls on the space go on while the connector lists its chats.
+    let started = Instant::now();
+    f.client()
+        .create_node(f.space(), NewNode::note("Meanwhile", ""), &me())
+        .unwrap();
+    assert_eq!(f.status().state, SourceState::Paused);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the space waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(listing.join().unwrap().len(), 2);
 }
