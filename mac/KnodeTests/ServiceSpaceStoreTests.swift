@@ -247,11 +247,13 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let added = try await store.setFolder(draft, in: space.id)
         #expect(added.kind == "project" && added.capture)
         #expect(added.path == ServiceSpaceStore.path(of: project))
+        #expect(added.project == SpaceFolder.Project(id: "project-site", title: "site", created: true))
         #expect(service.params(of: "folders.set")?["by"] as? [String: String] == ["kind": "person", "actor": "Ada"])
 
         // Turning capture off keeps the rules as the service wrote them, unknown keys too.
         let off = try await store.setFolder(added.draft(capture: false), in: space.id)
         #expect(off.id == added.id && !off.capture)
+        #expect(off.project?.created == false)
         let rules = try #require(service.params(of: "folders.set")?["rules"] as? [String: Any])
         #expect(rules["exclude"] as? [String] == ["node_modules/**"])
         #expect(rules["some_future_key"] as? Int == 1)
@@ -259,6 +261,7 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let agent = try await store.setFolder(.adding(.agent, at: URL(filePath: "/tmp/kn-sessions"), agent: "codex"), in: space.id)
         #expect(agent.agent == "codex")
         #expect(agent.isMissing)
+        #expect(agent.project == nil)
         await #expect(throws: SpaceStoreError.self) {
             _ = try await store.setFolder(.adding(.agent, at: URL(filePath: "/tmp/kn-sessions")), in: space.id)
         }
@@ -301,14 +304,42 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let added = try await store.setFolder(.adding(.project, at: project), in: space.id)
         #expect(!added.isMissing)
         #expect(added.localURL?.standardizedFileURL == project.standardizedFileURL)
+        // The core adds the project named after the folder, once.
+        let made = try #require(added.project)
+        #expect(made.title == "site" && made.created)
+        #expect(try await store.projects(in: space.id).map(\.id) == [made.id])
         _ = try await store.setFolder(added.draft(capture: false), in: space.id)
         #expect(try await store.folders(of: space.id).map(\.capture) == [false])
+        #expect(try await store.folders(of: space.id).map(\.project?.id) == [made.id])
         try await store.setCaptureEnabled(false, in: space.id)
         #expect(try await store.captureEnabled(in: space.id) == false)
         #expect(try await store.renameSpace(space.id, to: "  Renamed ").name == "Renamed")
         #expect(try await store.spaceDetails(space.id).name == "Renamed")
         try await store.removeFolder(added.id, from: space.id)
         #expect(try await store.folders(of: space.id).isEmpty)
+        // The project stays, and adding the folder again finds it instead of making another.
+        #expect(try await store.projects(in: space.id).map(\.id) == [made.id])
+        let again = try await store.setFolder(.adding(.project, at: project), in: space.id)
+        #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false))
+        #expect(try await store.projects(in: space.id).count == 1)
+        try await store.removeFolder(again.id, from: space.id)
+    }
+
+    @MainActor @Test func foldersScreenSaysWhatHappensToTheProject() {
+        let made = SpaceFolder.Project(id: "p", title: "site", created: true)
+        let found = SpaceFolder.Project(id: "p", title: "site", created: false)
+        #expect(SpaceFoldersModel.notice(for: made).hasPrefix("Added the project \u{201C}site\u{201D}."))
+        #expect(SpaceFoldersModel.notice(for: found).contains("the project this space already had"))
+        let folder = SpaceFolder(id: "f", kind: "project", path: "~/Developer/site", capture: true, project: found)
+        #expect(SpaceFoldersForm.removeMessage(for: folder).hasSuffix("The project \u{201C}site\u{201D} and its notes stay."))
+        var notes = folder
+        notes.kind = "notes"
+        notes.project = nil
+        #expect(!SpaceFoldersForm.removeMessage(for: notes).contains("project"))
+        #expect(SpaceFolder.projectName(for: URL(filePath: "/Volumes/Work/site", directoryHint: .isDirectory)) == "site")
+        #expect(SpaceFolder.projectName(for: URL(filePath: NSHomeDirectory(), directoryHint: .isDirectory)) == nil)
+        #expect(SpaceFolder.projectName(for: URL(filePath: "/", directoryHint: .isDirectory)) == nil)
+        #expect(AddProjectSheet.projectExplanation(for: URL(filePath: "/Volumes/Work/site")).contains("\u{201C}site\u{201D}"))
     }
 
     // MARK: History through the service
