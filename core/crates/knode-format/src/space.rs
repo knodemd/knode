@@ -201,31 +201,33 @@ impl Space {
         properties: &Properties,
         by: &Provenance,
     ) -> Result<Node> {
+        let (id, content) = self.prepare_node(new, properties)?;
+        let tx = self.conn.transaction()?;
+        write_new_node(&tx, &id, content, properties, by, Timestamp::now())?;
+        tx.commit()?;
+        self.require_node(&id)
+    }
+
+    /// Checks a node to create and gives it its id, writing nothing: with
+    /// [`write_new_node`], for writes that create a node inside a larger transaction.
+    pub(crate) fn prepare_node(
+        &mut self,
+        new: NewNode,
+        properties: &Properties,
+    ) -> Result<(NodeId, Content)> {
         check_properties(properties)?;
         let kind = if new.kind.trim().is_empty() {
             kinds::NOTE.to_string()
         } else {
             check_name("node kind", new.kind.trim())?
         };
-        let title = check_title(&new.title)?;
-        let tags = clean_tags(&new.tags)?;
-        let id = NodeId::from_ulid(next_ulid(&mut self.ids));
-        let now = Timestamp::now();
-
-        let tx = self.conn.transaction()?;
-        let prov = provenance_id(&tx, by)?;
-        let change = add_change(&tx, now, prov, actions::NODE_CREATE, &id.to_string(), None)?;
         let content = Content {
             kind,
-            title,
+            title: check_title(&new.title)?,
             body: new.body,
-            tags,
+            tags: clean_tags(&new.tags)?,
         };
-        insert_node(&tx, &id, &content, (now, prov), prov, now)?;
-        write_properties(&tx, &id, properties, prov, now)?;
-        record(&tx, &id, ChangeOp::Create, prov, now, change, None)?;
-        tx.commit()?;
-        self.require_node(&id)
+        Ok((NodeId::from_ulid(next_ulid(&mut self.ids)), content))
     }
 
     /// Creates a node written elsewhere, keeping its id, `created_at`, `updated_at`,
@@ -734,6 +736,23 @@ fn fts_query(query: &str) -> Option<String> {
     Some(out.join(" "))
 }
 
+/// Writes a node checked by [`Space::prepare_node`], with its change and history, in `tx`.
+pub(crate) fn write_new_node(
+    tx: &Transaction,
+    id: &NodeId,
+    content: Content,
+    properties: &Properties,
+    by: &Provenance,
+    now: Timestamp,
+) -> Result<()> {
+    let prov = provenance_id(tx, by)?;
+    let change = add_change(tx, now, prov, actions::NODE_CREATE, &id.to_string(), None)?;
+    insert_node(tx, id, &content, (now, prov), prov, now)?;
+    write_properties(tx, id, properties, prov, now)?;
+    record(tx, id, ChangeOp::Create, prov, now, change, None)?;
+    Ok(())
+}
+
 pub(crate) fn check_title(title: &str) -> Result<String> {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
@@ -1015,8 +1034,11 @@ pub(crate) fn resolve_path(
     from: Option<&NodeId>,
     target: &str,
 ) -> Result<Option<String>> {
-    let wanted = path_key(target);
-    if !wanted.contains('/') {
+    // A `[[../folder/note]]` names one file, relative to the linking note's: only that path.
+    let relative = relative_target(tx, from, target)?;
+    let exact = relative.is_some();
+    let wanted = path_key(relative.as_deref().unwrap_or(target));
+    if !exact && !wanted.contains('/') {
         return Ok(None);
     }
     let suffix = format!("/{wanted}");
@@ -1049,12 +1071,51 @@ pub(crate) fn resolve_path(
     while let Some(row) = rows.next()? {
         let value: String = row.get(1)?;
         let key = path_key(&value);
-        if key == wanted || key.ends_with(&suffix) {
+        if key == wanted || (!exact && key.ends_with(&suffix)) {
             candidates.push((row.get(0)?, Some(value)));
         }
     }
     drop(rows);
     nearest(tx, from, candidates)
+}
+
+/// A `[[link]]` target written relative to the linking note's file, as Obsidian writes links
+/// with its "relative path to file" setting: `[[../Research/Notes]]` from `OFM/Course/Plan.md` is
+/// `OFM/Research/Notes`. `None` when the target does not start with `../` or `./`, the linking
+/// node has no `markdown.path`, or the target goes above the root of the imported folder.
+fn relative_target(tx: &Connection, from: Option<&NodeId>, target: &str) -> Result<Option<String>> {
+    let target = target.trim();
+    if !(target.starts_with("../") || target.starts_with("./")) {
+        return Ok(None);
+    }
+    let Some(from) = from else {
+        return Ok(None);
+    };
+    let here: Option<String> = tx
+        .query_row(
+            "SELECT value FROM properties WHERE node_id = ?1 AND key = ?2",
+            params![from.to_string(), property_keys::MARKDOWN_PATH],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(here) = here else {
+        return Ok(None);
+    };
+    let mut parts: Vec<&str> = here.split('/').collect();
+    parts.pop();
+    for segment in target.split('/') {
+        match segment {
+            ".." => {
+                if parts.pop().is_none() {
+                    return Ok(None);
+                }
+            }
+            "." | "" => {}
+            name => parts.push(name),
+        }
+    }
+    let path = parts.join("/");
+    Ok(Some(path.strip_suffix(".md").unwrap_or(&path).to_owned()))
 }
 
 /// Turns the unresolved links waiting for the file `path` into `mentions` links to `id`:
@@ -1116,8 +1177,11 @@ fn apply_body_links(
             Some(target) => {
                 targets.insert(target);
             }
-            // A link waits for the title before `#`: `[[Roadmap#Plan]]` waits for `Roadmap`.
-            None => waiting.push(link.target.clone()),
+            // A link waits for the title before `#`: `[[Roadmap#Plan]]` waits for `Roadmap`. A
+            // relative one waits for the path it names, so the file finds it when it arrives.
+            None => waiting.push(
+                relative_target(tx, Some(id), &link.target)?.unwrap_or_else(|| link.target.clone()),
+            ),
         }
     }
     let existing: Vec<String> = {

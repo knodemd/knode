@@ -42,6 +42,10 @@ pub struct Document {
     pub include: bool,
     /// Source digest; revalidated before writing.
     pub digest: String,
+    /// The repository inside the source that tracks this document, when it was proposed
+    /// unchecked for that reason, so a review can bring a repository's documents back at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
 }
 /// An immutable fingerprint of an eligible source file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +293,83 @@ fn inventory(root: &Path, prefix: &str, found: &mut Inventory) -> Result<()> {
     }
     Ok(())
 }
+/// The paths a repository tracks, read from its `.git/index` (versions 2 to 4) without running
+/// `git`. `None` when the index is missing or cannot be read: callers then treat nothing as
+/// tracked, as before. A repository whose `.git` is a file (a worktree or a submodule) has no
+/// index there, so this returns `None` and its documents stay checked.
+fn tracked(repo: &Path) -> Option<BTreeSet<String>> {
+    let data = fs::read(repo.join(".git").join("index")).ok()?;
+    let config = fs::read_to_string(repo.join(".git").join("config")).unwrap_or_default();
+    let hash = if config.replace(' ', "").contains("objectformat=sha256") {
+        32
+    } else {
+        20
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?))
+    };
+    if data.get(0..4)? != b"DIRC" {
+        return None;
+    }
+    let version = u32_at(4)?;
+    if !(2..=4).contains(&version) {
+        return None;
+    }
+    let count = u32_at(8)? as usize;
+    let mut paths = BTreeSet::new();
+    let mut previous: Vec<u8> = Vec::new();
+    let mut at = 12;
+    for _ in 0..count {
+        let start = at;
+        // ctime, mtime, dev, ino, mode, uid, gid, size, then the object id and the flags.
+        let mode = u32_at(start + 24)?;
+        let flags_at = start + 40 + hash;
+        let flags = u16::from_be_bytes(data.get(flags_at..flags_at + 2)?.try_into().ok()?);
+        at = flags_at + 2;
+        if version >= 3 && flags & 0x4000 != 0 {
+            at += 2;
+        }
+        let name = if version == 4 {
+            // Prefix compression: drop N bytes of the previous name, then a NUL-ended suffix.
+            let mut byte = *data.get(at)?;
+            at += 1;
+            let mut strip = usize::from(byte & 0x7f);
+            while byte & 0x80 != 0 {
+                byte = *data.get(at)?;
+                at += 1;
+                strip = ((strip + 1) << 7) | usize::from(byte & 0x7f);
+            }
+            let end = at + data.get(at..)?.iter().position(|b| *b == 0)?;
+            let mut name = previous.get(..previous.len().checked_sub(strip)?)?.to_vec();
+            name.extend_from_slice(&data[at..end]);
+            at = end + 1;
+            name
+        } else {
+            let end = at + data.get(at..)?.iter().position(|b| *b == 0)?;
+            let name = data[at..end].to_vec();
+            // Entries are padded with 1 to 8 NULs to a multiple of eight bytes.
+            at = start + ((end - start + 8) & !7);
+            name
+        };
+        // Sparse directory entries (mode 040000) stand for a whole folder; skip them.
+        if mode & 0o170000 != 0o040000 {
+            paths.insert(String::from_utf8(name.clone()).ok()?);
+        }
+        previous = name;
+    }
+    Some(paths)
+}
+/// The nearest repository below the source that holds `path`, as a folder relative to it.
+fn repo_of<'a>(path: &str, repos: &'a BTreeSet<String>) -> Option<&'a str> {
+    let mut folder = path;
+    while let Some((parent, _)) = folder.rsplit_once('/') {
+        if let Some(repo) = repos.get(parent) {
+            return Some(repo);
+        }
+        folder = parent;
+    }
+    None
+}
 /// One line per exclusion reason, with a few examples, instead of one line per path.
 fn summarize(excluded: &BTreeMap<&'static str, Vec<String>>) -> Vec<String> {
     excluded
@@ -360,10 +441,15 @@ fn references(body: &str) -> Vec<(String, bool)> {
                     dest_url,
                     ..
                 },
-            ) => Some((
-                dest_url.to_string(),
-                matches!(link_type, LinkType::WikiLink { .. }),
-            )),
+            ) => {
+                let wiki = matches!(link_type, LinkType::WikiLink { .. });
+                let dest = if wiki {
+                    knode_md::unescaped(&dest_url)
+                } else {
+                    &dest_url
+                };
+                Some((dest.to_owned(), wiki))
+            }
             _ => None,
         })
         .filter(|(dest, _)| !dest.contains("://") && !dest.starts_with("mailto:"))
@@ -425,6 +511,10 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
         let mut groups = BTreeMap::new();
         let mut referenced = BTreeSet::new();
         let mut missing = Vec::new();
+        // In a vault, documentation tracked by a repository inside it lives with its code: an
+        // imported copy would go stale and crowd the person's own notes. Propose it unchecked.
+        let mut indexes: BTreeMap<&str, Option<BTreeSet<String>>> = BTreeMap::new();
+        let mut unchecked = Vec::new();
         for path in notes {
             let full = root.join(path);
             let digest = digest(&full)?;
@@ -472,13 +562,38 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
                     missing.push(format!("{path} → {target}"));
                 }
             }
+            let repository = if mode == Mode::Vault {
+                repo_of(path, &found.repos).filter(|repo| {
+                    indexes
+                        .entry(repo)
+                        .or_insert_with(|| tracked(&root.join(repo)))
+                        .as_ref()
+                        .is_some_and(|paths| paths.contains(&path[repo.len() + 1..]))
+                })
+            } else {
+                None
+            };
+            if repository.is_some() {
+                unchecked.push(path.as_str());
+            }
             plan.documents.push(Document {
                 path: path.clone(),
                 title: note.title,
                 project: id,
-                include: true,
+                include: repository.is_none(),
                 digest,
+                repository: repository.map(str::to_owned),
             });
+        }
+        if !unchecked.is_empty() {
+            let shown: Vec<_> = unchecked.iter().take(3).copied().collect();
+            let more = unchecked.len() - shown.len();
+            notices.push(format!(
+                "Unchecked {} documents tracked by git in the repositories inside this folder ({}{}): they live with their code, where agents read them, and a copy here would not follow their changes. Check any you want to bring anyway.",
+                unchecked.len(),
+                shown.join(", "),
+                if more > 0 { format!(" and {more} more") } else { String::new() }
+            ));
         }
         // Only files a note may reference are copied and fingerprinted: every file with a
         // referenced name, so a name that is unique in the source stays unique here.
@@ -1263,6 +1378,97 @@ mod tests {
         );
         let body = space.get_node(&context("Org")).unwrap().unwrap().body;
         assert!(body.contains("## Projects inside") && !body.contains("To be filled"));
+    }
+
+    /// Runs `git` in `dir`; false when git is not installed, so the test can skip.
+    fn run_git(dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Tester",
+                "-c",
+                "user.email=tester@example.invalid",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    #[test]
+    fn vault_repositories_propose_their_tracked_documents_unchecked() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        write("Ideas.md", "My own note.");
+        write("Org/alpha/README.md", "Tracked readme.");
+        write("Org/alpha/docs/Guide.md", "Tracked guide.");
+        write("Org/alpha/Status.md", "Untracked status note.");
+        write("Org/beta/README.md", "Tracked with index version 4.");
+        write("Org/beta/notes/Log.md", "Ignored log.");
+        write("Org/beta/.gitignore", "notes/\n");
+        // A repository whose index cannot be read keeps its documents checked.
+        write("Org/gamma/README.md", "No index.");
+        fs::create_dir_all(root.join("Org/gamma/.git")).unwrap();
+        // The vault's own repository tracks the person's notes: they stay checked.
+        if !run_git(&root, &["init", "-q"]) {
+            eprintln!("git is not installed; skipping");
+            return;
+        }
+        run_git(&root, &["add", "Ideas.md"]);
+        let alpha = root.join("Org/alpha");
+        run_git(&alpha, &["init", "-q"]);
+        run_git(&alpha, &["add", "README.md", "docs/Guide.md"]);
+        let beta = root.join("Org/beta");
+        run_git(&beta, &["init", "-q"]);
+        run_git(&beta, &["add", "README.md", ".gitignore"]);
+        assert!(run_git(&beta, &["update-index", "--index-version", "4"]));
+        let index = fs::read(beta.join(".git/index")).unwrap();
+        assert_eq!(index[4..8], 4u32.to_be_bytes());
+        assert_eq!(
+            tracked(&beta).unwrap(),
+            BTreeSet::from([".gitignore".to_owned(), "README.md".to_owned()])
+        );
+
+        let plan = analyze(Some(&root), Mode::Vault).unwrap();
+        let include: BTreeMap<_, _> = plan
+            .documents
+            .iter()
+            .map(|d| (d.path.as_str(), d.include))
+            .collect();
+        assert_eq!(
+            include,
+            BTreeMap::from([
+                ("Ideas.md", true),
+                ("Org/alpha/README.md", false),
+                ("Org/alpha/Status.md", true),
+                ("Org/alpha/docs/Guide.md", false),
+                ("Org/beta/README.md", false),
+                ("Org/beta/notes/Log.md", true),
+                ("Org/gamma/README.md", true),
+            ])
+        );
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|w| w.starts_with("Unchecked 3 documents tracked by git"))
+        );
+        let repository: BTreeMap<_, _> = plan
+            .documents
+            .iter()
+            .map(|d| (d.path.as_str(), d.repository.as_deref()))
+            .collect();
+        assert_eq!(repository["Org/alpha/docs/Guide.md"], Some("Org/alpha"));
+        assert_eq!(repository["Org/beta/README.md"], Some("Org/beta"));
+        assert_eq!(repository["Org/alpha/Status.md"], None);
+        assert_eq!(repository["Ideas.md"], None);
+        // A single project brings its own documentation, tracked or not.
+        let project = analyze(Some(&alpha), Mode::Project).unwrap();
+        assert!(project.documents.iter().all(|d| d.include));
     }
 
     #[test]
