@@ -393,3 +393,109 @@ fn unsupported_instruction_adapter_is_rejected_before_connection_changes() {
     assert!(out.contains("codex and claude-code only"));
     assert!(!sb.home().join(".cursor/mcp.json").exists());
 }
+
+#[test]
+fn overlapping_project_folders_are_shown_with_their_spaces() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let site = sb.home().join("code/site");
+    let docs = site.join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    let (site, docs) = (site.to_str().unwrap(), docs.to_str().unwrap());
+    sb.ok(&["--space", "work", "folders", "add", site]);
+    let out = sb.run(&["--space", "personal", "folders", "add", docs]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("~/code/site/docs (\"personal\") is inside ~/code/site (\"work\")"),
+        "{err}"
+    );
+    let out = sb.run(&["--space", "personal", "folders", "add", site]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("captured into both"), "{err}");
+
+    let all: Value = serde_json::from_str(&sb.ok(&["folders", "overlaps", "--json"])).unwrap();
+    let kinds: Vec<&str> = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["nested", "same", "nested"], "{all}");
+    assert_eq!(all[0]["inner"]["space_name"], "personal");
+    assert!(
+        sb.ok(&["folders", "overlaps"])
+            .contains("captured into both")
+    );
+
+    // Listing a space warns about its own overlaps only.
+    let out = sb.run(&["--space", "work", "folders", "list"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("captured into both"), "{err}");
+    assert!(!err.contains("both in \"personal\""), "{err}");
+}
+
+#[test]
+fn check_says_whether_an_agent_reaches_the_space_of_a_project() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let project = sb.home().join("code/site");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_str().unwrap();
+    sb.ok(&["--space", "personal", "folders", "add", project]);
+    let check = |extra: &[&str]| -> Value {
+        let mut args = vec!["connect", "gemini", "--check", "--json"];
+        args.extend_from_slice(extra);
+        serde_json::from_str(&sb.ok(&args)).unwrap()
+    };
+    let codes = |report: &Value| -> Vec<String> {
+        report["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["code"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let settings = sb.home().join(".gemini/settings.json");
+
+    // Disconnected: nothing in its settings, and the check writes nothing.
+    let report = check(&["--project", project]);
+    assert_eq!(codes(&report), ["not_connected"]);
+    assert_eq!(report["intended"]["name"], "personal");
+    assert_eq!(report["intended"]["from"], "project");
+    assert!(!settings.exists());
+    let err = sb.fails(&["connect", "gemini", "--check", "--project", project]);
+    assert!(err.contains("not in the settings"), "{err}");
+
+    // Connected to the default space (work): the project's space is another one.
+    sb.ok(&["connect", "gemini"]);
+    let report = check(&["--project", project]);
+    assert_eq!(codes(&report), ["wrong_space"], "{report}");
+    assert_eq!(report["settings"][0]["follows_default"], true);
+    assert_eq!(report["settings"][0]["space"]["name"], "work");
+    assert_eq!(report["access"], "write");
+    // Without a project, the default space is the one meant.
+    assert_eq!(check(&[])["ok"], true);
+
+    // Pointed at the project's space: it already has access elsewhere, so connecting does not
+    // give it any there, and the check gives none either.
+    let before = sb.ok(&["agents", "list"]);
+    sb.ok(&["--space", "personal", "connect", "gemini"]);
+    let report = check(&["--project", project]);
+    assert_eq!(codes(&report), ["no_access"], "{report}");
+    assert_eq!(report["access"], "none");
+    // --space named the space: its path is what the settings pin.
+    assert_eq!(report["settings"][0]["space"]["name"], "personal");
+    assert_eq!(report["settings"][0]["follows_default"], false);
+    assert_eq!(sb.ok(&["agents", "list"]), before);
+
+    // Only the person grants it.
+    sb.ok(&["agents", "grant", "gemini", "personal", "read"]);
+    let report = check(&["--project", project]);
+    assert_eq!(report["ok"], true, "{report}");
+    assert!(report["notes"][0].as_str().unwrap().contains("only read"));
+    let out = sb.ok(&["connect", "gemini", "--check", "--project", project]);
+    assert!(out.contains("OK: gemini-cli reaches"), "{out}");
+}

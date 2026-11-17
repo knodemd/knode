@@ -1,6 +1,6 @@
 //! The name, settings and folders of a space: the shapes of `space.rename`, `settings.get`,
-//! `settings.set`, `folders.list`, `folders.set` and `folders.remove`, and the rules they follow
-//! (section 15 of the .knode specification).
+//! `settings.set`, `folders.list`, `folders.set`, `folders.remove` and `folders.overlaps`, and the
+//! rules they follow (section 15 of the .knode specification).
 //!
 //! These functions work on an open space, so the CLI can use them when the service cannot run.
 //! Only a person changes the name, the settings and the folders of a space.
@@ -342,6 +342,182 @@ fn check_rules(kind: &str, rules: &Value) -> knode_format::Result<()> {
     Ok(())
 }
 
+/// Whether the recorded path `path` is the folder `folder` or inside it.
+pub(crate) fn inside(folder: &str, path: &str) -> bool {
+    if folder == "/" {
+        return path.starts_with('/');
+    }
+    path.strip_prefix(folder)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The folders of one space, for [`folder_overlaps`] and [`project_destinations`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceFolders {
+    /// The space.
+    pub space: PathBuf,
+    /// Its name.
+    pub name: String,
+    /// Its folders, as the space records them.
+    pub folders: Vec<Folder>,
+}
+
+impl SpaceFolders {
+    /// The folders of an open space.
+    pub fn of(space: &Space) -> knode_format::Result<Self> {
+        Ok(SpaceFolders {
+            space: space.path().to_path_buf(),
+            name: space.manifest().name.clone(),
+            folders: space.folders()?,
+        })
+    }
+}
+
+/// A project folder of a space, as [`folder_overlaps`] and [`project_destinations`] name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MappedFolder {
+    /// The space it belongs to.
+    pub space: PathBuf,
+    /// The name of that space: where the folder's conversations go.
+    pub space_name: String,
+    /// The id of the folder.
+    pub folder: String,
+    /// The folder as the space records it.
+    pub path: String,
+    /// Whether its conversations are captured.
+    pub capture: bool,
+}
+
+impl MappedFolder {
+    fn of(space: &SpaceFolders, folder: &Folder) -> Self {
+        MappedFolder {
+            space: space.space.clone(),
+            space_name: space.name.clone(),
+            folder: folder.id.clone(),
+            path: folder.path.clone(),
+            capture: folder.capture,
+        }
+    }
+}
+
+/// How two project folders overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlapKind {
+    /// The same folder is a project folder of two spaces: its conversations go to both.
+    Same,
+    /// One folder is inside the other: its conversations go to the inner folder's space only.
+    Nested,
+}
+
+/// Two project folders that overlap, as `folders.overlaps` returns them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderOverlap {
+    /// How they overlap.
+    pub kind: OverlapKind,
+    /// The outer folder; for [`OverlapKind::Same`], the folder of the first space.
+    pub outer: MappedFolder,
+    /// The folder inside it; for [`OverlapKind::Same`], the folder of the second space.
+    pub inner: MappedFolder,
+    /// What it means for capture, in a sentence, for people.
+    pub message: String,
+}
+
+/// The project folders of `spaces` that overlap: the same folder in two spaces, or a folder
+/// inside another. Capture sends a conversation to the project folder nearest to where it was
+/// held, and to every space that has that folder, so both are worth a look: the same folder in
+/// two spaces is captured into both, and a nested folder takes its conversations away from the
+/// folder around it. Each pair once, in the order of `spaces` and their folders.
+pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
+    let projects: Vec<MappedFolder> = spaces
+        .iter()
+        .flat_map(|space| {
+            space
+                .folders
+                .iter()
+                .filter(|f| f.kind == folder_kinds::PROJECT)
+                .map(move |f| MappedFolder::of(space, f))
+        })
+        .collect();
+    let mut overlaps = Vec::new();
+    for (i, a) in projects.iter().enumerate() {
+        for b in &projects[i + 1..] {
+            if a.path == b.path {
+                if a.space == b.space {
+                    continue; // A space keeps one folder per kind and path.
+                }
+                overlaps.push(FolderOverlap {
+                    kind: OverlapKind::Same,
+                    message: format!(
+                        "{} is a project folder of both \"{}\" and \"{}\": its conversations are \
+                         captured into both.",
+                        a.path, a.space_name, b.space_name
+                    ),
+                    outer: a.clone(),
+                    inner: b.clone(),
+                });
+                continue;
+            }
+            let (outer, inner) = if inside(&a.path, &b.path) {
+                (a, b)
+            } else if inside(&b.path, &a.path) {
+                (b, a)
+            } else {
+                continue;
+            };
+            let message = if outer.space == inner.space {
+                format!(
+                    "{} is inside {}, both in \"{}\": conversations held in it belong to its own \
+                     project, not to the one around it.",
+                    inner.path, outer.path, inner.space_name
+                )
+            } else {
+                format!(
+                    "{} (\"{}\") is inside {} (\"{}\"): conversations held in it are captured \
+                     into \"{}\" only, not into \"{}\".",
+                    inner.path,
+                    inner.space_name,
+                    outer.path,
+                    outer.space_name,
+                    inner.space_name,
+                    outer.space_name
+                )
+            };
+            overlaps.push(FolderOverlap {
+                kind: OverlapKind::Nested,
+                outer: outer.clone(),
+                inner: inner.clone(),
+                message,
+            });
+        }
+    }
+    overlaps
+}
+
+/// The project folders a folder on this machine belongs to, as capture routes it: those
+/// nearest to it, one per space (several when the same folder is in several spaces). Empty when
+/// no project folder holds it. Whether capture is on is not considered.
+pub fn project_destinations(spaces: &[SpaceFolders], folder: &Path) -> Vec<MappedFolder> {
+    let recorded = record_path(folder);
+    let matching: Vec<MappedFolder> = spaces
+        .iter()
+        .flat_map(|space| {
+            space
+                .folders
+                .iter()
+                .filter(|f| f.kind == folder_kinds::PROJECT && inside(&f.path, &recorded))
+                .map(move |f| MappedFolder::of(space, f))
+        })
+        .collect();
+    let Some(longest) = matching.iter().map(|f| f.path.len()).max() else {
+        return Vec::new();
+    };
+    matching
+        .into_iter()
+        .filter(|f| f.path.len() == longest)
+        .collect()
+}
+
 /// The patterns of a folder's rule (`include` or `exclude`).
 pub fn rule_patterns<'a>(rules: &'a Value, key: &str) -> Vec<&'a str> {
     rules
@@ -441,5 +617,104 @@ mod tests {
         assert!(check_icon("x").is_err());
         assert!(check_icon("🌱 🌱").is_err());
         assert!(check_icon("é").is_err());
+    }
+
+    fn folder(id: &str, kind: &str, path: &str) -> Folder {
+        let by = Provenance::person("Ada");
+        Folder {
+            id: id.into(),
+            kind: kind.into(),
+            path: path.into(),
+            capture: true,
+            rules: empty_object(),
+            created_at: knode_format::Timestamp(0),
+            created_by: by.clone(),
+            updated_at: knode_format::Timestamp(0),
+            updated_by: by,
+        }
+    }
+
+    fn space(name: &str, folders: Vec<Folder>) -> SpaceFolders {
+        SpaceFolders {
+            space: PathBuf::from(format!("/k/{name}.knode")),
+            name: name.into(),
+            folders,
+        }
+    }
+
+    #[test]
+    fn overlapping_project_folders_are_found_once() {
+        let spaces = [
+            space(
+                "Work",
+                vec![
+                    folder("w1", folder_kinds::PROJECT, "/code/site"),
+                    folder("w2", folder_kinds::PROJECT, "/code/site/docs"),
+                    folder("w3", folder_kinds::PROJECT, "/code/sitemap"),
+                    // Notes and agent folders are not routed by project.
+                    folder("w4", folder_kinds::NOTES, "/code/site/notes"),
+                ],
+            ),
+            space(
+                "Personal",
+                vec![
+                    folder("p1", folder_kinds::PROJECT, "/code/site"),
+                    folder("p2", folder_kinds::PROJECT, "/code/site/blog"),
+                    folder("p3", folder_kinds::PROJECT, "/elsewhere"),
+                ],
+            ),
+        ];
+        let found = folder_overlaps(&spaces);
+        let pairs: Vec<(OverlapKind, &str, &str)> = found
+            .iter()
+            .map(|o| (o.kind, o.outer.folder.as_str(), o.inner.folder.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                (OverlapKind::Nested, "w1", "w2"),
+                (OverlapKind::Same, "w1", "p1"),
+                (OverlapKind::Nested, "w1", "p2"),
+                (OverlapKind::Nested, "p1", "w2"),
+                (OverlapKind::Nested, "p1", "p2"),
+            ]
+        );
+        assert!(found[1].message.contains("captured into both"), "{found:?}");
+        assert!(
+            found[2]
+                .message
+                .contains("into \"Personal\" only, not into \"Work\"")
+        );
+        assert!(found[0].message.contains("both in \"Work\""));
+        assert!(folder_overlaps(&spaces[1..]).len() == 1);
+        assert!(folder_overlaps(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_folder_goes_to_its_nearest_project_folders() {
+        let spaces = [
+            space(
+                "Work",
+                vec![
+                    folder("w1", folder_kinds::PROJECT, "/code/site"),
+                    folder("w2", folder_kinds::PROJECT, "/code/site/docs"),
+                ],
+            ),
+            space(
+                "Personal",
+                vec![folder("p1", folder_kinds::PROJECT, "/code/site")],
+            ),
+        ];
+        let ids = |path: &str| -> Vec<String> {
+            project_destinations(&spaces, Path::new(path))
+                .into_iter()
+                .map(|f| f.folder)
+                .collect()
+        };
+        assert_eq!(ids("/code/site/docs/api"), ["w2"]);
+        assert_eq!(ids("/code/site/src"), ["w1", "p1"]);
+        assert_eq!(ids("/code/site"), ["w1", "p1"]);
+        assert!(ids("/code/sitemap").is_empty());
+        assert!(ids("/other").is_empty());
     }
 }

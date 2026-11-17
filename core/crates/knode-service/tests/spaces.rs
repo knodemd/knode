@@ -7,6 +7,7 @@ use std::time::Duration;
 use knode_format::{GrantLevel, NewNode, Provenance, actions, kinds, setting_keys};
 use knode_service::keys::{fingerprint, generate_key};
 use knode_service::protocol::codes;
+use knode_service::spaces::OverlapKind;
 use knode_service::{
     ChangeKind, Client, Config, Error, Event, FolderInput, ServiceHandle, SpaceEvent,
     SpaceEventKind, Subscription, start,
@@ -387,6 +388,61 @@ fn a_project_folder_creates_or_finds_its_project() {
             .is_some()
     );
     assert_eq!(f.person.projects(f.space()).unwrap().len(), 2);
+}
+
+#[test]
+fn overlapping_project_folders_are_reported_with_their_spaces() {
+    let f = Fixture::new();
+    let personal = f.space().with_file_name("Personal.knode");
+    f.person.create_space(&personal, "Personal").unwrap();
+    let project = |path: &PathBuf| FolderInput {
+        id: None,
+        kind: "project".into(),
+        path: path.to_string_lossy().into_owned(),
+        capture: true,
+        rules: json!({}),
+    };
+    let site = f.folder("code/site");
+    let docs = f.folder("code/site/docs");
+    f.person
+        .set_folder(f.space(), &project(&site), &me())
+        .unwrap();
+    f.person
+        .set_folder(&personal, &project(&docs), &me())
+        .unwrap();
+    f.person
+        .set_folder(&personal, &project(&site), &me())
+        .unwrap();
+
+    let found = f
+        .person
+        .folder_overlaps(&[f.space(), personal.clone()])
+        .unwrap();
+    let kinds: Vec<(OverlapKind, &str, &str)> = found
+        .iter()
+        .map(|o| {
+            (
+                o.kind,
+                o.outer.space_name.as_str(),
+                o.inner.space_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (OverlapKind::Nested, "Work", "Personal"),
+            (OverlapKind::Same, "Work", "Personal"),
+            (OverlapKind::Nested, "Personal", "Personal"),
+        ]
+    );
+    assert_eq!(found[0].inner.path, docs.to_string_lossy());
+    // One space alone: only its own folders are compared.
+    assert!(f.person.folder_overlaps(&[f.space()]).unwrap().is_empty());
+
+    // It names folders of every space given: people only.
+    let error = rpc(f.reader().folder_overlaps(&[f.space()]));
+    assert_eq!(error.code, codes::FORBIDDEN);
 }
 
 #[test]

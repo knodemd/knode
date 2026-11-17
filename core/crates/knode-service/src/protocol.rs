@@ -30,6 +30,9 @@ pub mod methods {
     pub const FOLDERS_SET: &str = "folders.set";
     /// Removes a folder of a space. People only.
     pub const FOLDERS_REMOVE: &str = "folders.remove";
+    /// The project folders of several spaces that overlap: the same folder in two spaces, or one
+    /// inside another. People only.
+    pub const FOLDERS_OVERLAPS: &str = "folders.overlaps";
     /// Creates a node.
     pub const NODE_CREATE: &str = "node.create";
     /// Reads a node.
@@ -566,6 +569,11 @@ pub(crate) struct FolderSetParams {
     #[serde(flatten)]
     pub folder: FolderInput,
     pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct FolderOverlapsParams {
+    pub spaces: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

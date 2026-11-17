@@ -27,7 +27,7 @@ use crate::agents::{
 use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
 use crate::search::{IndexRunParams, IndexStatus, SearchResults};
-use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
+use crate::spaces::{FolderInfo, FolderInput, FolderOverlap, SpaceEvent};
 use crate::{Error, Result, paths};
 
 mod import;
@@ -310,6 +310,16 @@ impl Client {
             by: by.clone(),
         };
         self.request(methods::FOLDERS_REMOVE, params)
+    }
+
+    /// The project folders of `spaces` that overlap: the same folder in two of them, or one
+    /// inside another, with the space each one's conversations go to. Only a person can ask.
+    pub fn folder_overlaps(&self, spaces: &[PathBuf]) -> Result<Vec<FolderOverlap>> {
+        let spaces = spaces
+            .iter()
+            .map(|space| space_path(space))
+            .collect::<Result<Vec<_>>>()?;
+        self.request(methods::FOLDERS_OVERLAPS, FolderOverlapsParams { spaces })
     }
 
     /// Creates a node.

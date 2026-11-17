@@ -35,7 +35,7 @@ use knode_ingest::{
 use crate::markdown::{record_path, resolve_path};
 use crate::protocol::ChangeKind;
 use crate::server::State;
-use crate::spaces::{capture_enabled, excluded, rule_patterns};
+use crate::spaces::{capture_enabled, excluded, inside, rule_patterns};
 
 /// The folder in the Knode home where capture keeps its state.
 pub const CAPTURE_DIR: &str = "capture";
@@ -307,15 +307,6 @@ impl Routes {
             _ => Vec::new(),
         }
     }
-}
-
-/// Whether the recorded path `path` is the folder `folder` or inside it.
-fn inside(folder: &str, path: &str) -> bool {
-    if folder == "/" {
-        return path.starts_with('/');
-    }
-    path.strip_prefix(folder)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// The spaces capture writes to, for [`Capture::sync_all_to`]: the routes the service keeps,

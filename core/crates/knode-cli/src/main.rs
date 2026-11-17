@@ -208,6 +208,17 @@ enum Command {
         /// --print previews the instructions without changing files or connecting the agent.
         #[arg(long, value_name = "PROJECT")]
         instructions: Option<PathBuf>,
+        /// Check, changing nothing, that the agent's settings make it use the space meant for it:
+        /// --space, else the space the conversations of --project go to, else the default space;
+        /// and that it may read there. Fails when it does not.
+        #[arg(long, requires = "agent", conflicts_with_all = ["print", "list", "instructions"])]
+        check: bool,
+        /// With --check: the project folder the agent works in.
+        #[arg(long, value_name = "FOLDER", requires = "check")]
+        project: Option<PathBuf>,
+        /// With --check: print the report as JSON, and succeed whatever it says.
+        #[arg(long, requires = "check")]
+        json: bool,
     },
     /// Run the MCP server on standard input and output. Agents start it themselves.
     Mcp {
@@ -392,8 +403,18 @@ fn run(cli: Cli) -> Result<()> {
             print,
             list,
             instructions,
+            check,
+            project,
+            json,
         } => {
             match agent {
+                Some(agent) if check => connect::check(
+                    &paths,
+                    agent,
+                    cli.space.as_deref(),
+                    project.as_deref(),
+                    json,
+                ),
                 Some(agent) if !list => {
                     let options = instructions.map(|project| {
                     let agent = match agent {
@@ -406,7 +427,8 @@ fn run(cli: Cli) -> Result<()> {
                     if let Some(options) = &options {
                         instructions::run(options.clone())?;
                     }
-                    connect::run(&paths, agent, print, cli.space.as_deref())?;
+                    let space = named_space(&paths, cli.space.as_deref())?;
+                    connect::run(&paths, agent, print, space.as_deref())?;
                     if !print && let Some(mut options) = options {
                         options.apply = true;
                         instructions::run(options)?;
@@ -422,7 +444,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Spaces { action, json } => spaces::run(&paths, action, json),
         Command::Folders { action } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
-            spaces::folders(&space, action)
+            spaces::folders(&paths, &space, action)
         }
         Command::Service { action } => service::run(&paths, action),
         Command::Instructions(options) => instructions::run(options),
@@ -448,6 +470,18 @@ pub(crate) fn absolute(path: &Path) -> Result<PathBuf> {
 pub(crate) fn resolve(paths: &Paths, flag: Option<&Path>) -> Result<ResolvedSpace> {
     let config = Config::load(paths)?;
     Ok(knode_config::resolve_space_from_env(flag, &config)?)
+}
+
+/// `--space` as a path: a name of a space Knode knows is looked up, anything else is taken as
+/// a path.
+pub(crate) fn named_space(paths: &Paths, flag: Option<&Path>) -> Result<Option<PathBuf>> {
+    match flag {
+        Some(flag) if !flag.exists() && flag.extension().is_none() => {
+            Ok(Some(spaces::find(paths, &flag.to_string_lossy())?))
+        }
+        Some(flag) => Ok(Some(absolute(flag)?)),
+        None => Ok(None),
+    }
 }
 
 /// The space to use, which must exist. `--space` may also name a space Knode knows.

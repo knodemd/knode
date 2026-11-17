@@ -4,6 +4,7 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/src/agents.rs
+$(SRCROOT)/../core/crates/knode-cli/src/connect/check.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/json.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/mod.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/places.rs
