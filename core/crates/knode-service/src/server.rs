@@ -1083,6 +1083,22 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let set_up = knode_vault::onboarding::is_set_up(&space)?;
             Ok(json!({ "set_up": set_up }))
         }
+        methods::ONBOARDING_APPLY_INTO => {
+            let p: OnboardingApplyIntoParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
+            let capture = crate::spaces::capture_enabled(&space)?;
+            let receipt = knode_vault::onboarding::apply_into(&p.plan, &mut space, &p.by);
+            // What was written before a failure is announced too.
+            state.notify_since(&space, mark)?;
+            if crate::spaces::capture_enabled(&space)? != capture {
+                state.notify_space(&space, SpaceEventKind::Settings, |e| {
+                    e.key = Some(knode_format::setting_keys::CAPTURE_ENABLED.to_string());
+                });
+            }
+            to_value(receipt?)
+        }
         methods::PROJECT_NOTES => {
             let p: ProjectNotesParams = params(method, raw)?;
             let space = state.space(&p.space)?;

@@ -75,6 +75,12 @@ belongs to, newest first.
   commands (Claude Code, Codex) to offer to set Knode up for you in that space, with the new
   `setup_guide` tool, which returns the same guide. Other agents, such as Claude Desktop, are
   asked to point you to Get started in the Knode app. Knode Service answers `space.set_up`.
+- **Set up the space your agent is already connected to**: `knode onboard apply --into <space>`
+  brings a reviewed plan into an existing space that is not set up yet, such as the new default
+  space the app connected your agent to, with the same checks, project nodes and receipt as a new
+  space, and keeps the conversations it already captured. No reconnection or new agent session is
+  needed. A space that is already set up is refused. Knode Service answers
+  `onboarding.apply_into`.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
