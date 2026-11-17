@@ -476,8 +476,8 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
 | `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected |
-| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
-| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
+| `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
+| `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
 | `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
 
 ```json
@@ -526,6 +526,28 @@ files up to 20 MB are attached; larger ones are named in the text. When Telegram
 (a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
 until the wait is over. A build of Knode without a Telegram app id lists the connector, which
 reports `unavailable`.
+
+The `imap` connector reads any mail account over IMAP with TLS (port 993; never plain text or
+`STARTTLS`), signed in with the address and an app password, checked by signing in once. Every
+minute it asks each mailbox for its `UIDVALIDITY` and `UIDNEXT` and reads only what is new, from
+the last UID read, without marking anything read; a changed `UIDVALIDITY` reads the mailbox
+again. On Gmail (`X-GM-EXT-1`) it reads only `All Mail`, with each message's labels as its
+folders. Mailboxes are excluded by their name on the server; spam and trash are never read.
+
+The `gmail` connector reads Gmail through the Gmail API after Sign in with Google (OAuth with
+PKCE and a loopback redirect to `http://127.0.0.1:<port>`, scope `gmail.readonly`). The first
+run lists the messages (from the day it was connected with `from-today`), later runs follow
+`users.history.list`; when Google no longer has the history it lists again what arrived from a
+day before the last good run, at most 2000 messages. Labels are excluded by their id (`INBOX`,
+`Label_12`); spam and trash are never read. A build of Knode without a Google client id
+(`KNODE_GOOGLE_CLIENT_ID` when it is built, or at run time) lists the connector, which reports
+`unavailable`.
+
+Both write through the mail importer: one `email` node per thread, and a message already in the
+space from a Google Takeout `.mbox`, Apple Mail or the other connector is found by its
+`Message-ID` and not added again. Their secrets (the app password, the refresh token) are kept
+only in the system keychain, and are forgotten when the connector signs out or is disconnected
+from the last space that had it.
 
 ## Search
 
