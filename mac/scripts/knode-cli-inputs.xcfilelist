@@ -89,6 +89,7 @@ $(SRCROOT)/../core/crates/knode-ingest/src/opencode.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/reader.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/redact.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/render.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/sources/files.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/sources/mod.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/sources/sqlite.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/text.rs

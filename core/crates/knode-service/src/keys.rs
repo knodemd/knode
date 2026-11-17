@@ -290,12 +290,23 @@ impl KeyStore for KeychainKeyStore {
 }
 
 /// Keys in the Secret Service (GNOME Keyring, KWallet) through `secret-tool`, falling back to
-/// files when it is missing or no Secret Service runs.
+/// files when it is missing or no Secret Service runs, unless it was made
+/// [`without_files`](Self::without_files).
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone)]
 pub struct SecretToolKeyStore {
     home: PathBuf,
-    files: FileKeyStore,
+    files: Option<FileKeyStore>,
+    program: String,
+}
+
+/// The error of a store that keeps nothing in files when no Secret Service runs.
+#[cfg(not(target_os = "macos"))]
+fn no_secret_service() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no Secret Service is running to keep it in",
+    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -304,13 +315,24 @@ impl SecretToolKeyStore {
     pub fn new(home: &Path, files: FileKeyStore) -> Self {
         SecretToolKeyStore {
             home: home.to_path_buf(),
-            files,
+            files: Some(files),
+            program: "secret-tool".into(),
+        }
+    }
+
+    /// The store for the Knode home `home` with no fallback: where no Secret Service runs,
+    /// nothing is kept and [`KeyStore::set`] fails with [`io::ErrorKind::Unsupported`].
+    pub fn without_files(home: &Path) -> Self {
+        SecretToolKeyStore {
+            home: home.to_path_buf(),
+            files: None,
+            program: "secret-tool".into(),
         }
     }
 
     fn tool(&self, args: &[&str], input: Option<&str>) -> Option<std::process::Output> {
         use std::process::{Command, Stdio};
-        let mut child = Command::new("secret-tool")
+        let mut child = Command::new(&self.program)
             .args(args)
             .stdin(if input.is_some() {
                 Stdio::piped()
@@ -349,7 +371,10 @@ impl KeyStore for SecretToolKeyStore {
                 return Ok(Some(key));
             }
         }
-        self.files.get(agent)
+        match &self.files {
+            Some(files) => files.get(agent),
+            None => Ok(None),
+        }
     }
 
     fn set(&self, agent: &str, key: &str) -> io::Result<()> {
@@ -362,10 +387,15 @@ impl KeyStore for SecretToolKeyStore {
             .is_some_and(|o| o.status.success())
             && self.get(agent)?.as_deref() == Some(key)
         {
-            self.files.delete(agent)?;
+            if let Some(files) = &self.files {
+                files.delete(agent)?;
+            }
             return Ok(());
         }
-        self.files.set(agent, key)
+        match &self.files {
+            Some(files) => files.set(agent, key),
+            None => Err(no_secret_service()),
+        }
     }
 
     fn delete(&self, agent: &str) -> io::Result<bool> {
@@ -373,17 +403,42 @@ impl KeyStore for SecretToolKeyStore {
         let mut args = vec!["clear"];
         args.extend(attrs.iter().map(String::as_str));
         let cleared = self.tool(&args, None).is_some_and(|o| o.status.success());
-        Ok(self.files.delete(agent)? || cleared)
+        let filed = match &self.files {
+            Some(files) => files.delete(agent)?,
+            None => false,
+        };
+        Ok(filed || cleared)
     }
 
     fn describe(&self) -> String {
-        "the Secret Service, or a file only you can read where it is missing".into()
+        match self.files {
+            Some(_) => "the Secret Service, or a file only you can read where it is missing".into(),
+            None => "the Secret Service".into(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn without_files_nothing_is_kept_where_no_secret_service_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SecretToolKeyStore::without_files(dir.path());
+        store.program = "knode-no-such-secret-tool".into();
+        let err = store.set("_source-x-session", "s3cret").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(store.get("_source-x-session").unwrap(), None);
+        assert!(!dir.path().join(KEYS_DIR).exists());
+        // With files, as agent keys have it, the key goes to a file.
+        let mut store =
+            SecretToolKeyStore::new(dir.path(), FileKeyStore::new(dir.path().join(KEYS_DIR)));
+        store.program = "knode-no-such-secret-tool".into();
+        store.set("agent", "k").unwrap();
+        assert_eq!(store.get("agent").unwrap().as_deref(), Some("k"));
+    }
 
     #[test]
     fn keys_and_fingerprints_follow_the_spec() {

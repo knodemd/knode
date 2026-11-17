@@ -127,7 +127,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `space.create` | `space`, `name` | Space info. `space` must end in `.knode` and must not exist. |
 | `space.open` | `space` | Space info. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
-| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. |
+| `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
 | `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, and `on` is stored as no value. Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
@@ -484,7 +484,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | --- | --- | --- |
 | `sources.list` | `space` | Every source of the space, connectors then importers, as below |
 | `sources.status` | `space`?, `source`? | `[{ "space", "name", "sources": [...] }]`: the connectors connected to the space, or with no `space` to every space the service knows that has one |
-| `sources.connect` | `space`, `source`, `history`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. The history is chosen once: asking for another one for a connected source fails with `invalid` |
+| `sources.connect` | `space`, `source`, `history`?, `on`?, `by` | The source. Connects it with `history` `from-today` (the default) or `everything`, and turns it on. With `on` `false` it is connected paused: its history and the day it was connected are fixed and `sources.containers` and `sources.exclude` work, but nothing is read until `sources.resume`, so what to leave out can be chosen first (connecting paused a source already connected pauses it). The history is chosen once: asking for another one for a connected source fails with `invalid` |
 | `sources.pause` / `sources.resume` | `space`, `source`, `by` | The source, off or on again |
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
@@ -521,11 +521,20 @@ written, and the importers find what they wrote by the service's own ids, so a r
 state file or a second device running the same connector writes nothing twice.
 
 A connector runs when the files it watches change (a local database and its `-wal`), at its
-interval, and when `sources.run` asks. Connectors that read another app's database read a copy
-of it, never the live file, and check its tables and columns first. Their writes are made with
+interval, and when `sources.run` asks. A file event runs it only when the size or modification
+time of the files or their `-wal` changed since its last run, so its own reads of them (which
+macOS reports as events) do not run it again. macOS reports writes to a file another app keeps
+open late, so a connector that watches files also runs at least once a minute. Connectors that
+read another app's database read a copy of it, never the live file: a copy made while the app
+wrote the database or its `-wal` is made again, and one that fails SQLite's `quick_check` is
+not read (the run fails and is tried again later). They check its tables and columns first. Their writes are made with
 the provenance `{ "kind": "system", "actor": "<source id>" }`. Secrets connectors need are kept
-in the system credential store (the Keychain on macOS), never in a space, a settings file or a
-log. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
+in the system credential store (the Keychain on macOS, the Secret Service on Linux), never in a
+space, a settings file or a log. Where Linux has no Secret Service, a connector that needs a
+secret cannot sign in and says to install one (GNOME Keyring or KeePassXC), unless
+`source_secrets_in_files = true` in `config.toml` lets it keep them in a file only its owner can
+read in `$KNODE_HOME/agent-keys/`. `sources.containers` does not keep the space locked while the
+connector lists its chats, which may take long over the network. `sources = false` in `config.toml` stops every connector; so does `capture = false`, which
 stops everything Knode Service brings in by itself.
 
 ## Search
@@ -537,7 +546,9 @@ reciprocal rank fusion, as section 19 of the
 `{ "node", "snippet", "score", "word_rank", "meaning_rank" }`: the node summary, the text around
 the words found (matches in `**bold**`) or the start of its nearest passage, the fusion score
 (higher is better) and its place in the words and meaning lists, from 1, or `null` when it is
-not in one.
+not in one. In `hybrid`, the score of a transcript (a node of kind `conversation`, `chat` or
+`email`) is halved, so a long transcript that matches in passing comes after the short note that
+answers the query.
 
 Search by meaning runs on this machine, with a small embedding model
 (`multilingual-e5-small`, about 490 MB, around 100 languages). Nothing is sent anywhere:
