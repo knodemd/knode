@@ -323,17 +323,19 @@ fn flow_map_value(text: &str, key: &str) -> Option<String> {
 /// The project folders of a space, encoded as Claude Code encodes folder names, with the project
 /// each belongs to.
 ///
-/// - A folder of kind `project` belongs to the project node titled as the folder's last name.
+/// - A folder of kind `project` belongs to the project node it records (its `project` rule,
+///   see [`Space::folder_project`]), else to the project node titled as the folder's last name.
 /// - A space made by onboarding keeps its source and groups in `onboarding.json`: each group's
-///   folder in the source belongs to the project node made for it.
+///   folder in the source (the source itself for the group `project`; never the group `shared`,
+///   the files at the top of the source) belongs to the project node made for it.
 /// - The longest folder whose encoded path is the encoded name, or the start of it followed by
 ///   `-` (a folder inside the project), wins.
-/// - A space with no folder of kind `project` falls back, for a name no folder matches, to
-///   a project node whose title, encoded, is the last part of the encoded name.
+/// - A name no folder ties to a project falls back to a project node whose title, encoded, is
+///   the last part of the encoded name, upper and lower case aside.
 pub struct ProjectMatcher {
     /// Encoded folder, project node and title (`None` when no project node matches the folder).
     folders: Vec<(String, Option<(NodeId, String)>)>,
-    /// Project nodes, by encoded title, for spaces without folders.
+    /// Project nodes, by encoded title in lower case, for names no folder ties to a project.
     titles: Vec<(String, NodeId, String)>,
 }
 
@@ -349,7 +351,6 @@ impl ProjectMatcher {
                 .map(|p| (p.node.id, p.node.title.clone()))
         };
         let mut folders = Vec::new();
-        let mut has_rules = false;
         let mut add = |path: &Path, project: Option<(NodeId, String)>| {
             let mut paths = vec![path.to_path_buf()];
             if let Ok(real) = path.canonicalize()
@@ -371,40 +372,41 @@ impl ProjectMatcher {
             let Some(path) = local_path(&folder.path) else {
                 continue;
             };
-            has_rules = true;
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            add(&path, node_titled(&name));
+            let project = space
+                .folder_project(&folder)?
+                .map(|p| (p.id, p.title))
+                .or_else(|| node_titled(&name));
+            add(&path, project);
         }
         if let Some(receipt) = read_receipt(space.path()) {
             for (path, name) in receipt.folders() {
-                let project = receipt
+                // The project node onboarding made for the group, as its receipt records it.
+                let made = match receipt
                     .contexts
                     .get(&name)
                     .and_then(|id| NodeId::parse(id).ok())
-                    .and_then(|id| projects.iter().find(|p| p.node.id == id))
-                    .map(|p| (p.node.id, p.node.title.clone()))
-                    .or_else(|| node_titled(&name));
-                add(&path, project);
+                {
+                    Some(id) => space.get_node(&id)?.map(|n| (n.id, n.title)),
+                    None => None,
+                };
+                add(&path, made.or_else(|| node_titled(&name)));
             }
         }
-        let titles = if has_rules {
-            Vec::new()
-        } else {
-            projects
-                .iter()
-                .map(|p| {
-                    (
-                        encode_folder(&p.node.title),
-                        p.node.id,
-                        p.node.title.clone(),
-                    )
-                })
-                .filter(|(e, _, _)| e.chars().any(|c| c != '-'))
-                .collect()
-        };
+        let titles = projects
+            .iter()
+            .map(|p| {
+                (
+                    encode_folder(&p.node.title).to_ascii_lowercase(),
+                    p.node.id,
+                    p.node.title.clone(),
+                )
+            })
+            .filter(|(e, _, _)| e.chars().any(|c| c != '-'))
+            .collect();
         Ok(ProjectMatcher { folders, titles })
     }
 
@@ -421,9 +423,10 @@ impl ProjectMatcher {
             .iter()
             .filter(|(candidate, _)| within(candidate))
             .max_by_key(|(candidate, _)| candidate.len());
-        if let Some((_, project)) = best {
-            return project.clone();
+        if let Some((_, Some(project))) = best {
+            return Some(project.clone());
         }
+        let encoded = encoded.to_ascii_lowercase();
         self.titles
             .iter()
             .filter(|(title, _, _)| {
@@ -464,7 +467,6 @@ struct Receipt {
 
 #[derive(Debug, Deserialize)]
 struct ReceiptPlan {
-    mode: String,
     source: Option<PathBuf>,
     #[serde(default)]
     groups: Vec<ReceiptGroup>,
@@ -477,8 +479,10 @@ struct ReceiptGroup {
 }
 
 impl Receipt {
-    /// Each group's folder in the source, with the group's project name. In a single project
-    /// the source is the project; otherwise each group id is its folder in the source.
+    /// Each group's folder in the source, with the group's project name, as `knode onboard`
+    /// reads it: the group `project` is the source itself, the group `shared` (the files at the
+    /// top of the source) has no folder of its own, and every other group id is its folder in
+    /// the source.
     fn folders(&self) -> Vec<(PathBuf, String)> {
         let Some(source) = &self.plan.source else {
             return Vec::new();
@@ -487,8 +491,9 @@ impl Receipt {
         self.plan
             .groups
             .iter()
+            .filter(|g| g.id != "shared")
             .filter_map(|g| {
-                let path = if self.plan.mode == "project" {
+                let path = if g.id == "project" {
                     source.clone()
                 } else {
                     source.join(&g.id)

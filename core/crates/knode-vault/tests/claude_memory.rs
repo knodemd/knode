@@ -309,3 +309,153 @@ fn a_space_made_by_onboarding_matches_by_its_source_and_project_names() {
     assert_eq!(report.unmatched, vec!["-Users-ada-Code-Other"]);
     assert_eq!(space.projects().unwrap().len(), 3, "no project is made up");
 }
+
+fn space_in(dir: &Path) -> Space {
+    Space::create(dir.join("Work.knode"), "Work").unwrap()
+}
+
+fn added_project_folder(space: &mut Space, path: &Path) -> NodeId {
+    fs::create_dir_all(path).unwrap();
+    space
+        .add_folder(
+            &FolderSpec {
+                id: None,
+                kind: folder_kinds::PROJECT.into(),
+                path: path.display().to_string(),
+                capture: false,
+                rules: serde_json::json!({}),
+            },
+            &me(),
+        )
+        .unwrap()
+        .project
+        .expect("a project folder has its project")
+        .node
+        .id
+}
+
+fn encoded(path: &Path) -> String {
+    knode_vault::claude_memory::encode_folder(&path.display().to_string())
+}
+
+#[test]
+fn a_project_folder_matches_the_project_it_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    let first = dir.path().join("w/a/api");
+    let second = dir.path().join("w/b/api");
+    let mut space = space_in(dir.path());
+    let api = added_project_folder(&mut space, &first);
+    // The second folder named `api` gets a project of its own, `api (b)`.
+    let api_b = added_project_folder(&mut space, &second);
+    assert_ne!(api, api_b);
+    assert_ne!(space.get_node(&api_b).unwrap().unwrap().title, "api");
+    memory(&projects, &encoded(&first), "a.md", "First.\n");
+    memory(&projects, &encoded(&second), "b.md", "Second.\n");
+
+    let report = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert!(report.unmatched.is_empty(), "{report:#?}");
+    let a = node_at(
+        &space,
+        &format!("claude-code-memory/{}/a.md", encoded(&first)),
+    );
+    let b = node_at(
+        &space,
+        &format!("claude-code-memory/{}/b.md", encoded(&second)),
+    );
+    assert_eq!(parts(&space, &a), vec![api]);
+    assert_eq!(parts(&space, &b), vec![api_b]);
+}
+
+#[test]
+fn a_project_folder_leaves_the_title_fallback_on_for_other_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    let mut space = space_in(dir.path());
+    let web = added_project_folder(&mut space, &dir.path().join("w/web"));
+    // No project folder for this one, but a project of its name, in other case.
+    let notes = project(&mut space, "notes app");
+    memory(
+        &projects,
+        &encoded(&dir.path().join("w/web")),
+        "a.md",
+        "Web.\n",
+    );
+    memory(&projects, "-Users-ada-Code-Notes-App", "b.md", "Notes.\n");
+
+    let report = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    assert!(report.unmatched.is_empty(), "{report:#?}");
+    let b = node_at(&space, "claude-code-memory/-Users-ada-Code-Notes-App/b.md");
+    assert_eq!(parts(&space, &b), vec![notes]);
+    assert_eq!(report.linked.get("notes app"), Some(&1));
+    assert_eq!(space.project_notes(&web, 10).unwrap().len(), 1);
+}
+
+#[test]
+fn an_onboarding_receipt_is_read_as_onboarding_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let projects = dir.path().join("projects");
+    // A folder of the source that is not a group: the files at the top are `shared`, which has
+    // no folder of its own.
+    memory(&projects, "-Users-ada-Proyectos-shared-x", "s.md", "Top.\n");
+    memory(&projects, "-Users-ada-Proyectos-web", "w.md", "Web.\n");
+    memory(&projects, "-Users-ada-Solo", "p.md", "Solo.\n");
+
+    let package = dir.path().join("Imported.knode");
+    let mut space = Space::create(&package, "Imported").unwrap();
+    // Renamed since onboarding made them: found by the id the receipt records.
+    let web = project(&mut space, "Website");
+    let shared = project(&mut space, "Top of the source");
+    let receipt = |source: &str, groups: serde_json::Value, contexts: serde_json::Value| {
+        serde_json::json!({
+            "space_id": "x",
+            "destination": package,
+            "plan": {
+                "version": 1,
+                "mode": "vault",
+                "source": source,
+                "groups": groups,
+                "documents": [],
+                "files": [],
+                "warnings": []
+            },
+            "import": {},
+            "contexts": contexts,
+            "unresolved": {}
+        })
+    };
+    let write = |r: serde_json::Value| {
+        fs::write(
+            package.join("onboarding.json"),
+            serde_json::to_vec(&r).unwrap(),
+        )
+        .unwrap()
+    };
+    write(receipt(
+        "/Users/ada/Proyectos",
+        serde_json::json!([
+            { "id": "web", "name": "web" },
+            { "id": "shared", "name": "Shared context" }
+        ]),
+        serde_json::json!({ "web": web.to_string(), "Shared context": shared.to_string() }),
+    ));
+    let report = import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    let w = node_at(&space, "claude-code-memory/-Users-ada-Proyectos-web/w.md");
+    assert_eq!(parts(&space, &w), vec![web]);
+    let s = node_at(
+        &space,
+        "claude-code-memory/-Users-ada-Proyectos-shared-x/s.md",
+    );
+    assert!(parts(&space, &s).is_empty(), "{report:#?}");
+
+    // A single project: the group `project` is the source itself.
+    let solo = project(&mut space, "Solo project");
+    write(receipt(
+        "/Users/ada/Solo",
+        serde_json::json!([{ "id": "project", "name": "Solo" }]),
+        serde_json::json!({ "Solo": solo.to_string() }),
+    ));
+    import_claude_code_memory(&mut space, &projects, &me()).unwrap();
+    let p = node_at(&space, "claude-code-memory/-Users-ada-Solo/p.md");
+    assert_eq!(parts(&space, &p), vec![solo]);
+}
