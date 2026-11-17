@@ -54,7 +54,8 @@ belongs to, newest first.
   preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
   address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
   folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
-  default). Importing again, or another date range, adds only the new messages. Knode never signs
+  default). Importing again, or another date range, adds only the new messages, and never
+  overwrites what you changed or added to a thread in Knode. Knode never signs
   in to a mail account: it reads only the files you point it at. Knode Service does the same with
   `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the

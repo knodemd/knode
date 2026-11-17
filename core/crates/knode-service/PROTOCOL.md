@@ -280,7 +280,7 @@ with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
 | `mbox` | An `.mbox` file (Gmail through Google Takeout, or a mailbox another app exported), or a folder of them: one `email` node per thread and one `person` node per address |
-| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, or a folder of `.emlx` files: as for `mbox` |
+| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, a folder of `.emlx` files, or a mailbox Apple Mail exported (`<name>.mbox`): as for `mbox` |
 
 `mail`, for `mbox` and `apple-mail` only, keeps the import to some messages and turns on
 attachments; every field is optional:
