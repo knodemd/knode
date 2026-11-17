@@ -260,10 +260,11 @@ provenance and add no change.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
+| `import.run` | `space`, `path` (absolute) or `url` (`http` or `https`), `from`?, `mail`?, `by` | The report below. Imports what is at `path`, or the web page at `url`, which is fetched then and only then. People only. |
 
 `from` names what it is; without it, the service tells it from the path and the start of the
-file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read.
+file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on this Mac are read;
+with `from` `apple-mail` and no `path`, Apple Mail's own store (`~/Library/Mail`).
 
 | `from` | What `path` is |
 | --- | --- |
@@ -278,6 +279,20 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `bear` | A Bear backup (`.bear2bk`, `.bearbk`), TextBundles (`.textbundle`, `.textpack`), its database, or notes it exported as Markdown |
 | `notion` | Notion's "Markdown & CSV" export, zipped or extracted |
 | `evernote` | An `.enex` file, or a folder of them |
+| `mbox` | An `.mbox` file (Gmail through Google Takeout, or a mailbox another app exported), or a folder of them: one `email` node per thread and one `person` node per address |
+| `apple-mail` | Apple Mail's store (`~/Library/Mail` or a `V<n>` folder in it), read only, or a folder of `.emlx` files: as for `mbox` |
+
+`mail`, for `mbox` and `apple-mail` only, keeps the import to some messages and turns on
+attachments; every field is optional:
+
+```json
+{ "folders": ["Work", "INBOX"], "since": "2026-01-01", "until": "2026-03-31", "attachments": true }
+```
+
+`folders` are Gmail labels or Apple Mail mailboxes, compared without case, matching a whole
+folder path or its last part; `since` and `until` are days in UTC, both included; `attachments`
+attaches the files of the messages to their thread (off by default). Spam and trash are left out
+unless `folders` names them. `mail` with any other source fails with `invalid_params`.
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",
@@ -299,7 +314,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
   part way.
 - A path that is not something Knode imports, or not the kind `from` names, fails with
   `invalid`; files that cannot be read fail with `folder`; another app's notes that macOS keeps
-  from Knode Service fail with `no_access`.
+  from Knode Service fail with `no_access`, as does Apple Mail's store without Full Disk Access.
 
 ## Changes
 
