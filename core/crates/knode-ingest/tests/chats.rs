@@ -860,3 +860,106 @@ fn keeps_slack_replies_whose_thread_starts_elsewhere() {
     assert!(part_of(&space, &thread));
     assert_eq!(chat_node(&space, "slack", "C01").body, general.body);
 }
+
+/// A folder of five Markdown notes.
+fn vault(root: &Path) {
+    fs::create_dir_all(root).unwrap();
+    for i in 1..=5 {
+        fs::write(
+            root.join(format!("Note {i}.md")),
+            format!("# Note {i}\n\nBody {i}\n"),
+        )
+        .unwrap();
+    }
+}
+
+fn write_file(root: &Path, name: &str, text: &str) {
+    let path = root.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+const SLACK_USERS: &str = r#"[{"id":"U01","name":"ada","real_name":"Ada"}]"#;
+const SLACK_CHANNELS: &str = r#"[{"id":"C01","name":"general"}]"#;
+const TELEGRAM_CHAT: &str = r#"{"name":"x","type":"personal_chat","id":1,"messages":[{"id":1,"type":"message","date":"2026-03-04T09:00:00","from":"Ada","text":"hi"}]}"#;
+
+#[test]
+fn a_folder_of_notes_with_a_chat_export_inside_is_not_that_chat() {
+    let cases: [(&str, &[(&str, &str)], ChatFormat); 3] = [
+        (
+            "whatsapp",
+            &[(
+                "Notes/Archive/WhatsApp Chat with Ada.txt",
+                "3/4/26, 9:15 AM - Ada: Morning!\n3/4/26, 9:16 AM - Mira: Hi\n",
+            )],
+            ChatFormat::WhatsApp,
+        ),
+        (
+            "telegram",
+            &[("deep/x/result.json", TELEGRAM_CHAT)],
+            ChatFormat::Telegram,
+        ),
+        (
+            "slack",
+            &[
+                ("Projects/old/slack/channels.json", SLACK_CHANNELS),
+                ("Projects/old/slack/users.json", SLACK_USERS),
+            ],
+            ChatFormat::Slack,
+        ),
+    ];
+    for (name, files, format) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Vault");
+        vault(&root);
+        for (file, text) in files {
+            write_file(&root, file, text);
+        }
+        assert_eq!(detect_chat_export(&root), None, "{name}");
+        // Without the notes, an export further down is still not what was given.
+        for i in 1..=5 {
+            fs::remove_file(root.join(format!("Note {i}.md"))).unwrap();
+        }
+        assert_eq!(detect_chat_export(&root), None, "{name} without notes");
+        // Named, the export is looked for at any depth.
+        assert!(knode_ingest::is_chat_export(&root, format), "{name}");
+    }
+}
+
+#[test]
+fn an_export_is_told_at_the_top_or_in_the_one_folder_at_the_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let chat = "[04/03/2026, 09:15:02] Ada: one\n[04/03/2026, 09:16:00] Grace: two\n";
+    // A zip of the export's folder, as macOS makes it.
+    let zipped = dir.path().join("WhatsApp Chat - Ada.zip");
+    zip(
+        &zipped,
+        &[
+            ("WhatsApp Chat - Ada/_chat.txt", chat.as_bytes()),
+            ("__MACOSX/WhatsApp Chat - Ada/._chat.txt", b"x"),
+        ],
+    );
+    assert_eq!(detect_chat_export(&zipped), Some(ChatFormat::WhatsApp));
+    // Two folders at the top: neither is the export.
+    let two = dir.path().join("two.zip");
+    zip(
+        &two,
+        &[
+            ("WhatsApp Chat - Ada/_chat.txt", chat.as_bytes()),
+            ("Other/readme.txt", b"x"),
+        ],
+    );
+    assert_eq!(detect_chat_export(&two), None);
+    // Markdown notes beside the export: a folder of notes.
+    let folder = dir.path().join("WhatsApp Chat - Grace");
+    write_file(&folder, "_chat.txt", chat);
+    assert_eq!(detect_chat_export(&folder), Some(ChatFormat::WhatsApp));
+    write_file(&folder, "Plan.md", "# Plan\n");
+    assert_eq!(detect_chat_export(&folder), None);
+    assert!(knode_ingest::is_chat_export(&folder, ChatFormat::WhatsApp));
+    // The chat's own file, given, is read whatever sits beside it.
+    assert_eq!(
+        detect_chat_export(folder.join("_chat.txt")),
+        Some(ChatFormat::WhatsApp)
+    );
+}

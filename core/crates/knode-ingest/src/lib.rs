@@ -66,7 +66,7 @@ pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
 pub use chats::{
     CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, PERSON_KIND, detect_chat_export,
-    import_chat_export, keys as chat_keys, person_keys,
+    import_chat_export, is_chat_export, keys as chat_keys, person_keys,
 };
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,

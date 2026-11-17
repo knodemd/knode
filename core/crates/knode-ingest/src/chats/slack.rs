@@ -66,15 +66,15 @@ const SYSTEM_SUBTYPES: &[&str] = &[
 static ANGLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<([^<>\n]+)>").expect("a regex"));
 
 /// The folder of a Slack export, if the files are one: where `users.json` and `channels.json`
-/// are, the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// are, in `root` (see [`super::in_root`]), the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     if files.single.is_some() {
         return None;
     }
     files
         .names()
         .iter()
-        .filter(|n| file_name(n) == "channels.json")
+        .filter(|n| super::in_root(n, root) && file_name(n) == "channels.json")
         .map(|n| parent(n).to_string())
         .filter(|dir| files.contains(&join(dir, "users.json")))
         .min_by_key(|dir| (dir.matches('/').count(), dir.len()))

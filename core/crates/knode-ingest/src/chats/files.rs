@@ -68,6 +68,32 @@ impl Files {
         &self.names
     }
 
+    /// The folder the export's own files sit in: the top, or, when the top holds one folder
+    /// and nothing else (a `.zip` of the export's folder), that folder. A folder that macOS
+    /// adds to the archives it makes, `__MACOSX`, does not count.
+    pub fn root(&self) -> String {
+        if self.single.is_some() {
+            return String::new();
+        }
+        let mut top = self
+            .names
+            .iter()
+            .filter(|n| !n.starts_with("__MACOSX/"))
+            .map(|n| {
+                n.split_once('/')
+                    .map(|(dir, _)| (dir, true))
+                    .unwrap_or((n, false))
+            });
+        let Some((first, is_dir)) = top.next() else {
+            return String::new();
+        };
+        if is_dir && top.all(|(dir, is_dir)| is_dir && dir == first) {
+            first.to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// Whether the export has this file.
     pub fn contains(&self, name: &str) -> bool {
         self.names.contains(name)

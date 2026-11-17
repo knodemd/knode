@@ -309,3 +309,32 @@ fn imports_a_chat_and_only_its_new_messages_again() {
         node.body
     );
 }
+
+#[test]
+fn a_folder_of_notes_holding_a_chat_export_imports_the_notes() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let vault = sb.path("Vault");
+    fs::create_dir_all(vault.join("Notes/Archive")).unwrap();
+    for i in 1..=5 {
+        fs::write(
+            vault.join(format!("Note {i}.md")),
+            format!("# Note {i}\n\nBody {i}\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        vault.join("Notes/Archive/WhatsApp Chat with Ada.txt"),
+        "3/4/26, 9:15 AM - Ada: Morning!\n3/4/26, 9:16 AM - Mira: Hi\n",
+    )
+    .unwrap();
+    let out = sb.ok(&["import", s(&vault)]);
+    assert!(
+        out.starts_with(&format!("Imported {} (folder of Markdown files): ", vault.display())),
+        "{out}"
+    );
+    assert!(out.contains(": 5 new"), "{out}");
+    let space = knode_format::Space::open(sb.space("work")).unwrap();
+    assert!(space.find_by_title("WhatsApp - Ada").unwrap().is_empty());
+    assert_eq!(space.find_by_title("Note 3").unwrap().len(), 1);
+}

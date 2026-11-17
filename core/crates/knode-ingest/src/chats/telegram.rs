@@ -26,15 +26,16 @@ use super::render::escape_text;
 /// How many bytes of `result.json` are read to tell it is a Telegram export.
 const PEEK_BYTES: u64 = 4 * 1024;
 
-/// The `result.json` of a Telegram export, if the files are one: the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// The `result.json` of a Telegram export, if the files are one: in `root` (see
+/// [`super::in_root`]), the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     let candidate = match &files.single {
         Some(single) if single.eq_ignore_ascii_case("result.json") => Some(single.clone()),
         Some(_) => None,
         None => files
             .names()
             .iter()
-            .filter(|n| file_name(n) == "result.json")
+            .filter(|n| super::in_root(n, root) && file_name(n) == "result.json")
             .min_by_key(|n| (n.matches('/').count(), n.len()))
             .cloned(),
     }?;

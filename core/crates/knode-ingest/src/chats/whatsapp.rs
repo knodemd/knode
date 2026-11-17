@@ -109,8 +109,8 @@ const NAME_WORDS: &[&str] = &[
 ];
 
 /// The chat file of a WhatsApp export, if it has one: `_chat.txt`, or a `.txt` named after
-/// WhatsApp, the shallowest.
-pub(crate) fn locate(files: &mut Files) -> Option<String> {
+/// WhatsApp, in `root` (see [`super::in_root`]) and the shallowest.
+pub(crate) fn locate(files: &mut Files, root: Option<&str>) -> Option<String> {
     let candidate = match &files.single {
         Some(single) if single.to_ascii_lowercase().ends_with(".txt") => Some(single.clone()),
         Some(_) => None,
@@ -119,7 +119,7 @@ pub(crate) fn locate(files: &mut Files) -> Option<String> {
                 files
                     .names()
                     .iter()
-                    .filter(|n| wanted(file_name(n)))
+                    .filter(|n| super::in_root(n, root) && wanted(file_name(n)))
                     .min_by_key(|n| (n.matches('/').count(), n.len()))
                     .cloned()
             };

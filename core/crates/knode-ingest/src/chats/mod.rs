@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use knode_format::{Provenance, Space};
 
 use crate::exports::{Imported, Skipped};
-use files::Files;
+use files::{Files, file_name};
 use write::ChatWriter;
 
 /// The kind of the node of a chat.
@@ -249,30 +249,70 @@ impl Located {
     }
 }
 
+/// Finds the export in `files`. Told from the files alone (`format` is `None`), an export is
+/// only one when it is what the person gave: its files at the top, or in the one folder at the
+/// top, and no Markdown notes beside them. A folder of notes that holds a chat export somewhere
+/// inside is a folder of notes, not that chat. Named, the format is looked for at any depth,
+/// the shallowest first.
 fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
     let wanted = |f: ChatFormat| format.is_none_or(|w| w == f);
+    let root = match format {
+        Some(_) => None,
+        None => {
+            let root = files.root();
+            if files.single.is_none() && has_notes(files, &root) {
+                return None;
+            }
+            Some(root)
+        }
+    };
+    let root = root.as_deref();
     if wanted(ChatFormat::WhatsApp)
-        && let Some(file) = whatsapp::locate(files)
+        && let Some(file) = whatsapp::locate(files, root)
     {
         return Some(Located::WhatsApp(file));
     }
     if wanted(ChatFormat::Telegram)
-        && let Some(file) = telegram::locate(files)
+        && let Some(file) = telegram::locate(files, root)
     {
         return Some(Located::Telegram(file));
     }
     if wanted(ChatFormat::Slack)
-        && let Some(dir) = slack::locate(files)
+        && let Some(dir) = slack::locate(files, root)
     {
         return Some(Located::Slack(dir));
     }
     None
 }
 
-/// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one.
+/// Whether Markdown notes sit in `root`, which no chat export writes there.
+fn has_notes(files: &Files, root: &str) -> bool {
+    files.names().iter().any(|n| {
+        let lower = file_name(n).to_ascii_lowercase();
+        files::parent(n) == root && (lower.ends_with(".md") || lower.ends_with(".markdown"))
+    })
+}
+
+/// Whether `name`, a path inside the export, may be where an export of `root` keeps its
+/// files: anywhere when `root` is `None`.
+fn in_root(name: &str, root: Option<&str>) -> bool {
+    root.is_none_or(|root| files::parent(name) == root)
+}
+
+/// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one:
+/// told from its files at the top (or in the one folder at the top). A folder with Markdown
+/// notes at the top is not a chat export, nor one that only holds an export further down.
 pub fn detect_chat_export(path: impl AsRef<Path>) -> Option<ChatFormat> {
     let mut files = Files::open(path.as_ref()).ok()?;
     locate(&mut files, None).map(|located| located.format())
+}
+
+/// Whether `path` holds an export of `format`, looked for at any depth, as
+/// [`import_chat_export`] does when it is given the format.
+pub fn is_chat_export(path: impl AsRef<Path>, format: ChatFormat) -> bool {
+    Files::open(path.as_ref())
+        .ok()
+        .is_some_and(|mut files| locate(&mut files, Some(format)).is_some())
 }
 
 /// Imports the chats of an export into `space`, written by `by` with `path` as the source:

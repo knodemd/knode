@@ -624,7 +624,7 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         ),
         ImportSource::WhatsApp | ImportSource::Telegram | ImportSource::Slack => {
             let format = source.chat().expect("a chat app");
-            if knode_ingest::detect_chat_export(path) != Some(format) {
+            if !knode_ingest::is_chat_export(path, format) {
                 return not(&format!("a {format}"));
             }
             Input::Chat(format, p)
