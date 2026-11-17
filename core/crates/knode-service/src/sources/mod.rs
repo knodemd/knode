@@ -188,6 +188,16 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ),
         ImportSource::Notion => ("Notion", "A Notion Markdown & CSV export", &[]),
         ImportSource::Evernote => ("Evernote", "Evernote .enex files", &[]),
+        ImportSource::Mbox => (
+            "Mail (mbox)",
+            "An .mbox file: Gmail through Google Takeout, or a mailbox another app exported",
+            &[],
+        ),
+        ImportSource::AppleMail => (
+            "Apple Mail",
+            "The mail of Apple Mail on this Mac, or a folder of .emlx files",
+            &[FullDiskAccess],
+        ),
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
