@@ -120,6 +120,15 @@ The `knode` command is at `Knode.app/Contents/Helpers/knode`. On the first run, 
 password). When a `knode` is already installed, for example with Homebrew, the app uses that one
 and says so. **Uninstall Command Line Tool…** removes only the link the app made.
 
+Once the command is installed on the first run (or was already), the app shows **Connect your
+agents**; the same step is in Get started, under **Let your agent do it**, and in **Knode > Connect
+Your Agents…**. It lists what `knode connect --list --json` reports: the agents on this Mac and the
+ones already connected, Claude Code first, then Codex, then the others. **Connect** runs
+`knode connect <agent>` (with `--space` only when the chosen space is not the space for agents),
+with the folders a shell uses on its `PATH` so the agent's own command is found, and then reads
+the list again: the core says whether the agent is connected. Once it is, the app says to open a
+new session of the agent, which sets the memory up.
+
 ## Requirements
 
 - macOS 26 or later

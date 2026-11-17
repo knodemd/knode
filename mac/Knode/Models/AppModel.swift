@@ -6,6 +6,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case newSpace
     case onboarding
     case onboardingReview(URL)
+    /// Connect your agents, on its own.
+    case connectAgents
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.

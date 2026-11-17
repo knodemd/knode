@@ -189,6 +189,9 @@ enum Command {
         /// List every agent Knode can be added to, and whether it is on this machine.
         #[arg(long, conflicts_with_all = ["agent", "print", "instructions"])]
         list: bool,
+        /// With --list: print it as JSON, with whether each agent is already connected.
+        #[arg(long, requires = "list")]
+        json: bool,
         /// Also install project-local memory instructions (Codex or Claude Code only).
         /// --print previews the instructions without changing files or connecting the agent.
         #[arg(long, value_name = "PROJECT")]
@@ -369,6 +372,7 @@ fn run(cli: Cli) -> Result<()> {
             agent,
             print,
             list,
+            json,
             instructions,
         } => {
             match agent {
@@ -391,6 +395,7 @@ fn run(cli: Cli) -> Result<()> {
                     }
                     Ok(())
                 }
+                _ if json => connect::list_json(),
                 _ => connect::list(),
             }
         }

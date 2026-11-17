@@ -29,39 +29,71 @@ final class CommandLineToolInstaller {
 
     // MARK: First run
 
-    /// On the first run, offers to install the command, unless one is installed already.
+    /// What to do once the command is installed on the first run: Connect your agents.
+    private var onReadyOnFirstRun: (@MainActor () -> Void)?
+    /// The command became ready on the first run before anyone asked to be told.
+    private var readyOnFirstRun = false
+
+    /// Runs `action` once the `knode` command is installed on the first run, or now if it already
+    /// was. Never on a later run.
+    func whenReadyOnFirstRun(_ action: @escaping @MainActor () -> Void) {
+        if readyOnFirstRun {
+            readyOnFirstRun = false
+            action()
+        } else {
+            onReadyOnFirstRun = action
+        }
+    }
+
+    private func readyOnThisFirstRun() {
+        if let action = onReadyOnFirstRun {
+            onReadyOnFirstRun = nil
+            action()
+        } else {
+            readyOnFirstRun = true
+        }
+    }
+
+    /// On the first run, offers to install the command, unless one is installed already. Once it
+    /// is installed, or when it already was, the app goes on to Connect your agents.
     func offerOnFirstRun() {
         guard !defaults.bool(forKey: Self.offeredKey) else { return }
         defaults.set(true, forKey: Self.offeredKey)
-        guard case .link = tool.installPlan() else { return }
+        guard case .link = tool.installPlan() else { readyOnThisFirstRun(); return }
         let alert = NSAlert()
         alert.messageText = "Install the knode command?"
         alert.informativeText = "With the knode command, Claude Code, Codex and your terminal can use Knode. "
             + "You can also install it later from the Knode menu."
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Not Now")
-        if alert.runModal() == .alertFirstButtonReturn { install() }
+        if alert.runModal() == .alertFirstButtonReturn, install() { readyOnThisFirstRun() }
     }
 
     // MARK: Install and uninstall
 
-    /// Installs the command, or says why there is nothing to do.
-    func install() {
+    /// Installs the command, or says why there is nothing to do. Returns whether the command is
+    /// installed afterwards.
+    @discardableResult
+    func install() -> Bool {
         switch tool.installPlan() {
         case .alreadyInstalled(let link):
             inform("The knode command is installed", "\(link.path(percentEncoded: false)) runs the knode command inside Knode.")
+            return true
         case .useExisting(let url, let homebrew):
             let how = homebrew ? "with Homebrew" : "already"
             inform("The knode command is installed \(how)", "Knode uses \(url.path(percentEncoded: false)) and installs nothing.")
+            return true
         case .link(let link, let needsAdministrator):
             do {
                 try makeLink(at: link, needsAdministrator: needsAdministrator)
                 defaults.set(link.path(percentEncoded: false), forKey: Self.installedLinkKey)
                 inform("The knode command is installed", "Open a new terminal window and run knode --help.")
+                return true
             } catch CommandLineToolError.cancelled {
-                return
+                return false
             } catch {
                 fail("The knode command could not be installed", error, link: link)
+                return false
             }
         }
     }
