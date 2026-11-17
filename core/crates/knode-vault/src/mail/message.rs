@@ -1,7 +1,7 @@
 //! One message, read with `mail-parser`: its headers decoded (encoded words, charsets), its
 //! text as Markdown, and the files it carries.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset, Utc};
@@ -26,6 +26,11 @@ const JUNK: &[&str] = &[
     "deleted messages",
     "deleted items",
 ];
+
+/// How many of the ids a message names in `References` and `In-Reply-To` are kept: the first
+/// (the start of the thread) and the last ones, as mail clients do. A broken or crafted message
+/// can name tens of thousands.
+pub(crate) const MAX_PARENTS: usize = 100;
 
 /// Where the bytes of a message are, to read its files again when they are attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +74,8 @@ pub(crate) struct Attached {
 pub(crate) struct Mail {
     /// The `Message-ID` without `<` and `>`, or `knode-<hash>` when the message has none.
     pub id: String,
-    /// The ids in `References`, then `In-Reply-To`, each once.
+    /// The ids in `References`, then `In-Reply-To`, each once: at most [`MAX_PARENTS`], the
+    /// first and the last ones.
     pub parents: Vec<String>,
     /// The subject, decoded.
     pub subject: String,
@@ -148,14 +154,11 @@ pub(crate) fn parse(
     });
     let body = body(&message);
 
-    let mut parents = Vec::new();
-    for value in [message.references(), message.in_reply_to()] {
-        for id in ids(value) {
-            if !parents.contains(&id) {
-                parents.push(id);
-            }
-        }
-    }
+    let parents = parents(
+        ids(message.references())
+            .into_iter()
+            .chain(ids(message.in_reply_to())),
+    );
     let mut folders = BTreeSet::new();
     match message.header(GMAIL_LABELS).and_then(HeaderValue::as_text) {
         Some(labels) => folders.extend(
@@ -293,6 +296,19 @@ fn people(address: Option<&Address<'_>>) -> Vec<Person> {
             })
         })
         .collect()
+}
+
+/// The ids a message names, each once, at most [`MAX_PARENTS`]: the first, which names the
+/// start of the thread, and the last ones, nearest to the message.
+fn parents(named: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut parents: Vec<String> = named.filter(|id| seen.insert(id.clone())).collect();
+    if parents.len() > MAX_PARENTS {
+        let last = parents.split_off(parents.len() - (MAX_PARENTS - 1));
+        parents.truncate(1);
+        parents.extend(last);
+    }
+    parents
 }
 
 /// The message ids of a `References` or `In-Reply-To` header.
@@ -644,6 +660,21 @@ Content-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\naGk=
         assert_eq!(files[1], ("attachment-2.pdf".to_string(), b"hi".to_vec()));
         // The same message read again gets the same id.
         assert_eq!(parse(raw, origin(), None, 2).unwrap().id, mail.id);
+    }
+
+    #[test]
+    fn keeps_the_first_and_the_last_parents_once() {
+        let references: Vec<String> = (0..5_000).map(|i| format!("<r{i}@example.com>")).collect();
+        let raw = format!(
+            "Message-ID: <m@example.com>\r\nFrom: a@example.com\r\nReferences: {} <r1@example.com>\r\n\
+In-Reply-To: <r4999@example.com>\r\n\r\nHi\r\n",
+            references.join(" ")
+        );
+        let mail = parse(raw.as_bytes(), origin(), None, 1).unwrap();
+        assert_eq!(mail.parents.len(), MAX_PARENTS);
+        assert_eq!(mail.root(), "r0@example.com");
+        assert_eq!(mail.parents[1], "r4901@example.com");
+        assert_eq!(mail.parents.last().unwrap(), "r4999@example.com");
     }
 
     #[test]

@@ -200,10 +200,11 @@ pub(crate) fn group(mails: Vec<Mail>) -> Vec<Thread> {
             let first = &messages[0];
             let key = first.root().to_string();
             let mut other_keys = Vec::new();
+            let mut seen: HashSet<&str> = HashSet::from([key.as_str()]);
             for mail in &messages {
                 let named = mail.parents.iter().map(String::as_str);
                 for candidate in [mail.root(), mail.id.as_str()].into_iter().chain(named) {
-                    if candidate != key && !other_keys.iter().any(|k| k == candidate) {
+                    if seen.insert(candidate) {
                         other_keys.push(candidate.to_string());
                     }
                 }

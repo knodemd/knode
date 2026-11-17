@@ -937,3 +937,34 @@ fn apple_mail_takes_an_exported_mailbox_and_does_not_follow_links() {
         assert_eq!(report.messages, 2);
     }
 }
+
+#[test]
+fn a_message_with_a_hundred_thousand_references_imports_fast() {
+    let tmp = tempfile::tempdir().unwrap();
+    let references: Vec<String> = (0..100_000).map(|i| format!("<r{i}@example.com>")).collect();
+    let file = write_mbox(
+        tmp.path(),
+        "refs.mbox",
+        &[message(
+            &[
+                ("Message-ID", "<many-refs@example.com>"),
+                ("From", "ada@example.com"),
+                ("Subject", "Re: Many references"),
+                ("Date", "Mon, 2 Mar 2026 09:00:00 +0000"),
+                ("References", &references.join(" ")),
+            ],
+            "Plain text.\n",
+        )],
+    );
+    let mut space = space(tmp.path());
+    let started = std::time::Instant::now();
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let again = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let took = started.elapsed();
+    assert_eq!(report.created.len(), 1);
+    assert_eq!(again.unchanged, 1);
+    let node = thread(&space, "Many references");
+    assert_eq!(space.properties(&node.id).unwrap()[keys::THREAD], "r0@example.com");
+    // Quadratic, this took minutes; linear, well under a second in a release build.
+    assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+}
