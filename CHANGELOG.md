@@ -31,8 +31,10 @@ belongs to, newest first.
   attached when the Mac has them. It reads a copy of the Messages database, never the database
   itself, and needs Full Disk Access, which it asks for by name when it is missing. Text that
   newer versions of Messages keep only in their archived form is read too; reactions are left
-  out, edited messages are marked edited and unsent ones unsent. People show as their phone
-  number or email address.
+  out, edited messages are marked edited and unsent ones unsent; a message edited or unsent
+  after it was brought in keeps the text it had then. If Messages numbers its messages again (a
+  rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
+  each conversation is missing. People show as their phone number or email address.
 
 ### v0.3 - Map and import (in progress)
 
