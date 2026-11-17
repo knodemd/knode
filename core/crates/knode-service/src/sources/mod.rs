@@ -26,6 +26,7 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod apple_mail;
 pub(crate) mod runtime;
 
 use std::collections::BTreeMap;
@@ -60,7 +61,13 @@ pub const STATE_FILE: &str = "state.json";
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
-    Vec::new()
+    #[allow(unused_mut)]
+    let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
+        connectors.push(Arc::new(apple_mail));
+    }
+    connectors
 }
 
 /// How Knode Service runs connectors.
@@ -188,6 +195,16 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ),
         ImportSource::Notion => ("Notion", "A Notion Markdown & CSV export", &[]),
         ImportSource::Evernote => ("Evernote", "Evernote .enex files", &[]),
+        ImportSource::Mbox => (
+            "Mail (mbox)",
+            "An .mbox file: Gmail through Google Takeout, or a mailbox another app exported",
+            &[],
+        ),
+        ImportSource::AppleMail => (
+            "Apple Mail",
+            "The mail of Apple Mail on this Mac, or a folder of .emlx files",
+            &[FullDiskAccess],
+        ),
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
         ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export in JSON", &[]),
         ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
