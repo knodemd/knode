@@ -1554,6 +1554,17 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_guide_asks_once_covers_an_existing_space_and_reports_tokens() {
+        let guide = agent_guide(Some(Path::new("/Users/ada/Notes")));
+        assert!(guide.contains("in one batch"));
+        assert!(guide.contains("## If they already have a space"));
+        assert!(guide.contains("merge or replace"));
+        assert!(guide.contains("knode onboard archive --target <old space>"));
+        assert!(guide.contains("connect the agents to it"));
+        assert!(guide.contains("how many tokens the onboarding used"));
+    }
+
+    #[test]
     fn the_agent_guide_and_prompt_name_the_source() {
         let source = Path::new("/Users/ada/Notes");
         let guide = agent_guide(Some(source));
@@ -1572,17 +1583,6 @@ mod tests {
             unknown.contains("Ask the person which folder")
                 && unknown.contains("--source \"<source>\"")
         );
-    }
-
-    #[test]
-    fn the_agent_guide_asks_once_covers_an_existing_space_and_reports_tokens() {
-        let guide = agent_guide(Some(Path::new("/Users/ada/Notes")));
-        assert!(guide.contains("in one batch"));
-        assert!(guide.contains("## If they already have a space"));
-        assert!(guide.contains("merge or replace"));
-        assert!(guide.contains("knode onboard archive --target <old space>"));
-        assert!(guide.contains("connect the agents to it"));
-        assert!(guide.contains("how many tokens the onboarding used"));
     }
 
     #[test]
