@@ -657,3 +657,387 @@ fn captures_editor_agents_into_a_space() {
     assert!(report.changes.is_empty(), "{report:?}");
     assert_eq!(report.unchanged, 1);
 }
+
+// Cursor, current layout: turn headers in chunks
+
+#[test]
+fn reads_cursor_turn_headers_kept_in_chunks() {
+    let dir = TempDir::new().unwrap();
+    let cursor = CursorUser::create(&dir.path().join("User"));
+    // The composer of a current Cursor: no inline headers, a header log, and a creation time
+    // far from its turns.
+    cursor.composer(
+        "c-chunked",
+        json!({
+            "_v": 18, "composerId": "c-chunked", "name": "Add a health check",
+            "createdAt": 1_700_000_000_000_i64, "lastUpdatedAt": 1_767_348_000_000_i64,
+            "unifiedMode": "agent", "isAgentic": true, "conversationState": "~",
+            "modelConfig": {"modelName": "model-example", "maxMode": false},
+            "workspaceIdentifier": {"id": "w1", "uri": {"$mid": 1, "fsPath": PROJECT,
+                "external": "file:///Users/example/project", "path": PROJECT, "scheme": "file"}},
+            "fullConversationHeadersOnly": [],
+            "headerLog": {"count": 3, "chunkCount": 2},
+            "conversationMap": {}
+        }),
+    );
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked:000000",
+        &json!([{"bubbleId": "h1", "type": 1}, {"bubbleId": "h2", "type": 2}]),
+    );
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked:000001",
+        &json!([{"bubbleId": "h3", "type": 2, "serverBubbleId": "s3"}]),
+    );
+    // A chunk past the header log, left from an earlier write, is not read.
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked:000002",
+        &json!([{"bubbleId": "stale", "type": 1}]),
+    );
+    cursor.bubble(
+        "c-chunked",
+        "h1",
+        json!({"_v": 3, "type": 1, "bubbleId": "h1", "text": "Add a health check endpoint",
+               "createdAt": "2026-01-02T10:00:00.000Z"}),
+    );
+    cursor.bubble(
+        "c-chunked",
+        "h2",
+        json!({"_v": 3, "type": 2, "bubbleId": "h2", "text": "", "createdAt": "2026-01-02T10:00:05.000Z",
+               "toolFormerData": {"toolCallId": "t1", "name": "edit_file_v2", "status": "completed",
+                                  "params": {"relativeWorkspacePath": "src/health.rs"},
+                                  "result": "edit output that is never kept"}}),
+    );
+    cursor.bubble(
+        "c-chunked",
+        "h3",
+        json!({"_v": 3, "type": 2, "bubbleId": "h3", "text": "The endpoint answers on /health.",
+               "createdAt": "2026-01-02T10:02:00.000Z"}),
+    );
+    cursor.bubble(
+        "c-chunked",
+        "stale",
+        json!({"type": 1, "text": "a turn no header lists"}),
+    );
+    // A turn no header lists any more, left from a retry, is not read either.
+    cursor.bubble(
+        "c-chunked",
+        "orphan",
+        json!({"type": 2, "text": "an earlier answer that was retried"}),
+    );
+
+    let files = discover(Agent::Cursor, &cursor.root).unwrap();
+    assert_eq!(files.len(), 1);
+    let mut reader = SessionReader::new(&files[0]);
+    reader.poll().unwrap();
+    let conversation = reader.conversation();
+    assert_eq!(conversation.title(), "Add a health check");
+    assert_eq!(conversation.project.as_deref(), Some(Path::new(PROJECT)));
+    assert_eq!(conversation.model.as_deref(), Some("model-example"));
+    assert_eq!(conversation.messages.len(), 2);
+    assert_eq!(
+        conversation.messages[0].text(),
+        "Add a health check endpoint"
+    );
+    assert_eq!(
+        tools(conversation, 1),
+        [tool("edit_file_v2", "src/health.rs", false)]
+    );
+    assert_eq!(
+        conversation.messages[1].text(),
+        "The endpoint answers on /health."
+    );
+    let markdown = to_markdown(conversation);
+    assert!(!markdown.contains("never kept"));
+    assert!(!markdown.contains("no header lists") && !markdown.contains("retried"));
+    // The start is the first turn, not the composer's creation time; the end is the last turn,
+    // which the composer's last update lags behind.
+    assert_eq!(
+        conversation.started_at.unwrap().to_rfc3339(),
+        "2026-01-02T10:00:00+00:00"
+    );
+    assert_eq!(
+        conversation.ended_at.unwrap().to_rfc3339(),
+        "2026-01-02T10:02:00+00:00"
+    );
+
+    // A new turn rewrites the header log and a chunk: the conversation is read again, whole.
+    assert_eq!(reader.poll().unwrap().records, 0);
+    put(
+        &cursor.connection,
+        "cursorDiskKV",
+        "composerConvHeaders:c-chunked:000001",
+        &json!([{"bubbleId": "h3", "type": 2}, {"bubbleId": "h4", "type": 1}]),
+    );
+    cursor.bubble(
+        "c-chunked",
+        "h4",
+        json!({"type": 1, "text": "Thanks", "createdAt": "2026-01-02T10:03:00.000Z"}),
+    );
+    let mut data: Value = serde_json::from_str(
+        &cursor
+            .connection
+            .query_row(
+                "SELECT value FROM cursorDiskKV WHERE key = 'composerData:c-chunked'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    data["headerLog"]["count"] = json!(4);
+    data["lastUpdatedAt"] = json!(1_767_348_180_000_i64);
+    cursor.composer("c-chunked", data);
+    assert_eq!(reader.poll().unwrap().records, 1);
+    assert_eq!(reader.conversation().messages.len(), 3);
+    assert_eq!(reader.conversation().messages[2].text(), "Thanks");
+}
+
+#[test]
+fn a_cursor_composer_without_turn_times_starts_when_it_was_created() {
+    let dir = TempDir::new().unwrap();
+    let cursor = CursorUser::create(&dir.path().join("User"));
+    cursor.composer(
+        "c-old",
+        json!({"_v": 2, "composerId": "c-old", "createdAt": 1_767_000_000_000_i64,
+               "lastUpdatedAt": 1_767_000_060_000_i64,
+               "conversation": [{"type": 1, "text": "Hello"}, {"type": 2, "text": "Hi"}]}),
+    );
+    let file = discover(Agent::Cursor, &cursor.root).unwrap().remove(0);
+    let conversation = read_session(&file).unwrap();
+    assert_eq!(
+        conversation.started_at.unwrap().timestamp_millis(),
+        1_767_000_000_000
+    );
+    assert_eq!(
+        conversation.ended_at.unwrap().timestamp_millis(),
+        1_767_000_060_000
+    );
+}
+
+// Cline SDK sessions
+
+/// Writes a Cline SDK session folder: its messages file and its manifest.
+fn cline_sdk_session(root: &Path, id: &str, messages: Value) -> PathBuf {
+    let dir = root.join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(format!("{id}.messages.json")),
+        json!({"version": 1, "updated_at": "2026-01-02T10:01:00.000Z", "agent": "lead",
+               "sessionId": id,
+               "origin": {"source": "cli", "mode": "user", "sessionId": id},
+               "messages": messages})
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join(format!("{id}.json")),
+        json!({"version": 1, "session_id": id, "source": "cli", "pid": 1,
+               "started_at": "2026-01-02T09:59:58.000Z", "status": "completed",
+               "interactive": true, "provider": "example", "model": "model-example",
+               "cwd": PROJECT, "workspace_root": PROJECT,
+               "enable_tools": true, "enable_spawn": false, "enable_teams": false,
+               "metadata": {"title": "Summarise the README", "mode": "act"},
+               "messages_path": format!("/Users/example/.cline/data/sessions/{id}/{id}.messages.json")})
+        .to_string(),
+    )
+    .unwrap();
+    dir
+}
+
+fn cline_sdk_messages() -> Value {
+    json!([
+        {"id": "m1", "role": "user", "content": [
+            {"type": "text", "text": "<mode_notice>The user switched from plan mode to act mode before sending this message.</mode_notice><user_input mode=\"act\">Summarise the README</user_input>"},
+            {"type": "text", "text": "<file_content path=\"/Users/example/project/README.md\">\nfile contents that are never kept\n</file_content>"}
+        ]},
+        {"id": "m2", "role": "assistant", "ts": 1_767_348_000_000_i64,
+         "modelInfo": {"id": "model-newer", "provider": "example"},
+         "content": [
+            {"type": "thinking", "thinking": "Private reasoning"},
+            {"type": "text", "text": "I will read it first."},
+            {"type": "tool_use", "id": "t1", "name": "read_files",
+             "input": {"files": [{"path": "/Users/example/project/README.md", "start_line": 1}]}},
+            {"type": "tool_use", "id": "t2", "name": "run_commands",
+             "input": {"commands": ["cargo test", "cargo clippy"]}}
+        ]},
+        {"id": "m3", "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "output that is never kept", "is_error": false},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "error output", "is_error": true}
+        ]},
+        {"id": "m4", "role": "assistant", "ts": 1_767_348_010_000_i64,
+         "modelInfo": {"id": "model-newer", "provider": "example"},
+         "metrics": {"inputTokens": 1, "outputTokens": 1, "cacheReadTokens": 0, "cacheWriteTokens": 0, "cost": 0},
+         "content": [{"type": "text", "text": "The README describes a small project."}]},
+        {"id": "m5", "role": "user", "content": [
+            {"type": "text", "text": "<user_command slash=\"newtask\">continue in a new task</user_command>"}
+        ]}
+    ])
+}
+
+#[test]
+fn reads_a_cline_sdk_session() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("sessions");
+    let id = "1767348000000_abcde";
+    let session = cline_sdk_session(&root, id, cline_sdk_messages());
+    // A subagent's messages in the same folder, and the session's other files, are not sessions.
+    fs::write(
+        session.join("agent-1.messages.json"),
+        json!({"version": 1, "agent": "subagent", "sessionId": "sub", "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "a subagent task"}]}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(session.join(format!("{id}.compaction.json")), "{}").unwrap();
+    fs::write(session.join("hooks.jsonl"), "").unwrap();
+
+    let files = discover(Agent::Cline, &root).unwrap();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert_eq!(files[0].session_id, id);
+    assert_eq!(files[0].path, session.join(format!("{id}.messages.json")));
+
+    let conversation = read_session(&files[0]).unwrap();
+    assert_eq!(conversation.agent, Agent::Cline);
+    assert_eq!(conversation.session_id, id);
+    assert_eq!(conversation.project.as_deref(), Some(Path::new(PROJECT)));
+    assert_eq!(conversation.model.as_deref(), Some("model-newer"));
+    assert_eq!(conversation.title(), "Summarise the README");
+    let roles: Vec<Role> = conversation.messages.iter().map(|m| m.role).collect();
+    assert_eq!(roles, [Role::User, Role::Assistant, Role::User]);
+    assert_eq!(conversation.messages[0].text(), "Summarise the README");
+    assert_eq!(
+        tools(&conversation, 1),
+        [
+            tool("read_files", "/Users/example/project/README.md", false),
+            tool("run_commands", "cargo test", true),
+        ]
+    );
+    assert!(
+        conversation.messages[1]
+            .text()
+            .ends_with("The README describes a small project.")
+    );
+    assert_eq!(
+        conversation.messages[2].text(),
+        "/newtask continue in a new task"
+    );
+    let markdown = to_markdown(&conversation);
+    assert!(!markdown.contains("never kept") && !markdown.contains("Private reasoning"));
+    assert!(!markdown.contains("mode_notice") && !markdown.contains("switched"));
+    assert!(!markdown.contains("subagent task"));
+    assert_eq!(
+        conversation.started_at.unwrap().to_rfc3339(),
+        "2026-01-02T09:59:58+00:00"
+    );
+    assert_eq!(
+        conversation.ended_at.unwrap().to_rfc3339(),
+        "2026-01-02T10:00:10+00:00"
+    );
+}
+
+#[test]
+fn reads_the_newer_cline_task_messages() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("tasks");
+    task(
+        &root,
+        "1767348000000",
+        json!([
+            {"ts": 1_767_348_000_000_i64, "type": "say", "say": "task", "text": "Plan the refactor"},
+            {"ts": 1_767_348_001_000_i64, "type": "ask", "ask": "plan_mode_respond",
+             "text": "{\"response\":\"First split the module.\",\"options\":[]}"},
+            {"ts": 1_767_348_002_000_i64, "type": "say", "say": "user_feedback", "text": "Go ahead"},
+            {"ts": 1_767_348_003_000_i64, "type": "ask", "ask": "act_mode_respond",
+             "text": "{\"response\":\"Splitting it now.\"}"},
+            {"ts": 1_767_348_004_000_i64, "type": "say", "say": "plan_completion_result",
+             "text": "The module is split."},
+            {"ts": 1_767_348_005_000_i64, "type": "say", "say": "checkpoint_created"},
+            {"ts": 1_767_348_006_000_i64, "type": "say", "say": "hook_status", "text": "{}"}
+        ]),
+    );
+    let file = discover(Agent::Cline, &root).unwrap().remove(0);
+    let conversation = read_session(&file).unwrap();
+    let texts: Vec<String> = conversation.messages.iter().map(|m| m.text()).collect();
+    assert_eq!(texts[0], "Plan the refactor");
+    assert_eq!(texts[1], "First split the module.");
+    assert_eq!(texts[2], "Go ahead");
+    assert!(texts[3].starts_with("Splitting it now."));
+    assert!(texts[3].ends_with("The module is split."));
+    assert_eq!(texts.len(), 4);
+}
+
+#[test]
+fn captures_cline_sdk_sessions_once_and_follows_them() {
+    let dir = TempDir::new().unwrap();
+    let mut space = Space::create(dir.path().join("Test.knode"), "Test").unwrap();
+    let data = dir.path().join(".cline/data");
+    let sessions = data.join("sessions");
+    let id = "1767348000000_abcde";
+    let session = cline_sdk_session(&sessions, id, cline_sdk_messages());
+    // The same task, from before Cline moved to its SDK: a resumed task keeps its id.
+    let tasks = data.join("tasks");
+    task(&tasks, id, cline_messages());
+
+    let mut capture = Capture::open(dir.path().join("state.json"))
+        .unwrap()
+        .with_roots([
+            (Agent::Cline, tasks.clone()),
+            (Agent::Cline, sessions.clone()),
+        ]);
+    let report = capture.sync_all(&mut space).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    // One conversation, one node.
+    let nodes: std::collections::BTreeSet<_> = report.changes.iter().map(|c| c.node_id).collect();
+    assert_eq!(nodes.len(), 1, "{report:?}");
+    let node_id = nodes.into_iter().next().unwrap();
+    for (key, value) in [
+        (property_keys::CONVERSATION_AGENT, "cline"),
+        (property_keys::CONVERSATION_SESSION, id),
+        (property_keys::CONVERSATION_PROJECT, PROJECT),
+    ] {
+        assert_eq!(
+            space.property(&node_id, key).unwrap().as_deref(),
+            Some(value),
+            "{key}"
+        );
+    }
+    assert!(
+        space
+            .property(&node_id, property_keys::CONVERSATION_STARTED_AT)
+            .unwrap()
+            .is_some()
+    );
+    // The SDK session, read last, holds the whole conversation.
+    assert_eq!(
+        space.get_node(&node_id).unwrap().unwrap().title,
+        "Summarise the README"
+    );
+
+    // Nothing new: nothing written.
+    let again = capture.sync_all(&mut space).unwrap();
+    assert!(again.changes.is_empty(), "{again:?}");
+
+    // The session grows: the same node is updated.
+    let mut messages = cline_sdk_messages();
+    messages.as_array_mut().unwrap().push(json!(
+        {"id": "m6", "role": "assistant", "ts": 1_767_348_020_000_i64,
+         "content": [{"type": "text", "text": "Started a new task."}]}
+    ));
+    let file = session.join(format!("{id}.messages.json"));
+    fs::write(
+        &file,
+        json!({"version": 1, "agent": "lead", "sessionId": id, "messages": messages}).to_string(),
+    )
+    .unwrap();
+    let report = capture.sync_paths(&mut space, &[file]).unwrap();
+    assert_eq!(report.updated().count(), 1, "{report:?}");
+    assert_eq!(report.created().count(), 0, "{report:?}");
+    assert_eq!(report.updated().next().unwrap().node_id, node_id);
+}
