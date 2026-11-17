@@ -95,10 +95,12 @@ leave a link at the old place until nothing uses it.
 
 ## Starting from nothing
 
-1. Create the space and make it the default: `knode init "<Name>"` and
-   `knode spaces default "<Name>"`. A new space captures the conversations of every agent from the
-   start: unless the person chose capture in step 3, turn it off right away with
-   `knode spaces capture "<Name>" off`.
+1. Set up the space you are connected to, if any: when Knode's instructions say this space is not
+   set up yet, or `knode spaces` shows a default space that holds no notes of the person, that
+   space is `<Name>` below; do not create another one. Only when there is no space at all, create
+   one and make it the default: `knode init "<Name>"` and `knode spaces default "<Name>"`. A new
+   space captures the conversations of every agent from the start: unless the person chose
+   capture in step 3, turn it off right away with `knode spaces capture "<Name>" off`.
 2. Ask which projects they work on now, and where. For each: register its folder
    (`knode --space "<Name>" folders add <folder> --kind project`); if that does not report a
    project node, create one by importing a folder holding a note named after the project whose
