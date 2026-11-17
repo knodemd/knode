@@ -52,14 +52,11 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         self.project = project
     }
 
-    /// The name of the project a project folder at `url` holds, as the core names it: the
-    /// folder's own name. `nil` for the home folder and the root of a disk, which have none.
+    /// The title of the project adding a project folder at `url` makes or finds, from the core so
+    /// it is the one the core creates: the folder's name, in NFC, with `[`, `]` and `|` replaced.
+    /// `nil` for the home folder and the root of a disk, which have none.
     static func projectName(for url: URL) -> String? {
-        let standard = url.standardizedFileURL
-        let home = URL(filePath: NSHomeDirectory(), directoryHint: .isDirectory).standardizedFileURL
-        let name = standard.lastPathComponent
-        guard standard.path(percentEncoded: false) != home.path(percentEncoded: false), !name.isEmpty, name != "/" else { return nil }
-        return name
+        KnodeCore.folderProjectTitle(path: ServiceSpaceStore.path(of: url))
     }
 
     public var knownKind: Kind? { Kind(rawValue: kind) }

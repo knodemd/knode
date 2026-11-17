@@ -323,6 +323,13 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false))
         #expect(try await store.projects(in: space.id).count == 1)
         try await store.removeFolder(again.id, from: space.id)
+
+        // A name a title cannot hold still makes the project the sheet promised.
+        let old = folder.appending(path: "site [old]", directoryHint: .isDirectory)
+        let bracketed = try await store.setFolder(.adding(.project, at: old), in: space.id)
+        #expect(bracketed.project?.title == SpaceFolder.projectName(for: old))
+        #expect(bracketed.project?.title == "site (old)")
+        #expect(try await store.projects(in: space.id).count == 2)
     }
 
     @MainActor @Test func foldersScreenSaysWhatHappensToTheProject() {
@@ -339,6 +346,9 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(SpaceFolder.projectName(for: URL(filePath: "/Volumes/Work/site", directoryHint: .isDirectory)) == "site")
         #expect(SpaceFolder.projectName(for: URL(filePath: NSHomeDirectory(), directoryHint: .isDirectory)) == nil)
         #expect(SpaceFolder.projectName(for: URL(filePath: "/", directoryHint: .isDirectory)) == nil)
+        // The sheet names the project the core makes, brackets and decomposed accents included.
+        #expect(SpaceFolder.projectName(for: URL(filePath: "/Volumes/Work/site [old]", directoryHint: .isDirectory)) == "site (old)")
+        #expect(SpaceFolder.projectName(for: URL(filePath: "/Volumes/Work/Cafe\u{301}", directoryHint: .isDirectory)) == "Caf\u{e9}")
         #expect(AddProjectSheet.projectExplanation(for: URL(filePath: "/Volumes/Work/site")).contains("\u{201C}site\u{201D}"))
     }
 
