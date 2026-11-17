@@ -54,6 +54,7 @@ struct ContentView: View {
             case .folders(let url): SpaceFoldersSheet(url: url)
             case .onboarding: OnboardingSheet()
             case .onboardingReview(let url): OnboardingSheet(existing: url)
+            case .connectAgents: ConnectAgentsSheet()
             default: EmptyView()
             }
         }
@@ -106,7 +107,7 @@ extension AppModel {
 extension SpaceSheet {
     fileprivate var isPanel: Bool {
         switch self {
-        case .access, .folders, .onboarding, .onboardingReview: true
+        case .access, .folders, .onboarding, .onboardingReview, .connectAgents: true
         case .newSpace, .rename, .icon: false
         }
     }

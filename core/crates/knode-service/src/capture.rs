@@ -6,7 +6,9 @@
 //! `spaces`, and those it has open) are matched against the folder the conversation was held
 //! in, the most specific one wins, and capture turned off for a project, or for a space, means
 //! nothing of it is stored. Conversations of no project go to the space of the `agent` folder
-//! they were read from, or else to the default space.
+//! they were read from, or else to the default space. A new space nobody has set up yet
+//! receives nothing until it is ([`capture_waits_for_setup`]), and a space whose person turned
+//! capture on receives only the conversations started since ([`capture_since`]).
 //!
 //! The machine-wide settings come from `config.toml` in the Knode home: `default_space`,
 //! `spaces`, `capture` (on unless `false`) and `capture_exclude`, which leaves projects out
@@ -26,6 +28,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use knode_format::{ChangeOp, Space, folder_kinds};
 use knode_ingest::{
     Agent, Capture, CaptureError, CaptureReport, Conversation, Destinations, ProjectFilter,
@@ -35,7 +38,9 @@ use knode_ingest::{
 use crate::markdown::{record_path, resolve_path};
 use crate::protocol::ChangeKind;
 use crate::server::State;
-use crate::spaces::{capture_enabled, excluded, rule_patterns};
+use crate::spaces::{
+    capture_enabled, capture_since, capture_waits_for_setup, excluded, rule_patterns,
+};
 
 /// The folder in the Knode home where capture keeps its state.
 pub const CAPTURE_DIR: &str = "capture";
@@ -104,6 +109,9 @@ struct Target {
     path: PathBuf,
     /// Its `capture.enabled` setting.
     capture: bool,
+    /// When the person turned capture on ([`capture_since`]): conversations started before are
+    /// not written to it.
+    since: Option<DateTime<Utc>>,
 }
 
 /// A `project` folder of a space.
@@ -197,13 +205,16 @@ impl Routes {
     }
 
     fn add(&mut self, space: &Space, id: &str) -> knode_format::Result<()> {
-        let capture = capture_enabled(space)?;
+        // A new space nobody has set up yet gets nothing until it is (#293). Routes are read
+        // again at every poll, so capture starts, and catches up, once it is.
+        let capture = capture_enabled(space)? && !capture_waits_for_setup(space)?;
         let folders = space.folders()?;
         self.spaces.insert(
             id.to_string(),
             Target {
                 path: space.path().to_path_buf(),
                 capture,
+                since: capture_since(space)?,
             },
         );
         for folder in folders {
@@ -265,10 +276,29 @@ impl Routes {
         self.spaces.get(id).map(|t| t.path.as_path())
     }
 
-    /// The ids of the spaces a conversation held in `project` and read from the session file
-    /// `file` goes to (section 15.5). Empty when it is stored nowhere.
+    /// [`Routes::route_at`] for a conversation of no known start.
+    #[cfg(test)]
     fn route(&self, project: Option<&Path>, file: &Path) -> Vec<String> {
-        let enabled = |id: &str| self.spaces.get(id).is_some_and(|t| t.capture);
+        self.route_at(None, project, file)
+    }
+
+    /// The ids of the spaces a conversation held in `project`, started at `started` and read
+    /// from the session file `file` goes to (section 15.5). Empty when it is stored nowhere. A
+    /// space whose capture was turned on at some time only takes conversations started since;
+    /// one of no known start is not written to it.
+    fn route_at(
+        &self,
+        started: Option<DateTime<Utc>>,
+        project: Option<&Path>,
+        file: &Path,
+    ) -> Vec<String> {
+        let enabled = |id: &str| {
+            self.spaces.get(id).is_some_and(|t| {
+                t.capture
+                    && t.since
+                        .is_none_or(|since| started.is_some_and(|started| started >= since))
+            })
+        };
         if let Some(project) = project.filter(|p| p.is_absolute()) {
             let recorded = record_path(project);
             let matching: Vec<&Project> = self
@@ -336,7 +366,9 @@ impl Destinations for Router {
     }
 
     fn route(&self, conversation: &Conversation, file: &Path) -> Vec<String> {
-        self.routes().route(conversation.project.as_deref(), file)
+        let started = conversation.started_at.or(conversation.ended_at);
+        self.routes()
+            .route_at(started, conversation.project.as_deref(), file)
     }
 
     fn with_space(
@@ -684,6 +716,7 @@ mod tests {
         Target {
             path: PathBuf::from(path),
             capture,
+            since: None,
         }
     }
 

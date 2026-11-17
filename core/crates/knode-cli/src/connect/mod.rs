@@ -99,6 +99,26 @@ impl Agent {
         }
     }
 
+    /// The agent's name as people know it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "Claude Code",
+            Agent::Codex => "Codex",
+            Agent::Gemini => "Gemini CLI",
+            Agent::ClaudeDesktop => "Claude Desktop",
+            Agent::Cursor => "Cursor",
+            Agent::Windsurf => "Windsurf",
+            Agent::Cline => "Cline",
+            Agent::RooCode => "Roo Code",
+            Agent::CopilotCli => "Copilot CLI",
+            Agent::OpenCode => "OpenCode",
+            Agent::Amp => "Amp",
+            Agent::Aider => "Aider",
+            Agent::VsCode => "GitHub Copilot in VS Code",
+            Agent::Zed => "Zed",
+        }
+    }
+
     pub const ALL: [Agent; 14] = [
         Agent::ClaudeCode,
         Agent::Codex,
@@ -287,6 +307,104 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
+/// `knode connect --list --json`: every agent, in the order `--list` shows them, with whether it
+/// is on this machine, whether its settings already run Knode as itself, and whether Knode can be
+/// added to it at all (Aider has no MCP client). For the apps: they show and decide nothing else.
+pub fn list_json() -> Result<()> {
+    let agents: Vec<Value> = Agent::ALL
+        .into_iter()
+        .map(|agent| {
+            serde_json::json!({
+                "agent": agent.arg(),
+                "name": agent.name(),
+                "title": agent.title(),
+                "detected": places::detected(agent),
+                "connected": connected(agent),
+                "can_connect": agent != Agent::Aider,
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({ "agents": agents }))?
+    );
+    Ok(())
+}
+
+/// Whether the agent's settings already run Knode as this agent (`knode mcp --agent <name>`), as
+/// `knode connect` leaves them. Settings from before agent keys, or written by hand without
+/// `--agent`, do not count. Whether its key still works is for Knode Service to say.
+pub fn connected(agent: Agent) -> bool {
+    let runs_as = |strings: Vec<String>| {
+        strings
+            .windows(2)
+            .any(|w| w[0] == "--agent" && w[1] == agent.name())
+    };
+    match agent {
+        Agent::Aider => false,
+        Agent::ClaudeCode => claude_code_settings()
+            .iter()
+            .any(|f| json_server(f, "mcpServers").is_some_and(runs_as)),
+        Agent::Codex => codex_server().is_some_and(runs_as),
+        _ => places::places(agent).is_ok_and(|found| {
+            found
+                .iter()
+                .any(|p| json_server(&p.file, p.container).is_some_and(runs_as))
+        }),
+    }
+}
+
+/// The strings of the `knode` entry under `container` in a JSON or JSONC settings file: its
+/// command and its arguments, in order.
+fn json_server(file: &Path, container: &str) -> Option<Vec<String>> {
+    let text = fs::read_to_string(file).ok()?;
+    let entry = json::get_entry(&text, container, SERVER)?;
+    Some(entry_strings(&entry))
+}
+
+fn entry_strings(entry: &Value) -> Vec<String> {
+    let mut strings = Vec::new();
+    for key in ["command", "args"] {
+        match entry.get(key) {
+            Some(Value::String(s)) => strings.push(s.clone()),
+            Some(Value::Array(items)) => {
+                strings.extend(items.iter().filter_map(|a| a.as_str().map(str::to_string)))
+            }
+            _ => {}
+        }
+    }
+    strings
+}
+
+/// Where Claude Code keeps its user MCP servers: `~/.claude.json`, and the one in
+/// `CLAUDE_CONFIG_DIR` when it is set.
+fn claude_code_settings() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(home) = home() {
+        files.push(home.join(".claude.json"));
+    }
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        files.push(PathBuf::from(dir).join(".claude.json"));
+    }
+    files
+}
+
+/// The arguments of `[mcp_servers.knode]` in Codex's `config.toml`.
+fn codex_server() -> Option<Vec<String>> {
+    let file = codex_config().ok()?;
+    let doc: toml_edit::DocumentMut = fs::read_to_string(file).ok()?.parse().ok()?;
+    let args = doc
+        .get("mcp_servers")?
+        .get(SERVER)?
+        .get("args")?
+        .as_array()?;
+    Some(
+        args.iter()
+            .filter_map(|a| a.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
 /// The credential store of this machine.
 pub fn store(paths: &Paths) -> Box<dyn KeyStore> {
     default_key_store(&paths.home)
@@ -360,52 +478,22 @@ fn issue_key(paths: &Paths, agent: Agent, space: Option<&Path>) -> Result<()> {
 /// The agents whose settings run `knode mcp` without an agent key: set up before keys. They
 /// stop working until they are connected again.
 pub fn without_key() -> Vec<Agent> {
-    let mut found = Vec::new();
-    let json_args = |file: &Path| -> Option<Vec<String>> {
-        let text = fs::read_to_string(file).ok()?;
-        let value: Value = serde_json::from_str(&text).ok()?;
-        let args = value
-            .get("mcpServers")?
-            .get(SERVER)?
-            .get("args")?
-            .as_array()?;
-        Some(
-            args.iter()
-                .filter_map(|a| a.as_str().map(str::to_string))
-                .collect(),
-        )
-    };
     let unkeyed =
         |args: Option<Vec<String>>| args.is_some_and(|a| !a.iter().any(|a| a == "--agent"));
-    if let Ok(home) = home() {
-        let mut claude = vec![home.join(".claude.json")];
-        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
-            claude.push(PathBuf::from(dir).join(".claude.json"));
-        }
-        if claude.iter().any(|f| unkeyed(json_args(f))) {
-            found.push(Agent::ClaudeCode);
-        }
-        let codex = codex_config().ok().and_then(|file| {
-            let doc: toml_edit::DocumentMut = fs::read_to_string(file).ok()?.parse().ok()?;
-            let args = doc
-                .get("mcp_servers")?
-                .get(SERVER)?
-                .get("args")?
-                .as_array()?;
-            Some(
-                args.iter()
-                    .filter_map(|a| a.as_str().map(str::to_string))
-                    .collect(),
-            )
-        });
-        if unkeyed(codex) {
-            found.push(Agent::Codex);
-        }
-        if unkeyed(json_args(&home.join(".gemini/settings.json"))) {
-            found.push(Agent::Gemini);
-        }
+    let mut found = Vec::new();
+    if claude_code_settings()
+        .iter()
+        .any(|f| unkeyed(json_server(f, "mcpServers")))
+    {
+        found.push(Agent::ClaudeCode);
     }
-    if claude_desktop_config().is_ok_and(|f| unkeyed(json_args(&f))) {
+    if unkeyed(codex_server()) {
+        found.push(Agent::Codex);
+    }
+    if home().is_ok_and(|h| unkeyed(json_server(&h.join(".gemini/settings.json"), "mcpServers"))) {
+        found.push(Agent::Gemini);
+    }
+    if claude_desktop_config().is_ok_and(|f| unkeyed(json_server(&f, "mcpServers"))) {
         found.push(Agent::ClaudeDesktop);
     }
     found

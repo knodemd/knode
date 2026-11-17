@@ -42,6 +42,11 @@ struct KnodeApp: App {
                 .environment(model)
                 .environment(agents)
 
+                .task {
+                    // Once the knode command is installed on the first run: Connect your agents,
+                    // unless Get started is open, which shows the same step.
+                    appDelegate.installer.whenReadyOnFirstRun { [model] in model.showConnectAgents() }
+                }
                 .onOpenURL { url in
                     Task { await model.openSpace(at: url) }
                 }
@@ -72,6 +77,8 @@ struct KnodeApp: App {
             CommandGroup(after: .appInfo) {
                 Button("Install Command Line Tool…") { appDelegate.installer.install() }
                 Button("Uninstall Command Line Tool…") { appDelegate.installer.uninstall() }
+                Button("Connect Your Agents…") { model.showConnectAgents() }
+                    .disabled(!model.canShowConnectAgents)
             }
         }
 

@@ -66,10 +66,26 @@ belongs to, newest first.
 
 #### Added
 
+- **Connect your agents** in the Mac app: once the `knode` command is installed on the first run,
+  in Get started and from **Knode > Connect Your Agents…**, the app lists the agents on your Mac,
+  Claude Code first, with a Connect button each and **Connect all detected**. After connecting it
+  says to open a new session of the agent, which sets your memory up. `knode connect --list
+  --json` prints the same list, with whether each agent is already connected.
 - **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
   any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
   asks you only what needs your judgment, imports a copy, connects itself and moves your
   instruction files to Knode. `knode onboard prompt` prints the prompt.
+- **Your agent offers to set Knode up**: when the space an agent connects to is not set up yet
+  (no import, no project and almost no notes of yours), the MCP server asks an agent that runs
+  commands (Claude Code, Codex) to offer to set Knode up for you in that space, with the new
+  `setup_guide` tool, which returns the same guide. Other agents, such as Claude Desktop, are
+  asked to point you to Get started in the Knode app. Knode Service answers `space.set_up`.
+- **Set up the space your agent is already connected to**: `knode onboard apply --into <space>`
+  brings a reviewed plan into an existing space that is not set up yet, such as the new default
+  space the app connected your agent to, with the same checks, project nodes and receipt as a new
+  space, and keeps the conversations it already captured. No reconnection or new agent session is
+  needed. A space that is already set up is refused. Knode Service answers
+  `onboarding.apply_into`.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -141,6 +157,13 @@ belongs to, newest first.
   after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
   `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
   added before this gets its project when it is added again.
+- **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
+  Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
+  become notes of the space, each part of the project that folder belongs to: a project folder of
+  the space, a project made by guided import from that folder, or a project named as the folder.
+  No project is made up: notes whose folder matches none are imported on their own and listed.
+  Importing again updates the same notes, skips memory that did not change, and keeps a note
+  edited in Knode as it is.
 
 - **Migration report for a vault import**: `knode import <folder> --report report.json` writes
   where every file of a Markdown folder or Obsidian vault went (the node of each note), what was
@@ -164,6 +187,9 @@ belongs to, newest first.
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
   request and the project's rules come before memory.
+- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
+  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
+  saying how many tokens the onboarding used.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
@@ -182,6 +208,13 @@ belongs to, newest first.
 
 #### Fixed
 
+- **A new space no longer fills with every earlier agent conversation** as soon as `knode
+  connect` starts Knode Service. Capture into a space nobody has set up yet (no capture choice,
+  no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
+  it up, a folder is added or something is written into it. Capture stays on by default, and
+  spaces it already writes to are not affected. `knode spaces capture <space> on` is now kept as
+  your choice instead of being stored as the default, and turning capture on for a space where
+  it was off or waiting keeps conversations from then on, not earlier ones.
 - **Long conversations no longer bury short notes in search**: agent conversations, imported chats
   and imported mail threads are long transcripts that match a query's words and meaning in passing,
   and could come before the short note that answers it. Hybrid search now counts a transcript half,

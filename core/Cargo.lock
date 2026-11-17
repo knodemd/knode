@@ -2392,6 +2392,7 @@ dependencies = [
  "knode-format",
  "knode-service",
  "knode-sync",
+ "knode-vault",
  "rmcp",
  "serde",
  "serde_json",

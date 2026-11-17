@@ -13,7 +13,7 @@ use knode_vault::migration::{DELETED_REASON, FileStatus, MigrationReport};
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 17] = [
+pub const FROM: [&str; 18] = [
     "export",
     "markdown",
     "session",
@@ -31,6 +31,7 @@ pub const FROM: [&str; 17] = [
     "whatsapp",
     "telegram",
     "slack",
+    "claude-code-memory",
 ];
 
 /// How many nodes the summary lists one by one.
@@ -38,8 +39,8 @@ const LISTED: usize = 20;
 
 /// What `knode import` was asked for.
 pub struct Request<'a> {
-    /// A path, or an http(s) URL; none for `--from apple-notes`, `--from bear` or
-    /// `--from apple-mail`.
+    /// A path, or an http(s) URL; none for `--from apple-notes`, `--from bear`,
+    /// `--from apple-mail` or `--from claude-code-memory`.
     pub target: Option<&'a str>,
     /// The kind named with `--from`.
     pub from: Option<&'a str>,
@@ -112,6 +113,11 @@ pub fn run(space: &Path, request: Request<'_>, by: &Provenance) -> Result<()> {
             "--folder, --since, --until and --attachments are for mail: --from mbox or apple-mail"
         );
     }
+    // Claude Code's memory of this person, where their environment says, not the service's.
+    let path = match (&path, what.source()) {
+        (None, ImportSource::ClaudeCodeMemory) => Some(PathBuf::from(what.from())),
+        _ => path,
+    };
     // The token of this machine; without one, Knode Service reads its own.
     let token = if what.needs_readwise_token() {
         knode_service::readwise::token(request.home)?

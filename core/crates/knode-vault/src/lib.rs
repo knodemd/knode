@@ -111,6 +111,7 @@
 
 pub mod apps;
 mod attachments;
+pub mod claude_memory;
 mod compare;
 mod frontmatter;
 mod import;

@@ -167,6 +167,10 @@ struct OnboardingSheet: View {
     /// judgment with the person and runs the same commands this sheet runs.
     private var agentStart: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Connect your agents").font(KFont.ui(13, .semibold))
+            ConnectAgentsPanel()
+            KDivider()
+            Text("Or bring your notes in from an agent session you already have open").font(KFont.ui(13, .semibold))
             KExplanation("Your agent reads a guide that comes with Knode, looks at your folders and asks you only what needs your judgment: which notes are yours, which stay with their code, which projects keep their files. Then it imports them, connects itself and moves your instruction files to Knode, showing you each change first. Your files are never changed: Knode imports a copy.")
             HStack {
                 Text(source?.path(percentEncoded: false) ?? "No folder chosen: your agent will ask").font(KFont.mono(12)).lineLimit(2)
