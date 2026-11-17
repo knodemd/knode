@@ -27,6 +27,13 @@ const JUNK: &[&str] = &[
     "deleted items",
 ];
 
+/// Whether `folder` (a path such as `[Gmail]/Spam`) is spam or trash, by its last part.
+pub(crate) fn is_junk_folder(folder: &str) -> bool {
+    let folder = folder.to_lowercase();
+    let last = folder.rsplit('/').next().unwrap_or(&folder);
+    JUNK.contains(&last)
+}
+
 /// Where the bytes of a message are, to read its files again when they are attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origin {
@@ -509,9 +516,7 @@ impl<'a> Collector<'a> {
     }
 
     fn is_junk(&self, folder: &str) -> bool {
-        let folder = folder.to_lowercase();
-        let last = folder.rsplit('/').next().unwrap_or(&folder);
-        JUNK.contains(&last) && !self.wanted(&folder)
+        is_junk_folder(folder) && !self.wanted(&folder.to_lowercase())
     }
 
     /// Adds a message read.

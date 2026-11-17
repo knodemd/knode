@@ -223,6 +223,9 @@ fn write_thread(
         .ok_or(knode_format::Error::NotFound(node_id))?;
     let fresh = sections(&thread, &names, &linked);
     let (prefix, mut merged, end) = parse(&node.body);
+    if created {
+        report.added += fresh.len();
+    }
     for section in fresh {
         match merged.iter_mut().find(|s| s.id == section.id) {
             // Written again only while it is as Knode wrote it.
@@ -231,7 +234,10 @@ fn write_thread(
                 *old = Section { after, ..section };
             }
             Some(_) => {}
-            None => merged.push(section),
+            None => {
+                report.added += 1;
+                merged.push(section);
+            }
         }
     }
     merged.sort_by(|a, b| (a.date == UNDATED, &a.date).cmp(&(b.date == UNDATED, &b.date)));
