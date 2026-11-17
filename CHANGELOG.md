@@ -167,13 +167,13 @@ belongs to, newest first.
 
 #### Changed
 
-- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
-  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
-  saying how many tokens the onboarding used.
 - **`knode instructions --apply`** also says when the agent reads the file and what it reads with
   it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
   `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
   request and the project's rules come before memory.
+- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
+  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
+  saying how many tokens the onboarding used.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
@@ -192,6 +192,13 @@ belongs to, newest first.
 
 #### Fixed
 
+- **A new space no longer fills with every earlier agent conversation** as soon as `knode
+  connect` starts Knode Service. Capture into a space nobody has set up yet (no capture choice,
+  no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
+  it up, a folder is added or something is written into it. Capture stays on by default, and
+  spaces it already writes to are not affected. `knode spaces capture <space> on` is now kept as
+  your choice instead of being stored as the default, and turning capture on for a space where
+  it was off or waiting keeps conversations from then on, not earlier ones.
 - **Long conversations no longer bury short notes in search**: agent conversations, imported chats
   and imported mail threads are long transcripts that match a query's words and meaning in passing,
   and could come before the short note that answers it. Hybrid search now counts a transcript half,
