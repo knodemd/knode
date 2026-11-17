@@ -481,7 +481,9 @@ reciprocal rank fusion, as section 19 of the
 `{ "node", "snippet", "score", "word_rank", "meaning_rank" }`: the node summary, the text around
 the words found (matches in `**bold**`) or the start of its nearest passage, the fusion score
 (higher is better) and its place in the words and meaning lists, from 1, or `null` when it is
-not in one.
+not in one. In `hybrid`, the score of a transcript (a node of kind `conversation` or `chat`) is
+halved, so a long transcript that matches in passing comes after the short note that answers
+the query.
 
 Search by meaning runs on this machine, with a small embedding model
 (`multilingual-e5-small`, about 490 MB, around 100 languages). Nothing is sent anywhere:

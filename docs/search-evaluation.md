@@ -2,7 +2,8 @@
 
 Knode searches a space three ways: by words (SQLite FTS5), by meaning (the local
 multilingual-e5-small model with sqlite-vec) and hybrid, which fuses both lists with reciprocal
-rank fusion (`1 / (60 + rank)`, up to 50 results from each list). This page measures how well
+rank fusion (`1 / (60 + rank)`, up to 50 results from each list, transcripts counted half). This
+page measures how well
 each mode finds the right note.
 
 ## The set
@@ -68,6 +69,36 @@ for any kind of query:
   thousands of long notes. The numbers say how the modes compare, not how a given space will
   do.
 - The queries were written by the same author as the notes, which tends to favour them.
+
+## Long transcripts and short notes
+
+A space that captures agent conversations, or imports chats, holds long transcripts next to
+short notes. A transcript touches many topics in passing, so it matches the words of many
+queries, and by meaning it is as near as its nearest chunk: with dozens of chunks it has dozens
+of chances to have one near the query. Plain fusion rewards being in both lists, so a transcript
+that is second or third in each could come before the note that answers the query (#269). In a
+real space of 480 notes, 11 conversations and 88 agent memories, `cuenta cloudflare laaabs
+account id` put three conversations first; the memory note that answers it was first by words.
+
+Since #269, hybrid search multiplies the fusion score of a transcript (kind `conversation` or
+`chat`) by 0.5: found first both ways, it scores as a note found first one way only. Words and
+meaning alone rank as before.
+
+The case is a test,
+[`long_conversations_do_not_outrank_the_short_note_that_answers`](../core/crates/knode-format/tests/embeddings.rs):
+a short note answers `cloudflare laaabs account id`; four long conversations (40 turns each,
+several chunks) say those words once in passing, and each has one chunk nearer the query than
+the note.
+
+| Note | Word rank | Meaning rank | Hybrid place | Score of the note | Best conversation |
+|---|---|---|---|---|---|
+| before | 1 | 5 | 3 | 0.03178 | 0.03252 (2, 1) |
+| **after** | 1 | 5 | **1** | 0.03178 | 0.01626 (2, 1) |
+
+The sets above have no transcripts, so their scores do not change. A transcript still comes
+first when nothing else matches as well, and a long note that is not a transcript is ranked as
+before: BM25 already normalizes length for words, and the nearest-chunk rule of meaning still
+favours long nodes a little.
 
 ## Indexing a large space
 

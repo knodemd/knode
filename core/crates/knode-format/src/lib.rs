@@ -73,7 +73,8 @@ pub use chunking::{
 };
 pub use embeddings::{
     ChunkVector, DEFAULT_HYBRID_RESULTS, EmbeddingModel, EmbeddingModelSpec, HYBRID_LIST_SIZE,
-    HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, VectorHit, rrf_score,
+    HybridHit, HybridResults, NEAREST_CHUNKS, RRF_K, SearchMode, StaleNode, TRANSCRIPT_KINDS,
+    TRANSCRIPT_WEIGHT, VectorHit, rrf_score,
 };
 pub use error::{Error, Result};
 pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNode};
