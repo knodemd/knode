@@ -36,7 +36,8 @@
 //! Google Takeout, as a `.zip` or a folder, into the same `conversation` nodes.
 //!
 //! Chats between people come from the exports of the apps they were held in:
-//! [`import_chat_export`] reads a WhatsApp chat export into one `chat` node per chat, and
+//! [`import_chat_export`] reads a WhatsApp chat export, a Telegram Desktop export or a Slack
+//! workspace export into one `chat` node per chat, and
 //! [`whatsapp_mac`] brings in the chats of WhatsApp for Mac as they arrive, as the same nodes.
 //!
 //! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
@@ -70,8 +71,8 @@ pub use aider::HISTORY_FILE as AIDER_HISTORY_FILE;
 pub use capture::{Capture, CaptureError, CaptureReport, Captured, Destinations};
 pub use chats::whatsapp_mac;
 pub use chats::{
-    CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, detect_chat_export,
-    import_chat_export, keys as chat_keys,
+    CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, PERSON_KIND, detect_chat_export,
+    import_chat_export, keys as chat_keys, person_keys,
 };
 pub use discover::{
     AIDER_ROOT_VARIABLE, CLINE_ROOT_VARIABLE, CURSOR_ROOT_VARIABLE, ROO_CODE_ROOT_VARIABLE,

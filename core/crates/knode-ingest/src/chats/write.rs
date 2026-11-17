@@ -330,6 +330,10 @@ fn shown(media: &Media) -> Shown {
         Media::Missing { name } => Shown::Missing(name.clone()),
         Media::Omitted { what } => Shown::Omitted(what.clone()),
         Media::NotOnDevice { name } => Shown::NotOnDevice(name.clone()),
+        Media::Link { name, url } => Shown::Link {
+            name: name.clone(),
+            url: url.clone(),
+        },
     }
 }
 

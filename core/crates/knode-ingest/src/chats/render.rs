@@ -21,6 +21,8 @@ pub(crate) enum Shown {
     Omitted(String),
     /// Not on this device, read from an app's own database: its name or what it was.
     NotOnDevice(String),
+    /// Only a link to it.
+    Link { name: String, url: String },
 }
 
 /// The heading of a day section, without `## `.
@@ -80,7 +82,7 @@ pub(crate) fn message_markdown(message: &ChatMessage, shown: &[Shown]) -> String
     let time = message.time.format("%H:%M");
     let mut lines: Vec<String> = escape_blocks(&message.text)
         .lines()
-        .map(str::to_string)
+        .map(|l| l.trim_end().to_string())
         .collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
@@ -126,6 +128,11 @@ fn shown_markdown(shown: &Shown) -> String {
         Shown::Missing(name) => format!("*[missing from the export: {}]*", escape_name(name)),
         Shown::Omitted(what) => format!("*[{} left out of the export]*", escape_name(what)),
         Shown::NotOnDevice(name) => format!("*[not on this Mac: {}]*", escape_name(name)),
+        Shown::Link { name, url } => format!(
+            "[{}](<{}>) *(not in the export)*",
+            escape_name(name),
+            url.replace(['<', '>'], "")
+        ),
     }
 }
 
@@ -287,11 +294,16 @@ mod tests {
             Shown::Attached("plan.pdf".into()),
             Shown::Missing("voice.opus".into()),
             Shown::Omitted("media".into()),
+            Shown::Link {
+                name: "notes.txt".into(),
+                url: "https://example.com/f".into(),
+            },
         ];
         assert_eq!(
             message_markdown(&m, &shown),
             "**Ada** (09:05, replying to Grace at 09:00: \"Lunch?\"): ![[photo.jpg]]\n[[plan.pdf]]\n\
-             *[missing from the export: voice.opus]*\n*[media left out of the export]*"
+             *[missing from the export: voice.opus]*\n*[media left out of the export]*\n\
+             [notes.txt](<https://example.com/f>) *(not in the export)*"
         );
     }
 
@@ -308,6 +320,11 @@ mod tests {
             "**Ada\\_1** (09:05): \\## not a day\nline\n\\---\n```\n# code\n```"
         );
         assert_eq!(escape_text("see [[Plan]]"), "see \\[\\[Plan\\]\\]");
+        let m = message(4, 9, Some("Ada"), "a\n#tag stays\n#\n###### six");
+        assert_eq!(
+            message_markdown(&m, &[]),
+            "**Ada** (09:05): a\n#tag stays\n\\#\n\\###### six"
+        );
     }
 
     #[test]

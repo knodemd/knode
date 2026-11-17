@@ -3,6 +3,8 @@
 //! | Export | Format id | What it reads |
 //! | --- | --- | --- |
 //! | WhatsApp "Export chat" | `whatsapp` | The `.zip`, its folder, or the `.txt`: `_chat.txt` (iOS) or `WhatsApp Chat with <name>.txt` (Android), in every locale, with the media beside it |
+//! | Slack workspace export | `slack` | The `.zip` or its folder: `users.json`, `channels.json` (and `groups.json`, `mpims.json`, `dms.json`) and a folder of day files per conversation; threads become their own nodes, members `person` nodes |
+//! | Telegram Desktop, JSON | `telegram` | The folder with `result.json` (one chat, or the whole account), or a `.zip` of it, with the media beside it |
 //!
 //! Every chat becomes one node of kind [`CHAT_KIND`]: the messages grouped by day under
 //! `## YYYY-MM-DD` headings, each with its sender and time, and the files of the export
@@ -16,6 +18,8 @@
 mod files;
 mod model;
 mod render;
+mod slack;
+mod telegram;
 mod whatsapp;
 pub mod whatsapp_mac;
 mod write;
@@ -33,9 +37,14 @@ use write::ChatWriter;
 /// The kind of the node of a chat.
 pub const CHAT_KIND: &str = "chat";
 
+/// The kind of the node of a Slack member.
+pub const PERSON_KIND: &str = slack::PERSON_KIND;
+
+pub use slack::person_keys;
+
 /// The properties of a chat's node.
 pub mod keys {
-    /// The app: `whatsapp`.
+    /// The app: `whatsapp`, `telegram` or `slack`.
     pub const APP: &str = "chat.app";
     /// The chat's id in the app, or, for apps that have none, one made from its name.
     pub const ID: &str = "chat.id";
@@ -43,7 +52,7 @@ pub mod keys {
     /// (`<number>@s.whatsapp.net`, `<id>@g.us`). Exports carry none; a chat is found by its JID
     /// first and by [`ID`] when no node has it, and the JID is then stored on that node.
     pub const JID: &str = "chat.jid";
-    /// What the chat is: `personal` or `group`.
+    /// What the chat is: `personal`, `group`, `channel`, `private-channel` or `thread`.
     pub const TYPE: &str = "chat.type";
     /// Who wrote in it, separated by `, `.
     pub const PARTICIPANTS: &str = "chat.participants";
@@ -69,16 +78,26 @@ pub mod keys {
 pub enum ChatFormat {
     /// A WhatsApp chat export.
     WhatsApp,
+    /// A Telegram Desktop export, in JSON.
+    Telegram,
+    /// A Slack workspace export.
+    Slack,
 }
 
 impl ChatFormat {
     /// Every format.
-    pub const ALL: [ChatFormat; 1] = [ChatFormat::WhatsApp];
+    pub const ALL: [ChatFormat; 3] = [
+        ChatFormat::WhatsApp,
+        ChatFormat::Telegram,
+        ChatFormat::Slack,
+    ];
 
-    /// Its id: `whatsapp`.
+    /// Its id: `whatsapp`, `telegram` or `slack`.
     pub fn id(self) -> &'static str {
         match self {
             ChatFormat::WhatsApp => "whatsapp",
+            ChatFormat::Telegram => "telegram",
+            ChatFormat::Slack => "slack",
         }
     }
 }
@@ -87,6 +106,8 @@ impl fmt::Display for ChatFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ChatFormat::WhatsApp => "WhatsApp export",
+            ChatFormat::Telegram => "Telegram Desktop export",
+            ChatFormat::Slack => "Slack export",
         })
     }
 }
@@ -124,7 +145,11 @@ impl fmt::Display for ChatImportError {
             ChatImportError::Json { file, error } => write!(f, "{file} could not be read: {error}"),
             ChatImportError::NotRecognized { path, format } => match format {
                 Some(format) => write!(f, "{} is not a {format}", path.display()),
-                None => write!(f, "{} is not a WhatsApp chat export", path.display()),
+                None => write!(
+                    f,
+                    "{} is not a WhatsApp, Telegram Desktop or Slack chat export",
+                    path.display()
+                ),
             },
             ChatImportError::NoChatName(path) => write!(
                 f,
@@ -180,6 +205,8 @@ pub struct ChatImportReport {
     pub attached: usize,
     /// Files the chats name that are not in the export, or that it left out.
     pub missing: usize,
+    /// The `person` nodes created for the members of a Slack workspace.
+    pub people: Vec<Imported>,
     /// What could not be imported, such as a file too large to attach; the rest was.
     pub skipped: Vec<Skipped>,
     /// What else is worth knowing, such as dates that could be read two ways.
@@ -196,6 +223,7 @@ impl ChatImportReport {
             messages: 0,
             attached: 0,
             missing: 0,
+            people: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
         }
@@ -212,6 +240,18 @@ impl ChatImportReport {
 /// What is in an export, found.
 enum Located {
     WhatsApp(String),
+    Telegram(String),
+    Slack(String),
+}
+
+impl Located {
+    fn format(&self) -> ChatFormat {
+        match self {
+            Located::WhatsApp(_) => ChatFormat::WhatsApp,
+            Located::Telegram(_) => ChatFormat::Telegram,
+            Located::Slack(_) => ChatFormat::Slack,
+        }
+    }
 }
 
 fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
@@ -221,15 +261,23 @@ fn locate(files: &mut Files, format: Option<ChatFormat>) -> Option<Located> {
     {
         return Some(Located::WhatsApp(file));
     }
+    if wanted(ChatFormat::Telegram)
+        && let Some(file) = telegram::locate(files)
+    {
+        return Some(Located::Telegram(file));
+    }
+    if wanted(ChatFormat::Slack)
+        && let Some(dir) = slack::locate(files)
+    {
+        return Some(Located::Slack(dir));
+    }
     None
 }
 
 /// The kind of chat export at `path` (a `.zip`, a folder, or a chat's `.txt`), if it is one.
 pub fn detect_chat_export(path: impl AsRef<Path>) -> Option<ChatFormat> {
     let mut files = Files::open(path.as_ref()).ok()?;
-    locate(&mut files, None).map(|located| match located {
-        Located::WhatsApp(_) => ChatFormat::WhatsApp,
-    })
+    locate(&mut files, None).map(|located| located.format())
 }
 
 /// Imports the chats of an export into `space`, written by `by` with `path` as the source:
@@ -268,9 +316,7 @@ pub fn import_chat_export(
         _ => not_recognized(),
     })?;
     let located = locate(&mut files, format).ok_or_else(not_recognized)?;
-    let format = match located {
-        Located::WhatsApp(_) => ChatFormat::WhatsApp,
-    };
+    let format = located.format();
     let mut writer = ChatWriter {
         space,
         by: by.clone().with_source(path.to_string_lossy()),
@@ -297,6 +343,12 @@ pub fn import_chat_export(
                 }
             }
         }
+        Located::Telegram(file) => {
+            for chat in telegram::read(&mut files, &file)? {
+                writer.write(&chat, &mut files)?;
+            }
+        }
+        Located::Slack(dir) => slack::import(&mut files, &dir, &mut writer)?,
     }
     Ok(writer.report)
 }
