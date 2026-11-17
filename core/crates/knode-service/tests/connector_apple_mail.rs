@@ -1149,8 +1149,19 @@ fn the_service_brings_in_new_mail_when_mail_writes_its_index() {
             .unwrap()
             .last_run
     };
-    // Reading the copy does not wake the connector again.
-    let ran = last_run(&client);
+    // Reading the copy does not wake the connector again. Events for the writes above can
+    // still arrive late (Linux reports some after the first run), so wait until the runs
+    // settle before checking that no new one starts.
+    let mut ran = last_run(&client);
+    let settle = Instant::now();
+    loop {
+        thread::sleep(Duration::from_millis(1000));
+        let now = last_run(&client);
+        if now == ran || settle.elapsed() > Duration::from_secs(10) {
+            break;
+        }
+        ran = now;
+    }
     thread::sleep(Duration::from_millis(1500));
     assert_eq!(last_run(&client), ran);
     let space = Space::open(&space_path).unwrap();
