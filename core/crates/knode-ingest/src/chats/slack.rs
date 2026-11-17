@@ -420,10 +420,12 @@ fn write_conversation(
     }
     let mut threads = Vec::new();
     let mut writers: BTreeSet<String> = BTreeSet::new();
+    let mut started: BTreeSet<&str> = BTreeSet::new();
     for m in &messages {
         if m.thread_ts.as_ref().is_some_and(|t| t != &m.ts) {
             continue;
         }
+        started.insert(m.ts.as_str());
         let Some(mut message) = message(workspace, m, &name, files) else {
             continue;
         };
@@ -467,15 +469,69 @@ fn write_conversation(
     }
     channel.collect_participants();
 
-    let Some(channel_id) = writer.write(&channel, files)? else {
-        return Ok(());
-    };
-    relate(workspace, writer, &channel_id, &writers)?;
+    // Replies whose first message is not in the export, such as an export that starts after
+    // it: kept in their thread's node, which says its start is missing.
+    let mut orphans = 0;
+    for (thread_ts, thread_replies) in &replies {
+        if started.contains(thread_ts.as_str()) {
+            continue;
+        }
+        let Some(start) = time(thread_ts) else {
+            continue;
+        };
+        let thread_title = clean_title(&format!(
+            "{} - thread ({})",
+            channel.title,
+            start.format("%Y-%m-%d %H:%M")
+        ))
+        .replace('#', "");
+        let mut thread = Chat::new(
+            ChatFormat::Slack,
+            format!("{}/{thread_ts}", conversation.id),
+            thread_title,
+        );
+        thread.kind = "thread".into();
+        thread.messages.push(ChatMessage::new(
+            format!("start-{thread_ts}"),
+            mark(thread_ts),
+            start,
+            None,
+            "The message that started this thread is not in this export.",
+        ));
+        for reply in thread_replies {
+            if let Some(reply) = self::message(workspace, reply, &name, files) {
+                thread.messages.push(reply);
+                orphans += 1;
+            }
+        }
+        thread.collect_participants();
+        let thread_writers = thread_replies
+            .iter()
+            .filter_map(|r| r.user.clone())
+            .collect();
+        threads.push((thread, thread_writers));
+    }
+    if orphans > 0 {
+        writer.report.notes.push(format!(
+            "{}: {orphans} {} to threads that start before this export kept in the threads' nodes.",
+            channel.title,
+            if orphans == 1 { "reply" } else { "replies" }
+        ));
+    }
+
+    // Every thread is linked `part-of` its channel, also one first written by a later import,
+    // whose first message in the channel cannot say so any more.
+    let channel_id = writer.write(&channel, files)?;
+    if let Some(channel_id) = &channel_id {
+        relate(workspace, writer, channel_id, &writers)?;
+    }
     for (thread, thread_writers) in threads {
         if let Some(thread_id) = writer.write(&thread, files)? {
-            writer
-                .space
-                .link(&thread_id, &channel_id, link_kinds::PART_OF, &writer.by)?;
+            if let Some(channel_id) = &channel_id {
+                writer
+                    .space
+                    .link(&thread_id, channel_id, link_kinds::PART_OF, &writer.by)?;
+            }
             relate(workspace, writer, &thread_id, &thread_writers)?;
         }
     }
@@ -695,6 +751,10 @@ fn emphasis(text: &str) -> String {
     pairs(&text, '~', "~~")
 }
 
+/// The longest run of text read as one `*bold*`, `_italic_` or `~struck~`: the search for
+/// the closing marker stops there, and at the end of the line, so it stays linear in the text.
+const MAX_EMPHASIS: usize = 1000;
+
 fn pairs(text: &str, marker: char, markdown: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let edge = |c: Option<&char>| c.is_none_or(|c| !c.is_alphanumeric());
@@ -706,10 +766,11 @@ fn pairs(text: &str, marker: char, markdown: &str) -> String {
             && chars
                 .get(i + 1)
                 .is_some_and(|c| !c.is_whitespace() && *c != marker)
-            && let Some(close) = (i + 1..chars.len()).find(|&j| {
-                chars[j] == marker && !chars[j - 1].is_whitespace() && edge(chars.get(j + 1))
-            })
-            && !chars[i + 1..close].contains(&'\n')
+            && let Some(close) = (i + 1..chars.len().min(i + 1 + MAX_EMPHASIS))
+                .take_while(|&j| chars[j] != '\n')
+                .find(|&j| {
+                    chars[j] == marker && !chars[j - 1].is_whitespace() && edge(chars.get(j + 1))
+                })
         {
             out.push_str(markdown);
             out.extend(&chars[i + 1..close]);
@@ -771,6 +832,15 @@ mod tests {
             "Run `a *b*` then\n\n```\nx < y\n```\n\ndone"
         );
         assert_eq!(markdown(&w, "1 &lt; 2 [[x]]"), "1 < 2 \\[\\[x\\]\\]");
+    }
+
+    #[test]
+    fn emphasis_stays_linear() {
+        let many = "*a ".repeat(100_000);
+        let started = std::time::Instant::now();
+        assert_eq!(emphasis(&many), many);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(emphasis("*one\ntwo*"), "*one\ntwo*");
     }
 
     #[test]

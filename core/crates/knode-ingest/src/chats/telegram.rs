@@ -450,8 +450,14 @@ fn entity_markdown(e: &Entity) -> String {
             format!("{fence}{pad}{text}{pad}{fence}")
         }
         "pre" => {
-            let language = e.language.as_deref().unwrap_or("");
-            format!("\n```{language}\n{}\n```\n", text.trim_end_matches('\n'))
+            // A fence longer than any run of backticks in the code, so the code cannot end it.
+            let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+            let fence = "`".repeat((longest + 1).max(3));
+            let language = e.language.as_deref().unwrap_or("").replace(['`', '\n'], "");
+            format!(
+                "\n{fence}{language}\n{}\n{fence}\n",
+                text.trim_end_matches('\n')
+            )
         }
         "text_link" => match &e.href {
             Some(href) => format!(
@@ -499,6 +505,16 @@ mod tests {
         assert_eq!(
             entity_markdown(&entity("link", "example.com")),
             "example.com"
+        );
+        let mut pre = entity("pre", "a\n```\n## 2026-03-20");
+        pre.language = Some("md".into());
+        assert_eq!(
+            entity_markdown(&pre),
+            "\n````md\na\n```\n## 2026-03-20\n````\n"
+        );
+        assert_eq!(
+            entity_markdown(&entity("plain", "x\n## 2026-03-20")),
+            "x\n\\## 2026-03-20"
         );
         let mut link = entity("text_link", "the [plan]");
         link.href = Some("https://example.com/<p>".into());

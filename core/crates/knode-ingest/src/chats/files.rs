@@ -8,6 +8,11 @@ use std::path::Path;
 
 use crate::exports::source::Source;
 
+/// The most bytes read from one file of an export: a chat's text or JSON, or a file to attach
+/// (which the space then limits to 100 MB). A larger file, such as a `.zip` made to unpack to
+/// far more than it holds, fails with a clear error instead of filling the memory or the disk.
+pub(crate) const MAX_FILE_SIZE: u64 = 512 * 1024 * 1024;
+
 /// The files of an export, by their path inside it with `/` between folders.
 pub(crate) struct Files {
     source: Source,
@@ -68,19 +73,58 @@ impl Files {
         self.names.contains(name)
     }
 
-    /// A reader over one file.
+    /// A reader over one file, which fails past [`MAX_FILE_SIZE`] bytes.
     pub fn open_file(&mut self, name: &str) -> io::Result<Box<dyn Read + '_>> {
-        self.source.open_file(name)
+        let inner = self.source.open_file(name)?;
+        Ok(Box::new(Limited {
+            inner,
+            left: MAX_FILE_SIZE,
+            name: name.to_string(),
+        }))
     }
 
     /// One whole file, as text (invalid UTF-8 replaced).
     pub fn read_to_string(&mut self, name: &str) -> io::Result<String> {
-        self.source.read_to_string(name)
+        let mut bytes = Vec::new();
+        self.open_file(name)?.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// The first `max` bytes of one file.
     pub fn peek(&mut self, name: &str, max: u64) -> io::Result<Vec<u8>> {
         self.source.peek(name, max)
+    }
+}
+
+/// A reader that fails once it has given `left` bytes and there are more.
+struct Limited<R> {
+    inner: R,
+    left: u64,
+    name: String,
+}
+
+impl<R: Read> Read for Limited<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.left == 0 {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is larger than {} MB, the most Knode reads from one file of an export",
+                        self.name,
+                        MAX_FILE_SIZE / (1024 * 1024)
+                    ),
+                )),
+            };
+        }
+        let max = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..max])?;
+        self.left -= n as u64;
+        Ok(n)
     }
 }
 
@@ -112,4 +156,33 @@ pub(crate) fn stem(path: &Path) -> String {
     };
     name.map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stops_reading_past_the_limit() {
+        let mut ok = Limited {
+            inner: &b"abc"[..],
+            left: 3,
+            name: "a".into(),
+        };
+        let mut out = Vec::new();
+        ok.read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"abc");
+        let mut big = Limited {
+            inner: &b"abcd"[..],
+            left: 3,
+            name: "_chat.txt".into(),
+        };
+        let error = big.read_to_end(&mut Vec::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("_chat.txt is larger than 512 MB"),
+            "{error}"
+        );
+    }
 }

@@ -8,7 +8,7 @@ use knode_format::{ChangeOp, NewNode, NodeId, NodeUpdate, Properties, Provenance
 use super::files::Files;
 use super::model::{Chat, ChatMessage, Media};
 use super::render::{Shown, append};
-use super::{CHAT_KIND, ChatImportError, ChatImportReport, keys};
+use super::{CHAT_KIND, ChatFormat, ChatImportError, ChatImportReport, keys};
 use crate::exports::Imported;
 
 /// Writes chats into a space, counting what it does in a report.
@@ -27,8 +27,13 @@ struct Mark {
 impl ChatWriter<'_> {
     /// The node of a chat imported before.
     pub fn find(&self, chat: &Chat) -> Result<Option<NodeId>, ChatImportError> {
-        for summary in self.space.find_by_property(keys::ID, &chat.id)? {
-            if self.space.property(&summary.id, keys::APP)?.as_deref() == Some(chat.app.id()) {
+        self.find_id(chat.app, &chat.id)
+    }
+
+    /// The node of the chat `id` of `app` imported before.
+    pub fn find_id(&self, app: ChatFormat, id: &str) -> Result<Option<NodeId>, ChatImportError> {
+        for summary in self.space.find_by_property(keys::ID, id)? {
+            if self.space.property(&summary.id, keys::APP)?.as_deref() == Some(app.id()) {
                 return Ok(Some(summary.id));
             }
         }
@@ -73,7 +78,31 @@ impl ChatWriter<'_> {
             self.report.chats.push(imported(id, ChangeOp::Create));
             return Ok(Some(id));
         };
+        // Messages before where the last import stopped are not added: most were imported then.
+        // Those beyond the count imported then were not, and are reported.
+        let before = chat.messages.len() - new.len();
+        let imported_before = self
+            .space
+            .property(&id, keys::MESSAGES)?
+            .and_then(|n| n.parse::<usize>().ok())
+            .unwrap_or(0);
+        if before > imported_before {
+            let n = before - imported_before;
+            self.report.skip(
+                chat.title.clone(),
+                format!(
+                    "{n} {} older than the last one imported {} not added",
+                    if n == 1 { "message" } else { "messages" },
+                    if n == 1 { "was" } else { "were" }
+                ),
+            );
+        }
         if new.is_empty() {
+            for (key, value) in &chat.properties {
+                if self.space.property(&id, key)?.as_deref() != Some(value.as_str()) {
+                    self.space.set_property(&id, key, value, &self.by)?;
+                }
+            }
             self.report.unchanged += 1;
             return Ok(Some(id));
         }
@@ -95,12 +124,7 @@ impl ChatWriter<'_> {
             },
             &self.by,
         )?;
-        let total = self
-            .space
-            .property(&id, keys::MESSAGES)?
-            .and_then(|n| n.parse::<usize>().ok())
-            .unwrap_or(0)
-            + new.len();
+        let total = imported_before + new.len();
         let started = self.space.property(&id, keys::STARTED_AT)?;
         let props = properties(chat, &new, mark.as_ref(), total, started);
         self.space.set_properties(&id, &props, &self.by)?;
@@ -354,6 +378,7 @@ fn properties(
         );
     }
     props.insert(keys::MESSAGES.into(), total.to_string());
+    props.extend(chat.properties.clone());
     props
 }
 

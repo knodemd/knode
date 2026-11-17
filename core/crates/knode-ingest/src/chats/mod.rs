@@ -62,6 +62,9 @@ pub mod keys {
     pub const LAST: &str = "chat.last";
     /// The messages at that position, so one more there is still added.
     pub const LAST_KEYS: &str = "chat.last_keys";
+    /// How a WhatsApp chat's dates were read: `day-month` or `month-day`. Kept from the first
+    /// import, so later exports of the chat read their dates the same way.
+    pub const DATE_ORDER: &str = "chat.date_order";
 }
 
 /// The kind of a chat export.
@@ -124,6 +127,8 @@ pub enum ChatImportError {
         /// The format asked for, if one was.
         format: Option<ChatFormat>,
     },
+    /// The export does not say the chat's name, which finds it again.
+    NoChatName(PathBuf),
     /// The space could not be written.
     Space(knode_format::Error),
 }
@@ -141,6 +146,13 @@ impl fmt::Display for ChatImportError {
                     path.display()
                 ),
             },
+            ChatImportError::NoChatName(path) => write!(
+                f,
+                "{}: the chat's name is not in the export's file names, and Knode finds a chat \
+                 again by its name. Import the .zip as WhatsApp named it (WhatsApp Chat - \
+                 <name>.zip), or put _chat.txt in a folder named so",
+                path.display()
+            ),
             ChatImportError::Space(error) => {
                 write!(f, "the import could not write the space: {error}")
             }
@@ -153,7 +165,7 @@ impl std::error::Error for ChatImportError {
         match self {
             ChatImportError::Io(error) => Some(error),
             ChatImportError::Json { error, .. } => Some(error),
-            ChatImportError::NotRecognized { .. } => None,
+            ChatImportError::NotRecognized { .. } | ChatImportError::NoChatName(_) => None,
             ChatImportError::Space(error) => Some(error),
         }
     }
@@ -192,6 +204,8 @@ pub struct ChatImportReport {
     pub people: Vec<Imported>,
     /// What could not be imported, such as a file too large to attach; the rest was.
     pub skipped: Vec<Skipped>,
+    /// What else is worth knowing, such as dates that could be read two ways.
+    pub notes: Vec<String>,
 }
 
 impl ChatImportReport {
@@ -206,6 +220,7 @@ impl ChatImportReport {
             missing: 0,
             people: Vec::new(),
             skipped: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -304,8 +319,24 @@ pub fn import_chat_export(
     };
     match located {
         Located::WhatsApp(file) => {
-            let chat = whatsapp::read(&mut files, path, &file)?;
-            writer.write(&chat, &mut files)?;
+            let name = whatsapp::name(&files, path, &file)
+                .ok_or_else(|| ChatImportError::NoChatName(path.to_path_buf()))?;
+            let stored = match writer.find_id(ChatFormat::WhatsApp, &name.to_lowercase())? {
+                Some(id) => writer.space.property(&id, keys::DATE_ORDER)?,
+                None => None,
+            };
+            match whatsapp::read(&mut files, &file, &name, stored.as_deref())? {
+                Ok(read) => {
+                    for (item, reason) in read.skipped {
+                        writer.report.skip(item, reason);
+                    }
+                    writer.report.notes.extend(read.note);
+                    writer.write(&read.chat, &mut files)?;
+                }
+                Err(conflict) => {
+                    writer.report.skip(format!("WhatsApp - {name}"), conflict.0);
+                }
+            }
         }
         Located::Telegram(file) => {
             for chat in telegram::read(&mut files, &file)? {

@@ -30,10 +30,25 @@ pub(crate) fn day_heading(message: &ChatMessage) -> String {
 
 /// The day of the last day section in `body`, if any.
 fn last_day(body: &str) -> Option<&str> {
-    body.lines()
-        .rev()
-        .find_map(|line| line.strip_prefix("## "))
-        .map(str::trim)
+    let mut fence = None;
+    let mut day = None;
+    for line in body.lines() {
+        match fence {
+            Some(open) => {
+                if closes(line, open) {
+                    fence = None;
+                }
+            }
+            None => {
+                if let Some(open) = opens(line) {
+                    fence = Some(open);
+                } else if let Some(heading) = line.strip_prefix("## ") {
+                    day = Some(heading.trim());
+                }
+            }
+        }
+    }
+    day
 }
 
 /// `body` with `messages` (and how their files are shown) added at the end: a message of the
@@ -137,35 +152,39 @@ pub(crate) fn escape_name(name: &str) -> String {
 }
 
 /// Plain text from a chat, ready to go into Markdown: `[[` and `]]`, which would link to
-/// nodes, are escaped. The text keeps its other characters as written.
+/// nodes, are escaped, and so is the start of every line Markdown would read as a block of its
+/// own (a heading, a fence, a rule or the underline of a heading). The text keeps its other
+/// characters as written.
 pub(crate) fn escape_text(text: &str) -> String {
-    text.replace("[[", "\\[\\[").replace("]]", "\\]\\]")
-}
-
-/// Lines of a message that Markdown would read as headings (`# title`, or a line of `=` or
-/// `-` under text) escaped, outside fenced code, so a message never starts a section.
-fn escape_blocks(text: &str) -> String {
+    let text = text.replace("[[", "\\[\\[").replace("]]", "\\]\\]");
     let mut out = String::with_capacity(text.len());
-    let mut fence: Option<&str> = None;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(open) = fence {
-            if trimmed.starts_with(open) {
-                fence = None;
-            }
-        } else if trimmed.starts_with("```") {
-            fence = Some("```");
-        } else if trimmed.starts_with("~~~") {
-            fence = Some("~~~");
-        } else if is_heading(trimmed)
-            || (!trimmed.is_empty() && trimmed.chars().all(|c| matches!(c, '=' | '-' | ' ')))
-        {
-            out.push('\\');
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
         }
-        out.push_str(line);
-        out.push('\n');
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if indent <= 3 && starts_block(&line[indent..]) {
+            out.push_str(&line[..indent]);
+            out.push('\\');
+            out.push_str(&line[indent..]);
+        } else {
+            out.push_str(line);
+        }
     }
     out
+}
+
+/// Whether a line, without its indent, starts a block: a heading, a fence, or a line of only
+/// `-`, `=`, `*` or `_` (a rule, or the underline that makes the line before a heading).
+fn starts_block(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    is_heading(trimmed)
+        || trimmed.starts_with("```")
+        || trimmed.starts_with("~~~")
+        || (!trimmed.is_empty()
+            && ["-", "=", "*", "_"].iter().any(|c| {
+                trimmed.starts_with(c) && trimmed.chars().all(|x| x == ' ' || c.starts_with(x))
+            }))
 }
 
 /// Whether a line is an ATX heading: one to six `#`, then a space or nothing.
@@ -176,6 +195,59 @@ fn is_heading(line: &str) -> bool {
             .chars()
             .next()
             .is_none_or(char::is_whitespace)
+}
+
+/// The fence a line opens: its character and length. A fence of backticks cannot have one in
+/// its info string, so ```` ```code``` ```` is not one.
+fn opens(line: &str) -> Option<(char, usize)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let line = &line[indent..];
+    let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = line.chars().take_while(|x| *x == c).count();
+    (n >= 3 && (c == '~' || !line[n..].contains('`'))).then_some((c, n))
+}
+
+/// Whether a line closes the fence `open`.
+fn closes(line: &str, (c, n): (char, usize)) -> bool {
+    let trimmed = line.trim();
+    let run = trimmed.chars().take_while(|x| *x == c).count();
+    run >= n && trimmed.chars().all(|x| x == c) && line.len() - line.trim_start().len() <= 3
+}
+
+/// The lines of a message escaped so that none starts a section or a block outside the fenced
+/// code an importer wrote, and a fence left open closed, so a message never reaches the next.
+fn escape_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.lines() {
+        match fence {
+            Some(open) => {
+                if closes(line, open) {
+                    fence = None;
+                }
+            }
+            None => {
+                if let Some(open) = opens(line) {
+                    fence = Some(open);
+                } else {
+                    let indent = line.len() - line.trim_start_matches(' ').len();
+                    if indent <= 3 && starts_block(&line[indent..]) {
+                        out.push('\\');
+                    }
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some((c, n)) = fence {
+        out.extend(std::iter::repeat_n(c, n));
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -250,5 +322,36 @@ mod tests {
             message_markdown(&m, &[]),
             "**Ada** (09:05): a\n#tag stays\n\\#\n\\###### six"
         );
+    }
+
+    #[test]
+    fn text_never_starts_a_block() {
+        assert_eq!(
+            escape_text("```mono```\n## 2026-03-20\n---\n***\n  # h\n#tag\n=\n    # code"),
+            "\\```mono```\n\\## 2026-03-20\n\\---\n\\***\n  \\# h\n#tag\n\\=\n    # code"
+        );
+        // Inline code is not a fence: the day after it is still escaped.
+        let m = message(
+            4,
+            9,
+            Some("Ada"),
+            &escape_text("```mono```\n## 2026-03-20\nok"),
+        );
+        let body = append("", &[(&m, vec![])]);
+        assert!(!body.contains("\n## 2026-03-20"), "{body}");
+        assert_eq!(last_day(&body), Some("2026-03-04"));
+        // A fence left open is closed with the message.
+        let m = message(4, 9, Some("Ada"), "see\n```\ncode");
+        let body = append("", &[(&m, vec![])]);
+        assert!(body.ends_with("```\ncode\n```\n"), "{body}");
+    }
+
+    #[test]
+    fn the_last_day_is_outside_code() {
+        let body = "## 2026-03-04\n\n**A** (09:00): x\n```\n## 2026-03-09\n```\n";
+        assert_eq!(last_day(body), Some("2026-03-04"));
+        let later = message(4, 10, Some("B"), "y");
+        let more = append(body, &[(&later, vec![])]);
+        assert_eq!(more.matches("## 2026-03-04").count(), 1, "{more}");
     }
 }

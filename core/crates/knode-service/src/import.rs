@@ -831,6 +831,7 @@ fn chats(
     for s in &report.skipped {
         result.skip(s.item.clone(), s.reason.clone());
     }
+    result.notes.extend(report.notes.iter().cloned());
     if report.messages > 0 {
         result
             .notes
@@ -861,9 +862,8 @@ fn chats(
 fn chat_error(error: knode_ingest::ChatImportError) -> ImportError {
     match error {
         knode_ingest::ChatImportError::Space(error) => ImportError::Space(error),
-        e @ knode_ingest::ChatImportError::NotRecognized { .. } => {
-            ImportError::Unknown(e.to_string())
-        }
+        e @ (knode_ingest::ChatImportError::NotRecognized { .. }
+        | knode_ingest::ChatImportError::NoChatName(_)) => ImportError::Unknown(e.to_string()),
         other => ImportError::Unreadable(other.to_string()),
     }
 }
