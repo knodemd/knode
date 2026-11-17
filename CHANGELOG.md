@@ -86,6 +86,8 @@ belongs to, newest first.
 
 #### Changed
 
+- **Guided import report**: links to documents you left out in review are counted apart as
+  expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
   "Imported memory" for every import; the name stays editable.
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,

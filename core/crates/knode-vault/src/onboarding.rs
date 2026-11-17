@@ -86,8 +86,13 @@ pub struct Receipt {
     pub import: ImportReport,
     /// Generated context note IDs, keyed by reviewed project name.
     pub contexts: BTreeMap<String, String>,
-    /// Unresolved links after import, keyed by source path/title.
+    /// Unresolved links after import, keyed by source path/title: links that found no note and
+    /// do not name a document left out in review.
     pub unresolved: BTreeMap<String, Vec<String>>,
+    /// Links to documents the reviewed plan left out, keyed like `unresolved`: expected, not
+    /// problems, since the person chose to leave those documents out.
+    #[serde(default)]
+    pub left_out: BTreeMap<String, Vec<String>>,
     /// Source attachment references normalized to node-local names or blob URLs.
     #[serde(default)]
     pub attachment_links: Vec<AttachmentLink>,
@@ -649,6 +654,31 @@ pub fn analyze(source: Option<&Path>, mode: Mode) -> Result<Plan> {
     plan.warnings = notices;
     Ok(plan)
 }
+/// A path or link target as compared with left-out documents: lowercase, without `.md`, a
+/// leading `./` or `../` steps, or a `#heading`.
+fn link_key(target: &str) -> String {
+    let mut key = target
+        .split('#')
+        .next()
+        .unwrap_or(target)
+        .trim()
+        .to_lowercase();
+    while let Some(rest) = key.strip_prefix("../").or_else(|| key.strip_prefix("./")) {
+        key = rest.to_owned();
+    }
+    key.strip_suffix(".md").map(str::to_owned).unwrap_or(key)
+}
+
+/// Whether an unresolved link names a document the plan left out: by its whole path, an ending of
+/// it, or its file name.
+fn names_left_out(target: &str, skipped: &[String]) -> bool {
+    let wanted = link_key(target);
+    !wanted.is_empty()
+        && skipped
+            .iter()
+            .any(|path| *path == wanted || path.ends_with(&format!("/{wanted}")))
+}
+
 /// Groups with the same suggested name would merge on import, since equal names merge on
 /// purpose: tell them apart by their parent folder instead.
 fn unique_names(groups: BTreeMap<String, String>) -> Vec<Group> {
@@ -988,15 +1018,28 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
         .into_iter()
         .map(|(name, id)| (name, id.to_string()))
         .collect();
+    let skipped: Vec<String> = plan
+        .documents
+        .iter()
+        .filter(|d| !d.include)
+        .map(|d| link_key(&d.path))
+        .collect();
+    let mut left_out = BTreeMap::new();
     for node in nodes {
         let pending = space.unresolved_links(&node.id)?;
         if !pending.is_empty() {
-            unresolved.insert(
-                space
-                    .property(&node.id, crate::property_keys::PATH)?
-                    .unwrap_or(node.title),
-                pending,
-            );
+            let key = space
+                .property(&node.id, crate::property_keys::PATH)?
+                .unwrap_or(node.title);
+            let (expected, missing): (Vec<_>, Vec<_>) = pending
+                .into_iter()
+                .partition(|target| names_left_out(target, &skipped));
+            if !missing.is_empty() {
+                unresolved.insert(key.clone(), missing);
+            }
+            if !expected.is_empty() {
+                left_out.insert(key, expected);
+            }
         }
     }
     let receipt = Receipt {
@@ -1006,6 +1049,7 @@ pub fn apply(plan: &Plan, destination: &Path, name: &str, by: &Provenance) -> Re
         import,
         contexts,
         unresolved,
+        left_out,
         attachment_links,
     };
     fs::write(
@@ -1182,7 +1226,11 @@ mod tests {
         fs::create_dir_all(root.join("A")).unwrap();
         fs::create_dir_all(root.join("B")).unwrap();
         fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
-        fs::write(root.join("A/Plan.md"), "See [[Other]].").unwrap();
+        fs::write(
+            root.join("A/Plan.md"),
+            "See [[Other]], [[../Skip.md]] and [[Nowhere]].",
+        )
+        .unwrap();
         fs::write(root.join("B/Other.md"), "original").unwrap();
         fs::write(root.join("Skip.md"), "excluded").unwrap();
         fs::write(root.join("node_modules/pkg/README.md"), "dependency").unwrap();
@@ -1199,6 +1247,10 @@ mod tests {
         let dest = dir.path().join("Work.knode");
         let receipt = apply(&plan, &dest, "Work", &Provenance::person("Tester")).unwrap();
         assert_eq!(receipt.contexts.len(), 1);
+        // A link to a document left out in review is expected; one to nothing is reported.
+        // Relative links wait under the path they name (format, relative links): `Skip`.
+        assert_eq!(receipt.left_out["A/Plan.md"], ["Skip"]);
+        assert_eq!(receipt.unresolved["A/Plan.md"], ["Nowhere"]);
         let space = Space::open(&dest).unwrap();
         assert_eq!(space.node_count().unwrap(), 3);
         assert_eq!(

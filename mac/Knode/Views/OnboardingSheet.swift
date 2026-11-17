@@ -51,6 +51,8 @@ private struct ImportResult: Decodable {
     var destination: String
     var contexts: [String: String]
     var unresolved: [String: [String]]
+    /// Links to documents left out in review: expected, shown as a count.
+    var leftOut: [String: [String]]?
     var report: Report
     var plan: ImportPlan
     var conversations: BroughtSessions?
@@ -61,7 +63,7 @@ private struct ImportResult: Decodable {
         var unlinked: [Skipped]
     }
     struct Skipped: Decodable { var path: String; var reason: String }
-    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan, conversations; case report = "import"; case conversationsError = "conversations_error" }
+    enum CodingKeys: String, CodingKey { case destination, contexts, unresolved, plan, conversations; case leftOut = "left_out"; case report = "import"; case conversationsError = "conversations_error" }
 }
 
 struct OnboardingSheet: View {
@@ -329,6 +331,10 @@ struct OnboardingSheet: View {
                 if let message = result.conversationsError {
                     KErrorText(message).textSelection(.enabled)
                     KButton("Try bringing conversations again", icon: .chat, size: .small) { Task { await retrySessions() } }
+                }
+                if let leftOut = result.leftOut, !leftOut.isEmpty {
+                    let count = leftOut.values.reduce(0) { $0 + $1.count }
+                    KExplanation("\(count) \(count == 1 ? "link points" : "links point") to documents you left out. That is expected: they stay as written.")
                 }
                 if !result.unresolved.isEmpty || !result.report.attachments.isEmpty || !result.report.unlinked.isEmpty {
                     ScrollView {
