@@ -10,6 +10,22 @@ No version is released yet. Everything below is on `main`, so the first release 
 It is grouped by the version of the [roadmap](https://knode.md/handbook/roadmap) each change
 belongs to, newest first.
 
+### v0.4 - Capture life (in progress)
+
+#### Added
+
+- **Sources**: one list of everything that brings things into a space, the importers you run once
+  and the connectors that keep bringing in what is new. A connector is off until you connect it
+  to a space, choosing to bring in what happens from today on (the default) or everything it
+  has; you can pause it, exclude chats, channels or folders it will never read again, or
+  disconnect it, and what it brought in stays. Knode Service runs the connected ones when their
+  files change or every few minutes, picks up where it stopped after a restart without writing
+  anything twice, waits longer after each error, and stops and says so when another app's
+  database changed instead of writing wrong data. `knode sources` lists the sources of a space
+  with when each last ran, how much it brought in and its last error, and connects, pauses,
+  resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
+  keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+
 ### v0.3 - Map and import (in progress)
 
 #### Added

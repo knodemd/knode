@@ -194,6 +194,10 @@ pub struct Config {
     /// On when left out. See [`Config::embeddings_enabled`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeddings: Option<String>,
+    /// Whether Knode Service runs the connectors switched on in the spaces (WhatsApp, Mail,
+    /// Telegram...). On when left out. See [`Config::sources_enabled`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sources: Option<bool>,
     /// Keys written by newer versions, kept as they are.
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -203,6 +207,13 @@ impl Config {
     /// Whether conversations are captured: `capture` in `config.toml`, on by default.
     pub fn capture_enabled(&self) -> bool {
         self.capture.unwrap_or(true)
+    }
+
+    /// Whether connectors run: `sources` in `config.toml`, on by default, and only while
+    /// `capture` is on too, so `capture = false` stops everything Knode Service brings in by
+    /// itself.
+    pub fn sources_enabled(&self) -> bool {
+        self.sources.unwrap_or(true) && self.capture_enabled()
     }
 
     /// Whether search by meaning is on: `embeddings` in `config.toml`, on unless it is `"off"`.
