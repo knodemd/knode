@@ -309,3 +309,70 @@ fn imports_a_chat_and_only_its_new_messages_again() {
         node.body
     );
 }
+
+#[test]
+fn a_vault_import_writes_a_report_and_an_export_compares_with_the_vault() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let vault = sb.path("Vault");
+    let put = |rel: &str, bytes: &[u8]| {
+        let path = vault.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    };
+    put(
+        "Welcome.md",
+        b"See [[Plan]], [[Missing]] and ![[shared.png]].\n",
+    );
+    put("Projects/Plan.md", b"---\ntags: [project]\n---\nShip.\n");
+    put("assets/shared.png", &[1, 2, 3]);
+    put(".obsidian/app.json", b"{}");
+
+    // Not for anything but a folder.
+    let file = vault.join("Welcome.md");
+    let err = sb.fails(&["import", s(&file), "--report", "r.json"]);
+    assert!(err.contains("--report is for a folder"), "{err}");
+
+    let report_file = sb.path("report.json");
+    let out = sb.ok(&["import", "--vault", s(&vault), "--report", s(&report_file)]);
+    assert!(out.contains("Report: 2 new, 0 updated"), "{out}");
+    assert!(
+        out.contains("unresolved link in Welcome.md: [[Missing]]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("missing attachment in Welcome.md: shared.png"),
+        "{out}"
+    );
+    let report: Value = serde_json::from_str(&fs::read_to_string(&report_file).unwrap()).unwrap();
+    assert_eq!(report["version"], 1);
+    assert_eq!(report["counts"]["created"], 2);
+    let files = report["files"].as_array().unwrap();
+    let welcome = files.iter().find(|f| f["path"] == "Welcome.md").unwrap();
+    assert_eq!(welcome["status"], "created");
+    assert_eq!(welcome["node"].as_str().unwrap().len(), 26);
+    let obsidian = files.iter().find(|f| f["path"] == ".obsidian").unwrap();
+    assert_eq!(obsidian["status"], "skipped");
+
+    // The report is in --json too.
+    let json: Value = serde_json::from_str(&sb.ok(&["import", s(&vault), "--json"])).unwrap();
+    assert_eq!(json["report"]["counts"]["unchanged"], 2);
+
+    // Export and compare: the notes keep their text, with an id added.
+    let out_dir = sb.path("Export");
+    let out = sb.ok(&["export", s(&out_dir), "--compare", s(&vault)]);
+    assert!(
+        out.contains("0 identical, 2 with only frontmatter changes, 0 changed, 0 moved, 1 missing"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Frontmatter keys that differ: id (2)."),
+        "{out}"
+    );
+    assert!(out.contains("missing: assets/shared.png"), "{out}");
+    assert!(out.contains("not imported: .obsidian"), "{out}");
+    let json: Value =
+        serde_json::from_str(&sb.ok(&["export", s(&out_dir), "--compare", s(&vault), "--json"]))
+            .unwrap();
+    assert_eq!(json["counts"]["metadata"], 2);
+}

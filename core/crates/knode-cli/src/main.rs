@@ -104,6 +104,11 @@ enum Command {
         /// Rehearse a Markdown-folder import locally without changing a destination space.
         #[arg(long)]
         preview: bool,
+        /// Folder of Markdown files: also write the migration report, as JSON, to this file
+        /// (where each file went, what was left out and why, links and attachments that did not
+        /// come through).
+        #[arg(long, value_name = "FILE", conflicts_with = "preview")]
+        report: Option<PathBuf>,
         /// Mail: only this folder, a Gmail label or an Apple Mail mailbox. Repeat for more.
         #[arg(long, value_name = "NAME", visible_aliases = ["label", "mailbox"])]
         folder: Vec<String>,
@@ -159,6 +164,13 @@ enum Command {
     Export {
         /// The folder; created if needed. Files Knode did not write are never touched.
         dir: PathBuf,
+        /// Then compare the export with this folder, the one imported (such as an Obsidian
+        /// vault), and list what differs. Changes neither folder.
+        #[arg(long, value_name = "SOURCE")]
+        compare: Option<PathBuf>,
+        /// With --compare: print the comparison as JSON.
+        #[arg(long, requires = "compare")]
+        json: bool,
     },
     /// Show the latest changes to the space, or the history of one node.
     History {
@@ -314,6 +326,7 @@ fn run(cli: Cli) -> Result<()> {
             vault,
             json,
             preview,
+            report,
             folder,
             since,
             until,
@@ -332,6 +345,7 @@ fn run(cli: Cli) -> Result<()> {
                 json,
                 home: &paths.home,
                 mail,
+                report: report.as_deref(),
             };
             import::run(&space, request, &person())
         }
@@ -356,9 +370,9 @@ fn run(cli: Cli) -> Result<()> {
             let space = existing_space(&paths, cli.space.as_deref())?;
             maps::attachments(service::backend(&space)?.as_ref(), &node, json)
         }
-        Command::Export { dir } => {
+        Command::Export { dir, compare, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
-            markdown::export(&absolute(&space)?, &dir)
+            markdown::export(&absolute(&space)?, &dir, compare.as_deref(), json)
         }
         Command::History { node, limit, json } => {
             let space = existing_space(&paths, cli.space.as_deref())?;

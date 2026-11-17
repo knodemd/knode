@@ -248,6 +248,10 @@ pub struct ImportResult {
     /// What else is worth knowing: what was left out or read only in part.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// For a folder of Markdown files, such as an Obsidian vault: where each file went, what was
+    /// left out and why, and the links and attachments that did not come through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<knode_vault::migration::MigrationReport>,
 }
 
 impl ImportResult {
@@ -265,6 +269,7 @@ impl ImportResult {
             nodes: Vec::new(),
             skipped: Vec::new(),
             notes: Vec::new(),
+            report: None,
         }
     }
 
@@ -813,11 +818,15 @@ pub fn run(
         }
         Input::MarkdownFolder(dir) => {
             let report = knode_vault::import(space, dir, by).map_err(vault_error)?;
+            let id = |file: &String| report.nodes.get(file).copied();
             for file in &report.created {
-                result.node(None, file.clone(), ImportOutcome::Created);
+                result.node(id(file), file.clone(), ImportOutcome::Created);
             }
             for file in &report.updated {
-                result.node(None, file.clone(), ImportOutcome::Updated);
+                result.node(id(file), file.clone(), ImportOutcome::Updated);
+            }
+            for file in &report.edited {
+                result.node(id(file), file.clone(), ImportOutcome::Edited);
             }
             result.unchanged += report.unchanged;
             result.attached = report.attached.len();
@@ -832,7 +841,10 @@ pub fn run(
                     if n == 1 { "is" } else { "are" }
                 ));
             }
+            result.report =
+                Some(knode_vault::migration::report(space, dir, &report).map_err(vault_error)?);
             if report.created.len() + report.updated.len() + report.unchanged == 0
+                && report.edited.is_empty()
                 && report.skipped.is_empty()
             {
                 return Err(ImportError::Unknown(format!(

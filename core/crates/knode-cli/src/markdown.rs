@@ -10,8 +10,21 @@ use knode_vault::ExportReport;
 
 use crate::service;
 
-/// Writes the space to `dir` as Markdown files.
-pub fn export(space: &Path, dir: &Path) -> Result<()> {
+/// How many differences of each kind `--compare` lists one by one.
+const LISTED: usize = 20;
+
+/// Writes the space to `dir` as Markdown files, then compares them with `compare`, the folder
+/// that was imported, when given.
+pub fn export(space: &Path, dir: &Path, compare: Option<&Path>, json: bool) -> Result<()> {
+    let source = compare.map(crate::absolute).transpose()?;
+    if let Some(source) = &source
+        && !source.is_dir()
+    {
+        bail!(
+            "{} is not a folder: --compare takes the folder that was imported",
+            source.display()
+        );
+    }
     let dir = crate::absolute(dir)?;
     if dir.starts_with(space) {
         bail!(
@@ -23,7 +36,7 @@ pub fn export(space: &Path, dir: &Path) -> Result<()> {
         Some(client) => client.export_markdown(space, &dir)?,
         None => knode_vault::export(&Space::open(space)?, &dir)?,
     };
-    println!(
+    let summary = format!(
         "Exported {} to {}: {} written, {} unchanged, {} removed.",
         plural(report.files, "note"),
         dir.display(),
@@ -31,7 +44,95 @@ pub fn export(space: &Path, dir: &Path) -> Result<()> {
         report.unchanged,
         report.removed.len()
     );
+    let Some(source) = source else {
+        println!("{summary}");
+        return Ok(());
+    };
+    let comparison = knode_vault::compare(&source, &dir)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&comparison)?);
+    } else {
+        println!("{summary}");
+        print_comparison(&comparison);
+    }
     Ok(())
+}
+
+/// Prints what differs between the imported folder and the export.
+fn print_comparison(c: &knode_vault::Comparison) {
+    use knode_vault::Difference;
+    let n = &c.counts;
+    println!(
+        "Compared with {}: {} identical, {} with only frontmatter changes, {} changed, {} moved, {} missing; {} only in the export; {} not imported.",
+        c.source.display(),
+        n.identical,
+        n.metadata,
+        n.changed,
+        n.moved,
+        n.missing,
+        n.added,
+        n.excluded
+    );
+    let mut metadata_keys = std::collections::BTreeMap::<String, usize>::new();
+    for note in c
+        .notes
+        .iter()
+        .filter(|n| n.difference == Difference::Metadata)
+    {
+        for key in note
+            .added_keys
+            .iter()
+            .chain(&note.removed_keys)
+            .chain(&note.changed_keys)
+        {
+            *metadata_keys.entry(key.clone()).or_default() += 1;
+        }
+    }
+    if !metadata_keys.is_empty() {
+        let keys: Vec<String> = metadata_keys
+            .iter()
+            .map(|(k, n)| format!("{k} ({n})"))
+            .collect();
+        println!("  Frontmatter keys that differ: {}.", keys.join(", "));
+    }
+    let listed: Vec<String> = c
+        .notes
+        .iter()
+        .chain(&c.files)
+        .filter_map(|f| match f.difference {
+            Difference::Changed => Some(match f.first_changed_line {
+                Some(line) => format!("changed: {} (from line {line})", f.path),
+                None => format!("changed: {}", f.path),
+            }),
+            Difference::Moved => Some(format!(
+                "moved: {} -> {}",
+                f.path,
+                f.exported.as_deref().unwrap_or("?")
+            )),
+            Difference::Missing => Some(format!("missing: {}", f.path)),
+            _ => None,
+        })
+        .chain(c.added.iter().map(|p| format!("only in the export: {p}")))
+        .chain(c.excluded.iter().map(|e| {
+            format!(
+                "not imported: {} ({})",
+                e.path,
+                e.reason.as_deref().unwrap_or("")
+            )
+        }))
+        .collect();
+    for line in listed.iter().take(LISTED) {
+        println!("  {line}");
+    }
+    if listed.len() > LISTED {
+        println!(
+            "  and {} more: use --json for all of them",
+            listed.len() - LISTED
+        );
+    }
+    if c.text_preserved() {
+        println!("Every note and file of the folder is in the export with the same text.");
+    }
 }
 
 /// Shows the live Markdown folder of the space, or turns it on at `dir` or off.

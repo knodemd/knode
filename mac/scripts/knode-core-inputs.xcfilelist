@@ -124,6 +124,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/apps/proto.rs
 $(SRCROOT)/../core/crates/knode-vault/src/apps/source.rs
 $(SRCROOT)/../core/crates/knode-vault/src/apps/write.rs
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
+$(SRCROOT)/../core/crates/knode-vault/src/compare.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
 $(SRCROOT)/../core/crates/knode-vault/src/import.rs
 $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
@@ -134,6 +135,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/mail/message.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/mod.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/thread.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/write.rs
+$(SRCROOT)/../core/crates/knode-vault/src/migration.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
 $(SRCROOT)/../core/crates/knode-vault/src/onboarding.rs

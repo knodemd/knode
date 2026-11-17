@@ -308,8 +308,13 @@ unless `folders` names them. `mail` with any other source fails with `invalid_pa
 - `source` is the `from` it was read as, and `format` what it was, for people.
 - `nodes` lists the nodes created or changed, in order (for reading, every document read), each
   with `outcome` `created`, `updated`, `unchanged` or `edited` (the source changed, but so did the
-  node, in Knode, since the last import, so it was left as it is), and `highlights` added. `id` is
-  missing for the files of a Markdown folder, which are named by their path.
+  node, in Knode, since the last import, so it was left as it is), and `highlights` added. The
+  nodes of a Markdown folder are named by their path.
+- `report`, for a folder of Markdown files only, is the migration report
+  (`knode_vault::migration::MigrationReport`, `version` 1): every file of the folder with its
+  `status` (`created`, `updated`, `unchanged`, `edited`, `attached`, `skipped` or `failed`), its
+  `node` and a `reason`; `counts`; `unresolved_links`, `ambiguous_links`, `missing_attachments`
+  and `failed_links`; and `limits`, what it does not check.
 - `skipped` lists `{ "item", "reason" }` for what could not be imported; the rest was. `notes`
   lists what else is worth knowing, such as files left out or parts of a note read only in part.
 - Importing the same thing again finds the same nodes: it writes only what changed.
