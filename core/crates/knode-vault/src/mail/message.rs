@@ -27,6 +27,13 @@ const JUNK: &[&str] = &[
     "deleted items",
 ];
 
+/// Whether `folder` (a path such as `[Gmail]/Spam`) is spam or trash, by its last part.
+pub(crate) fn is_junk_folder(folder: &str) -> bool {
+    let folder = folder.to_lowercase();
+    let last = folder.rsplit('/').next().unwrap_or(&folder);
+    JUNK.contains(&last)
+}
+
 /// How many of the ids a message names in `References` and `In-Reply-To` are kept: the first
 /// (the start of the thread) and the last ones, as mail clients do. A broken or crafted message
 /// can name tens of thousands.
@@ -645,9 +652,7 @@ impl<'a> Collector<'a> {
     }
 
     fn is_junk(&self, folder: &str) -> bool {
-        let folder = folder.to_lowercase();
-        let last = folder.rsplit('/').next().unwrap_or(&folder);
-        JUNK.contains(&last) && !self.wanted(&folder)
+        is_junk_folder(folder) && !self.wanted(&folder.to_lowercase())
     }
 
     /// Adds a message read.

@@ -26,6 +26,7 @@
 //! run; the service calls them for `sources.*` and wakes the runtime after each change. Only a
 //! person changes the settings of a source.
 
+pub mod apple_mail;
 pub(crate) mod runtime;
 
 use std::collections::BTreeMap;
@@ -62,6 +63,10 @@ pub const STATE_FILE: &str = "state.json";
 pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     #[allow(unused_mut)]
     let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
+    #[cfg(target_os = "macos")]
+    if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
+        connectors.push(Arc::new(apple_mail));
+    }
     #[cfg(target_os = "macos")]
     if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
         connectors.push(Arc::new(imessage));
@@ -275,6 +280,9 @@ pub struct RunState {
     /// The error of its last run, if it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// How many runs in a row failed.
     #[serde(default)]
     pub failures: u32,
@@ -348,6 +356,10 @@ pub struct SourceStatus {
     /// The error of its last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<LastError>,
+    /// What the connector said the person should know after its last run that went well, such
+    /// as what it could not bring in yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
     /// When it runs next, at the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<Timestamp>,
@@ -490,6 +502,7 @@ impl Registry {
             last_items: 0,
             items: 0,
             last_error: None,
+            notice: None,
             next_run: None,
         }));
         Ok(out)
@@ -545,6 +558,7 @@ impl Registry {
             last_items: run.last_items,
             items: run.items,
             last_error: run.last_error,
+            notice: run.notice,
             next_run: run.next_run,
         }
     }
@@ -1008,13 +1022,14 @@ mod tests {
         let connectors = builtin_connectors();
         let ids: Vec<String> = connectors.iter().map(|c| c.info().id).collect();
         assert!(ids.iter().any(|id| id == "whatsapp-mac"), "{ids:?}");
-        // No two sources share an id.
-        let mut all: Vec<String> = importers().into_iter().map(|s| s.id).collect();
-        all.extend(ids);
-        let count = all.len();
-        all.sort();
-        all.dedup();
-        assert_eq!(all.len(), count);
+        // No two connectors share an id, and WhatsApp for Mac's is not the export importer's
+        // (a connector may share its id only with the importer of the same source, as
+        // `apple-mail` does).
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
+        assert!(importers().iter().all(|s| s.id != "whatsapp-mac"));
     }
 
     #[test]

@@ -364,6 +364,10 @@ impl Runtime {
                 state.last_success = Some(now);
                 state.last_items = written.items;
                 state.last_error = None;
+                state.notice = state
+                    .cursor
+                    .as_ref()
+                    .and_then(|c| entry.connector.notice(c));
                 state.failures = 0;
                 state.next_run = Some(later(now, interval));
             }
