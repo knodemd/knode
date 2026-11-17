@@ -195,6 +195,8 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         ImportSource::Notion => ("Notion", "A Notion Markdown & CSV export", &[]),
         ImportSource::Evernote => ("Evernote", "Evernote .enex files", &[]),
         ImportSource::WhatsApp => ("WhatsApp export", "A WhatsApp chat export", &[]),
+        ImportSource::Telegram => ("Telegram export", "A Telegram Desktop export, in JSON", &[]),
+        ImportSource::Slack => ("Slack export", "A Slack workspace export", &[]),
     };
     SourceInfo {
         id: source.id().to_string(),
