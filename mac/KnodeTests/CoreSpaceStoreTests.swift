@@ -104,7 +104,7 @@ import Testing
     @Test func remembersSpacesNewestFirst() throws {
         let suite = "KnodeTests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.removeTestSuite(suite) }
         let folder = FileManager.default.temporaryDirectory.appending(path: suite, directoryHint: .isDirectory)
         let first = folder.appending(path: "First.knode", directoryHint: .isDirectory)
         let second = folder.appending(path: "Second.knode", directoryHint: .isDirectory)
