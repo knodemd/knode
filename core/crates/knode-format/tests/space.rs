@@ -433,6 +433,30 @@ fn reuses_provenance_rows() {
 }
 
 #[test]
+fn lists_nodes_by_who_created_them() {
+    let (_dir, mut space) = new_space();
+    let mine = space.create_node(NewNode::note("Mine", ""), &me()).unwrap();
+    let theirs = space
+        .create_node(NewNode::note("Theirs", ""), &claude())
+        .unwrap();
+    // Who created a node counts, not who changed it last.
+    space
+        .update_node(&mine.id, rename("Mine too"), &claude())
+        .unwrap();
+    let ids = |actor| -> Vec<_> {
+        space
+            .created_by(actor, 10)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect()
+    };
+    assert_eq!(ids(ActorKind::Person), [mine.id]);
+    assert_eq!(ids(ActorKind::Agent), [theirs.id]);
+    assert!(ids(ActorKind::System).is_empty());
+}
+
+#[test]
 fn lists_recent_nodes_and_finds_titles() {
     let (_dir, mut space) = new_space();
     let a = space

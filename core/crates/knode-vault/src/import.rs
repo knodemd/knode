@@ -67,7 +67,8 @@ pub struct ImportReport {
 ///   the space has no such node, the new node keeps the id, and for a file written by Knode its
 ///   `created`, `updated`, `created_by` and `updated_by` too, so a copy of a space has the same
 ///   ids, dates and authors. A file without an id updates the node imported before from the
-///   same path. Importing a folder again never duplicates.
+///   same path (not one [`import_file`] imported on its own). Importing a folder again never
+///   duplicates.
 /// - A file written by Knode gives the node its kind, tags, typed links and properties. Any other
 ///   file (an Obsidian note) gives it the tags of its frontmatter and its inline `#tags`; its
 ///   frontmatter is kept as it is, to be written back on export.
@@ -114,11 +115,62 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
     Ok(report)
 }
 
+/// Imports one Markdown file as [`import`] would if it were alone in its folder: its frontmatter,
+/// its dates and its `markdown.path` (the file name). `key` names the file in the space, kept in
+/// [`markdown.file`](crate::property_keys::FILE): importing a file with the same key again
+/// updates the same node, and files with the same name in other folders (other keys), or in a
+/// folder imported with [`import`], are other nodes. `title`, when given, names the note instead
+/// of its file name. Files next to it that it embeds are attached.
+pub fn import_file(
+    space: &mut Space,
+    file: impl AsRef<Path>,
+    key: &str,
+    title: Option<String>,
+    by: &Provenance,
+) -> Result<ImportReport> {
+    let file = file.as_ref();
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let rel = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut report = ImportReport::default();
+    // Only the files beside it can be its attachments; the other notes there are not read.
+    let siblings: Vec<String> = fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.') && !n.to_lowercase().ends_with(".md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut batch = Batch::new(dir, &siblings);
+    match fs::read_to_string(file) {
+        Ok(text) => {
+            let mut note = parse(&rel, &text);
+            if let Some(title) = title {
+                note.title = title;
+            }
+            note.file_times = file_times(file);
+            note.file = Some(key.to_string());
+            batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
+        }
+        Err(e) => report.skipped.push(Skipped {
+            path: rel,
+            reason: e.to_string(),
+        }),
+    }
+    batch.finish(space, by, &mut report)?;
+    Ok(report)
+}
+
 /// Called with a note about to update the node it matches, before the node is written: it may
 /// change the note, or write the node itself first. See [`Batch::note`].
 pub(crate) type Hook<'a> = dyn FnMut(&mut Space, NodeId, &str, &mut Note) -> Result<()> + 'a;
 
-fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
+pub(crate) fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
     Ok(())
 }
 
@@ -399,6 +451,8 @@ pub(crate) struct Note {
     pub(crate) body: String,
     /// When the file was created and last modified, for a note whose dates Knode did not write.
     pub(crate) file_times: Option<(Timestamp, Timestamp)>,
+    /// The key of a file imported on its own: see [`keys::FILE`].
+    pub(crate) file: Option<String>,
 }
 
 /// When a file was created and last modified, as far as the file system says: a file system
@@ -599,12 +653,24 @@ fn write(
     by: &Provenance,
     hook: &mut Hook<'_>,
 ) -> Result<(NodeId, Outcome)> {
-    let existing = match note.id {
-        Some(id) => find(space, &id.to_string())?,
-        None => space
-            .find_by_property(keys::PATH, rel)?
+    let existing = match (note.id, &note.file) {
+        (Some(id), _) => find(space, &id.to_string())?,
+        // A file on its own is found by its key, never by its name alone.
+        (None, Some(file)) => space
+            .find_by_property(keys::FILE, file)?
             .first()
             .map(|s| s.id),
+        // A folder's file, by its path, but not a node a file on its own came from.
+        (None, None) => {
+            let mut found = None;
+            for s in space.find_by_property(keys::PATH, rel)? {
+                if space.property(&s.id, keys::FILE)?.is_none() {
+                    found = Some(s.id);
+                    break;
+                }
+            }
+            found
+        }
     };
 
     if let Some(id) = existing {
@@ -614,6 +680,9 @@ fn write(
 
     let mut props = note.props.clone();
     props.insert(keys::PATH.into(), rel.into());
+    if let Some(file) = &note.file {
+        props.insert(keys::FILE.into(), file.clone());
+    }
     if note.vault {
         props.insert(keys::STYLE.into(), STYLE_VAULT.into());
     }

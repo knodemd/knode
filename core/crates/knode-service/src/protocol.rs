@@ -60,6 +60,11 @@ pub mod methods {
     pub const RECENT: &str = "recent";
     /// The projects of a space, with their parent and how much is in each.
     pub const PROJECTS: &str = "projects";
+    /// Whether a space has been set up: an onboarding receipt, a project or a few notes of a
+    /// person.
+    pub const SPACE_SET_UP: &str = "space.set_up";
+    /// Applies a reviewed onboarding plan into a space that is not set up yet. People only.
+    pub const ONBOARDING_APPLY_INTO: &str = "onboarding.apply_into";
     /// The nodes that are part of a project, most recently changed first.
     pub const PROJECT_NOTES: &str = "project.notes";
     /// Every version of a node.
@@ -717,6 +722,13 @@ pub(crate) struct RestoreParams {
 pub(crate) struct VaultExportParams {
     pub space: PathBuf,
     pub dir: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct OnboardingApplyIntoParams {
+    pub space: PathBuf,
+    pub plan: knode_vault::onboarding::Plan,
+    pub by: Provenance,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -116,3 +116,95 @@ fn empty_start_and_later_config_edits_are_preserved_on_archive() {
     assert!(out.contains("left untouched"));
     assert_eq!(fs::read_to_string(config).unwrap(), current);
 }
+
+#[test]
+fn applies_into_the_space_an_agent_is_connected_to_once() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "Memory"]);
+    // A conversation captured before onboarding, as in a fresh default space.
+    let session = common::ingest_fixture(
+        "claude/projects/-Users-example-project/0f8e2c1a-1111-4222-8333-444455556666.jsonl",
+    );
+    sb.ok(&["import", session.to_str().unwrap()]);
+    let source = sb.path("vault");
+    fs::create_dir_all(source.join("Projects/Web")).unwrap();
+    fs::create_dir_all(source.join("Projects/Book")).unwrap();
+    fs::write(source.join("Projects/Web/Plan.md"), "Ship it").unwrap();
+    fs::write(source.join("Projects/Book/Draft.md"), "Chapter one").unwrap();
+    let raw = sb.ok(&[
+        "onboard",
+        "analyze",
+        "--mode",
+        "vault",
+        "--source",
+        source.to_str().unwrap(),
+    ]);
+    let plan = sb.path("plan.json");
+    fs::write(&plan, raw).unwrap();
+    let apply = [
+        "onboard",
+        "apply",
+        "--plan",
+        plan.to_str().unwrap(),
+        "--into",
+        "Memory",
+        "--sessions",
+    ];
+    let raw = sb.ok(&apply);
+    let receipt: Value = serde_json::from_str(&raw).unwrap();
+    let space = sb.space("Memory");
+    assert_eq!(receipt["applied_into"], true);
+    assert_eq!(
+        receipt["destination"].as_str().unwrap(),
+        space.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(receipt["contexts"].as_object().unwrap().len(), 2);
+    assert!(space.join("onboarding.json").exists());
+    let inspected: Value =
+        serde_json::from_str(&sb.ok(&["onboard", "inspect", "--target", space.to_str().unwrap()]))
+            .unwrap();
+    assert_eq!(inspected["contexts"], receipt["contexts"]);
+    {
+        let opened = knode_format::Space::open(&space).unwrap();
+        // The conversation, two notes and their two projects.
+        assert_eq!(opened.node_count().unwrap(), 5);
+        assert_eq!(opened.projects().unwrap().len(), 2);
+    }
+    assert!(sb.ok(&["spaces"]).contains("Memory"));
+
+    // Now it is set up: applying again is refused.
+    let err = sb.fails(&apply);
+    assert!(err.contains("already set up"), "{err}");
+
+    // So is a space with notes of its person.
+    sb.ok(&["init", "Used"]);
+    let notes = sb.path("notes");
+    fs::create_dir_all(&notes).unwrap();
+    for name in ["One", "Two", "Three"] {
+        fs::write(notes.join(format!("{name}.md")), name).unwrap();
+    }
+    sb.ok(&["--space", "Used", "import", notes.to_str().unwrap()]);
+    let err = sb.fails(&[
+        "onboard",
+        "apply",
+        "--plan",
+        plan.to_str().unwrap(),
+        "--into",
+        "Used",
+    ]);
+    assert!(err.contains("already set up"), "{err}");
+    assert!(!sb.space("Used").join("onboarding.json").exists());
+
+    // `--into` and a new destination do not go together.
+    let err = sb.fails(&[
+        "onboard",
+        "apply",
+        "--plan",
+        plan.to_str().unwrap(),
+        "--into",
+        "Used",
+        "--destination",
+        sb.path("Other.knode").to_str().unwrap(),
+    ]);
+    assert!(err.contains("cannot be used with"), "{err}");
+}

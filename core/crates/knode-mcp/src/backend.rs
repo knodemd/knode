@@ -274,6 +274,16 @@ pub trait Backend: Send + Sync + 'static {
     fn attach_file(&self, id: &NodeId, path: &Path, by: &Provenance) -> BackendResult<Attachment>;
     /// `folders.list`: the folders that feed the space, where they are on this machine.
     fn folders(&self) -> BackendResult<Vec<LocalFolder>>;
+    /// `space.set_up`: whether the space has been set up (see
+    /// [`knode_vault::onboarding::is_set_up`]). A backend that cannot tell says yes, so agents
+    /// are never pushed to set up a space that may already be in use.
+    fn is_set_up(&self) -> BackendResult<bool> {
+        Ok(true)
+    }
+    /// The folder of the space this backend serves, when it has one.
+    fn space_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// A folder that feeds the space, as this machine sees it.
@@ -639,6 +649,16 @@ impl Backend for DirectBackend {
                 .collect())
         })
     }
+
+    fn is_set_up(&self) -> BackendResult<bool> {
+        self.with_space(|s| {
+            knode_vault::onboarding::is_set_up(s).map_err(|e| BackendError::Failed(e.to_string()))
+        })
+    }
+
+    fn space_path(&self) -> Option<PathBuf> {
+        self.path().map(Path::to_path_buf)
+    }
 }
 
 /// A boxed backend is a backend, so the backend can be picked at run time.
@@ -785,5 +805,13 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn folders(&self) -> BackendResult<Vec<LocalFolder>> {
         (**self).folders()
+    }
+
+    fn is_set_up(&self) -> BackendResult<bool> {
+        (**self).is_set_up()
+    }
+
+    fn space_path(&self) -> Option<PathBuf> {
+        (**self).space_path()
     }
 }

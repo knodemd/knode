@@ -111,6 +111,7 @@
 
 pub mod apps;
 mod attachments;
+pub mod claude_memory;
 mod frontmatter;
 mod import;
 mod live;
@@ -125,7 +126,7 @@ mod time;
 
 use std::path::PathBuf;
 
-pub use import::{ImportReport, Skipped, import};
+pub use import::{ImportReport, Skipped, import, import_file};
 pub use live::{BodyWritten, LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
 pub use mirror::{ExportReport, export};
 
@@ -160,6 +161,11 @@ pub mod property_keys {
     /// When the node was written from that file: while the node's `updated_at` is still this,
     /// export writes [`UPDATED`] as `updated`. Read, no longer written.
     pub const WRITTEN: &str = "markdown.written";
+    /// The file a node was imported from on its own rather than in a folder, as the caller of
+    /// [`import_file`](crate::import_file) names it (Knode records it as folders are: absolute,
+    /// `~/...` inside the home folder). Importing that file again updates the node; a folder's
+    /// file with the same [`PATH`] never does.
+    pub const FILE: &str = "markdown.file";
 
     /// Set on a node whose file was deleted from its live Markdown folder, to the path the file
     /// had. Knode never deletes a node because its file is gone: the node stays, is no longer

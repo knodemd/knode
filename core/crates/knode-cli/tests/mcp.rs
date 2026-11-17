@@ -79,12 +79,16 @@ impl Client {
     }
 
     fn initialize(&mut self, version: &str) -> Value {
+        self.initialize_as(version, "test-client")
+    }
+
+    fn initialize_as(&mut self, version: &str, client: &str) -> Value {
         let response = self.request(
             "initialize",
             json!({
                 "protocolVersion": version,
                 "capabilities": {},
-                "clientInfo": { "name": "test-client", "version": "1.0.0" }
+                "clientInfo": { "name": client, "version": "1.0.0" }
             }),
         );
         self.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
@@ -123,6 +127,30 @@ fn text(result: &Value) -> &str {
 }
 
 #[test]
+fn claude_code_is_offered_to_set_up_a_new_space_and_claude_desktop_is_sent_to_the_app() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    let agent = sb.connect_agent();
+    for (client, setup) in [("claude-code", true), ("claude-ai", false)] {
+        let mut mcp = Client::start(&sb, &["--agent", agent]);
+        let init = mcp.initialize_as("2025-06-18", client);
+        let instructions = init["result"]["instructions"].as_str().unwrap().to_owned();
+        assert_eq!(
+            instructions.contains("call the setup_guide tool"),
+            setup,
+            "{client}: {instructions}"
+        );
+        assert!(!instructions.contains("without asking"), "{instructions}");
+        assert_eq!(
+            instructions.contains("choose Get started"),
+            !setup,
+            "{client}: {instructions}"
+        );
+        mcp.finish();
+    }
+}
+
+#[test]
 fn a_client_uses_every_tool() {
     let sb = Sandbox::new();
     sb.ok(&["init", "work"]);
@@ -140,6 +168,11 @@ fn a_client_uses_every_tool() {
             .unwrap()
             .contains("write_node")
     );
+    // A new space is not set up yet; a client not known to run commands is asked to send the
+    // person to the app, not to run the guide.
+    let instructions = result["instructions"].as_str().unwrap();
+    assert!(instructions.contains("choose Get started"), "{init}");
+    assert!(!instructions.contains("setup_guide"), "{init}");
 
     let tools = client.request("tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap().clone();
@@ -159,7 +192,8 @@ fn a_client_uses_every_tool() {
             "read_canvas",
             "attach_file",
             "read_attachment",
-            "read_excerpt"
+            "read_excerpt",
+            "setup_guide"
         ]
     );
     for tool in &tools {
@@ -500,4 +534,76 @@ fn grants_and_revocation_reach_the_tools() {
     assert_eq!(result["isError"], true, "{result}");
     assert!(text(&result).contains("knode connect"), "{result}");
     client.finish();
+}
+
+/// Installed project instructions neither connect an agent nor give it a space: an agent that is
+/// not connected, or that runs in a space it may not see, gets an error from `write_node`, which
+/// the instructions tell it to report, and nothing is saved anywhere.
+#[test]
+fn instructions_do_not_connect_an_agent_or_save_through_the_wrong_space() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let project = sb.path("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let agents_md = project.join("AGENTS.md");
+    std::fs::write(&agents_md, "# Rules\nRun the tests.\n").unwrap();
+    sb.ok(&[
+        "instructions",
+        "codex",
+        "--project",
+        project.to_str().unwrap(),
+        "--apply",
+    ]);
+    let installed = std::fs::read_to_string(&agents_md).unwrap();
+    assert!(
+        installed.contains("Verify the connected space"),
+        "{installed}"
+    );
+    assert!(
+        installed.contains("do not claim a successful save"),
+        "{installed}"
+    );
+
+    // Installing them connected nothing: no Codex settings, no agent, no grant.
+    assert!(!sb.path("codex/config.toml").exists());
+    assert!(sb.ok(&["agents", "list"]).contains("No agents yet"));
+
+    // Disconnected: Codex runs Knode with no key on this machine.
+    let mut client = Client::start(&sb, &["--agent", "codex"]);
+    client.initialize("2025-06-18");
+    let result = client.call("write_node", json!({ "title": "Storage decision" }));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(text(&result).contains("knode connect codex"), "{result}");
+    client.finish();
+
+    // Connected to work, but run in personal, which it may not see.
+    let agent = sb.connect_agent();
+    let personal_path = sb.space("personal");
+    let mut client = Client::start(
+        &sb,
+        &["--agent", agent, "--space", personal_path.to_str().unwrap()],
+    );
+    client.initialize("2025-06-18");
+    let result = client.call("write_node", json!({ "title": "Storage decision" }));
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(
+        text(&result).contains("cannot open the Knode space"),
+        "{result}"
+    );
+    client.finish();
+
+    // Nothing was saved, in either space, and connecting left the instructions as they were.
+    for space in ["work", "personal"] {
+        let found = sb.ok(&[
+            "--space", space, "search", "Storage", "decision", "--words", "--json",
+        ]);
+        let found: Value = serde_json::from_str(&found).unwrap();
+        assert_eq!(
+            found["hits"].as_array().map(Vec::len),
+            Some(0),
+            "{space}: {found}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&agents_md).unwrap(), installed);
 }

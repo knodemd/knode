@@ -191,6 +191,14 @@ impl Backend for ServiceBackend {
         self.with(|c, s| c.project_notes(s, id, limit))
     }
 
+    fn is_set_up(&self) -> BackendResult<bool> {
+        self.with(|c, s| c.space_set_up(s))
+    }
+
+    fn space_path(&self) -> Option<PathBuf> {
+        Some(self.space.clone())
+    }
+
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {
         self.with(|c, s| c.history(s, id))
     }
