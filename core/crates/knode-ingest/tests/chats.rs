@@ -1226,6 +1226,6 @@ fn markdown_anywhere_makes_a_folder_of_notes() {
     assert_eq!(detect_chat_export(&slack), Some(ChatFormat::Slack));
     // A folder of notes alone holds no export.
     let notes = dir.path().join("Notes");
-    vault(&notes);
+    self::vault(&notes);
     assert_eq!(knode_ingest::chat_export_inside(&notes), None);
 }
