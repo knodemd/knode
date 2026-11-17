@@ -17,6 +17,8 @@ private struct ImportDocument: Codable, Equatable, Identifiable {
     var project: String
     var include: Bool
     var digest: String
+    /// The repository inside the source that tracks this document, when it starts unchecked for that reason.
+    var repository: String?
     var id: String { path }
 }
 private struct ImportSourceFile: Codable, Equatable {
@@ -71,7 +73,9 @@ struct OnboardingSheet: View {
     @State private var step = 0
     @State private var mode = "vault"
     @State private var source: URL?
-    @State private var name = "Imported memory"
+    /// The suggested name before a source is chosen, and for an empty start.
+    static let defaultName = "Imported memory"
+    @State private var name = OnboardingSheet.defaultName
     @State private var destinationFolder: URL?
     @State private var plan = ImportPlan()
     @State private var result: ImportResult?
@@ -196,6 +200,10 @@ struct OnboardingSheet: View {
                     }
                     KButton("Add project", icon: .add, size: .small) { plan.groups.append(ImportGroup(id: UUID().uuidString, name: "New project")) }
                     Divider()
+                    if !trackedRepositories.isEmpty {
+                        repositoryDocuments
+                        Divider()
+                    }
                     Text("\(included) of \(plan.documents.count) Markdown documents selected").font(KFont.ui(12))
                     bulkAssignment
                     Text("\(matchingDocuments.count) documents match this path filter").font(KFont.ui(11))
@@ -261,6 +269,38 @@ struct OnboardingSheet: View {
                 }.frame(maxHeight: 80)
                 if preview.secrets > 0 {
                     Text("\(preview.secrets) likely secrets (keys, tokens, passwords) will be replaced with [redacted]. Other sensitive text is kept as written.").font(KFont.ui(11))
+                }
+            }
+        }
+    }
+
+    /// Repositories whose tracked documents start unchecked, with how many and how many are brought.
+    private var trackedRepositories: [(name: String, total: Int, brought: Int)] {
+        var counts: [String: (total: Int, brought: Int)] = [:]
+        for document in plan.documents {
+            guard let repository = document.repository else { continue }
+            counts[repository, default: (0, 0)].total += 1
+            if document.include { counts[repository, default: (0, 0)].brought += 1 }
+        }
+        return counts.keys.sorted().map { (name: $0, total: counts[$0]!.total, brought: counts[$0]!.brought) }
+    }
+
+    private var repositoryDocuments: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Documentation tracked in your repositories").font(KFont.ui(13))
+            KExplanation("These start unchecked: they live with their code, where agents read them, and a copy here would not follow their changes. Turn a repository on if it keeps your own notes, such as a status note or session logs.")
+            ForEach(trackedRepositories, id: \.name) { repository in
+                Toggle(isOn: Binding(
+                    get: { repository.brought == repository.total },
+                    set: { on in
+                        for index in plan.documents.indices where plan.documents[index].repository == repository.name {
+                            plan.documents[index].include = on
+                        }
+                        acknowledged = false
+                    }
+                )) {
+                    let partly = repository.brought > 0 && repository.brought < repository.total ? ", \(repository.brought) brought" : ""
+                    Text("\(repository.name), \(repository.total) \(repository.total == 1 ? "document" : "documents")\(partly)").font(KFont.mono(11))
                 }
             }
         }
@@ -354,6 +394,8 @@ struct OnboardingSheet: View {
             if mode != "empty", let source { args += ["--source", source.path(percentEncoded: false)] }
             let text = try await command.run(args)
             plan = try JSONDecoder().decode(ImportPlan.self, from: Data(text.utf8))
+            // Name the new space after its source, unless the person already typed a name.
+            if name == Self.defaultName, mode != "empty", let source { name = source.lastPathComponent }
             acknowledged = false; step = 1
         }
     }

@@ -54,15 +54,36 @@ belongs to, newest first.
 
 #### Changed
 
+<<<<<<< HEAD
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
+=======
+- **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
+  "Imported memory" for every import; the name stays editable.
+>>>>>>> origin/main
 - **The `.knode` format, schema version 4**: link kinds, graph and canvas views, attachments,
   embeddings and the documents used for editing together. Spaces are upgraded when they are
   opened.
 - **Markdown export** keeps the kind of each link and the attached files.
+- **Installing the Mac app**: opened from its disk image, Downloads or any other folder, Knode offers
+  to move itself to Applications. When the `knode` command points to another copy of Knode, the app
+  names it and offers to point the command to itself, so agents do not keep running an old copy.
+- **Guided import of a vault that holds its repositories**: documents tracked by git in those
+  repositories (`README`, `CHANGELOG`, `AGENTS.md` and the like) are proposed unchecked, since they
+  live with their code and a copy would not follow their changes. Your own notes, including
+  untracked ones inside a repository, stay checked, and you can check any document again.
 
 #### Fixed
 
+- **Spaces made outside the Mac app** (with `knode init`, `knode onboard apply` or by an agent),
+  including the default space, now appear in the sidebar the next time the app opens, unless you
+  took them off the list.
+- **Obsidian links with a relative path**: `[[../Research/Insights]]` and `[[./Glossary]]`, as Obsidian
+  writes them with "relative path to file", now link to the file they name, even when it is
+  imported after the note.
+- **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
+  label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
+  written that way finds its attachment on import.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
