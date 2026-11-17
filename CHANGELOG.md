@@ -144,6 +144,10 @@ belongs to, newest first.
 
 #### Changed
 
+- **`knode instructions --apply`** also says when the agent reads the file and what it reads with
+  it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
+  `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
+  request and the project's rules come before memory.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
