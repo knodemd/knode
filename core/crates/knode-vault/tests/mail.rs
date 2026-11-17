@@ -941,7 +941,9 @@ fn apple_mail_takes_an_exported_mailbox_and_does_not_follow_links() {
 #[test]
 fn a_message_with_a_hundred_thousand_references_imports_fast() {
     let tmp = tempfile::tempdir().unwrap();
-    let references: Vec<String> = (0..100_000).map(|i| format!("<r{i}@example.com>")).collect();
+    let references: Vec<String> = (0..100_000)
+        .map(|i| format!("<r{i}@example.com>"))
+        .collect();
     let file = write_mbox(
         tmp.path(),
         "refs.mbox",
@@ -964,7 +966,10 @@ fn a_message_with_a_hundred_thousand_references_imports_fast() {
     assert_eq!(report.created.len(), 1);
     assert_eq!(again.unchanged, 1);
     let node = thread(&space, "Many references");
-    assert_eq!(space.properties(&node.id).unwrap()[keys::THREAD], "r0@example.com");
+    assert_eq!(
+        space.properties(&node.id).unwrap()[keys::THREAD],
+        "r0@example.com"
+    );
     // Quadratic, this took minutes; linear, well under a second in a release build.
     assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
 }
@@ -1012,4 +1017,42 @@ fn remote_images_in_mail_never_load_by_themselves() {
     let plain = thread(&space, "Plain deals").body;
     assert!(plain.contains("!\\[](https://tracker"), "{plain}");
     assert!(!plain.contains("Look: ![]"), "{plain}");
+}
+
+#[test]
+fn bcc_recipients_are_never_shown_as_cc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write_mbox(
+        tmp.path(),
+        "bcc.mbox",
+        &[
+            simple(
+                "<bcc-1@example.com>",
+                "Ada Example <ada@example.com>",
+                "Weekly deals",
+                "Tue, 03 Mar 2026 09:00:00 +0100",
+                &[("Bcc", "secret-bcc@example.com")],
+            ),
+            simple(
+                "<bcc-2@example.com>",
+                "Ada Example <ada@example.com>",
+                "Both",
+                "Tue, 03 Mar 2026 09:00:00 +0100",
+                &[("Cc", "carol@example.org"), ("Bcc", "dan@example.org")],
+            ),
+        ],
+    );
+    let mut space = space(tmp.path());
+    import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    let body = thread(&space, "Weekly deals").body;
+    assert!(!body.contains("**Cc:**"), "{body}");
+    assert!(
+        body.contains("- **Bcc:** <secret-bcc@example.com>\n"),
+        "{body}"
+    );
+    let both = thread(&space, "Both").body;
+    assert!(
+        both.contains("- **Cc:** <carol@example.org>\n- **Bcc:** <dan@example.org>\n"),
+        "{both}"
+    );
 }

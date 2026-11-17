@@ -489,7 +489,12 @@ fn section(mail: &Mail, names: &[String], linked: &[bool]) -> Section {
         text.push_str(&format!(" - {}", sent.format("%Y-%m-%d %H:%M")));
     }
     text.push_str("\n\n");
-    for (label, list) in [("From", &mail.from), ("To", &mail.to), ("Cc", &mail.cc)] {
+    for (label, list) in [
+        ("From", &mail.from),
+        ("To", &mail.to),
+        ("Cc", &mail.cc),
+        ("Bcc", &mail.bcc),
+    ] {
         if !list.is_empty() {
             let list: Vec<String> = list.iter().map(address).collect();
             text.push_str(&format!("- **{label}:** {}\n", list.join(", ")));

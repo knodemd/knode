@@ -84,6 +84,8 @@ pub(crate) struct Mail {
     pub from: Vec<Person>,
     pub to: Vec<Person>,
     pub cc: Vec<Person>,
+    /// Kept apart from `cc`: who was sent a blind copy is never shown as someone who saw it.
+    pub bcc: Vec<Person>,
     pub date: Option<DateTime<FixedOffset>>,
     /// The text, as Markdown.
     pub body: String,
@@ -118,7 +120,11 @@ impl Mail {
 
     /// Everyone it is from or to.
     pub fn people(&self) -> impl Iterator<Item = &Person> {
-        self.from.iter().chain(&self.to).chain(&self.cc)
+        self.from
+            .iter()
+            .chain(&self.to)
+            .chain(&self.cc)
+            .chain(&self.bcc)
     }
 }
 
@@ -144,8 +150,8 @@ pub(crate) fn parse(
     let topic = clean_line(message.thread_name().unwrap_or_default());
     let from = people(message.from());
     let to = message.all_to().flat_map(|a| people(Some(a))).collect();
-    let mut cc: Vec<Person> = message.all_cc().flat_map(|a| people(Some(a))).collect();
-    cc.extend(message.all_bcc().flat_map(|a| people(Some(a))));
+    let cc = message.all_cc().flat_map(|a| people(Some(a))).collect();
+    let bcc = message.all_bcc().flat_map(|a| people(Some(a))).collect();
     let date = message.date().filter(|d| d.is_valid()).and_then(|d| {
         let seconds = (d.tz_hour as i32 * 3600 + d.tz_minute as i32 * 60)
             * if d.tz_before_gmt { -1 } else { 1 };
@@ -215,6 +221,7 @@ pub(crate) fn parse(
         from,
         to,
         cc,
+        bcc,
         date,
         body,
         attachments,

@@ -16,8 +16,9 @@
 //! one message joins two threads written before, it goes to the older node, each message stays
 //! in the one node it is in, and the two nodes are linked as `related`. The body has
 //! one section per message, in the order they were sent: a `##` heading with the sender and the
-//! date, the sender and the recipients, then the text. The text part is preferred; HTML is
-//! turned into Markdown when a message has no text part. Every section starts with a
+//! date, the sender and the recipients (`From`, `To`, `Cc` and, on its own line, `Bcc`), then the
+//! text. The text part is preferred; HTML is turned into Markdown when a message has no text
+//! part. Every section starts with a
 //! `<!-- mail <message-id> <date> <lines> <digest> -->` line, which is how the next import finds
 //! it and tells whether it was changed in Knode.
 //!

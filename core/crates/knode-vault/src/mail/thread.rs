@@ -268,6 +268,7 @@ mod tests {
             }],
             to: Vec::new(),
             cc: Vec::new(),
+            bcc: Vec::new(),
             date: DateTime::parse_from_rfc3339(date).ok(),
             body: String::new(),
             attachments: Vec::new(),
