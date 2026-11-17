@@ -65,10 +65,11 @@ pub const SCHEMA: &[(&str, &[&str])] = &[
     ("mailboxes", &["ROWID", "url"]),
 ];
 
-/// The longest time between two runs when no change of the index was seen. macOS reports the
-/// changes of a file that is kept open late, and Mail keeps its index open, so the connector
-/// also runs every minute: new mail is in within a minute. On APFS the copy of the index is a
-/// clone, so a run that finds nothing new is quick.
+/// The longest time between two looks at the index when no change of it was seen. macOS
+/// reports the changes of a file that is kept open late, and Mail keeps its index open, so the
+/// service also looks at it every minute, and runs the connector when it changed or a message
+/// file is waited for: new mail is in within a minute. An index that did not change is not
+/// copied.
 const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(60);
 
 /// After how long a message the index lists whose file is still not there is reported in the
@@ -298,6 +299,11 @@ impl Connector for AppleMailConnector {
 
     fn check(&self) -> Result<(), SourceError> {
         self.snapshot().map(|_| ())
+    }
+
+    fn waiting(&self, cursor: &Cursor) -> bool {
+        // A message file Mail writes after its index is not seen as a change of the index.
+        !State::read(Some(cursor)).waiting.is_empty()
     }
 
     fn notice(&self, cursor: &Cursor) -> Option<String> {

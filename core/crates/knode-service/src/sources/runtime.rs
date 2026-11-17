@@ -6,7 +6,13 @@
 //! A file event runs a watching connector only when its files really changed since its last
 //! run ([`FileStamp`]): on macOS a connector's own copy of a database is reported as events on
 //! it, which would otherwise run it again and again. Writes to files kept open are reported
-//! late, so a watching connector also runs at least every [`SourcesOptions::watch_every`].
+//! late, so a watching connector is also looked at every [`SourcesOptions::watch_every`]: it
+//! runs then only when its files changed, or its last run did not read everything, so a
+//! database that did not change is not copied again.
+//!
+//! The person's setting of a source is read again before every batch of a run: a pause, an
+//! exclusion or a disconnect made while a run goes on counts from the next batch, and nothing
+//! of a source disconnected meanwhile is written or saved.
 //!
 //! Nothing runs while `sources` or `capture` is off in `config.toml`: Knode Service then brings
 //! nothing in on its own. Runs happen one at a time, so a space is never written by two
@@ -26,7 +32,7 @@ use notify::{RecursiveMode, Watcher as _};
 
 use super::{
     Connector, FetchRequest, FileStamp, LastError, SourceError, SourceSecrets, SourceSetting,
-    SourcesOptions, Trigger, Written, provenance, source_settings, state_key,
+    SourcesOptions, Trigger, Written, provenance, source_setting, source_settings, state_key,
 };
 use crate::server::{State, last_change, lock_ignoring_poison};
 
@@ -56,6 +62,8 @@ impl SourcesTask {
         home: PathBuf,
         options: SourcesOptions,
     ) -> std::io::Result<Self> {
+        // Copies of other apps' databases left by a Knode that ended while it read them.
+        knode_ingest::sources::sqlite::remove_stale_copies(running);
         let stopping = Arc::new(AtomicBool::new(false));
         let (wake, woken) = mpsc::channel();
         state.set_sources_wake(Some(wake.clone()));
@@ -75,6 +83,7 @@ impl SourcesTask {
                         files_changed: BTreeMap::new(),
                         forced: BTreeSet::new(),
                         stamps: BTreeMap::new(),
+                        read_all: BTreeSet::new(),
                         last_config_error: None,
                     };
                     runtime.supervise(&woken);
@@ -139,6 +148,10 @@ struct Runtime {
     /// The files a watching connector watches as they were when it last ran, by
     /// `<space id>/<source id>`: a file event runs it only when they changed since.
     stamps: BTreeMap<String, FileStamp>,
+    /// The sources whose last run read everything there was without an error, by
+    /// `<space id>/<source id>`: at its interval, such a watching connector runs only when its
+    /// files changed since.
+    read_all: BTreeSet<String>,
     last_config_error: Option<String>,
 }
 
@@ -177,17 +190,29 @@ impl Runtime {
                     }
                 };
                 if self.due(entry, changed) {
-                    self.forced.remove(&entry.key());
+                    let key = entry.key();
+                    let forced = self.forced.remove(&key);
                     // Taken before the run, so a change made while it runs runs it again.
-                    match stamp(entry.connector.as_ref()) {
-                        Some(stamp) => self.stamps.insert(entry.key(), stamp),
-                        None => self.stamps.remove(&entry.key()),
+                    let stamp = stamp(entry.connector.as_ref());
+                    // At its interval, a watching connector whose files did not change since
+                    // a run that read everything has nothing new to read: no copy is made.
+                    if !forced && !changed && self.unchanged(entry, stamp.as_ref()) {
+                        continue;
+                    }
+                    match stamp {
+                        Some(stamp) => self.stamps.insert(key.clone(), stamp),
+                        None => self.stamps.remove(&key),
                     };
-                    self.run(entry);
+                    if self.run(entry) {
+                        self.read_all.insert(key);
+                    } else {
+                        self.read_all.remove(&key);
+                    }
                 }
             }
             let keys: BTreeSet<String> = entries.iter().map(Entry::key).collect();
             self.stamps.retain(|key, _| keys.contains(key));
+            self.read_all.retain(|key| keys.contains(key));
             let wait = self.wait(&entries);
             match woken.recv_timeout(wait) {
                 Ok(wake) => {
@@ -323,6 +348,32 @@ impl Runtime {
         changed || state.next_run.is_none_or(|t| now >= t)
     }
 
+    /// Whether the files the entry watches are as they were before its last run, which read
+    /// everything: then its next run is only set later, and nothing is read or copied.
+    fn unchanged(&self, entry: &Entry, now: Option<&FileStamp>) -> bool {
+        let key = entry.key();
+        if !matches!(entry.connector.trigger(), Trigger::Watch { .. })
+            || !self.read_all.contains(&key)
+        {
+            return false;
+        }
+        let same = matches!((now, self.stamps.get(&key)), (Some(now), Some(last)) if now == last);
+        if !same {
+            return false;
+        }
+        let registry = self.state.registry();
+        let mut states = registry.states();
+        let Some(state) = states.get_mut(&key) else {
+            return false;
+        };
+        // Kept in memory only: the state on disk says when it last really ran.
+        state.next_run = Some(later(
+            Timestamp::now(),
+            interval(&self.options, entry.connector.as_ref()),
+        ));
+        true
+    }
+
     /// How long to wait before looking again.
     fn wait(&self, entries: &[Entry]) -> Duration {
         let mut wait = self.options.settings_poll;
@@ -342,25 +393,44 @@ impl Runtime {
         wait.max(Duration::from_millis(10))
     }
 
-    /// Runs one connector for one space and records what happened.
-    fn run(&self, entry: &Entry) {
+    /// Runs one connector for one space and records what happened. Nothing is recorded for a
+    /// source disconnected while it ran: its state stays forgotten. Returns whether it read
+    /// everything there was, without an error.
+    fn run(&self, entry: &Entry) -> bool {
         let registry = self.state.registry();
         let key = entry.key();
         let started = Timestamp::now();
         registry.set_running(&key, true);
         let result = self.batches(entry, &key);
         registry.set_running(&key, false);
-        let interval = match entry.connector.trigger() {
-            // Events on files kept open come late: the interval is the bound.
-            Trigger::Watch { every, .. } => every.min(self.options.watch_every),
-            Trigger::Interval(every) => every,
+        if matches!(result, Ok((_, Ended::Gone))) {
+            return false;
+        }
+        let done = matches!(result, Ok((_, Ended::Done)));
+        let interval = interval(&self.options, entry.connector.as_ref());
+        // The space is locked while the state is saved, so a disconnect cannot come between
+        // the check that the source is still connected and the save.
+        let space = match self.state.space(&entry.space) {
+            Ok(space) => space,
+            Err(e) => {
+                eprintln!(
+                    "Knode Service: {} cannot be opened: {}",
+                    entry.space.display(),
+                    e.message
+                );
+                return false;
+            }
         };
+        let space = lock_ignoring_poison(&space);
+        if matches!(live(&space, entry), Ok(None)) {
+            return false;
+        }
         let mut states = registry.states();
         let state = states.entry(&key);
         state.last_run = Some(started);
         let now = Timestamp::now();
         match result {
-            Ok(written) => {
+            Ok((written, _)) => {
                 state.last_success = Some(now);
                 state.last_items = written.items;
                 state.last_error = None;
@@ -395,14 +465,30 @@ impl Runtime {
                 });
             }
         }
+        let read_all = done
+            && !state
+                .cursor
+                .as_ref()
+                .is_some_and(|c| entry.connector.waiting(c));
         if let Err(e) = states.save(&self.home) {
             eprintln!("Knode Service: the state of sources cannot be saved: {e}");
         }
+        read_all
     }
 
-    /// Fetches and writes batches until the connector has nothing more, or the run is long
-    /// enough. Returns what was written, and the error that stopped it, if any.
-    fn batches(&self, entry: &Entry, key: &str) -> Result<Written, (Written, SourceError)> {
+    /// Fetches and writes batches until the connector has nothing more, the run is long
+    /// enough, or the person paused or disconnected the source. Returns what was written and
+    /// how the run ended, or the error that stopped it.
+    ///
+    /// The setting of the source is read again before each batch, so a pause or an exclusion
+    /// made while the run goes on counts from the next batch, and again with the space locked
+    /// before a batch is written: a batch fetched before the source was paused, disconnected,
+    /// or had one of its chats excluded is not written, and its cursor is not saved.
+    fn batches(
+        &self,
+        entry: &Entry,
+        key: &str,
+    ) -> Result<(Written, Ended), (Written, SourceError)> {
         let mut written = Written::default();
         entry.connector.check().map_err(|e| (written, e))?;
         let registry = self.state.registry();
@@ -412,24 +498,44 @@ impl Runtime {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
+            let setting = {
+                let space = self.space(entry).map_err(|e| (written, e))?;
+                let space = lock_ignoring_poison(&space);
+                match live(&space, entry).map_err(|e| (written, e))? {
+                    None => return Ok((written, Ended::Gone)),
+                    Some(setting) if !setting.on => return Ok((written, Ended::Paused)),
+                    Some(setting) => setting,
+                }
+            };
             let cursor = registry.states().get(key).and_then(|s| s.cursor.clone());
             let request = FetchRequest {
                 space_id: &entry.space_id,
                 cursor: cursor.as_ref(),
-                history: entry.setting.history,
-                since: entry.setting.since,
-                excluded: &entry.setting.exclude,
+                history: setting.history,
+                since: setting.since,
+                excluded: &setting.exclude,
                 max_items: self.options.max_items.max(1),
                 secrets: &secrets,
             };
             let fetched = entry.connector.fetch(&request).map_err(|e| (written, e))?;
+            let space = self.space(entry).map_err(|e| (written, e))?;
+            let mut space = lock_ignoring_poison(&space);
+            match live(&space, entry).map_err(|e| (written, e))? {
+                None => return Ok((written, Ended::Gone)),
+                Some(now) if !now.on => return Ok((written, Ended::Paused)),
+                // Fetched with fewer exclusions than there are now: fetched again.
+                Some(now)
+                    if now
+                        .exclude
+                        .iter()
+                        .any(|c| !setting.exclude.iter().any(|e| e.id == c.id)) =>
+                {
+                    continue;
+                }
+                Some(_) => {}
+            }
             let mut this = Written::default();
             if let Some(batch) = fetched.batch.filter(|b| !b.is_empty()) {
-                let space = self
-                    .state
-                    .space(&entry.space)
-                    .map_err(|e| (written, SourceError::Failed(e.message)))?;
-                let mut space = lock_ignoring_poison(&space);
                 let mark =
                     last_change(&space).map_err(|e| (written, SourceError::Failed(e.message)))?;
                 let result = batch.write(&mut space, &by);
@@ -438,7 +544,7 @@ impl Runtime {
                 this = result.map_err(|e| (written, e))?;
                 written += this;
             }
-            // Saved only now that the batch is in the space.
+            // Saved only now that the batch is in the space, with the space still locked.
             {
                 let mut states = registry.states();
                 let state = states.entry(key);
@@ -452,11 +558,60 @@ impl Runtime {
                 }
             }
             if !fetched.more {
-                break;
+                return Ok((written, Ended::Done));
             }
         }
-        Ok(written)
+        Ok((written, Ended::More))
     }
+
+    fn space(&self, entry: &Entry) -> Result<Arc<Mutex<knode_format::Space>>, SourceError> {
+        self.state
+            .space(&entry.space)
+            .map_err(|e| SourceError::Failed(e.message))
+    }
+}
+
+/// How a run that did not fail ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// It read everything there was.
+    Done,
+    /// It ran long enough, or the service is stopping: there may be more to read.
+    More,
+    /// The person paused the source while it ran.
+    Paused,
+    /// The person disconnected the source while it ran (or disconnected and connected it
+    /// again, which is another connection with its own state).
+    Gone,
+}
+
+/// The setting of the entry's source in the space now, or `None` when it is no longer the
+/// connection the run started for: disconnected, or connected again since.
+fn live(space: &knode_format::Space, entry: &Entry) -> Result<Option<SourceSetting>, SourceError> {
+    Ok(source_setting(space, &entry.source_id)
+        .map_err(SourceError::Space)?
+        .filter(|s| s.connected_at == entry.setting.connected_at))
+}
+
+/// The longest time between two runs of the connector.
+fn interval(options: &SourcesOptions, connector: &dyn Connector) -> Duration {
+    match connector.trigger() {
+        // Events on files kept open come late: the interval is the bound.
+        Trigger::Watch { every, .. } => every.min(options.watch_every),
+        Trigger::Interval(every) => every,
+    }
+}
+
+/// Whether the process `pid` is running (or cannot be told, so its files are kept).
+fn running(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    // Signal 0 sends nothing: it only asks whether the process is there.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// The files a connector watches as they are now; `None` when it watches none, or they cannot
@@ -564,6 +719,15 @@ mod tests {
         assert_eq!(backoff(&options, 2), Duration::from_secs(60));
         assert_eq!(backoff(&options, 3), Duration::from_secs(100));
         assert_eq!(backoff(&options, 400), Duration::from_secs(100));
+    }
+
+    #[test]
+    fn a_process_that_ended_is_not_running() {
+        assert!(running(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!running(pid));
     }
 
     #[test]
