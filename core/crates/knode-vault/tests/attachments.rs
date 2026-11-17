@@ -205,6 +205,86 @@ fn notes_from_other_apps_attach_the_files_they_embed() {
 }
 
 #[test]
+fn standard_markdown_images_attach_like_embeds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("vault");
+    let b = "# B\n\n![b](pic2.png)\n";
+    let c = "# C\n\n![c](<my pic.png>) ![d](my%20pic3.png) ![e](./dot.svg) [doc](report.pdf)\n\n\
+             ![w](https://example.com/web.png) ![x](data:image/png;base64,AAAA) [y](http:web.png)\n";
+    put(&vault, "a.md", "# A\n\n![[pic.png]]\n");
+    put(&vault, "b.md", b);
+    put(&vault, "c.md", c);
+    for name in [
+        "pic.png",
+        "pic2.png",
+        "my pic.png",
+        "my pic3.png",
+        "dot.svg",
+        "report.pdf",
+        "web.png",
+    ] {
+        put(&vault, name, PHOTO);
+    }
+
+    let mut space = Space::create(tmp.path().join("Vault.knode"), "Vault").unwrap();
+    let report = import(&mut space, &vault, &me()).unwrap();
+    assert!(report.skipped.is_empty(), "{report:?}");
+    assert_eq!(
+        report.attached,
+        [
+            "dot.svg",
+            "my pic.png",
+            "my pic3.png",
+            "pic.png",
+            "pic2.png",
+            "report.pdf"
+        ]
+    );
+    assert_eq!(
+        report.attachments,
+        ["web.png"],
+        "web addresses are not files"
+    );
+
+    let names = |title: &str| -> Vec<String> {
+        let id = space.find_by_title(title).unwrap()[0].id;
+        let mut names: Vec<String> = space
+            .attachments(&id)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names("A"), ["pic.png"]);
+    assert_eq!(names("B"), ["pic2.png"]);
+    assert_eq!(
+        names("C"),
+        ["dot.svg", "my pic.png", "my pic3.png", "report.pdf"]
+    );
+
+    // Exported, the notes keep their links as written, next to the same files.
+    let out = tmp.path().join("out");
+    export(&space, &out).unwrap();
+    let files = tree(&out);
+    // Export adds only the node's id in a frontmatter.
+    for (path, body) in [("b.md", b), ("c.md", c)] {
+        let md = String::from_utf8(files[path].clone()).unwrap();
+        assert!(md.ends_with(&format!("\n---\n{body}")), "{md}");
+    }
+    for name in [
+        "pic2.png",
+        "my pic.png",
+        "my pic3.png",
+        "dot.svg",
+        "report.pdf",
+    ] {
+        assert_eq!(files[name], PHOTO, "{name}");
+    }
+}
+
+#[test]
 fn links_of_unknown_kinds_are_kept_or_reported() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("in");

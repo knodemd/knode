@@ -161,6 +161,82 @@ fn the_report_maps_every_file_and_names_what_did_not_come_through() {
 }
 
 #[test]
+fn markdown_images_next_to_the_note_are_attached_and_reported_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Vault");
+    put(&dir, "a.md", "# A\n\n![[pic.png]]\n");
+    put(&dir, "b.md", "# B\n\n![b](pic2.png)\n");
+    put(&dir, "pic.png", [1]);
+    put(&dir, "pic2.png", [2]);
+    let mut space = Space::create(tmp.path().join("V.knode"), "V").unwrap();
+    let imported = import(&mut space, &dir, &me()).unwrap();
+    let r = report(&space, &dir, &imported).unwrap();
+    assert_eq!(
+        (r.counts.attached, r.counts.skipped, r.counts.failed),
+        (2, 0, 0),
+        "{:#?}",
+        r.files
+    );
+    assert!(
+        r.missing_attachments.is_empty(),
+        "{:?}",
+        r.missing_attachments
+    );
+}
+
+#[test]
+fn a_file_named_by_another_path_is_not_blamed_on_failed_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Vault");
+    put(&dir, "n.md", "# N\n\n![n](img/pic.png)\n");
+    put(&dir, "pic.png", [1]);
+    let mut space = Space::create(tmp.path().join("V.knode"), "V").unwrap();
+    let imported = import(&mut space, &dir, &me()).unwrap();
+    let r = report(&space, &dir, &imported).unwrap();
+    assert_eq!(r.counts.failed, 0);
+    let skipped = r.files.iter().find(|f| f.path == "pic.png").unwrap();
+    assert_eq!(skipped.status, FileStatus::Skipped);
+    let skipped = skipped.reason.clone().unwrap();
+    assert_eq!(r.missing_attachments.len(), 1);
+    let missing = &r.missing_attachments[0];
+    assert_eq!(missing.found, ["pic.png"]);
+    assert!(!missing.reason.contains("failed"), "{}", missing.reason);
+    assert!(
+        missing.reason.contains("another path"),
+        "{}",
+        missing.reason
+    );
+    assert!(skipped.contains("another path"), "{skipped}");
+}
+
+#[test]
+fn a_file_next_to_the_note_that_could_not_be_attached_points_to_the_failed_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Vault");
+    put(&dir, "n.md", "# N\n\n![n](pic.png)\n");
+    put(&dir, "pic.png", [1]);
+    let mut space = Space::create(tmp.path().join("V.knode"), "V").unwrap();
+    let mut imported = import(&mut space, &dir, &me()).unwrap();
+    // As if attaching it had failed.
+    let id = imported.nodes["n.md"];
+    space.detach(&id, "pic.png", &me()).unwrap();
+    imported.attached.clear();
+    imported.attachments.push("pic.png".into());
+    imported.skipped.push(knode_vault::Skipped {
+        path: "pic.png".into(),
+        reason: "too big".into(),
+    });
+    let r = report(&space, &dir, &imported).unwrap();
+    assert_eq!(r.counts.failed, 1);
+    assert_eq!(r.missing_attachments.len(), 1);
+    assert!(
+        r.missing_attachments[0].reason.contains("failed"),
+        "{}",
+        r.missing_attachments[0].reason
+    );
+}
+
+#[test]
 fn importing_again_keeps_edits_made_in_knode() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("Vault");

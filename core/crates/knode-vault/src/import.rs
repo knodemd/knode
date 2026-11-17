@@ -11,7 +11,7 @@ use knode_format::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::attachments::{files_to_blob_urls, wiki_names};
+use crate::attachments::{files_to_blob_urls, link_names, wiki_names};
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
 use crate::mirror::{read_attachment_map, read_link_kinds};
 use crate::names::{folder_of, join, stem_of, title_from_stem};
@@ -98,8 +98,9 @@ pub struct ImportOptions {
 ///   frontmatter is kept as it is, to be written back on export.
 /// - The path of the file, folders included, is kept in the property
 ///   [`markdown.path`](crate::property_keys::PATH).
-/// - A file a note embeds or links to by name (`![[beds.svg]]`, `[[beds.svg]]`) that is next to
-///   the note is attached to its node under that name, and so are the attachments
+/// - A file a note embeds or links to by name (`![[beds.svg]]`, `[[beds.svg]]`,
+///   `![Beds](beds.svg)`, `[plan](<beds plan.svg>)`, `beds%20plan.svg`) that is next to the note
+///   is attached to its node under that name, and so are the attachments
 ///   `.knode/files.json` lists for the note (a folder written by [`export`](crate::export)),
 ///   whose file names in Markdown links become `knode:blob/<hash>` again. An attachment with that
 ///   name and other content is replaced. Attached files are listed in
@@ -367,7 +368,10 @@ impl Batch {
             .iter()
             .map(|(name, path, _)| (name.clone(), path.clone()))
             .collect();
-        for name in wiki_names(&note.body) {
+        for name in wiki_names(&note.body)
+            .into_iter()
+            .chain(link_names(&note.body))
+        {
             let path = join(folder_of(rel), &name);
             if files.contains(&path) {
                 wanted.entry(name).or_insert(path);
