@@ -594,7 +594,8 @@ struct State {
     /// The conversation whose history is read first in the next run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     next: Option<String>,
-    /// Whether the next run reads a thread before a history.
+    /// Whether the next run reads a thread before a history: the last call made was a
+    /// history.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     threads_first: bool,
 }
@@ -944,7 +945,8 @@ impl<'a> Run<'a> {
 
         // 1 and 2. Threads with replies not read yet and the history of each conversation in
         // turn, one call each, starting where the last run stopped. The two take turns, and
-        // which goes first changes every run: under the lower limits a run makes about one
+        // the next run starts with the other kind than the last call made (a run stopped
+        // before any call changes nothing): under the lower limits a run makes about one
         // call, and neither a thread backfill nor a long history starves the other.
         let mut due = state
             .threads
@@ -963,7 +965,6 @@ impl<'a> Run<'a> {
         let mut pending = order.iter();
         let mut visited = 0;
         let mut threads_turn = state.threads_first;
-        state.threads_first = !state.threads_first;
         let mut idle = 0;
         while idle < 2 && !self.stopped() && batch.len() < max {
             if threads_turn {
@@ -971,6 +972,10 @@ impl<'a> Run<'a> {
                     Some(key) => {
                         idle = 0;
                         self.thread(request, state, batch, &key, page, now, &shape_of)?;
+                        if !self.stopped() {
+                            // The call was made, not refused by the limits or the time.
+                            state.threads_first = false;
+                        }
                     }
                     None => idle += 1,
                 }
@@ -992,7 +997,10 @@ impl<'a> Run<'a> {
                             page,
                         )? {
                             Visit::Stopped => break,
-                            Visit::Read => visited += 1,
+                            Visit::Read => {
+                                visited += 1;
+                                state.threads_first = true;
+                            }
                         }
                     }
                     None => idle += 1,
