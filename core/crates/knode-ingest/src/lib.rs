@@ -43,7 +43,9 @@
 //!
 //! Connectors that keep bringing in what is new implement [`sources::Connector`]; Knode Service
 //! runs them. [`imessage::IMessageConnector`] brings iMessage conversations in live, from a copy
-//! of the Messages database of the Mac, into the same `chat` nodes.
+//! of the Messages database of the Mac, into the same `chat` nodes, and
+//! [`slack::SlackConnector`] brings in the Slack conversations the person is in, through the
+//! Slack Web API, into the same nodes as a Slack export.
 
 mod aider;
 mod amp;
@@ -64,6 +66,9 @@ mod reader;
 mod redact;
 mod render;
 pub mod sources;
+
+/// The Slack connector: see [`slack::SlackConnector`].
+pub use chats::slack_live as slack;
 mod text;
 mod vscdb;
 mod watch;

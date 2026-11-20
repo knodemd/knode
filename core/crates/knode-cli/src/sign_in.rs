@@ -31,6 +31,8 @@ pub fn run(client: &Client, source: &str) -> Result<()> {
             }
             SignInState::SignedOut => SignInStep::Start {
                 account: match source {
+                    // The workspace is picked on Slack's page.
+                    "slack" => String::new(),
                     "gmail" => {
                         ask_optional("Your Gmail address (Return to choose it on Google's page)")?
                     }

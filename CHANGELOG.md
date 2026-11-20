@@ -61,6 +61,13 @@ belongs to, newest first.
   Apple Mail or the other connector is never added twice. `knode sources sign-in gmail` or
   `knode sources sign-in imap` signs in from the terminal, and disconnecting signs out and
   removes the secrets from the keychain.
+- **Slack connector**: brings in the channels, private channels, group messages and direct
+  messages you are in on Slack, with their threads and people, into the same nodes a Slack export
+  makes, so an export and the connector never write a message twice. `knode sources sign-in
+  slack` signs in once in the browser (OAuth with PKCE: Knode asks only to read, and keeps no
+  client secret); the sign-in stays in the system keychain, and signing out or disconnecting
+  the last space revokes it and removes it. Every conversation comes in except the channels you exclude. It reads within
+  Slack's rate limits, spreading what does not fit over the next runs.
 
 ### v0.3 - Map and import (in progress)
 

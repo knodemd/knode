@@ -91,6 +91,7 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     connectors.push(Arc::new(telegram::connector()));
     connectors.push(Arc::new(gmail::GmailConnector::new()));
     connectors.push(Arc::new(imap::ImapConnector::new()));
+    connectors.push(Arc::new(knode_ingest::slack::SlackConnector::from_env()));
     connectors
 }
 

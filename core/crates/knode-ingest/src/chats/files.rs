@@ -64,6 +64,15 @@ impl Files {
         })
     }
 
+    /// No files at all: for chats read from an API, whose files are links.
+    pub fn empty() -> Files {
+        Files {
+            source: Source::Dir(std::path::PathBuf::new()),
+            names: BTreeSet::new(),
+            single: None,
+        }
+    }
+
     /// The files of a folder, opened by their path inside it, without listing them first: for
     /// a folder as large as the one Messages keeps its attachments in.
     pub fn unlisted(dir: &Path) -> Files {

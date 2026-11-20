@@ -26,6 +26,7 @@ pub mod imessage;
 mod model;
 mod render;
 mod slack;
+pub mod slack_live;
 mod telegram;
 pub mod telegram_live;
 mod whatsapp;
