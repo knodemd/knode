@@ -385,6 +385,27 @@ final class FakeSignIn: SourceSignIn {
         #expect(client.source("whatsapp")?.setting?.history == .everything)
     }
 
+    @Test func closingTheSheetBeforeStartLeavesTheSourcePaused() async throws {
+        let client = FakeSourcesClient([Self.whatsapp()])
+        client.setContainers([SourceContainer(id: "2@g.us", name: "Family")], for: "whatsapp")
+        let model = makeModel(client)
+        await model.select(space)
+        let first = try #require(model.connectors.first)
+        let flow = try #require(model.connectFlow(for: first))
+
+        await flow.continueFromFullDiskAccess()
+        await flow.connect()
+        #expect(flow.step == .containers)
+        #expect(!flow.isManaging, "Start, not Done, until the person starts it.")
+
+        // Closed, or Start later: nothing turns it on.
+        flow.cancel()
+        #expect(!flow.isFinished)
+        #expect(!client.calls.contains { $0.hasPrefix("resume") })
+        #expect(client.source("whatsapp")?.isOn == false)
+        #expect(client.source("whatsapp")?.isConnected == true)
+    }
+
     @Test func choosingWhatAConnectedSourceReadsDoesNotPauseIt() async throws {
         var connected = Self.whatsapp(connected: true)
         connected.setting?.exclude = [SourceContainer(id: "2@g.us", name: "Family", excluded: true)]
