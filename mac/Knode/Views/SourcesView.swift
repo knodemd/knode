@@ -136,7 +136,9 @@ struct SourceCard: View {
     }
 
     private func confirmDisconnect() {
-        let secrets = source.needsSignIn ? " Its sign-in is removed from your Keychain." : ""
+        let secrets = source.needsSignIn
+            ? " Once no space on this Mac has it connected, its sign-in is removed from your Keychain."
+            : ""
         overlays?.confirmation = KConfirmation(
             title: "Disconnect \(source.name)?",
             message: "It stops bringing things into \(spaceName). Everything it brought in stays in the space, and so do your notes about it.\(secrets) Connecting it again asks for the history again.",
@@ -269,7 +271,7 @@ struct ConnectSourceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: KSpace.x5) {
             KSheetTitle(kicker: flow.isManaging ? "What it reads" : "Connect a source", title: flow.source.name,
-                        message: flow.source.reads, close: dismiss)
+                        message: flow.source.reads, close: cancel)
             if !flow.isManaging {
                 SourceStepsBar(steps: flow.steps, current: flow.stepIndex)
             }
@@ -291,18 +293,11 @@ struct ConnectSourceSheet: View {
         .onDisappear { flow.cancel() }
     }
 
-    /// Closing after connecting turns the source on, as Done does.
+    /// Closes without starting: a source this sheet connected stays connected, paused, until
+    /// the person starts it from its card.
     private func cancel() {
         flow.cancel()
         close()
-    }
-
-    private func dismiss() {
-        if flow.step == .containers {
-            Task { await flow.finish() }
-        } else {
-            close()
-        }
     }
 
     @ViewBuilder private var footer: some View {
@@ -329,6 +324,9 @@ struct ConnectSourceSheet: View {
                 KButton("Cancel", icon: .close, action: cancel)
                 primary("Connect", icon: .connect, disabled: flow.isBusy) { Task { await flow.connect() } }
             case .containers:
+                if !flow.isManaging {
+                    KButton("Start later", icon: .history, action: cancel)
+                }
                 primary(flow.isManaging ? "Done" : "Start", icon: flow.isManaging ? .done : .play, disabled: flow.isBusy) {
                     Task { await flow.finish() }
                 }
@@ -510,7 +508,8 @@ private struct ContainersStep: View {
     var body: some View {
         let noun = flow.containerNoun
         VStack(alignment: .leading, spacing: KSpace.x3) {
-            KExplanation("Every one of your \(noun) comes in, and new ones too, except the ones you switch off. One switched off is never read again; what came from it stays.")
+            KExplanation("Every one of your \(noun) comes in, and new ones too, except the ones you switch off. One switched off is never read again; what came from it stays."
+                + (flow.isManaging ? "" : " Nothing is read until you start it."))
             if flow.containers.count > 8 {
                 KSearchField(placeholder: "Find", text: $filter, size: .small)
             }
