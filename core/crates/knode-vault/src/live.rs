@@ -592,7 +592,7 @@ impl LiveFolder {
                     report.updated.push(rel.clone());
                     report.changes.push((id, ChangeOp::Update));
                 }
-                Outcome::Unchanged => {}
+                Outcome::Unchanged | Outcome::Kept | Outcome::Edited => {}
             }
             if !matches!(outcome, Outcome::Unchanged) || self.seen_path(&id) != Some(rel.clone()) {
                 self.record(id, ChangeOp::Update);

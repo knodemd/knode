@@ -232,6 +232,9 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                     let was = sources::disconnect(&mut space, &source, by)?;
                     if was {
                         sources::forget_state(&paths.home, &space.manifest().id, &source)?;
+                        drop(space);
+                        // As the service does: the sign-in goes with the last space.
+                        sources::sign_out_if_unused(&paths.home, &source);
                     }
                     was
                 }

@@ -65,45 +65,72 @@ pub(crate) fn write(
                 .or_insert_with(|| name.clone());
         }
     }
+    // Who becomes a person from some message of the import, whatever order the threads are
+    // written in: a message to many people or from a list still links to them.
+    let mut known = HashSet::new();
+    for mail in threads.iter().flat_map(|t| &t.messages) {
+        let (sure, _) = people_of(mail, &mut HashSet::new());
+        known.extend(sure.into_iter().map(|p| p.address.clone()));
+    }
     let mut people = People {
         names,
+        known,
         nodes: HashMap::new(),
         left_out: HashSet::new(),
     };
     for thread in threads {
         write_thread(space, source, thread, options, by, &mut people, report)?;
     }
-    report.people_left_out += people
-        .left_out
-        .iter()
-        .filter(|a| !people.nodes.contains_key(*a))
-        .count();
+    for address in &people.left_out {
+        if !people.nodes.contains_key(address) && person_in(space, address)?.is_none() {
+            report.people_left_out += 1;
+        }
+    }
     Ok(())
 }
 
-/// The people of the import: the name each address goes by, the node of each one written, and
-/// the addresses left out ([`people_of`]).
+/// The people of the import: the name each address goes by, the addresses that become people
+/// from some message of it, the node of each one written, and the addresses left out
+/// ([`people_of`]).
 struct People {
     names: HashMap<String, String>,
+    known: HashSet<String>,
     nodes: HashMap<String, NodeId>,
     left_out: HashSet<String>,
 }
 
-/// Who of a message becomes a person: its senders, and its recipients when it has at most
-/// [`MAX_RECIPIENTS`], `Bcc` only in sent mail. The others are added to `left_out`.
-fn people_of<'a>(mail: &'a Mail, left_out: &mut HashSet<String>) -> Vec<&'a Person> {
+/// Who of a message becomes a person, and who only when they are a person already.
+///
+/// Its senders, and its recipients when it has at most [`MAX_RECIPIENTS`], `Bcc` only in sent
+/// mail, become people. The recipients of a message to more, and everyone of mail from a list
+/// or bulk mail ([`Mail::list`]), only when they are people already or become people from
+/// another message of the import (such as everyone the person wrote to). The `Bcc` of mail that
+/// was not sent are added to `left_out`.
+fn people_of<'a>(
+    mail: &'a Mail,
+    left_out: &mut HashSet<String>,
+) -> (Vec<&'a Person>, Vec<&'a Person>) {
     let bcc: &[Person] = if mail.is_sent() { &mail.bcc } else { &[] };
     if !mail.is_sent() {
         left_out.extend(mail.bcc.iter().map(|p| p.address.clone()));
     }
     let recipients: Vec<&Person> = mail.to.iter().chain(&mail.cc).chain(bcc).collect();
-    let mut out: Vec<&Person> = mail.from.iter().collect();
-    if recipients.len() <= MAX_RECIPIENTS {
-        out.extend(recipients);
+    let senders = mail.from.iter();
+    if mail.list {
+        (Vec::new(), senders.chain(recipients).collect())
+    } else if recipients.len() <= MAX_RECIPIENTS {
+        (senders.chain(recipients).collect(), Vec::new())
     } else {
-        left_out.extend(recipients.iter().map(|p| p.address.clone()));
+        (senders.collect(), recipients)
     }
-    out
+}
+
+/// The person node of an address in the space, if there is one.
+fn person_in(space: &Space, address: &str) -> Result<Option<NodeSummary>, MailError> {
+    Ok(space
+        .find_by_property(keys::PERSON_EMAIL, address)?
+        .into_iter()
+        .find(|n| n.kind == kinds::PERSON))
 }
 
 fn write_thread(
@@ -311,7 +338,18 @@ fn write_thread(
     }
     let mut chosen = Vec::new();
     for mail in &thread.messages {
-        chosen.extend(people_of(mail, &mut people.left_out));
+        let (sure, if_known) = people_of(mail, &mut people.left_out);
+        chosen.extend(sure);
+        for person in if_known {
+            if people.known.contains(&person.address)
+                || people.nodes.contains_key(&person.address)
+                || person_in(space, &person.address)?.is_some()
+            {
+                chosen.push(person);
+            } else {
+                people.left_out.insert(person.address.clone());
+            }
+        }
     }
     for person in chosen {
         let person = person_node(space, person, by, people, report)?;
@@ -424,11 +462,7 @@ fn person_node(
         .get(&person.address)
         .map(|n| clean_title(n))
         .filter(|n| !n.is_empty());
-    let found = space
-        .find_by_property(keys::PERSON_EMAIL, &person.address)?
-        .into_iter()
-        .find(|n| n.kind == kinds::PERSON);
-    let id = match found {
+    let id = match person_in(space, &person.address)? {
         Some(node) => {
             if let Some(name) = name.filter(|_| node.title == person.address) {
                 space.update_node(

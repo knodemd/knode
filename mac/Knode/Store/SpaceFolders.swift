@@ -35,21 +35,28 @@ public struct SpaceFolder: Identifiable, Hashable, Sendable {
         public var created: Bool
         /// The folder had been added before and already held this project.
         public var alreadyHeld: Bool
+        /// The folder had been removed and, added again, took back the project it held before.
+        public var heldBefore: Bool
         /// When adding the folder gave it a project named after its parent folder too, such as
         /// "api (b)", the project of its own name that another folder holds.
         public var passedOver: String?
-        /// The folders, as recorded, that hold the files of `passedOver`.
+        /// The folders, as recorded, that hold the files of `passedOver`, or, when
+        /// `passedOverReleased`, the folder that held them last.
         public var passedOverFolders: [String]
+        /// No folder holds `passedOver` now: it is kept for the folder that held it.
+        public var passedOverReleased: Bool
         /// The other folders, as recorded, that hold the files of this project too.
         public var sharedWith: [String]
 
-        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], sharedWith: [String] = []) {
+        public init(id: Node.ID, title: String, created: Bool = false, alreadyHeld: Bool = false, heldBefore: Bool = false, passedOver: String? = nil, passedOverFolders: [String] = [], passedOverReleased: Bool = false, sharedWith: [String] = []) {
             self.id = id
             self.title = title
             self.created = created
             self.alreadyHeld = alreadyHeld
+            self.heldBefore = heldBefore
             self.passedOver = passedOver
             self.passedOverFolders = passedOverFolders
+            self.passedOverReleased = passedOverReleased
             self.sharedWith = sharedWith
         }
     }
@@ -136,4 +143,36 @@ struct CaptureAgent: Identifiable, Hashable, Sendable {
 /// The setting that turns capture into a space on or off.
 enum CaptureSetting {
     static let key = "capture.enabled"
+}
+
+/// Two project folders that overlap, as `folders.overlaps` answers: the same folder in two spaces,
+/// or one inside another. The core decides and says what it means in `message`.
+public struct FolderOverlap: Decodable, Hashable, Sendable {
+    /// One of the two folders, with its space.
+    public struct Folder: Decodable, Hashable, Sendable {
+        public var space: String
+        public var spaceName: String
+        /// The id of the folder in its space.
+        public var folder: String
+        public var path: String
+
+        enum CodingKeys: String, CodingKey {
+            case space, folder, path
+            case spaceName = "space_name"
+        }
+    }
+
+    /// `same` or `nested`, or a kind of a newer version.
+    public var kind: String
+    public var outer: Folder
+    public var inner: Folder
+    public var message: String
+
+    /// Whether the folder `id` of the space at `space` is one of the two.
+    func involves(folder id: String, inSpace space: URL) -> Bool {
+        let path = AgentInfo.canonicalPath(space)
+        return [outer, inner].contains {
+            $0.folder == id && AgentInfo.canonicalPath(URL(filePath: $0.space, directoryHint: .isDirectory)) == path
+        }
+    }
 }

@@ -85,6 +85,8 @@ pub(crate) struct ChatMessage {
     pub reply_to: Option<String>,
     /// Lines shown after it, in Markdown, such as a link to its thread.
     pub notes: Vec<String>,
+    /// How many secrets were replaced in it with `[redacted]`, counted when it is written.
+    pub redacted: usize,
 }
 
 impl ChatMessage {
@@ -107,6 +109,7 @@ impl ChatMessage {
             media: Vec::new(),
             reply_to: None,
             notes: Vec::new(),
+            redacted: 0,
         }
     }
 }

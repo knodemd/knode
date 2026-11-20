@@ -11,7 +11,7 @@ use knode_format::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::attachments::{files_to_blob_urls, wiki_names};
+use crate::attachments::{files_to_blob_urls, link_names, wiki_names};
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
 use crate::mirror::{read_attachment_map, read_link_kinds};
 use crate::names::{folder_of, join, stem_of, title_from_stem};
@@ -52,6 +52,30 @@ pub struct ImportReport {
     /// a target the space does not have, or a kind that cannot be defined.
     #[serde(default)]
     pub unlinked: Vec<Skipped>,
+    /// The node of every file read into the space, created, updated or not, by path.
+    #[serde(default)]
+    pub nodes: BTreeMap<String, NodeId>,
+    /// The files that did not change since the last import whose node was edited in Knode since
+    /// then: the node was left as it is. Also counted in [`unchanged`](Self::unchanged).
+    #[serde(default)]
+    pub kept: Vec<String>,
+    /// The files that changed since the last import whose node was also edited in Knode since
+    /// then: the node was left as it is, and the file's changes were not brought in.
+    #[serde(default)]
+    pub edited: Vec<String>,
+    /// The files imported before whose node was deleted in Knode since then, with the node
+    /// that was deleted: not imported again, unless
+    /// [`include_deleted`](ImportOptions::include_deleted) is set.
+    #[serde(default)]
+    pub deleted: BTreeMap<String, NodeId>,
+}
+
+/// How [`import_with`] imports a folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportOptions {
+    /// Import again the files whose node was deleted in Knode since they were imported, as new
+    /// nodes. Left out, they are listed in [`deleted`](ImportReport::deleted) and not imported.
+    pub include_deleted: bool,
 }
 
 /// Reads every `.md` file under `dir` into `space`, written by `by`.
@@ -67,14 +91,16 @@ pub struct ImportReport {
 ///   the space has no such node, the new node keeps the id, and for a file written by Knode its
 ///   `created`, `updated`, `created_by` and `updated_by` too, so a copy of a space has the same
 ///   ids, dates and authors. A file without an id updates the node imported before from the
-///   same path. Importing a folder again never duplicates.
+///   same path (not one [`import_file`] imported on its own). Importing a folder again never
+///   duplicates.
 /// - A file written by Knode gives the node its kind, tags, typed links and properties. Any other
 ///   file (an Obsidian note) gives it the tags of its frontmatter and its inline `#tags`; its
 ///   frontmatter is kept as it is, to be written back on export.
 /// - The path of the file, folders included, is kept in the property
 ///   [`markdown.path`](crate::property_keys::PATH).
-/// - A file a note embeds or links to by name (`![[beds.svg]]`, `[[beds.svg]]`) that is next to
-///   the note is attached to its node under that name, and so are the attachments
+/// - A file a note embeds or links to by name (`![[beds.svg]]`, `[[beds.svg]]`,
+///   `![Beds](beds.svg)`, `[plan](<beds plan.svg>)`, `beds%20plan.svg`) that is next to the note
+///   is attached to its node under that name, and so are the attachments
 ///   `.knode/files.json` lists for the note (a folder written by [`export`](crate::export)),
 ///   whose file names in Markdown links become `knode:blob/<hash>` again. An attachment with that
 ///   name and other content is replaced. Attached files are listed in
@@ -88,12 +114,50 @@ pub struct ImportReport {
 /// Typed links and attachments are added, never removed. A file that cannot be read or breaks a rule of the
 /// format (such as a bad kind) is skipped and listed in [`skipped`](ImportReport::skipped); the
 /// rest is imported.
+///
+/// # Importing again
+///
+/// Each node remembers, in [`markdown.imported`](crate::property_keys::IMPORTED), its title,
+/// kind, tags and body as the import left them and as the file had them. Importing the folder
+/// again compares the node and the file with that:
+///
+/// - neither changed: the node is unchanged;
+/// - only the file changed: the node takes the file's changes ([`updated`](ImportReport::updated));
+/// - only the node changed, in Knode: the node is left as it is ([`kept`](ImportReport::kept));
+/// - both changed: the node is left as it is and the file's changes are not brought in
+///   ([`edited`](ImportReport::edited)), for a person to merge by hand.
+///
+/// A node imported by an earlier version of Knode, which did not remember this, takes the file.
+///
+/// A note deleted in Knode stays deleted: a file imported before whose node is gone is not
+/// imported again, and is listed in [`deleted`](ImportReport::deleted). A file with an `id` is
+/// known by the history of that id; a file without one, by the setting
+/// [`markdown.import.paths`](crate::setting_keys::IMPORTED_PATHS), where the import keeps the
+/// node of each such file (written only when `by` is a person, who alone may change settings).
+/// [`import_with`] and [`include_deleted`](ImportOptions::include_deleted) bring them back.
+/// Notes are written one at a time, so an import that stops halfway leaves the notes it wrote;
+/// running it again finds them and writes the rest, and makes the typed links only made at the
+/// end. A file renamed or moved in the folder without an `id` in its frontmatter is a new note:
+/// the node of its old path stays.
 pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Result<ImportReport> {
+    import_with(space, dir, by, &ImportOptions::default())
+}
+
+/// [`import`], with `options`.
+pub fn import_with(
+    space: &mut Space,
+    dir: impl AsRef<Path>,
+    by: &Provenance,
+    options: &ImportOptions,
+) -> Result<ImportReport> {
     let dir = dir.as_ref();
+    let mut paths = imported_paths(space)?;
+    let recorded = paths.clone();
     let mut notes = Vec::new();
     let mut report = ImportReport::default();
     walk(dir, "", &mut notes, &mut report.attachments)?;
     let mut batch = Batch::new(dir, &report.attachments);
+    batch.keep_edits = true;
     for rel in notes {
         let full = dir.join(&rel);
         let text = match fs::read_to_string(&full) {
@@ -108,7 +172,113 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
         };
         let mut note = parse(&rel, &text);
         note.file_times = file_times(&full);
-        batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
+        if !options.include_deleted
+            && let Some(gone) = deleted_in_knode(space, &paths, &rel, &note)?
+        {
+            report.deleted.insert(rel, gone);
+            continue;
+        }
+        let has_id = note.id.is_some();
+        if let Some((id, _)) = batch.note(space, &rel, note, by, &mut report, &mut no_hook)? {
+            if has_id {
+                paths.remove(&rel);
+            } else {
+                paths.insert(rel, id);
+            }
+        }
+    }
+    batch.finish(space, by, &mut report)?;
+    if paths != recorded && by.kind == ActorKind::Person {
+        let value = serde_json::to_string(&paths)
+            .map_err(|e| knode_format::Error::Invalid(e.to_string()))?;
+        space.set_setting(crate::setting_keys::IMPORTED_PATHS, Some(&value), by)?;
+    }
+    Ok(report)
+}
+
+/// The node of each file without an `id` that [`import`] read, by path: the setting
+/// [`markdown.import.paths`](crate::setting_keys::IMPORTED_PATHS). Empty when it is not set or
+/// cannot be read.
+fn imported_paths(space: &Space) -> Result<BTreeMap<String, NodeId>> {
+    Ok(space
+        .setting(crate::setting_keys::IMPORTED_PATHS)?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+/// The node deleted in Knode that the file `rel` was imported as, if it was: a file with an `id`
+/// whose node is gone but has a history, or a file without one recorded in `paths` whose node is
+/// gone, when no other node has its path.
+fn deleted_in_knode(
+    space: &Space,
+    paths: &BTreeMap<String, NodeId>,
+    rel: &str,
+    note: &Note,
+) -> Result<Option<NodeId>> {
+    if let Some(id) = note.id {
+        let gone = find(space, &id.to_string())?.is_none() && !space.history(&id)?.is_empty();
+        return Ok(gone.then_some(id));
+    }
+    let Some(id) = paths.get(rel) else {
+        return Ok(None);
+    };
+    if space.get_node(id)?.is_some() {
+        return Ok(None);
+    }
+    for s in space.find_by_property(keys::PATH, rel)? {
+        if space.property(&s.id, keys::FILE)?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(*id))
+}
+
+/// Imports one Markdown file as [`import`] would if it were alone in its folder: its frontmatter,
+/// its dates and its `markdown.path` (the file name). `key` names the file in the space, kept in
+/// [`markdown.file`](crate::property_keys::FILE): importing a file with the same key again
+/// updates the same node, and files with the same name in other folders (other keys), or in a
+/// folder imported with [`import`], are other nodes. `title`, when given, names the note instead
+/// of its file name. Files next to it that it embeds are attached.
+pub fn import_file(
+    space: &mut Space,
+    file: impl AsRef<Path>,
+    key: &str,
+    title: Option<String>,
+    by: &Provenance,
+) -> Result<ImportReport> {
+    let file = file.as_ref();
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let rel = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut report = ImportReport::default();
+    // Only the files beside it can be its attachments; the other notes there are not read.
+    let siblings: Vec<String> = fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.') && !n.to_lowercase().ends_with(".md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut batch = Batch::new(dir, &siblings);
+    match fs::read_to_string(file) {
+        Ok(text) => {
+            let mut note = parse(&rel, &text);
+            if let Some(title) = title {
+                note.title = title;
+            }
+            note.file_times = file_times(file);
+            note.file = Some(key.to_string());
+            batch.note(space, &rel, note, by, &mut report, &mut no_hook)?;
+        }
+        Err(e) => report.skipped.push(Skipped {
+            path: rel,
+            reason: e.to_string(),
+        }),
     }
     batch.finish(space, by, &mut report)?;
     Ok(report)
@@ -118,7 +288,7 @@ pub fn import(space: &mut Space, dir: impl AsRef<Path>, by: &Provenance) -> Resu
 /// change the note, or write the node itself first. See [`Batch::note`].
 pub(crate) type Hook<'a> = dyn FnMut(&mut Space, NodeId, &str, &mut Note) -> Result<()> + 'a;
 
-fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
+pub(crate) fn no_hook(_: &mut Space, _: NodeId, _: &str, _: &mut Note) -> Result<()> {
     Ok(())
 }
 
@@ -132,6 +302,8 @@ pub(crate) struct Batch {
     exported: crate::mirror::AttachmentMap,
     attached: BTreeSet<String>,
     pending_links: Vec<(String, NodeId, String, Vec<String>)>,
+    /// Whether a node edited in Knode since it was imported is left as it is: see [`import`].
+    keep_edits: bool,
 }
 
 impl Batch {
@@ -143,6 +315,7 @@ impl Batch {
             exported: read_attachment_map(dir),
             attached: BTreeSet::new(),
             pending_links: Vec::new(),
+            keep_edits: false,
         }
     }
 
@@ -180,7 +353,7 @@ impl Batch {
         };
         note.body = blob_urls(&|_, hash| hash.to_string());
         let read = note.body.clone();
-        let (id, outcome) = match write(space, rel, &mut note, by, hook) {
+        let (id, outcome) = match write(space, rel, &mut note, by, self.keep_edits, hook) {
             Ok(written) => written,
             Err(e) => {
                 report.skipped.push(Skipped {
@@ -195,7 +368,10 @@ impl Batch {
             .iter()
             .map(|(name, path, _)| (name.clone(), path.clone()))
             .collect();
-        for name in wiki_names(&note.body) {
+        for name in wiki_names(&note.body)
+            .into_iter()
+            .chain(link_names(&note.body))
+        {
             let path = join(folder_of(rel), &name);
             if files.contains(&path) {
                 wanted.entry(name).or_insert(path);
@@ -217,8 +393,9 @@ impl Batch {
         // A file changed since the export: its links name the blob now attached.
         let fixed = blob_urls(&|name, hash| hashes.get(name).cloned().unwrap_or(hash.into()));
         let mut outcome = outcome;
-        // Unless the hook chose another body.
-        if note.body == read && fixed != note.body {
+        let kept = matches!(outcome, Outcome::Kept | Outcome::Edited);
+        // Unless the hook chose another body, or the node keeps its own.
+        if !kept && note.body == read && fixed != note.body {
             space.update_node(
                 &id,
                 NodeUpdate {
@@ -235,6 +412,15 @@ impl Batch {
             Outcome::Created => report.created.push(rel.to_string()),
             Outcome::Updated => report.updated.push(rel.to_string()),
             Outcome::Unchanged => report.unchanged += 1,
+            Outcome::Kept => {
+                report.unchanged += 1;
+                report.kept.push(rel.to_string());
+            }
+            Outcome::Edited => report.edited.push(rel.to_string()),
+        }
+        report.nodes.insert(rel.to_string(), id);
+        if self.keep_edits && !kept {
+            remember_import(space, &id, &note, by)?;
         }
         for (kind, targets) in std::mem::take(&mut note.links) {
             self.pending_links
@@ -399,6 +585,8 @@ pub(crate) struct Note {
     pub(crate) body: String,
     /// When the file was created and last modified, for a note whose dates Knode did not write.
     pub(crate) file_times: Option<(Timestamp, Timestamp)>,
+    /// The key of a file imported on its own: see [`keys::FILE`].
+    pub(crate) file: Option<String>,
 }
 
 /// When a file was created and last modified, as far as the file system says: a file system
@@ -574,6 +762,70 @@ pub(crate) enum Outcome {
     Created,
     Updated,
     Unchanged,
+    /// The file did not change since the last import, the node did: left as it is.
+    Kept,
+    /// Both changed since the last import: the node was left as it is.
+    Edited,
+}
+
+/// A hash of what a file gives a node: its title, kind, tags and body.
+fn note_hash(note: &Note) -> String {
+    let mut tags = note.tags.clone();
+    tags.sort();
+    tags.dedup();
+    let mut text = String::new();
+    for part in [
+        note.title.as_str(),
+        note.kind.as_deref().unwrap_or(""),
+        &tags.join("\u{1f}"),
+        &note.body,
+    ] {
+        text.push_str(part);
+        text.push('\0');
+    }
+    crate::mirror::content_hash(text.as_bytes())
+}
+
+/// Remembers the node as the import left it and the file it was read from: see [`import`].
+fn remember_import(space: &mut Space, id: &NodeId, note: &Note, by: &Provenance) -> Result<()> {
+    if let Some(node) = space.get_node(id)? {
+        let value = format!("{} {}", crate::live::fields_hash(&node), note_hash(note));
+        space.set_property(id, keys::IMPORTED, &value, by)?;
+    }
+    Ok(())
+}
+
+/// Whether the node was edited in Knode since it was last imported: `Kept` when the file did
+/// not change since then, `Edited` when it did. `None` when the node was not edited, already
+/// agrees with the file, or was imported by a version of Knode that did not remember it.
+fn knode_edits(space: &Space, id: &NodeId, note: &Note) -> Result<Option<Outcome>> {
+    let Some(imported) = space.property(id, keys::IMPORTED)? else {
+        return Ok(None);
+    };
+    let Some((node_hash, file_hash)) = imported.split_once(' ') else {
+        return Ok(None);
+    };
+    let Some(node) = space.get_node(id)? else {
+        return Ok(None);
+    };
+    let mut tags = note.tags.clone();
+    tags.sort();
+    tags.dedup();
+    let mut node_tags = node.tags.clone();
+    node_tags.sort();
+    node_tags.dedup();
+    let agree = node.title == note.title
+        && node.body == note.body
+        && node_tags == tags
+        && note.kind.as_ref().is_none_or(|k| *k == node.kind);
+    if agree || crate::live::fields_hash(&node) == node_hash {
+        return Ok(None);
+    }
+    Ok(Some(if note_hash(note) == file_hash {
+        Outcome::Kept
+    } else {
+        Outcome::Edited
+    }))
 }
 
 /// The node a file `id` stands for: the node with that id, or a node imported from a file with
@@ -597,15 +849,34 @@ fn write(
     rel: &str,
     note: &mut Note,
     by: &Provenance,
+    keep_edits: bool,
     hook: &mut Hook<'_>,
 ) -> Result<(NodeId, Outcome)> {
-    let existing = match note.id {
-        Some(id) => find(space, &id.to_string())?,
-        None => space
-            .find_by_property(keys::PATH, rel)?
+    let existing = match (note.id, &note.file) {
+        (Some(id), _) => find(space, &id.to_string())?,
+        // A file on its own is found by its key, never by its name alone.
+        (None, Some(file)) => space
+            .find_by_property(keys::FILE, file)?
             .first()
             .map(|s| s.id),
+        // A folder's file, by its path, but not a node a file on its own came from.
+        (None, None) => {
+            let mut found = None;
+            for s in space.find_by_property(keys::PATH, rel)? {
+                if space.property(&s.id, keys::FILE)?.is_none() {
+                    found = Some(s.id);
+                    break;
+                }
+            }
+            found
+        }
     };
+    if let Some(id) = existing
+        && keep_edits
+        && let Some(outcome) = knode_edits(space, &id, note)?
+    {
+        return Ok((id, outcome));
+    }
 
     if let Some(id) = existing {
         hook(space, id, rel, note)?;
@@ -614,6 +885,9 @@ fn write(
 
     let mut props = note.props.clone();
     props.insert(keys::PATH.into(), rel.into());
+    if let Some(file) = &note.file {
+        props.insert(keys::FILE.into(), file.clone());
+    }
     if note.vault {
         props.insert(keys::STYLE.into(), STYLE_VAULT.into());
     }
@@ -705,7 +979,7 @@ fn write(
             (node.id, Outcome::Created)
         }
         Some(id) => {
-            let before = space.get_node(&id)?.map(|n| n.updated_at);
+            let before = space.get_node(&id)?;
             let node = space.update_node(
                 &id,
                 NodeUpdate {
@@ -716,7 +990,14 @@ fn write(
                 },
                 by,
             )?;
-            let mut changed = before != Some(node.updated_at);
+            // Two writes in the same millisecond keep `updated_at`: the fields tell too.
+            let mut changed = before.as_ref().is_none_or(|b| {
+                b.updated_at != node.updated_at
+                    || b.title != node.title
+                    || b.body != node.body
+                    || b.kind != node.kind
+                    || b.tags != node.tags
+            });
             changed |= space.set_properties(&id, &props, by)?;
             for key in stale {
                 changed |= space.remove_property(&id, key)?;

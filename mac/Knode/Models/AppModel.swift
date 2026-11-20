@@ -6,6 +6,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case newSpace
     case onboarding
     case onboardingReview(URL)
+    /// Connect your agents, on its own.
+    case connectAgents
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -47,6 +49,15 @@ final class AppModel {
     private(set) var defaultSpaceURL: URL?
     /// The sheet shown over the window, if any.
     var sheet: SpaceSheet?
+
+    /// Whether Connect your agents can open now: never over another sheet, which may be busy (Get
+    /// started importing, for one) and shows its own way there.
+    var canShowConnectAgents: Bool { sheet == nil || sheet == .connectAgents }
+
+    /// Opens Connect your agents unless another sheet is open.
+    func showConnectAgents() {
+        if canShowConnectAgents { sheet = .connectAgents }
+    }
     /// The space the person asked to take off the sidebar, while they confirm.
     var spaceToRemove: SpaceItem?
     private(set) var selectedSpaceID: Space.ID?
@@ -409,6 +420,16 @@ final class AppModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Adds the spaces made outside the app since launch (the command line, an agent, an import)
+    /// that the person has not taken off the list, and notes a new default space.
+    func refreshKnownSpaces() {
+        guard let spaceLibrary else { return }
+        defaultSpaceURL = try? settings.defaultSpace()
+        spaceLibrary.addKnown([defaultSpaceURL].compactMap { $0 } + settings.knownSpaces())
+        let entries = spaceLibrary.entries
+        if entries != library { library = entries }
     }
 
     /// Takes a space off the sidebar and closes it. Its files stay where they are. With `forget`,
@@ -954,6 +975,8 @@ final class AppModel {
         do {
             let space = try await openedSpace(at: url)
             let folders = SpaceFoldersModel(space: space, store: store(for: space.id))
+            folders.spaceURL = url
+            folders.captureSpaces = { [settings] in settings.captureSpaces() }
             folders.projectsChanged = { [weak self] in
                 if self?.selectedSpaceID == space.id { await self?.reload() }
             }

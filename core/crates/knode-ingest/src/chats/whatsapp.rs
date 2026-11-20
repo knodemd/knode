@@ -336,8 +336,6 @@ pub(crate) struct Read {
     pub note: Option<String>,
     /// Lines that start like a message but whose date is not one, with why.
     pub skipped: Vec<(String, String)>,
-    /// How many secrets in the messages were replaced.
-    pub redacted: usize,
 }
 
 /// Why a chat cannot be imported into the node it was imported into before.
@@ -404,7 +402,6 @@ pub(crate) fn read(
             .insert(super::keys::DATE_ORDER.into(), order.id().into());
     }
     let mut skipped = Vec::new();
-    let mut redacted = 0;
     let mut seen: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (h, more) in entries {
         let Some(time) = time(&h, order) else {
@@ -429,8 +426,7 @@ pub(crate) fn read(
             });
         }
 
-        let (message_text, n) = crate::redact::redact_tokens(&message_text);
-        redacted += n;
+        let (message_text, redacted) = crate::redact::redact_tokens(&message_text);
 
         let mark = time.format("%Y-%m-%dT%H:%M").to_string();
         let base = stable_hash(&[&mark, sender.as_deref().unwrap_or(""), &without_bidi(&raw)]);
@@ -440,6 +436,7 @@ pub(crate) fn read(
         let mut message =
             ChatMessage::new(key, mark, time, sender, escape_text(message_text.trim()));
         message.media = media;
+        message.redacted = redacted;
         chat.messages.push(message);
     }
     chat.collect_participants();
@@ -462,7 +459,6 @@ pub(crate) fn read(
         chat,
         note,
         skipped,
-        redacted,
     }))
 }
 

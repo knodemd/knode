@@ -27,7 +27,7 @@ use crate::agents::{
 use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
 use crate::search::{IndexRunParams, IndexStatus, SearchResults};
-use crate::spaces::{FolderInfo, FolderInput, SpaceEvent};
+use crate::spaces::{FolderInfo, FolderInput, FolderOverlap, SpaceEvent};
 use crate::{Error, Result, paths};
 
 mod import;
@@ -313,6 +313,16 @@ impl Client {
         self.request(methods::FOLDERS_REMOVE, params)
     }
 
+    /// The project folders of `spaces` that overlap: the same folder in two of them, or one
+    /// inside another, with the space each one's conversations go to. Only a person can ask.
+    pub fn folder_overlaps(&self, spaces: &[PathBuf]) -> Result<Vec<FolderOverlap>> {
+        let spaces = spaces
+            .iter()
+            .map(|space| space_path(space))
+            .collect::<Result<Vec<_>>>()?;
+        self.request(methods::FOLDERS_OVERLAPS, FolderOverlapsParams { spaces })
+    }
+
     /// Creates a node.
     pub fn create_node(
         &self,
@@ -586,6 +596,37 @@ impl Client {
             space: space_path(space.as_ref())?,
         };
         self.request(methods::PROJECTS, params)
+    }
+
+    /// Whether a space has been set up: it has an onboarding receipt, a project or a few notes
+    /// of a person. See `knode_vault::onboarding::is_set_up`.
+    pub fn space_set_up(&self, space: impl AsRef<Path>) -> Result<bool> {
+        #[derive(serde::Deserialize)]
+        struct SetUp {
+            set_up: bool,
+        }
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        let answer: SetUp = self.request(methods::SPACE_SET_UP, params)?;
+        Ok(answer.set_up)
+    }
+
+    /// Applies a reviewed onboarding plan into `space`, which must not be set up yet: its
+    /// documents, a node for each project and the receipt, while what the space holds stays.
+    /// See `knode_vault::onboarding::apply_into`. People only.
+    pub fn onboarding_apply_into(
+        &self,
+        space: impl AsRef<Path>,
+        plan: &knode_vault::onboarding::Plan,
+        by: &Provenance,
+    ) -> Result<knode_vault::onboarding::Receipt> {
+        let params = OnboardingApplyIntoParams {
+            space: space_path(space.as_ref())?,
+            plan: plan.clone(),
+            by: by.clone(),
+        };
+        self.request(methods::ONBOARDING_APPLY_INTO, params)
     }
 
     /// The nodes that are part of a project, most recently changed first.

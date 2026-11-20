@@ -112,6 +112,7 @@ impl ChatWriter<'_> {
                 return Ok(None);
             }
             let id = self.create(chat, &new, files)?;
+            self.count_redacted(chat, &new);
             self.report.chats.push(imported(id, ChangeOp::Create));
             return Ok(Some(id));
         };
@@ -211,8 +212,25 @@ impl ChatWriter<'_> {
         }
         self.space.set_properties(&id, &props, &self.by)?;
         self.report.messages += new.len();
+        self.count_redacted(chat, &new);
         self.report.chats.push(imported(id, ChangeOp::Update));
         Ok(Some(id))
+    }
+
+    /// Counts the secrets replaced in the messages written. A message written twice, such as
+    /// the first message of a Slack thread, in its channel's node and again in the thread's
+    /// (whose id starts with the channel's and a `/`), is counted once.
+    fn count_redacted(&mut self, chat: &Chat, written: &[&ChatMessage]) {
+        let root = chat.id.split('/').next().unwrap_or(&chat.id);
+        for m in written.iter().filter(|m| m.redacted > 0) {
+            if self
+                .report
+                .redacted_seen
+                .insert(format!("{}\n{root}\n{}", chat.app.id(), m.key))
+            {
+                self.report.redacted += m.redacted;
+            }
+        }
     }
 
     fn mark(&self, id: &NodeId) -> Result<Option<Mark>, ChatImportError> {

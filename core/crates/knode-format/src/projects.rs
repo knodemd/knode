@@ -5,14 +5,18 @@ use std::collections::HashMap;
 
 use rusqlite::{Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use ulid::Generator;
 
 use unicode_normalization::UnicodeNormalization;
 
 use crate::access::{record_folder_project, write_folder};
-use crate::space::{SUMMARY_COLUMNS, SUMMARY_PATH, check_title, summary, write_new_node};
+use crate::space::{
+    Content, SUMMARY_COLUMNS, SUMMARY_PATH, check_title, next_ulid, provenance_id, summary,
+    write_new_node, write_properties,
+};
 use crate::{
     Error, Folder, FolderSpec, NewNode, NodeId, NodeSummary, Properties, Provenance, Result, Space,
-    Timestamp, folder_kinds, kinds, link_kinds,
+    Timestamp, folder_kinds, kinds, link_kinds, property_keys,
 };
 
 /// A new, empty `project` node with this title.
@@ -50,9 +54,13 @@ pub struct FolderProject {
     /// Whether the folder had been added before and already held the files of this project.
     #[serde(default, skip_serializing_if = "is_false")]
     pub already_held: bool,
-    /// The project of the folder's own name that the folder did not join because another folder
-    /// holds it, when adding it gave the folder a project named after its parent folders
-    /// instead, such as `api (b)` next to `api`.
+    /// Whether the folder had been removed and came back: it holds again the project it held
+    /// before, which no folder held while it was gone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub held_before: bool,
+    /// The first project named after the folder that the folder did not join because another
+    /// folder holds it, or held it last (`released`), when adding it gave the folder a project
+    /// named after its parent folders instead, such as `api (b)` next to `api`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passed_over: Option<PassedOverProject>,
     /// The other folders, as recorded, that hold the files of this project too. Empty unless
@@ -68,6 +76,7 @@ impl FolderProject {
             node,
             created: false,
             already_held: false,
+            held_before: false,
             passed_over: None,
             shared_with: Vec::new(),
         }
@@ -79,8 +88,13 @@ impl FolderProject {
 pub struct PassedOverProject {
     /// Its title.
     pub title: String,
-    /// The folders, as recorded, that hold its files.
+    /// The folders, as recorded, that hold its files, or, when `released`, the folder that held
+    /// them last.
     pub folders: Vec<String>,
+    /// Whether no folder holds it now: it is kept for the folder that held it, which takes it
+    /// back if it is added again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub released: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -247,6 +261,20 @@ impl Space {
         Ok(self.project_index()?.held(folder).cloned())
     }
 
+    /// Every folder of the space, oldest first, with the `project` node it holds the files of
+    /// (see [`folder_project`](Space::folder_project)), reading the projects once. Reads only.
+    pub fn folders_with_projects(&self) -> Result<Vec<(Folder, Option<NodeSummary>)>> {
+        let projects = self.project_index()?;
+        Ok(self
+            .folders()?
+            .into_iter()
+            .map(|folder| {
+                let project = projects.held(&folder).cloned();
+                (folder, project)
+            })
+            .collect())
+    }
+
     /// Adds a folder as [`set_folder`](Space::set_folder) does and, for a project folder, finds
     /// or creates the `project` node it holds the files of and records it in the folder's
     /// `project` rule, in one transaction: either both are written or neither. Every client adds
@@ -257,17 +285,23 @@ impl Space {
     /// folders of the same name are kept apart:
     ///
     /// - a folder added again keeps the project it holds (`already_held`);
-    /// - a new folder joins the space's project of its name when no other folder holds it, such
-    ///   as one an import made;
-    /// - when another folder holds it, the folder tries its name with its parent folders, such
-    ///   as `api (b)` for `~/w/b/api`, then `api (w - b)`, then `api (w - b) 2` and so on: it
-    ///   joins the first such project no folder holds, or creates the first name the space does
-    ///   not have, and `passed_over` names the project of its own name it did not join.
+    /// - a folder removed and added again takes back the project it held last, when no folder
+    ///   holds it now (`held_before`);
+    /// - a new folder joins the space's project of its name when no folder holds it and no
+    ///   folder ever held it, such as one an import made;
+    /// - otherwise the folder tries its name with its parent folders, such as `api (b)` for
+    ///   `~/w/b/api`, then `api (w - b)`, then `api (w - b) 2` and so on: it joins the first such
+    ///   project no folder ever held, or creates the first name the space does not have, and
+    ///   `passed_over` names the first project it did not join. A project a folder held is
+    ///   kept for that folder even after it is removed (`released`).
+    ///
+    /// The project records the folder that last held it in its `project.folder` property
+    /// ([`property_keys::PROJECT_FOLDER`]).
     ///
     /// Folders added before Knode recorded their project hold the project of their own name;
     /// the first folder added with this version records that for each of them (as a `system`
-    /// change), so a new project never changes theirs. Folders that shared a project then keep
-    /// sharing it, and `shared_with` names the others.
+    /// change), creating the project when the space has none, so a new folder never takes it.
+    /// Folders that shared a project then keep sharing it, and `shared_with` names the others.
     ///
     /// The lookup and the writes are made in one immediate transaction, so two writers adding
     /// folders of the same name at once create one project, not two.
@@ -299,8 +333,22 @@ impl Space {
             rules.insert(PROJECT_RULE.into(), id.to_string().into());
         }
         write_folder(&tx, &write, by, now)?;
-        if let Some(FolderPlan::Create { .. }) = &plan {
-            write_new_node(&tx, &new_id, content, &Properties::new(), by, now)?;
+        // The project keeps the folder that last held it.
+        let owner = Properties::from([(
+            property_keys::PROJECT_FOLDER.to_string(),
+            write.path.clone(),
+        )]);
+        match &plan {
+            Some(FolderPlan::Create { .. }) => {
+                write_new_node(&tx, &new_id, content, &owner, by, now)?;
+            }
+            Some(FolderPlan::Join(project)) => {
+                let id = &project.node.id;
+                if self.property(id, property_keys::PROJECT_FOLDER)?.as_ref() != Some(&write.path) {
+                    write_properties(&tx, id, &owner, provenance_id(&tx, by)?, now)?;
+                }
+            }
+            None => {}
         }
         tx.commit()?;
         let folder = self
@@ -328,29 +376,65 @@ impl Space {
         path: &str,
         now: Timestamp,
     ) -> Result<FolderPlan> {
-        let projects = self.project_index()?;
+        let mut projects = self.project_index()?;
+        let folders: Vec<Folder> = self
+            .folders()?
+            .into_iter()
+            .filter(|folder| folder.kind == folder_kinds::PROJECT)
+            .collect();
+        let system = Provenance::system();
+        let mut ids = Generator::new();
         let mut this = None;
         // The other project folders, by the project each holds.
         let mut holders: HashMap<NodeId, Vec<String>> = HashMap::new();
-        for mut folder in self.folders()? {
-            if folder.kind != folder_kinds::PROJECT {
+        for mut folder in folders {
+            if folder.id == id {
+                this = projects.held(&folder).map(|node| node.id);
                 continue;
             }
-            let held = projects.held(&folder).map(|node| node.id);
-            if let (true, None, Some(node), Some(rules)) = (
-                folder.id != id,
-                recorded_project(&folder),
-                held,
-                folder.rules.as_object_mut(),
-            ) {
-                rules.insert(PROJECT_RULE.into(), node.to_string().into());
+            // A folder added before Knode recorded its project holds the project of its own
+            // name: record it, creating it when the space has none, so this folder cannot take
+            // that name.
+            if recorded_project(&folder).is_none() && folder.rules.is_object() {
+                let Some(name) = folder_project_name(&folder.path) else {
+                    continue;
+                };
+                let node = match projects.named(&name).map(|node| node.id) {
+                    Some(node) => node,
+                    None => {
+                        let node = NodeId::from_ulid(next_ulid(&mut ids));
+                        let content = Content {
+                            kind: kinds::PROJECT.into(),
+                            title: check_title(&name)?,
+                            body: String::new(),
+                            tags: Vec::new(),
+                        };
+                        write_new_node(tx, &node, content, &Properties::new(), &system, now)?;
+                        // The connection reads the transaction's own writes.
+                        projects = self.project_index()?;
+                        node
+                    }
+                };
+                if let Some(rules) = folder.rules.as_object_mut() {
+                    rules.insert(PROJECT_RULE.into(), node.to_string().into());
+                }
                 record_folder_project(tx, &folder.id, &folder.rules, now)?;
             }
-            if folder.id == id {
-                this = held;
-            } else if let Some(node) = held {
-                holders.entry(node).or_default().push(folder.path);
+            let Some(node) = projects.held(&folder).map(|node| node.id) else {
+                continue;
+            };
+            // Projects held before Knode recorded the folder that held them keep it now.
+            if self
+                .property(&node, property_keys::PROJECT_FOLDER)?
+                .is_none()
+            {
+                let owner = Properties::from([(
+                    property_keys::PROJECT_FOLDER.to_string(),
+                    folder.path.clone(),
+                )]);
+                write_properties(tx, &node, &owner, provenance_id(tx, &system)?, now)?;
             }
+            holders.entry(node).or_default().push(folder.path);
         }
         let others = |node: &NodeSummary| holders.get(&node.id).cloned().unwrap_or_default();
 
@@ -362,6 +446,19 @@ impl Space {
                 ..FolderProject::found(node.clone())
             })));
         }
+        // A folder that comes back takes back the project it held last, if no folder holds it.
+        for held in self.find_by_property(property_keys::PROJECT_FOLDER, path)? {
+            let free = projects
+                .by_id
+                .get(&held.id)
+                .filter(|node| !holders.contains_key(&node.id));
+            if let Some(node) = free {
+                return Ok(FolderPlan::Join(Box::new(FolderProject {
+                    held_before: true,
+                    ..FolderProject::found(node.clone())
+                })));
+            }
+        }
         let names = folder_project_names(path);
         let last = names.last().cloned().unwrap_or_default();
         let numbered = (2u32..).map(|n| format!("{last} {n}"));
@@ -371,16 +468,31 @@ impl Space {
                 return Ok(FolderPlan::Create { name, passed_over });
             };
             let folders = others(node);
-            if folders.is_empty() {
-                return Ok(FolderPlan::Join(Box::new(FolderProject {
-                    passed_over,
-                    ..FolderProject::found(node.clone())
-                })));
+            if !folders.is_empty() {
+                passed_over.get_or_insert(PassedOverProject {
+                    title: node.title.clone(),
+                    folders,
+                    released: false,
+                });
+                continue;
             }
-            passed_over.get_or_insert(PassedOverProject {
-                title: node.title.clone(),
-                folders,
-            });
+            // No folder holds it: only a project no folder ever held can be joined; one a folder
+            // held is kept for that folder.
+            match self.property(&node.id, property_keys::PROJECT_FOLDER)? {
+                None => {
+                    return Ok(FolderPlan::Join(Box::new(FolderProject {
+                        passed_over,
+                        ..FolderProject::found(node.clone())
+                    })));
+                }
+                Some(owner) => {
+                    passed_over.get_or_insert(PassedOverProject {
+                        title: node.title.clone(),
+                        folders: vec![owner],
+                        released: true,
+                    });
+                }
+            }
         }
         unreachable!("the numbered names never end")
     }
@@ -743,24 +855,31 @@ mod tests {
             space.folder_project(&added_b.folder).unwrap().map(|n| n.id),
             Some(second.node.id)
         );
-        // The project api now holds no folder, so the next folder named api joins it.
-        let joined = space
+        // No folder holds api now, but it is kept for ~/w/a/api: another folder named api does
+        // not take it.
+        let other = space
             .add_folder(&folder(folder_kinds::PROJECT, "~/x/api"), &by)
             .unwrap()
             .project
             .unwrap();
-        assert_eq!(joined.node.id, first.node.id);
-        assert!(!joined.created && joined.passed_over.is_none());
+        assert!(other.created);
+        assert_eq!(other.node.title, "api (x)");
+        let passed = other.passed_over.unwrap();
+        assert!(passed.released);
+        assert_eq!(
+            (passed.title.as_str(), passed.folders.as_slice()),
+            ("api", ["~/w/a/api".to_string()].as_slice())
+        );
 
         // When every name is taken, the folder gets a numbered one: it never shares.
         let numbered = space
-            .add_folder(&folder(folder_kinds::PROJECT, "~/api"), &by)
+            .add_folder(&folder(folder_kinds::PROJECT, "/x/api"), &by)
             .unwrap()
             .project
             .unwrap();
         assert!(numbered.created && numbered.shared_with.is_empty());
-        assert_eq!(numbered.node.title, "api 2");
-        assert_eq!(space.projects().unwrap().len(), 4);
+        assert_eq!(numbered.node.title, "api (x) 2");
+        assert_eq!(space.projects().unwrap().len(), 5);
     }
 
     fn holds(space: &Space, path: &str) -> String {
@@ -898,48 +1017,252 @@ mod tests {
 
     #[test]
     fn concurrent_writers_create_one_project_of_a_name() {
-        // Two processes add folders named api to one space at the same time: the lookup and the
-        // write happen in one immediate transaction, so one creates api and the other, seeing
-        // it, creates api (b). Without it both could create api.
-        for round in 0..8 {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("S.knode");
-            drop(Space::create(&path, "S").unwrap());
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let writers: Vec<_> = ["~/w/a/api", "~/w/b/api"]
-                .into_iter()
-                .map(|folder_path| {
-                    let path = path.clone();
-                    let barrier = barrier.clone();
+        // Writers on one package (the CLI without the service while the service runs) add
+        // folders of the same new name at once: the lookup and the write happen in one immediate
+        // transaction, so there is one project of that name, not several.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("S.knode");
+        drop(Space::create(&path, "S").unwrap());
+        const WRITERS: usize = 4;
+        for round in 0..20 {
+            let name = format!("app{round}");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+            let handles: Vec<_> = (0..WRITERS)
+                .map(|writer| {
+                    let (path, name, barrier) = (path.clone(), name.clone(), barrier.clone());
                     std::thread::spawn(move || {
                         let mut space = Space::open(&path).unwrap();
+                        let spec = folder(folder_kinds::PROJECT, &format!("~/w{writer}/{name}"));
                         barrier.wait();
                         space
-                            .add_folder(
-                                &folder(folder_kinds::PROJECT, folder_path),
-                                &Provenance::person("Tester"),
-                            )
-                            .unwrap()
+                            .add_folder(&spec, &Provenance::person("Tester"))
+                            .unwrap();
                     })
                 })
                 .collect();
-            for writer in writers {
-                writer.join().unwrap();
+            for handle in handles {
+                handle.join().unwrap();
             }
             let space = Space::open(&path).unwrap();
-            let mut titles: Vec<_> = space
-                .projects()
-                .unwrap()
-                .into_iter()
-                .map(|p| p.node.title)
-                .collect();
-            titles.sort();
-            assert_eq!(titles.len(), 2, "round {round}: {titles:?}");
-            assert!(
-                titles.contains(&"api".to_string()),
-                "round {round}: {titles:?}"
-            );
+            let projects = space.projects().unwrap();
+            let named = projects.iter().filter(|p| p.node.title == name).count();
+            assert_eq!(named, 1, "{name}");
+            // Every folder got a project of its own.
+            assert_eq!(projects.len(), WRITERS * (round + 1), "{name}");
         }
+    }
+
+    fn add(space: &mut Space, path: &str) -> super::FolderProject {
+        space
+            .add_folder(
+                &folder(folder_kinds::PROJECT, path),
+                &Provenance::person("Tester"),
+            )
+            .unwrap()
+            .project
+            .unwrap()
+    }
+
+    fn remove(space: &mut Space, path: &str) {
+        let id = space
+            .folders()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap()
+            .id;
+        assert!(
+            space
+                .remove_folder(&id, &Provenance::person("Tester"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn an_older_folder_with_no_project_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        // Added the old way: no project rule and no project node.
+        let old = space
+            .set_folder(&folder(folder_kinds::PROJECT, "~/w/a/api"), &by)
+            .unwrap();
+        assert_eq!(space.folder_project(&old).unwrap(), None);
+
+        // The new folder records the old one's project first, so it does not take api.
+        let new = add(&mut space, "~/w/b/api");
+        assert!(new.created);
+        assert_eq!(new.node.title, "api (b)");
+        let passed = new.passed_over.unwrap();
+        assert!(!passed.released);
+        assert_eq!(passed.folders, ["~/w/a/api"]);
+        let old_project = space.folder_project(&space.folder(&old.id).unwrap().unwrap());
+        let old_project = old_project.unwrap().unwrap();
+        assert_eq!(old_project.title, "api");
+        assert_ne!(old_project.id, new.node.id);
+        // Made and recorded as a system change.
+        assert_eq!(old_project.updated_by, Provenance::system());
+        assert!(
+            space
+                .folder(&old.id)
+                .unwrap()
+                .unwrap()
+                .rules
+                .get("project")
+                .is_some()
+        );
+
+        // Adding the old folder again keeps api, held by it alone.
+        let again = add(&mut space, "~/w/a/api");
+        assert!(again.already_held && !again.created);
+        assert_eq!(again.node.id, old_project.id);
+        assert!(again.shared_with.is_empty());
+        assert_eq!(holds(&space, "~/w/b/api"), "api (b)");
+        assert_eq!(space.projects().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_project_no_folder_holds_is_kept_for_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        let plain = add(&mut space, "~/x/api");
+        let qualified = add(&mut space, "~/w/a/api");
+        assert_eq!(qualified.node.title, "api (a)");
+        let note = space
+            .create_node(NewNode::note("Plan", ""), &by)
+            .unwrap()
+            .id;
+        space
+            .link(&note, &qualified.node.id, link_kinds::PART_OF, &by)
+            .unwrap();
+        remove(&mut space, "~/w/a/api");
+
+        // An unrelated folder whose names lead to api (a) does not take it, or its notes.
+        let unrelated = add(&mut space, "~/y/a/api");
+        assert!(unrelated.created);
+        assert_eq!(unrelated.node.title, "api (y - a)");
+        assert_eq!(unrelated.passed_over.unwrap().title, "api");
+        assert!(
+            space
+                .project_notes(&unrelated.node.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        // The folder that held it takes it back, with its notes.
+        let back = add(&mut space, "~/w/a/api");
+        assert!(back.held_before && !back.created && !back.already_held);
+        assert_eq!(back.node.id, qualified.node.id);
+        assert_eq!(space.project_notes(&back.node.id, 10).unwrap().len(), 1);
+
+        // The same for the plain name.
+        remove(&mut space, "~/x/api");
+        let z = add(&mut space, "~/z/api");
+        assert!(z.created);
+        assert_eq!(z.node.title, "api (z)");
+        let passed = z.passed_over.unwrap();
+        assert!(passed.released);
+        assert_eq!(
+            (passed.title.as_str(), passed.folders.as_slice()),
+            ("api", ["~/x/api".to_string()].as_slice())
+        );
+        let x = add(&mut space, "~/x/api");
+        assert!(x.held_before);
+        assert_eq!(x.node.id, plain.node.id);
+        assert_eq!(space.projects().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_folder_takes_back_its_project_after_a_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        let api = add(&mut space, "~/w/a/api");
+        let update = crate::NodeUpdate {
+            title: Some("Payments API".into()),
+            ..Default::default()
+        };
+        space.update_node(&api.node.id, update, &by).unwrap();
+        remove(&mut space, "~/w/a/api");
+        let back = add(&mut space, "~/w/a/api");
+        assert!(back.held_before);
+        assert_eq!(back.node.id, api.node.id);
+        assert_eq!(space.projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_project_no_folder_ever_held_is_joined_by_the_first_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        // Made by an import, with no folder.
+        let imported = space.find_or_create_project("api", &by).unwrap().node;
+        let first = add(&mut space, "~/w/a/api");
+        assert!(!first.created && !first.held_before && first.passed_over.is_none());
+        assert_eq!(first.node.id, imported.id);
+        assert_eq!(
+            space
+                .property(&imported.id, crate::property_keys::PROJECT_FOLDER)
+                .unwrap()
+                .as_deref(),
+            Some("~/w/a/api")
+        );
+        // Once a folder held it, it is kept for that folder.
+        remove(&mut space, "~/w/a/api");
+        let other = add(&mut space, "~/w/b/api");
+        assert!(other.created);
+        assert_eq!(other.node.title, "api (b)");
+    }
+
+    #[test]
+    fn projects_recorded_before_the_folder_was_kept_get_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let api = add(&mut space, "~/w/a/api");
+        // As a project made before Knode kept the folder that held it.
+        assert!(
+            space
+                .remove_property(&api.node.id, crate::property_keys::PROJECT_FOLDER)
+                .unwrap()
+        );
+        // The next folder added writes it down, so the project stays with its folder.
+        add(&mut space, "~/w/c/web");
+        assert_eq!(
+            space
+                .property(&api.node.id, crate::property_keys::PROJECT_FOLDER)
+                .unwrap()
+                .as_deref(),
+            Some("~/w/a/api")
+        );
+        remove(&mut space, "~/w/a/api");
+        assert_eq!(add(&mut space, "~/w/b/api").node.title, "api (b)");
+    }
+
+    #[test]
+    fn listing_folders_finds_each_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let by = Provenance::person("Tester");
+        add(&mut space, "~/w/a/api");
+        add(&mut space, "~/w/b/api");
+        space
+            .add_folder(&folder(folder_kinds::NOTES, "~/Notes"), &by)
+            .unwrap();
+        let listed: Vec<_> = space
+            .folders_with_projects()
+            .unwrap()
+            .into_iter()
+            .map(|(f, p)| (f.path, p.map(|p| p.title)))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("~/w/a/api".to_string(), Some("api".to_string())),
+                ("~/w/b/api".to_string(), Some("api (b)".to_string())),
+                ("~/Notes".to_string(), None),
+            ]
+        );
     }
 
     #[test]

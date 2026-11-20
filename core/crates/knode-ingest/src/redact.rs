@@ -44,12 +44,17 @@ static WHOLE: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// `API_KEY=...`.
 static VALUES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
+        // `password: ...` and the like: the value runs to the next space, or to its closing
+        // quote when it starts with one.
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*"(?P<secret>[^"]{8,})""#,
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*'(?P<secret>[^']{8,})'"#,
+        r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*(?P<secret>[^\s"']\S{7,})"#,
         // `Authorization: Bearer ...`.
         r"(?i)\bbearer\s+(?P<secret>[A-Za-z0-9._~+/=\-]{16,})",
         // `password = ...`, `API_KEY: "..."` and the like.
         r#"(?i)\b[A-Za-z0-9_.\-]*(?:password|passwd|pwd|secret|token|api[_\-]?key|access[_\-]?key|private[_\-]?key)[A-Za-z0-9_.\-]*["']?\s*[:=]\s*["']?(?P<secret>[^\s"',;]{8,})"#,
         // `--password ...`, `--api-key=...` and the like on a command line.
-        r"(?i)--[a-z0-9\-]*(?:password|token|secret|api-key)[= ](?P<secret>[^\s\-][^\s]{7,})",
+        r"(?i)--[a-z0-9\-]*(?:password|passwd|pwd|token|secret|api-key)[= ](?P<secret>[^\s\-][^\s]{7,})",
         // The password in `scheme://user:password@host`.
         r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:(?P<secret>[^\s/@]+)@",
     ]
@@ -65,8 +70,9 @@ pub fn redact_secrets(text: &str) -> (String, usize) {
 
 /// Like [`redact_secrets`], for text people wrote to each other, such as chat messages, where
 /// "Secret: everything went fine" is a sentence: only what is shaped like a credential is
-/// replaced. Known key formats always are; after a name such as `password:` or `token=`, or
-/// `Bearer`, only a value of at least 16 characters with both letters and digits; and the
+/// replaced. Known key formats always are; after a name that says it is a password (`password`,
+/// `passwd`, `pwd`), any value of at least 8 characters; after another name such as `token=`,
+/// or `Bearer`, only a value of at least 16 characters with both letters and digits; and the
 /// password in a URL.
 pub(crate) fn redact_tokens(text: &str) -> (String, usize) {
     redact(text, true)
@@ -76,6 +82,14 @@ pub(crate) fn redact_tokens(text: &str) -> (String, usize) {
 /// the password in a URL, the last one.
 fn any_value(rule: usize) -> bool {
     rule == VALUES.len() - 1
+}
+
+/// Whether the text before a value names a password, such as `password:` or `--pwd=`.
+fn names_password(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["password", "passwd", "pwd"]
+        .iter()
+        .any(|n| name.contains(n))
 }
 
 /// Whether a value after a name looks generated rather than written: long, with letters and
@@ -105,14 +119,18 @@ fn redact(text: &str, tokens_only: bool) -> (String, usize) {
                 .replace_all(&out, |caps: &Captures| {
                     let whole = caps.get(0).expect("match");
                     let secret = caps.name("secret").expect("secret group");
+                    let start = secret.start() - whole.start();
+                    let end = secret.end() - whole.start();
+                    let name = &whole.as_str()[..start];
                     if secret.as_str().contains(REDACTED)
-                        || (tokens_only && !any_value(rule) && !token_shaped(secret.as_str()))
+                        || (tokens_only
+                            && !any_value(rule)
+                            && !token_shaped(secret.as_str())
+                            && !(names_password(name) && secret.as_str().chars().count() >= 8))
                     {
                         return whole.as_str().to_string();
                     }
                     count += 1;
-                    let start = secret.start() - whole.start();
-                    let end = secret.end() - whole.start();
                     format!(
                         "{}{REDACTED}{}",
                         &whole.as_str()[..start],
@@ -214,6 +232,41 @@ mod tests {
         }
         let slack = format!("xox{}-1-1234567890-abcdefghij", "b");
         assert_eq!(redact_tokens(&slack), (REDACTED.to_string(), 1));
+    }
+
+    #[test]
+    fn passwords_of_eight_characters_are_replaced_in_chats() {
+        for (text, expected) in [
+            ("password: hunter2hunter2", format!("password: {REDACTED}")),
+            ("my pwd=abcdefgh ok", format!("my pwd={REDACTED} ok")),
+            (
+                "DB_PASSWORD = \"correcthorse\"",
+                format!("DB_PASSWORD = \"{REDACTED}\""),
+            ),
+        ] {
+            assert_eq!(redact_tokens(text), (expected, 1), "{text}");
+        }
+        // The value runs to the next space, or to its closing quote.
+        for (text, expected) in [
+            ("password: hunter2;hunter2", format!("password: {REDACTED}")),
+            ("password: abc,defghijk", format!("password: {REDACTED}")),
+            (
+                "\"password\": \"correct horse\", next",
+                format!("\"password\": \"{REDACTED}\", next"),
+            ),
+            ("--pwd hunter2hunter2", format!("--pwd {REDACTED}")),
+            ("--passwd hunter2hunter2", format!("--passwd {REDACTED}")),
+        ] {
+            assert_eq!(redact_tokens(text), (expected, 1), "{text}");
+        }
+        // Secrets and tokens still need the shape of a generated value.
+        for kept in [
+            "secret: hunter2hunter2",
+            "token: abcdefghijkl",
+            "password: short",
+        ] {
+            assert_eq!(redact_tokens(kept), (kept.to_string(), 0), "{kept}");
+        }
     }
 
     #[test]

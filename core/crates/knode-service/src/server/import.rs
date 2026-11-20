@@ -36,6 +36,14 @@ pub(super) fn run(state: &State, raw: Value) -> Result<Value, RpcError> {
         }
         what = what.with_mail_options(options);
     }
+    if p.include_deleted {
+        if !what.is_markdown_folder() {
+            return Err(RpcError::invalid_params(
+                "include_deleted only goes with a folder of Markdown files",
+            ));
+        }
+        what = what.with_include_deleted(true);
+    }
     // macOS asks Knode Service itself, by its path, for Full Disk Access to what it reads.
     if let Ok(program) = std::env::current_exe() {
         what = what.read_by(program);

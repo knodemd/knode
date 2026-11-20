@@ -111,10 +111,13 @@
 
 pub mod apps;
 mod attachments;
+pub mod claude_memory;
+mod compare;
 mod frontmatter;
 mod import;
 mod live;
 pub mod mail;
+pub mod migration;
 mod mirror;
 mod names;
 pub mod onboarding;
@@ -125,7 +128,10 @@ mod time;
 
 use std::path::PathBuf;
 
-pub use import::{ImportReport, Skipped, import};
+pub use compare::{
+    COMPARISON_VERSION, Compared, Comparison, ComparisonCounts, Difference, compare,
+};
+pub use import::{ImportOptions, ImportReport, Skipped, import, import_file, import_with};
 pub use live::{BodyWritten, LIVE_FILE, LiveFolder, PullReport, cloud_folder_warning};
 pub use mirror::{ExportReport, export};
 
@@ -160,6 +166,11 @@ pub mod property_keys {
     /// When the node was written from that file: while the node's `updated_at` is still this,
     /// export writes [`UPDATED`] as `updated`. Read, no longer written.
     pub const WRITTEN: &str = "markdown.written";
+    /// The file a node was imported from on its own rather than in a folder, as the caller of
+    /// [`import_file`](crate::import_file) names it (Knode records it as folders are: absolute,
+    /// `~/...` inside the home folder). Importing that file again updates the node; a folder's
+    /// file with the same [`PATH`] never does.
+    pub const FILE: &str = "markdown.file";
 
     /// Set on a node whose file was deleted from its live Markdown folder, to the path the file
     /// had. Knode never deletes a node because its file is gone: the node stays, is no longer
@@ -167,8 +178,23 @@ pub mod property_keys {
     /// property keeps it, and writes its file again.
     pub const DELETED: &str = "markdown.deleted";
 
+    /// Set by [`import`](crate::import) on each node it reads from a file: two hashes, of the
+    /// node's title, kind, tags and body as the import left them, and of what the file gave it.
+    /// Importing the folder again tells from them whether the node was edited in Knode and
+    /// whether the file changed since.
+    pub const IMPORTED: &str = "markdown.imported";
+
     /// The prefix of every key above.
     pub const PREFIX: &str = "markdown.";
+}
+
+/// The space settings this crate keeps.
+pub mod setting_keys {
+    /// The node of each file without an `id` that [`import`](crate::import) read, by its path
+    /// relative to the folder, as a JSON object (`{"Projects/Plan.md": "<node id>"}`). It
+    /// outlives the nodes, so importing the folder again tells a note deleted in Knode from a
+    /// new file.
+    pub const IMPORTED_PATHS: &str = "markdown.import.paths";
 }
 
 /// The value of [`property_keys::STYLE`] for notes from other apps.

@@ -53,6 +53,25 @@ import Testing
         #expect(model.sheet == nil)
     }
 
+    @Test func overlapsAreAskedOnlyAboutTheSpacesCaptureRoutesOver() async throws {
+        let model = makeModel()
+        await model.createSpace(named: "Work", in: folder)
+        let work = try #require(model.selectedSpace?.url)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let archived = folder.appending(path: "Work-archive-1794871951073089000.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: archived, withIntermediateDirectories: true)
+        let gone = folder.appending(path: "Gone.knode", directoryHint: .isDirectory)
+        try model.settings.setDefaultSpace(work)
+        try model.settings.rememberSpace(archived)
+        try model.settings.rememberSpace(gone)
+
+        // As the core decides: a moved or deleted space and an archived copy are left out.
+        #expect(model.settings.captureSpaces() == [work.standardizedFileURL])
+        let folders = try #require(await model.foldersModel(at: work))
+        folders.stop()
+        #expect(folders.captureSpaces?() == [work.standardizedFileURL])
+    }
+
     @Test func aProjectCanBeAddedWithoutEnablingCapture() async throws {
         let model = makeModel()
         await model.createSpace(named: "Work", in: folder)
@@ -208,6 +227,19 @@ import Testing
         SpaceLibrary(defaults: defaults).remove(memory)
         SpaceLibrary(defaults: defaults).add(memory)
         #expect(makeModel(settings: settings).sidebarSpaces.map(\.name) == ["Memoria"])
+    }
+
+    @Test func aSpaceMadeWhileTheAppIsOpenAppearsWhenItIsActiveAgain() throws {
+        let settings = MemoryKnodeSettings()
+        let model = makeModel(settings: settings)
+        #expect(model.sidebarSpaces.isEmpty)
+        let made = folder.appending(path: "Made.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        try Data(#"{"format":0,"id":"01K83N6V4W5D2XQJ0Y7RZ9T1AD","name":"Made"}"#.utf8).write(to: made.appending(path: "manifest.json"))
+        try settings.setDefaultSpace(made)
+        model.refreshKnownSpaces()
+        #expect(model.sidebarSpaces.map(\.name) == ["Made"])
+        #expect(model.sidebarSpaces.first?.isDefault == true)
     }
 
     @Test func theFirstLaunchListsTheSpacesKnodeKnows() throws {

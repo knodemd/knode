@@ -133,6 +133,24 @@ struct KExplanation: View {
 }
 
 /// What went wrong, in the danger colour.
+/// Something worth fixing that does not stop anything, tinted as a warning banner.
+struct KWarningText: View {
+    var message: String
+    @Environment(\.kTheme) private var theme
+
+    init(_ message: String) { self.message = message }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: KSpace.x2) {
+            KIcon(.warning, size: .sm, color: theme.isDark ? theme.indigo : theme.fg).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
+            Text(message).font(KFont.ui(12)).foregroundStyle(theme.fg)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct KErrorText: View {
     var message: String
     @Environment(\.kTheme) private var theme
