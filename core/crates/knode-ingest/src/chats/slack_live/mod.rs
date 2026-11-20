@@ -23,12 +23,14 @@
 //! 1. `users.list` (every hour) and `conversations.list` (every ten minutes): the members of
 //!    the workspace and every public and private channel, group message and direct message
 //!    the person is in. Lists longer than a run allows go on in the next run.
-//! 2. Threads with replies not read yet: `conversations.replies` after the last one read.
-//! 3. Each conversation in turn, leaving out the excluded ones: `conversations.history` after
-//!    the last message read. Messages are written oldest first, so a conversation with more
-//!    new messages than one page first walks back page by page, keeping only where each page
-//!    starts in the cursor, and then reads the pages forward.
-//! 4. When there is time left, threads active in the last week are checked again for new
+//! 2. Threads with replies not read yet (`conversations.replies` after the last one read)
+//!    and each conversation in turn, leaving out the excluded ones (`conversations.history`
+//!    after the last message read), taking turns, the first of the two changing every run,
+//!    so neither a thread backfill nor a long history holds back the other. Messages are
+//!    written oldest first, so a conversation with more new messages than one page first
+//!    walks back page by page, keeping only where each page starts in the cursor, and then
+//!    reads the pages forward.
+//! 3. When there is time left, threads active in the last week are checked again for new
 //!    replies.
 //!
 //! Slack limits `conversations.history` and `conversations.replies` of apps not in the Slack
@@ -89,7 +91,8 @@ const USERS_TTL: Duration = Duration::from_secs(3600);
 const CONVERSATIONS_TTL: Duration = Duration::from_secs(600);
 /// How long after its last reply a thread is checked again for new replies.
 const THREAD_WATCH: Duration = Duration::from_secs(7 * 24 * 3600);
-/// The most threads the cursor follows; the least active ones are dropped first.
+/// The most threads the cursor follows; the least active ones are dropped first, never one
+/// with replies not read yet.
 const MAX_THREADS: usize = 1000;
 /// How long [`SignInStep::Browser`] waits for the browser to come back from Slack.
 const BROWSER_WAIT: Duration = Duration::from_secs(30);
@@ -406,6 +409,16 @@ impl Connector for SlackConnector {
     fn sign_out(&self, secrets: &dyn Secrets) -> Result<bool, SourceError> {
         *self.pending() = None;
         if let Some(token) = Token::load(secrets).ok().flatten() {
+            // A rotating token that expired is refreshed first, or Slack refuses to revoke it.
+            let token = self
+                .client_id()
+                .ok()
+                .and_then(|id| {
+                    oauth::refresh(self.http.as_ref(), id, &token, self.clock.unix())
+                        .ok()
+                        .flatten()
+                })
+                .unwrap_or(token);
             let _ = self
                 .http
                 .post("auth.revoke", Some(&token.access_token), &[]);
@@ -581,6 +594,10 @@ struct State {
     /// The conversation whose history is read first in the next run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     next: Option<String>,
+    /// Whether the next run reads a thread before a history: the last call made was a
+    /// history.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    threads_first: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,6 +641,23 @@ impl ThreadState {
     }
 }
 
+/// Drops the least active threads past `max`, never one with replies not read yet.
+fn evict(threads: &mut BTreeMap<String, ThreadState>, max: usize) {
+    if threads.len() <= max {
+        return;
+    }
+    let mut by_activity: Vec<(u64, String)> = threads
+        .iter()
+        .filter(|(_, t)| !t.due())
+        .map(|(k, t)| (t.active, k.clone()))
+        .collect();
+    by_activity.sort();
+    let drop = (threads.len() - max).min(by_activity.len());
+    for (_, key) in by_activity.into_iter().take(drop) {
+        threads.remove(&key);
+    }
+}
+
 /// The seconds of a `ts`.
 fn seconds(ts: &str) -> u64 {
     ts.split('.')
@@ -638,6 +672,14 @@ fn later(a: Option<String>, b: &str) -> String {
         Some(a) if mark(&a) >= mark(b) => a,
         _ => b.to_string(),
     }
+}
+
+/// What a visit to a conversation did.
+enum Visit {
+    /// A call was made, or the conversation is gone.
+    Read,
+    /// The rate limits, the time of the run or an error stopped the run.
+    Stopped,
 }
 
 /// An answer, or why there is none.
@@ -890,18 +932,7 @@ impl<'a> Run<'a> {
             present.contains(channel)
                 && (t.due() || now.saturating_sub(t.active) <= THREAD_WATCH.as_secs())
         });
-        if state.threads.len() > MAX_THREADS {
-            let mut by_activity: Vec<(u64, String)> = state
-                .threads
-                .iter()
-                .map(|(k, t)| (t.active, k.clone()))
-                .collect();
-            by_activity.sort();
-            let drop = by_activity.len() - MAX_THREADS;
-            for (_, key) in by_activity.into_iter().take(drop) {
-                state.threads.remove(&key);
-            }
-        }
+        evict(&mut state.threads, MAX_THREADS);
         let start = match request.history {
             crate::sources::History::Everything => "0".to_string(),
             crate::sources::History::FromToday => {
@@ -912,22 +943,18 @@ impl<'a> Run<'a> {
             wanted.iter().map(|c| (c.id.as_str(), *c)).collect();
         let shape_of = |id: &str| by_id.get(id).map(|c| shape(c, &self.token.user_id, &users));
 
-        // 1. Threads with replies not read yet.
-        let due: Vec<String> = state
+        // 1 and 2. Threads with replies not read yet and the history of each conversation in
+        // turn, one call each, starting where the last run stopped. The two take turns, and
+        // the next run starts with the other kind than the last call made (a run stopped
+        // before any call changes nothing): under the lower limits a run makes about one
+        // call, and neither a thread backfill nor a long history starves the other.
+        let mut due = state
             .threads
             .iter()
             .filter(|(_, t)| t.due())
             .map(|(k, _)| k.clone())
-            .collect();
-        for key in due {
-            if self.stopped() || batch.len() >= max {
-                break;
-            }
-            self.thread(request, state, batch, &key, page, now, &shape_of)?;
-        }
-
-        // 2. The history of each conversation in turn, one call each, starting where the
-        // last run stopped.
+            .collect::<Vec<_>>()
+            .into_iter();
         let ids: Vec<&str> = wanted.iter().map(|c| c.id.as_str()).collect();
         let first = state
             .next
@@ -935,90 +962,51 @@ impl<'a> Run<'a> {
             .and_then(|n| ids.iter().position(|id| *id == n))
             .unwrap_or(0);
         let order: Vec<&str> = ids[first..].iter().chain(&ids[..first]).copied().collect();
+        let mut pending = order.iter();
         let mut visited = 0;
-        for id in &order {
-            if self.stopped() || batch.len() >= max {
-                break;
-            }
-            let Some((conversation, kind)) = shape_of(id) else {
-                continue;
-            };
-            let conv = state
-                .conversations
-                .entry(id.to_string())
-                .or_insert_with(|| ConversationState {
-                    done: start.clone(),
-                    seek: Vec::new(),
-                })
-                .clone();
-            let mut params = vec![
-                ("channel", id.to_string()),
-                ("oldest", conv.done.clone()),
-                ("inclusive", "false".to_string()),
-                ("limit", page.to_string()),
-            ];
-            params.extend(conv.seek.last().map(|l| ("latest", l.clone())));
-            let answer = self.call::<Messages>(Tier::Messages, "conversations.history", &params)?;
-            let history = match answer {
-                Answer::Stopped => break,
-                Answer::Gone => {
-                    state.conversations.remove(*id);
-                    visited += 1;
-                    continue;
-                }
-                Answer::Got(history) => history,
-            };
-            visited += 1;
-            let entry = state.conversations.get_mut(*id).expect("the conversation");
-            if history.has_more
-                && let Some(oldest) = history
-                    .messages
-                    .iter()
-                    .map(|m| m.ts.clone())
-                    .min_by_key(|ts| mark(ts))
-                && entry.seek.last() != Some(&oldest)
-            {
-                // More than a page: walk back first, so messages are written oldest first.
-                entry.seek.push(oldest);
-                continue;
-            }
-            entry.seek.pop();
-            let mut newest = entry.done.clone();
-            let mut messages = Vec::new();
-            for m in history.messages {
-                newest = later(Some(newest), &m.ts);
-                if !wanted_at(request, &m.ts) {
-                    continue;
-                }
-                if let Some(thread_ts) = m.thread_ts.clone() {
-                    let key = format!("{id}/{thread_ts}");
-                    if m.is_reply() {
-                        // A reply also sent to the channel: its thread has news.
-                        let t = state.threads.entry(key).or_default();
-                        t.latest = Some(later(t.latest.take(), &m.ts));
-                        t.active = t.active.max(seconds(&m.ts));
-                        continue;
-                    }
-                    if m.reply_count.unwrap_or(0) > 0 {
-                        let t = state.threads.entry(key).or_default();
-                        if let Some(latest) = &m.latest_reply {
-                            t.latest = Some(later(t.latest.take(), latest));
-                            t.active = t.active.max(seconds(latest));
+        let mut threads_turn = state.threads_first;
+        let mut idle = 0;
+        while idle < 2 && !self.stopped() && batch.len() < max {
+            if threads_turn {
+                match due.next() {
+                    Some(key) => {
+                        idle = 0;
+                        self.thread(request, state, batch, &key, page, now, &shape_of)?;
+                        if !self.stopped() {
+                            // The call was made, not refused by the limits or the time.
+                            state.threads_first = false;
                         }
-                        batch
-                            .entry(conversation.clone(), kind)
-                            .threaded
-                            .insert(m.ts.clone());
                     }
+                    None => idle += 1,
                 }
-                messages.push(m);
+            } else {
+                match pending.next() {
+                    Some(id) => {
+                        idle = 0;
+                        let Some((conversation, kind)) = shape_of(id) else {
+                            continue;
+                        };
+                        match self.history(
+                            request,
+                            state,
+                            batch,
+                            id,
+                            conversation,
+                            kind,
+                            &start,
+                            page,
+                        )? {
+                            Visit::Stopped => break,
+                            Visit::Read => {
+                                visited += 1;
+                                state.threads_first = true;
+                            }
+                        }
+                    }
+                    None => idle += 1,
+                }
             }
-            state
-                .conversations
-                .get_mut(*id)
-                .expect("the conversation")
-                .done = newest;
-            batch.add(conversation, kind, messages);
+            threads_turn = !threads_turn;
         }
         if !order.is_empty() {
             state.next = Some(order[visited % order.len()].to_string());
@@ -1046,6 +1034,96 @@ impl<'a> Run<'a> {
         self.lookup_users(&writers)?;
         self.blocked = blocked;
         Ok(())
+    }
+
+    /// Reads one page of the history of conversation `id` after the last message read.
+    #[allow(clippy::too_many_arguments)]
+    fn history(
+        &mut self,
+        request: &FetchRequest<'_>,
+        state: &mut State,
+        batch: &mut LiveBatch,
+        id: &str,
+        conversation: Conversation,
+        kind: &'static str,
+        start: &str,
+        page: usize,
+    ) -> Result<Visit, SourceError> {
+        let conv = state
+            .conversations
+            .entry(id.to_string())
+            .or_insert_with(|| ConversationState {
+                done: start.to_string(),
+                seek: Vec::new(),
+            })
+            .clone();
+        let mut params = vec![
+            ("channel", id.to_string()),
+            ("oldest", conv.done.clone()),
+            ("inclusive", "false".to_string()),
+            ("limit", page.to_string()),
+        ];
+        params.extend(conv.seek.last().map(|l| ("latest", l.clone())));
+        let answer = self.call::<Messages>(Tier::Messages, "conversations.history", &params)?;
+        let history = match answer {
+            Answer::Stopped => return Ok(Visit::Stopped),
+            Answer::Gone => {
+                state.conversations.remove(id);
+                return Ok(Visit::Read);
+            }
+            Answer::Got(history) => history,
+        };
+        let entry = state.conversations.get_mut(id).expect("the conversation");
+        if history.has_more
+            && let Some(oldest) = history
+                .messages
+                .iter()
+                .map(|m| m.ts.clone())
+                .min_by_key(|ts| mark(ts))
+            && entry.seek.last() != Some(&oldest)
+        {
+            // More than a page: walk back first, so messages are written oldest first.
+            entry.seek.push(oldest);
+            return Ok(Visit::Read);
+        }
+        entry.seek.pop();
+        let mut newest = entry.done.clone();
+        let mut messages = Vec::new();
+        for m in history.messages {
+            newest = later(Some(newest), &m.ts);
+            if !wanted_at(request, &m.ts) {
+                continue;
+            }
+            if let Some(thread_ts) = m.thread_ts.clone() {
+                let key = format!("{id}/{thread_ts}");
+                if m.is_reply() {
+                    // A reply also sent to the channel: its thread has news.
+                    let t = state.threads.entry(key).or_default();
+                    t.latest = Some(later(t.latest.take(), &m.ts));
+                    t.active = t.active.max(seconds(&m.ts));
+                    continue;
+                }
+                if m.reply_count.unwrap_or(0) > 0 {
+                    let t = state.threads.entry(key).or_default();
+                    if let Some(latest) = &m.latest_reply {
+                        t.latest = Some(later(t.latest.take(), latest));
+                        t.active = t.active.max(seconds(latest));
+                    }
+                    batch
+                        .entry(conversation.clone(), kind)
+                        .threaded
+                        .insert(m.ts.clone());
+                }
+            }
+            messages.push(m);
+        }
+        state
+            .conversations
+            .get_mut(id)
+            .expect("the conversation")
+            .done = newest;
+        batch.add(conversation, kind, messages);
+        Ok(Visit::Read)
     }
 
     /// Reads the replies of one thread after the last one read.
@@ -1286,6 +1364,34 @@ mod tests {
             Limits::NotListed.interval(Tier::Messages),
             Duration::from_secs(60)
         );
+    }
+
+    #[test]
+    fn eviction_keeps_threads_with_replies_not_read() {
+        let read = |active: u64| ThreadState {
+            done: Some("1.000000".into()),
+            latest: Some("1.000000".into()),
+            active,
+            ..ThreadState::default()
+        };
+        let unread = |active: u64| ThreadState {
+            active,
+            ..ThreadState::default()
+        };
+        let mut threads: BTreeMap<String, ThreadState> = [
+            ("C/1".to_string(), unread(1)),
+            ("C/2".to_string(), read(2)),
+            ("C/3".to_string(), read(3)),
+            ("C/4".to_string(), unread(4)),
+        ]
+        .into();
+        evict(&mut threads, 2);
+        // The least active read ones go; the unread ones stay, even the least active.
+        assert_eq!(threads.keys().collect::<Vec<_>>(), ["C/1", "C/4"]);
+        // More unread threads than the cap: all of them stay.
+        threads.insert("C/5".into(), unread(5));
+        evict(&mut threads, 2);
+        assert_eq!(threads.len(), 3);
     }
 
     #[test]

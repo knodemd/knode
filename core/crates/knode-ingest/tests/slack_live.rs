@@ -801,6 +801,40 @@ fn refreshes_a_rotating_token_before_it_expires() {
     assert!(matches!(error, SourceError::SignIn(_)), "{error}");
 }
 
+#[test]
+fn signing_out_refreshes_an_expired_token_before_revoking_it() {
+    let (setup, connector) = setup(Limits::Marketplace);
+    let unix = setup.clock.unix().as_secs();
+    setup
+        .secrets
+        .set(
+            "token",
+            &json!({"access_token": "xoxp-expired", "refresh_token": "xoxe-1-refresh",
+                "expires_at": unix.saturating_sub(60), "user_id": "U01", "team_id": "T01"})
+            .to_string(),
+        )
+        .unwrap();
+    assert!(connector.sign_out(&setup.secrets).unwrap());
+    let revokes = setup.slack.calls("auth.revoke");
+    assert_eq!(revokes.len(), 1);
+    assert_eq!(revokes[0].token.as_deref(), Some("xoxp-refreshed"));
+    assert!(setup.secrets.get("token").unwrap().is_none());
+
+    // A refresh Slack refuses still forgets the token.
+    setup
+        .secrets
+        .set(
+            "token",
+            &json!({"access_token": "xoxp-old", "refresh_token": "xoxe-expired",
+                "expires_at": unix.saturating_sub(60), "user_id": "U01", "team_id": "T01"})
+            .to_string(),
+        )
+        .unwrap();
+    assert!(connector.sign_out(&setup.secrets).unwrap());
+    assert_eq!(setup.slack.calls("auth.revoke").len(), 2);
+    assert!(setup.secrets.get("token").unwrap().is_none());
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reading.
 
@@ -1086,6 +1120,69 @@ fn reads_long_histories_oldest_first_within_the_lower_limits() {
     let cursor = setup.cursor.clone().unwrap();
     assert!(!cursor.as_str().contains("Message"), "{cursor:?}");
     assert!(!cursor.as_str().contains("xoxp"), "{cursor:?}");
+}
+
+#[test]
+fn a_thread_backfill_does_not_hold_back_new_messages() {
+    let (mut setup, connector) = setup(Limits::NotListed);
+    setup.excluded = ["C02", "C09", "G01"]
+        .iter()
+        .map(|id| Container::new(*id, *id))
+        .collect();
+    setup.slack.with(|w| w.history.clear());
+    setup.slack.with(|w| w.replies.clear());
+    setup
+        .slack
+        .post_message("D01", msg("U02", "Lunch?", &ts(10, 1)));
+    // #general: 12 threads, each with a reply, all in one page of 15.
+    for i in 0..12 {
+        let start = ts(i * 60, 1);
+        setup
+            .slack
+            .post_message("C01", msg("U01", &format!("Topic {i:02}"), &start));
+        setup.slack.post_message(
+            "C01",
+            reply(
+                "U02",
+                &format!("Answer {i:02}"),
+                &ts(i * 60 + 30, 2),
+                &start,
+            ),
+        );
+    }
+    // Read both histories once: the 12 threads are now due, one call a minute each.
+    let mut runs = 0;
+    while setup.chat("C01").is_none() || setup.chat("D01").is_none() {
+        setup.sync(&connector, 1);
+        runs += 1;
+        assert!(runs < 10, "the histories were never read");
+    }
+
+    // A new direct message comes in long before the 12 threads are read.
+    setup
+        .slack
+        .post_message("D01", msg("U02", "Are you there?", &ts(4000, 1)));
+    let mut waited = 0;
+    while !setup.chat("D01").unwrap().body.contains("Are you there?") {
+        setup.sync(&connector, 1);
+        waited += 1;
+        assert!(
+            waited <= 6,
+            "a new message waited behind the thread backfill"
+        );
+    }
+    let body = setup.chat("C01").unwrap().body;
+    let threads_read = setup.slack.calls("conversations.replies").len();
+    assert!(
+        threads_read < 12,
+        "{threads_read} threads read first: {body}"
+    );
+
+    // And every reply still comes in.
+    setup.sync(&connector, 40);
+    assert!(setup.slack.calls("conversations.replies").len() >= 12);
+    let body = setup.chat("C01").unwrap().body;
+    assert!(body.contains("Topic 00"), "{body}");
 }
 
 #[test]
