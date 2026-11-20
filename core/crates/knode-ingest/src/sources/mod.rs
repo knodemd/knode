@@ -660,6 +660,16 @@ pub trait Connector: Send + Sync {
         None
     }
 
+    /// Whether, stopped at `cursor`, the connector waits for something the files it watches
+    /// do not show (such as a message file another app has not downloaded yet). A connector
+    /// with a [`Trigger::Watch`] then runs at its interval even when those files did not
+    /// change; otherwise it runs at its interval only when they did. Waiting for nothing
+    /// unless the connector says otherwise.
+    fn waiting(&self, cursor: &Cursor) -> bool {
+        let _ = cursor;
+        false
+    }
+
     /// Reads what is new after `request.cursor`, at most about `request.max_items` items,
     /// leaving out excluded containers and what is older than the history chosen.
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError>;

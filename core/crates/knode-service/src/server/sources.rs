@@ -180,13 +180,14 @@ fn forget_unused_account(state: &State, id: &str) {
         return;
     }
     // Each space is locked only to read its settings; the connector signs out (on the
-    // network) with none locked.
+    // network) with none locked. A space that cannot be read counts as still having it: its
+    // sign-in is kept rather than removed too early.
     let still = known_spaces(state).into_iter().any(|path| {
         let Ok(space) = state.space(&path) else {
-            return false;
+            return true;
         };
         let space = lock_ignoring_poison(&space);
-        sources::source_settings(&space).is_ok_and(|s| s.contains_key(id))
+        sources::source_settings(&space).map_or(true, |s| s.contains_key(id))
     });
     if still {
         return;

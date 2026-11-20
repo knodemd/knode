@@ -153,6 +153,11 @@ public actor RoutingSpaceStore: SpaceStore {
         try await route(space) { store in try await store.removeFolder(folder, from: space) }
     }
 
+    /// Through Knode Service only: the core in the app does not compare spaces.
+    public func folderOverlaps(spaces: [URL]) async throws -> [FolderOverlap] {
+        try await service.folderOverlaps(spaces: spaces)
+    }
+
     public func closeSpace(_ space: Space.ID) async {
         guard let entry = open.removeValue(forKey: space) else { return }
         if entry.backend == .service {

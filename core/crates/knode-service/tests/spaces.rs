@@ -7,6 +7,7 @@ use std::time::Duration;
 use knode_format::{GrantLevel, NewNode, Provenance, actions, kinds, setting_keys};
 use knode_service::keys::{fingerprint, generate_key};
 use knode_service::protocol::codes;
+use knode_service::spaces::OverlapKind;
 use knode_service::{
     ChangeKind, Client, Config, Error, Event, FolderInput, ServiceHandle, SpaceEvent,
     SpaceEventKind, Subscription, start,
@@ -134,13 +135,19 @@ fn settings_are_read_by_all_and_changed_by_the_person() {
     assert_eq!(event.what, SpaceEventKind::Settings);
     assert_eq!(event.key.as_deref(), Some(setting_keys::SPACE_ICON));
 
-    // Capture off is stored; on is the default, so it is stored as no value.
+    // Capture off is stored, and so is on: it is the person's choice, which a new space waits
+    // for. Back to the default, it is stored as no value.
     f.person
         .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, Some("off"), &me())
         .unwrap();
     let settings = f
         .person
         .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, Some("on"), &me())
+        .unwrap();
+    assert_eq!(settings[setting_keys::CAPTURE_ENABLED], "on");
+    let settings = f
+        .person
+        .set_setting(f.space(), setting_keys::CAPTURE_ENABLED, None, &me())
         .unwrap();
     assert!(!settings.contains_key(setting_keys::CAPTURE_ENABLED));
 
@@ -149,7 +156,7 @@ fn settings_are_read_by_all_and_changed_by_the_person() {
         .person
         .changes_of(f.space(), setting_keys::CAPTURE_ENABLED, 10)
         .unwrap();
-    assert_eq!(changes.len(), 2);
+    assert_eq!(changes.len(), 3);
     assert!(changes.iter().all(|c| c.action == actions::SETTINGS_SET));
 
     // Values the format does not allow are refused.
@@ -387,6 +394,107 @@ fn a_project_folder_creates_or_finds_its_project() {
             .is_some()
     );
     assert_eq!(f.person.projects(f.space()).unwrap().len(), 2);
+}
+
+#[test]
+fn a_folder_changed_to_a_project_folder_records_its_project() {
+    let f = Fixture::new();
+    let first = FolderInput {
+        id: None,
+        kind: "project".into(),
+        path: f.folder("w/a/api").display().to_string(),
+        capture: true,
+        rules: json!({}),
+    };
+    let first = f.person.set_folder(f.space(), &first, &me()).unwrap();
+    assert_eq!(first.project.unwrap().node.title, "api");
+    // A notes folder of the same name, changed by its id into a project folder, gets a project
+    // of its own and records it, instead of falling back to the other folder's api.
+    let notes = FolderInput {
+        id: None,
+        kind: "notes".into(),
+        path: f.folder("w/b/api").display().to_string(),
+        capture: true,
+        rules: json!({}),
+    };
+    let notes = f.person.set_folder(f.space(), &notes, &me()).unwrap();
+    assert!(notes.project.is_none());
+    let change = FolderInput {
+        id: Some(notes.folder.id.clone()),
+        kind: "project".into(),
+        path: f.folder("w/b/api").display().to_string(),
+        capture: true,
+        rules: json!({}),
+    };
+    let changed = f.person.set_folder(f.space(), &change, &me()).unwrap();
+    let project = changed.project.unwrap();
+    assert!(project.created);
+    assert_eq!(project.node.title, "api (b)");
+    assert_eq!(
+        changed.folder.rules["project"],
+        json!(project.node.id.to_string())
+    );
+    let listed = f.person.folders(f.space()).unwrap();
+    let titles: Vec<_> = listed
+        .iter()
+        .map(|i| i.project.as_ref().map(|p| p.node.title.clone()))
+        .collect();
+    assert_eq!(titles, [Some("api".into()), Some("api (b)".into())]);
+}
+
+#[test]
+fn overlapping_project_folders_are_reported_with_their_spaces() {
+    let f = Fixture::new();
+    let personal = f.space().with_file_name("Personal.knode");
+    f.person.create_space(&personal, "Personal").unwrap();
+    let project = |path: &PathBuf| FolderInput {
+        id: None,
+        kind: "project".into(),
+        path: path.to_string_lossy().into_owned(),
+        capture: true,
+        rules: json!({}),
+    };
+    let site = f.folder("code/site");
+    let docs = f.folder("code/site/docs");
+    f.person
+        .set_folder(f.space(), &project(&site), &me())
+        .unwrap();
+    f.person
+        .set_folder(&personal, &project(&docs), &me())
+        .unwrap();
+    f.person
+        .set_folder(&personal, &project(&site), &me())
+        .unwrap();
+
+    let found = f
+        .person
+        .folder_overlaps(&[f.space(), personal.clone()])
+        .unwrap();
+    let kinds: Vec<(OverlapKind, &str, &str)> = found
+        .iter()
+        .map(|o| {
+            (
+                o.kind,
+                o.outer.space_name.as_str(),
+                o.inner.space_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (OverlapKind::Nested, "Work", "Personal"),
+            (OverlapKind::Same, "Work", "Personal"),
+            (OverlapKind::Nested, "Personal", "Personal"),
+        ]
+    );
+    assert_eq!(found[0].inner.path, docs.to_string_lossy());
+    // One space alone: only its own folders are compared.
+    assert!(f.person.folder_overlaps(&[f.space()]).unwrap().is_empty());
+
+    // It names folders of every space given: people only.
+    let error = rpc(f.reader().folder_overlaps(&[f.space()]));
+    assert_eq!(error.code, codes::FORBIDDEN);
 }
 
 #[test]

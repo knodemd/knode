@@ -71,6 +71,9 @@ public protocol SpaceStore: Sendable {
     /// Removes a folder from the space. Nothing captured from it is removed.
     func removeFolder(_ folder: SpaceFolder.ID, from space: Space.ID) async throws
 
+    /// The project folders of these spaces that overlap, each pair once (`folders.overlaps`).
+    func folderOverlaps(spaces: [URL]) async throws -> [FolderOverlap]
+
     /// Stops using the space. Nothing on disk changes.
     func closeSpace(_ space: Space.ID) async
 
@@ -109,6 +112,9 @@ extension SpaceStore {
 
     /// The notes that are part of a project, most recently changed first.
     public func projectNotes(_ project: Node.ID, in space: Space.ID) async throws -> [NodeSummary] { [] }
+
+    /// Only Knode Service compares the folders of several spaces; other stores find none.
+    public func folderOverlaps(spaces: [URL]) async throws -> [FolderOverlap] { [] }
 }
 
 /// A change to a space, made by the app or by anyone else.

@@ -15,6 +15,20 @@ import Testing
         )
     }
 
+    @Test func connectYourAgentsNeverReplacesAnotherSheet() {
+        let model = makeModel()
+        model.sheet = .onboarding
+        #expect(!model.canShowConnectAgents)
+        model.showConnectAgents()
+        #expect(model.sheet == .onboarding)
+
+        model.sheet = nil
+        #expect(model.canShowConnectAgents)
+        model.showConnectAgents()
+        #expect(model.sheet == .connectAgents)
+        #expect(model.canShowConnectAgents)
+    }
+
     @Test func startsWithNothingOpen() {
         let model = makeModel()
         #expect(model.spaces.isEmpty)

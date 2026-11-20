@@ -7,6 +7,13 @@ struct AgentsSettingsView: View {
     @Environment(AgentsModel.self) private var agents
     @Environment(AppModel.self) private var model
     @Environment(\.kOverlays) private var overlays
+    @State private var checks: AgentChecks
+
+    init() {
+        _checks = State(initialValue: AgentChecks { arguments in
+            try await KnodeCommand.withShellPath().run(arguments)
+        })
+    }
 
     var body: some View {
         KSettingsPane {
@@ -31,6 +38,10 @@ struct AgentsSettingsView: View {
                     if agent.kind != agent.name { KChip(agent.kind) }
                 } content: {
                     AgentDetails(agent: agent, onConnect: { overlays?.connecting = $0 })
+                    if let connectable = ConnectableAgent.checkable(agent) {
+                        KHairline()
+                        AgentCheckSection(agent: connectable, checks: checks)
+                    }
                     KHairline()
                     let spaces = AgentSpaces.rows(for: agent, sidebar: model.sidebarSpaces)
                     if spaces.isEmpty {
@@ -52,6 +63,11 @@ struct AgentsSettingsView: View {
             }
         }
         .task { await agents.load() }
+        .task(id: agents.agents.compactMap(ConnectableAgent.checkable).map(\.rawValue)) {
+            for agent in agents.agents.compactMap(ConnectableAgent.checkable) where checks.results[agent.rawValue] == nil {
+                await checks.check(agent.rawValue)
+            }
+        }
     }
 
     private func confirmRevoke(_ agent: AgentInfo) {
@@ -301,5 +317,225 @@ enum AgentSpaces {
             rows.append(Row(url: url, title: url.deletingPathExtension().lastPathComponent, icon: nil))
         }
         return rows
+    }
+}
+
+/// Connect your agents: the agents of this machine, Claude Code first, each with a Connect button,
+/// and what to do next once one is connected. On the first run and in Get started.
+struct ConnectAgentsPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.kTheme) private var theme
+    @State private var connect: ConnectAgentsModel
+    @State private var checks: AgentChecks
+    @State private var space: URL?
+
+    init() {
+        let refusal = ConnectAgentsModel.moveFirst(
+            executable: CommandLineTool.forThisApp.executable().resolvingSymlinksInPath(),
+            bundle: Bundle.main.bundleURL.resolvingSymlinksInPath(),
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
+        _connect = State(initialValue: ConnectAgentsModel(refusal: refusal) { arguments in
+            try await KnodeCommand.withShellPath().run(arguments)
+        })
+        _checks = State(initialValue: AgentChecks { arguments in
+            try await KnodeCommand.withShellPath().run(arguments)
+        })
+    }
+
+    /// What the checks depend on: the chosen space and the agents connected.
+    private var checkKey: [String] {
+        [space?.path(percentEncoded: false) ?? ""] + connect.agents.filter(\.connected).map(\.agent)
+    }
+
+    private var spaces: [SpaceItem] { model.sidebarSpaces.filter { !$0.isExample && !$0.isMissing } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x3) {
+            KExplanation("Connecting gives an agent a key of its own, kept in your Keychain, and adds Knode to its settings. The first time, it can read and write only this space.")
+            if let refusal = connect.refusal {
+                KBanner(.warning, title: "Knode is not in Applications", message: refusal, actions: {
+                    KButton("Move to Applications", icon: .folder, kind: .primary, size: .small) {
+                        _ = ApplicationMover().offerToMove(evenIfDeclined: true)
+                    }
+                })
+            }
+            if spaces.isEmpty {
+                KExplanation("You have no space yet: your agent will make one when it sets up your memory.")
+            } else {
+                KSettingRow("Space") {
+                    KDropdown(selection: $space, options: spaces.map { KOption(Optional($0.url), $0.isDefault ? "\($0.name) (space for agents)" : $0.name) }, size: .small)
+                        .frame(width: 260)
+                }
+            }
+            switch connect.state {
+            case .loading:
+                HStack(spacing: KSpace.x2) { KSpinner(); KExplanation("Looking for your agents") }
+            case .failed(let message):
+                KErrorText(message).textSelection(.enabled)
+                KButton("Check again", icon: .search, size: .small) { Task { await connect.load() } }
+            case .loaded where connect.agents.isEmpty:
+                KExplanation("No agents found on this Mac. Install Claude Code or Codex, then check again.")
+                KButton("Check again", icon: .search, size: .small) { Task { await connect.load() } }
+            case .loaded:
+                ForEach(connect.agents) { agent in row(agent) }
+                HStack {
+                    Spacer()
+                    KButton("Connect all detected", icon: .connect, kind: .primary, size: .small) {
+                        Task { await connect.connectAllDetected(space: space, defaultSpace: model.defaultSpaceURL) }
+                    }
+                    .disabled(connect.isBusy || connect.refusal != nil || connect.detectedNotConnected.isEmpty)
+                }
+            }
+        }
+        .task { await connect.load() }
+        .task(id: checkKey) {
+            for agent in connect.agents where agent.connected {
+                await checks.check(agent.agent, space: space, defaultSpace: model.defaultSpaceURL)
+            }
+        }
+        .onAppear { if space == nil { space = model.defaultSpaceURL ?? spaces.first?.url } }
+    }
+
+    private func row(_ agent: AgentOnThisMachine) -> some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            HStack(spacing: KSpace.x2) {
+                Text(agent.title).font(KFont.ui(13, .semibold))
+                if !agent.detected { Text("Not found on this Mac").font(KFont.ui(11)).foregroundStyle(theme.muted) }
+                Spacer()
+                if agent.connected {
+                    HStack(spacing: KSpace.x1) { KIcon(.done, size: .sm); Text("Connected").font(KFont.ui(12)) }
+                } else if connect.outcomes[agent.agent] == .connecting {
+                    KSpinner()
+                } else {
+                    KButton("Connect", icon: .connect, size: .small) {
+                        Task { await connect.connect(agent, space: space, defaultSpace: model.defaultSpaceURL) }
+                    }
+                    .disabled(connect.isBusy || connect.refusal != nil)
+                }
+            }
+            if connect.connectedNow.contains(agent.agent) {
+                KExplanation(ConnectAgentsModel.nextStep(for: agent.title))
+            }
+            if agent.connected {
+                AgentCheckView(result: checks.results[agent.agent])
+            }
+            switch connect.outcomes[agent.agent] {
+            case .notConnected(let text), .failed(let text):
+                KErrorText(text.isEmpty ? "\(agent.title) is not connected yet." : text).textSelection(.enabled)
+            default:
+                EmptyView()
+            }
+        }
+    }
+}
+
+/// The Connect your agents step on its own, after the `knode` command is installed on the first
+/// run and from the Knode menu.
+struct ConnectAgentsSheet: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        KSheetSurface(width: 560) {
+            KSheetTitle(kicker: "Get started", title: "Connect your agents", close: { model.sheet = nil })
+            ConnectAgentsPanel()
+            HStack {
+                Spacer()
+                KButton("Done", icon: .done, kind: .primary) { model.sheet = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .knodeTheme()
+    }
+}
+
+/// Which space an agent reaches, in Settings: checked against the default space, or against a
+/// project folder the person picks. It never changes anything.
+struct AgentCheckSection: View {
+    let agent: ConnectableAgent
+    let checks: AgentChecks
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x2) {
+            HStack(spacing: KSpace.x2) {
+                Text("Space it reaches").kLineStyle(10)
+                Spacer()
+                KButton("Check a project", icon: .folder, size: .small) {
+                    guard let project = SpacePanels.chooseFolder(title: "Check a Project", message: "Checks whether \(agent.title) reaches the space this folder's conversations go to. Nothing is changed.") else { return }
+                    Task { await checks.check(agent.rawValue, project: project) }
+                }
+                KButton("Check again", icon: .search, size: .small) { Task { await checks.check(agent.rawValue) } }
+            }
+            .disabled(checks.results[agent.rawValue] == .checking)
+            AgentCheckView(result: checks.results[agent.rawValue])
+        }
+    }
+}
+
+/// What `knode connect <agent> --check` found: OK, or each problem with the command that fixes
+/// it, to run in Terminal. The app runs none of them.
+struct AgentCheckView: View {
+    let result: AgentChecks.Result?
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        switch result {
+        case nil:
+            EmptyView()
+        case .checking:
+            HStack(spacing: KSpace.x2) { KSpinner(); KExplanation("Checking which space it reaches") }
+        case .failed(let message):
+            KErrorText(message)
+        case .checked(let check):
+            VStack(alignment: .leading, spacing: KSpace.x2) {
+                if check.ok {
+                    HStack(alignment: .firstTextBaseline, spacing: KSpace.x2) {
+                        KIcon(.done, size: .sm, color: theme.isDark ? theme.indigo : theme.fg)
+                        Text(Self.okText(check)).font(KFont.ui(12)).foregroundStyle(theme.fg)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                ForEach(Array(check.problems.enumerated()), id: \.offset) { _, problem in
+                    KWarningText(problem.text)
+                    ForEach(problem.commands, id: \.self) { command in
+                        SuggestedCommand(command: command)
+                    }
+                }
+                ForEach(check.notes, id: \.self) { note in KExplanation(note) }
+                if !check.ok {
+                    KExplanation("Nothing was changed. Run the command in Terminal, then check again.")
+                }
+            }
+        }
+    }
+
+    /// What an OK check says, in one sentence.
+    static func okText(_ check: AgentCheck) -> String {
+        let space = check.intended.map { "\u{201C}\($0.shown)\u{201D}" } ?? "its space"
+        let project = check.project.map { ", where the conversations of \(URL(filePath: $0).lastPathComponent) go" } ?? ""
+        let access = check.access == "write" ? ", and may read and write there" : check.access == "read" ? ", and may read there" : ""
+        return "Reaches \(space)\(project)\(access)."
+    }
+}
+
+/// A command the check suggests, to copy into Terminal.
+struct SuggestedCommand: View {
+    let command: String
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: KSpace.x2) {
+            Text(command).font(KFont.mono(12)).foregroundStyle(theme.fg).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            KIconButton(.copy, title: "Copy command", size: .small) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+            }
+        }
+        .padding(.horizontal, KSpace.x3)
+        .padding(.vertical, KSpace.x1)
+        .background(RoundedRectangle(cornerRadius: KRadius.row, style: .continuous).fill(theme.bg))
+        .overlay(RoundedRectangle(cornerRadius: KRadius.row, style: .continuous).strokeBorder(theme.line))
+        .padding(.leading, 14 + KSpace.x2)
     }
 }

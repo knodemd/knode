@@ -4,6 +4,7 @@ $(SRCROOT)/../core/Cargo.lock
 $(SRCROOT)/../core/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/Cargo.toml
 $(SRCROOT)/../core/crates/knode-cli/src/agents.rs
+$(SRCROOT)/../core/crates/knode-cli/src/connect/check.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/json.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/mod.rs
 $(SRCROOT)/../core/crates/knode-cli/src/connect/places.rs
@@ -177,6 +178,8 @@ $(SRCROOT)/../core/crates/knode-vault/src/apps/proto.rs
 $(SRCROOT)/../core/crates/knode-vault/src/apps/source.rs
 $(SRCROOT)/../core/crates/knode-vault/src/apps/write.rs
 $(SRCROOT)/../core/crates/knode-vault/src/attachments.rs
+$(SRCROOT)/../core/crates/knode-vault/src/claude_memory.rs
+$(SRCROOT)/../core/crates/knode-vault/src/compare.rs
 $(SRCROOT)/../core/crates/knode-vault/src/frontmatter.rs
 $(SRCROOT)/../core/crates/knode-vault/src/import.rs
 $(SRCROOT)/../core/crates/knode-vault/src/lib.rs
@@ -188,6 +191,7 @@ $(SRCROOT)/../core/crates/knode-vault/src/mail/mod.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/raw.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/thread.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mail/write.rs
+$(SRCROOT)/../core/crates/knode-vault/src/migration.rs
 $(SRCROOT)/../core/crates/knode-vault/src/mirror.rs
 $(SRCROOT)/../core/crates/knode-vault/src/names.rs
 $(SRCROOT)/../core/crates/knode-vault/src/onboarding.rs

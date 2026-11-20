@@ -233,6 +233,52 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(again.icon == "🧪")
     }
 
+    // MARK: Overlapping project folders
+
+    @MainActor @Test func overlapsShowOnTheProjectFoldersOfTheirSpace() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let api = try await store.setFolder(.adding(.project, at: URL(filePath: "/tmp/kn-work/api")), in: space.id)
+        let other = try await store.setFolder(.adding(.project, at: URL(filePath: "/tmp/kn-site")), in: space.id)
+        let message = "/tmp/kn-work/api is inside /tmp/kn-work, a project folder of \u{201C}Other\u{201D}: conversations held in it go to \u{201C}Test\u{201D} only."
+        let elsewhere = "/tmp/kn-site is a project folder of \u{201C}Elsewhere\u{201D} too."
+        func folder(_ space: String, _ name: String, _ id: String, _ path: String) -> [String: Any] {
+            ["space": space, "space_name": name, "folder": id, "path": path, "capture": true, "space_capture": true]
+        }
+        service.setOverlaps([
+            ["kind": "nested", "outer": folder("/tmp/Other.knode", "Other", "outer", "/tmp/kn-work"),
+             "inner": folder(path, "Test", api.id, "/tmp/kn-work/api"), "message": message],
+            // The same id in two other spaces is not a folder of this one.
+            ["kind": "same", "outer": folder("/tmp/Elsewhere.knode", "Elsewhere", other.id, "/tmp/kn-site"),
+             "inner": folder("/tmp/Other.knode", "Other", other.id, "/tmp/kn-site"), "message": elsewhere],
+        ])
+
+        let direct = try await store.folderOverlaps(spaces: [url])
+        #expect(direct.map(\.kind) == ["nested", "same"])
+        #expect(direct.first?.inner.spaceName == "Test")
+
+        let folders = SpaceFoldersModel(space: space, store: store)
+        folders.spaceURL = url
+        folders.captureSpaces = { [url] in [url, URL(filePath: "/tmp/Other.knode", directoryHint: .isDirectory)] }
+        await folders.load()
+        folders.stop()
+        #expect(service.params(of: "folders.overlaps")?["spaces"] as? [String] == [path, "/tmp/Other.knode"])
+        #expect(folders.overlapMessages(for: api) == [message])
+        #expect(folders.overlapMessages(for: other).isEmpty)
+    }
+
+    @MainActor @Test func noOverlapsWithoutTheSpacesCaptureUses() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let space = try await store.openSpace(at: url)
+        let folders = SpaceFoldersModel(space: space, store: store)
+        await folders.load()
+        folders.stop()
+        #expect(!service.requests.contains("folders.overlaps"))
+        #expect(try await store.folderOverlaps(spaces: []).isEmpty)
+        // Stores other than Knode Service do not compare spaces.
+        #expect(try await PreviewSpaceStore().folderOverlaps(spaces: [url]).isEmpty)
+    }
+
     // MARK: Name, settings and folders through the service
 
     @Test func storeChangesFoldersThroughTheService() async throws {
@@ -317,10 +363,10 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         #expect(try await store.spaceDetails(space.id).name == "Renamed")
         try await store.removeFolder(added.id, from: space.id)
         #expect(try await store.folders(of: space.id).isEmpty)
-        // The project stays, and adding the folder again finds it instead of making another.
+        // The project stays, and adding the folder again takes it back instead of making another.
         #expect(try await store.projects(in: space.id).map(\.id) == [made.id])
         let again = try await store.setFolder(.adding(.project, at: project), in: space.id)
-        #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false))
+        #expect(again.project == SpaceFolder.Project(id: made.id, title: "site", created: false, heldBefore: true))
         #expect(try await store.projects(in: space.id).count == 1)
         try await store.removeFolder(again.id, from: space.id)
 
@@ -342,7 +388,11 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         let own = SpaceFolder.Project(id: "q", title: "site (b)", created: true, passedOver: "site", passedOverFolders: ["~/a/site"])
         #expect(SpaceFoldersModel.notice(for: own).hasPrefix("Added the project \u{201C}site (b)\u{201D}, named after its parent folder too: \u{201C}site\u{201D} already holds the files of ~/a/site."))
         let joined = SpaceFolder.Project(id: "q", title: "site (b)", passedOver: "site", passedOverFolders: ["~/a/site"])
-        #expect(SpaceFoldersModel.notice(for: joined) == "This folder holds the files of \u{201C}site (b)\u{201D}, the project this space already had: \u{201C}site\u{201D} already holds the files of ~/a/site.")
+        #expect(SpaceFoldersModel.notice(for: joined) == "This folder holds the files of \u{201C}site (b)\u{201D}, the project this space already had and no folder held before: \u{201C}site\u{201D} already holds the files of ~/a/site.")
+        let kept = SpaceFolder.Project(id: "r", title: "site (c)", created: true, passedOver: "site", passedOverFolders: ["~/a/site"], passedOverReleased: true)
+        #expect(SpaceFoldersModel.notice(for: kept).hasPrefix("Added the project \u{201C}site (c)\u{201D}, named after its parent folder too: \u{201C}site\u{201D} is kept for ~/a/site, which held it before."))
+        let back = SpaceFolder.Project(id: "p", title: "site", heldBefore: true)
+        #expect(SpaceFoldersModel.notice(for: back) == "This folder holds the files of \u{201C}site\u{201D} again, as it did before it was removed.")
         let shared = SpaceFolder.Project(id: "p", title: "site", sharedWith: ["~/site"])
         #expect(SpaceFoldersModel.notice(for: shared).hasSuffix("\u{201C}site\u{201D} also holds the files of ~/site."))
         let folder = SpaceFolder(id: "f", kind: "project", path: "~/Developer/site", capture: true, project: found)

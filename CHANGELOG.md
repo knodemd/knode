@@ -73,10 +73,26 @@ belongs to, newest first.
 
 #### Added
 
+- **Connect your agents** in the Mac app: once the `knode` command is installed on the first run,
+  in Get started and from **Knode > Connect Your Agents…**, the app lists the agents on your Mac,
+  Claude Code first, with a Connect button each and **Connect all detected**. After connecting it
+  says to open a new session of the agent, which sets your memory up. `knode connect --list
+  --json` prints the same list, with whether each agent is already connected.
 - **Let your agent bring your notes in**: Get started offers a prompt to paste into Claude Code, Codex or
   any agent that runs commands. The agent follows the guide Knode ships (`knode onboard guide`),
   asks you only what needs your judgment, imports a copy, connects itself and moves your
   instruction files to Knode. `knode onboard prompt` prints the prompt.
+- **Your agent offers to set Knode up**: when the space an agent connects to is not set up yet
+  (no import, no project and almost no notes of yours), the MCP server asks an agent that runs
+  commands (Claude Code, Codex) to offer to set Knode up for you in that space, with the new
+  `setup_guide` tool, which returns the same guide. Other agents, such as Claude Desktop, are
+  asked to point you to Get started in the Knode app. Knode Service answers `space.set_up`.
+- **Set up the space your agent is already connected to**: `knode onboard apply --into <space>`
+  brings a reviewed plan into an existing space that is not set up yet, such as the new default
+  space the app connected your agent to, with the same checks, project nodes and receipt as a new
+  space, and keeps the conversations it already captured. No reconnection or new agent session is
+  needed. A space that is already set up is refused. Knode Service answers
+  `onboarding.apply_into`.
 - **Map**: typed links with their own labels (`part of` and `has part`, `answers`, `contradicts`,
   or kinds you define), backlinks grouped by label, and in the Mac app a graph of the space with
   filters and saved views, and canvases where notes are placed, grouped and linked by hand.
@@ -114,10 +130,12 @@ belongs to, newest first.
   other `mbox` file), and `knode import --from apple-mail` reads the Apple Mail store on the Mac,
   which needs Full Disk Access (Knode says how to allow it when it is missing). Each thread
   becomes one node with its messages in order, sender, recipients and date, the text part
-  preferred and HTML turned into Markdown; everyone in a thread becomes a person node, one per
-  address, linked from it. `--label`/`--mailbox` and `--since`/`--until` import only some
-  folders and dates, spam and trash are left out, and `--attachments` attaches the files (off by
-  default). Importing again, or another date range, adds only the new messages, and never
+  preferred and HTML turned into Markdown; the people in a thread become person nodes, one per
+  address, linked from it. Mailing lists and bulk mail add no new people, nor do the recipients
+  of a message to more than 20 addresses or the Bcc of mail you received; such a thread still
+  links to those who are people already or whom you wrote to. `--label`/`--mailbox` and
+  `--since`/`--until` import only some folders and dates, spam and trash are left out, and
+  `--attachments` attaches the files (off by default). Importing again, or another date range, adds only the new messages, and never
   overwrites what you changed or added to a thread in Knode. Knode never signs
   in to a mail account: it reads only the files you point it at. Knode Service does the same with
   `import.run`.
@@ -134,6 +152,12 @@ belongs to, newest first.
   Slack workspace exports become one node per channel and direct message, each thread its own
   node linked to its channel, and the members who wrote or were mentioned `person` nodes that
   mentions link to; files are kept as links, or attached when the export includes them.
+  Credentials in the messages are replaced with `[redacted]`: known key formats, a value of 8 or
+  more characters after `password` or `pwd`, and after `secret` or `token` a value of 16 or more
+  characters with letters and digits; the summary counts those in the messages written. A folder
+  holding notes is imported as notes even with a chat export in it, and the summary says how to
+  import the export; a folder holding only exports says how to import each. When a Telegram
+  `result.json` is cut off partway, the chats written before it stopped are kept and named.
   `--from whatsapp`, `--from telegram` or `--from slack` says what it is; Knode Service imports
   them through `import.run`.
 - **The live Markdown folder works both ways**: edits made in the `.md` files come back into the
@@ -148,9 +172,55 @@ belongs to, newest first.
   after its parent folder too, such as `api (b)`, and Knode says so. The folder's row and
   `knode folders list` name it, and removing the folder keeps the project and its notes. A folder
   added before this gets its project when it is added again.
+- **Overlapping project folders**: `knode folders overlaps` lists project folders that are in two
+  spaces (their conversations are captured into both) or inside another folder (their
+  conversations go to the inner folder's space only), with the space of each. `knode folders add`
+  and `knode folders list` warn about them, and Knode Service answers `folders.overlaps` for the
+  apps.
+- **Does the agent reach the right space?** `knode connect <agent> --check [--project <folder>]`
+  reads the agent's MCP settings and says which space it uses (`--space`, `KNODE_SPACE` or the
+  default space), whether that is the space the project's conversations go to (or `--space`), and
+  whether the agent may read there. A project folder does not switch an agent's space, and the
+  check never changes settings or gives access; it says what to run. `--json` prints the report.
+- **The Mac app shows both**: in Settings > Spaces each project folder says which space its
+  conversations go to and warns, with the core's sentence, when it overlaps a project folder of
+  this or another space. Settings > Agents and access and the Connect your agents step check each
+  connected agent and show OK, or each problem with the command that fixes it, to copy into
+  Terminal (**Check a project** checks against a project folder's space). Nothing is granted or
+  changed.
+- **Claude Code's memory comes in with `knode import --from claude-code-memory`**: the notes
+  Claude Code keeps for each folder you work in (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`)
+  become notes of the space, each part of the project that folder belongs to: a project folder of
+  the space, a project made by guided import from that folder, or a project named as the folder.
+  No project is made up: notes whose folder matches none are imported on their own and listed.
+  Importing again updates the same notes, skips memory that did not change, and keeps a note
+  edited in Knode as it is.
+
+- **Migration report for a vault import**: `knode import <folder> --report report.json` writes
+  where every file of a Markdown folder or Obsidian vault went (the node of each note), what was
+  created, updated, unchanged, attached, skipped or failed and why, and the links that name no
+  note or several, embedded files that were not attached and typed links that could not be made.
+  Without `--report`, the summary lists those when there are any. `--json` and Knode Service's
+  `import.run` carry the same report.
+- **Compare an export with the vault**: `knode export <dir> --compare <vault>` lists the notes
+  whose text changed, moved or is missing, the frontmatter keys Knode added, files only in the
+  export and what import never reads (such as `.obsidian/`); `--json` for all of it.
 
 #### Changed
 
+- **Importing a Markdown folder again keeps your edits in Knode**: a note edited in Knode since
+  it was imported is left as it is; when its file changed too, the import says so (`edited`) for
+  you to merge by hand, instead of overwriting the note with the file. Notes imported before this
+  version take the file once, as before, and keep Knode's version in their history. A note you
+  deleted in Knode stays deleted: the import and its report say it was not imported again, and
+  `knode import <folder> --include-deleted` brings such notes back.
+- **`knode instructions --apply`** also says when the agent reads the file and what it reads with
+  it (Claude Code: `~/.claude/CLAUDE.md` and the folders above, `/memory` to list them; Codex:
+  `~/.codex/AGENTS.md`, the folders from the project root, `AGENTS.override.md`), and that your
+  request and the project's rules come before memory.
+- **The agent's onboarding guide** asks all its questions in one batch, covers a person who already
+  has a space (merging into a new one or replacing it, then reconnecting the agents), and ends by
+  saying how many tokens the onboarding used.
 - **Guided import report**: links to documents you left out in review are counted apart as
   expected, instead of listed with the links that found nothing.
 - **Guided import names the new space after its source folder** (`Proyectos.knode`) instead of
@@ -169,6 +239,19 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Importing a Markdown folder or Obsidian vault attaches the files a note embeds with standard
+  Markdown**, `![alt](pic.png)`, `![alt](<my pic.png>)` or `my%20pic.png`, or links to with
+  `[text](file.pdf)`, when they are next to the note, as it already did for `![[pic.png]]`. Web
+  addresses and `data:` images are never attached, and an export writes the link back as it was.
+  The migration report no longer sends you to the failed files when none failed: a file next to
+  the note that the note names by another path says so in both places.
+- **A new space no longer fills with every earlier agent conversation** as soon as `knode
+  connect` starts Knode Service. Capture into a space nobody has set up yet (no capture choice,
+  no onboarding, no folders, no notes) waits until the person turns capture on, onboarding sets
+  it up, a folder is added or something is written into it. Capture stays on by default, and
+  spaces it already writes to are not affected. `knode spaces capture <space> on` is now kept as
+  your choice instead of being stored as the default, and turning capture on for a space where
+  it was off or waiting keeps conversations from then on, not earlier ones.
 - **Long conversations no longer bury short notes in search**: agent conversations, imported chats
   and imported mail threads are long transcripts that match a query's words and meaning in passing,
   and could come before the short note that answers it. Hybrid search now counts a transcript half,
@@ -185,6 +268,10 @@ belongs to, newest first.
 - **Obsidian links inside tables**: `[[Projects/web/README\|web]]`, where Obsidian escapes the
   label's `|` in a table cell, now links to its note instead of staying unresolved, and an embed
   written that way finds its attachment on import.
+- **Importing one Markdown file** reads its frontmatter as properties instead of text, takes its
+  `title` when it has one, and updates the same note when imported again instead of adding a copy
+  (a note an earlier version imported from it included). Files with the same name in other
+  folders stay notes of their own.
 - **Search imported notes by file name**: words and hybrid search also index `markdown.path`,
   so `DEPLOY.md` finds a note imported from `Projects/DEPLOY.md` even when its title and text
   use other words. Existing spaces rebuild their search index on opening (schema version 5).
@@ -194,6 +281,9 @@ belongs to, newest first.
   links. Titles are tried first, as before.
 - **Search by meaning on large spaces**: a search by meaning or hybrid search took minutes in a
   space of a few thousand notes (170 s on 2,700 notes and 20,000 chunks); it takes about 40 ms.
+- **`knode --space <name> connect <agent>`** wrote the name as a folder relative to where it ran,
+  so the agent pointed at a space that does not exist. It now pins the path of the space of that
+  name.
 - **A deep `KNODE_HOME`**: when the Knode Service socket would be longer than a Unix socket path
   may be, commands and `knode service run` say so, with the length and the limit, and ask for a
   shorter folder, instead of only "could not start".

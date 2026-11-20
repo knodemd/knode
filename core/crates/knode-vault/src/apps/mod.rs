@@ -28,7 +28,7 @@ mod db;
 mod enml;
 mod evernote;
 mod folder;
-mod markdown;
+pub(crate) mod markdown;
 mod notion;
 mod proto;
 mod source;

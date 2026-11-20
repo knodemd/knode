@@ -203,7 +203,8 @@ impl Space {
     ) -> Result<Node> {
         let (id, content) = self.prepare_node(new, properties)?;
         let tx = self.conn.transaction()?;
-        write_new_node(&tx, &id, content, properties, by, Timestamp::now())?;
+        // The id carries the creation time, so the node takes the same instant.
+        write_new_node(&tx, &id, content, properties, by, id.created_at())?;
         tx.commit()?;
         self.require_node(&id)
     }
@@ -605,6 +606,15 @@ impl Space {
         )
     }
 
+    /// The nodes created by a person, an agent or Knode itself, as `actor` says, newest first.
+    pub fn created_by(&self, actor: ActorKind, limit: usize) -> Result<Vec<NodeSummary>> {
+        self.query_summaries(
+            "JOIN provenance c ON c.id = n.created_by WHERE c.actor_kind = ?1 \
+             ORDER BY n.created_at DESC, n.seq DESC LIMIT ?2",
+            params![actor.as_str(), limit_param(limit)],
+        )
+    }
+
     /// Every version of a node, oldest first, including its deletion. Works for deleted nodes.
     ///
     /// Each version names the change it belongs to; see [`change`](Self::change).
@@ -806,7 +816,7 @@ fn check_properties(properties: &Properties) -> Result<()> {
 }
 
 /// Adds or replaces properties of a node.
-fn write_properties(
+pub(crate) fn write_properties(
     tx: &Transaction<'_>,
     id: &NodeId,
     properties: &Properties,

@@ -31,14 +31,23 @@ pub enum Action {
         #[arg(long, value_parser=["vault","project","empty"])]
         mode: String,
     },
-    /// Import a reviewed JSON proposal into a new independent .knode package.
+    /// Import a reviewed JSON proposal into a new independent .knode package, or with `--into`
+    /// into an existing space that is not set up yet.
     Apply {
         #[arg(long)]
         plan: PathBuf,
-        #[arg(long)]
-        destination: PathBuf,
-        #[arg(long)]
-        name: String,
+        /// The new .knode package to create.
+        #[arg(long, required_unless_present = "into")]
+        destination: Option<PathBuf>,
+        /// The name of the new space.
+        #[arg(long, required_unless_present = "into")]
+        name: Option<String>,
+        /// Apply into this existing space (a name or a .knode path) instead of a new one, such
+        /// as the space the agent is already connected to. Refused when the space is already set
+        /// up: it has an onboarding receipt, projects or a few notes of its own. What it holds
+        /// stays; capture is turned off, as in a new onboarding space.
+        #[arg(long, conflicts_with_all = ["destination", "name"])]
+        into: Option<String>,
         /// Also bring the agent conversations (Claude Code, Codex and the other agents Knode
         /// reads) held inside the folders of the projects kept, each part of its project, with
         /// obvious secrets replaced. Off unless given; `onboard sessions --plan` lists them first.
@@ -109,15 +118,22 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
             plan,
             destination,
             name,
+            into,
             sessions,
         } => {
             let plan: Plan = serde_json::from_slice(&std::fs::read(plan)?)?;
-            let receipt = onboarding::apply(
-                &plan,
-                &crate::absolute(&destination)?,
-                &name,
-                &crate::person(),
-            )?;
+            let receipt = match (into, destination, name) {
+                (Some(into), _, _) => {
+                    apply_into(&plan, &crate::spaces::find(paths, &into)?, &crate::person())?
+                }
+                (None, Some(destination), Some(name)) => onboarding::apply(
+                    &plan,
+                    &crate::absolute(&destination)?,
+                    &name,
+                    &crate::person(),
+                )?,
+                _ => bail!("Give --destination and --name, or --into"),
+            };
             let mut out = serde_json::to_value(&receipt)?;
             if sessions {
                 // The space and its receipt exist now: a failure here is reported with the
@@ -125,8 +141,13 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
                 match bring_sessions(&receipt, None) {
                     Ok(brought) => out["conversations"] = serde_json::to_value(&brought)?,
                     Err(error) => {
+                        let done = if receipt.applied_into {
+                            "The plan was applied"
+                        } else {
+                            "The space was created"
+                        };
                         let message = format!(
-                            "The space was created, but its agent conversations could not be brought in: {error:#}. Run `knode onboard sessions --target \"{}\" --apply` to try again.",
+                            "{done}, but its agent conversations could not be brought in: {error:#}. Run `knode onboard sessions --target \"{}\" --apply` to try again.",
                             receipt.destination.display()
                         );
                         eprintln!("{message}");
@@ -263,13 +284,35 @@ pub fn run(paths: &Paths, action: Action) -> Result<()> {
             }
             let archived = archived?;
             let recovery = restore_connection(paths, &receipt.space_id).unwrap_or("Copy archived, but Codex configuration recovery needs review. Reconnect your preferred space in Settings.");
-            println!(
-                "{}",
-                serde_json::json!({"archived": archived, "codex_configuration": recovery})
-            );
+            let mut out =
+                serde_json::json!({"archived": archived, "codex_configuration": recovery});
+            // A space onboarding applied into existed before it: say that what it held then is
+            // in the archive too.
+            if receipt.applied_into {
+                out["note"] = serde_json::Value::String("Onboarding applied into this space, which existed before; what it held before onboarding, such as captured conversations, is archived with it and comes back when the archive is reopened.".into());
+            }
+            println!("{}", serde_json::to_string(&out)?);
         }
     }
     Ok(())
+}
+
+/// Applies the plan into the existing space at `space`: through Knode Service, which has the
+/// space open for the app and agents, or directly when the service cannot run.
+fn apply_into(
+    plan: &Plan,
+    space: &Path,
+    by: &knode_format::Provenance,
+) -> Result<onboarding::Receipt> {
+    match crate::service::client() {
+        Some(client) => client
+            .onboarding_apply_into(space, plan, by)
+            .map_err(|e| match e {
+                knode_service::Error::Rpc(e) => anyhow::anyhow!(e.message),
+                other => anyhow::anyhow!(other),
+            }),
+        None => Ok(onboarding::apply_into(plan, &mut Space::open(space)?, by)?),
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

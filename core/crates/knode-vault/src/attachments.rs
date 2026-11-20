@@ -65,8 +65,30 @@ pub(crate) fn wiki_names(body: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The file a Markdown link or image destination names when it is a file next to the note: the
+/// destination without `./`, `#fragment` or `?query`, percent-decoded. `None` for web addresses
+/// and other schemes (`https:`, `data:`, `knode:`), anchors, absolute paths and paths in other
+/// folders.
+pub(crate) fn local_name(dest: &str) -> Option<String> {
+    if crate::apps::markdown::is_url(dest) || dest.starts_with(['#', '/']) {
+        return None;
+    }
+    let dest = dest.split(['#', '?']).next().unwrap_or_default();
+    let dest = dest.strip_prefix("./").unwrap_or(dest);
+    let name = crate::apps::markdown::decode_path(dest);
+    (!name.is_empty() && !name.contains(['/', '\\', ':'])).then_some(name)
+}
+
+/// The names a body uses as `![alt](name)` or `[text](name)`: see [`local_name`].
+pub(crate) fn link_names(body: &str) -> BTreeSet<String> {
+    links(body)
+        .into_iter()
+        .filter_map(|(_, dest)| local_name(&dest))
+        .collect()
+}
+
 /// The source ranges of the inline links and images of `body`, with their destinations.
-fn links(body: &str) -> Vec<(Range<usize>, String)> {
+pub(crate) fn links(body: &str) -> Vec<(Range<usize>, String)> {
     Parser::new_ext(body, knode_md::options())
         .into_offset_iter()
         .filter_map(|(event, range)| match event {
@@ -171,6 +193,19 @@ mod tests {
         assert_eq!(
             names.into_iter().collect::<Vec<_>>(),
             ["beds.svg", "photo.png"]
+        );
+    }
+
+    #[test]
+    fn link_names_are_files_next_to_the_note() {
+        let names = link_names(
+            "![a](pic.png) ![b](<my pic.png>) ![c](my%20pic2.png) [d](./doc.pdf#page=2) \
+             ![e](https://x.org/w.png) ![f](data:image/png;base64,AA) [g](#top) [h](/abs.png) \
+             [i](sub/pic.png) [j](knode:blob/abc) [k](mailto:a@b.c)",
+        );
+        assert_eq!(
+            names.into_iter().collect::<Vec<_>>(),
+            ["doc.pdf", "my pic.png", "my pic2.png", "pic.png"]
         );
     }
 }

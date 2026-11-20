@@ -1218,15 +1218,13 @@ impl Batch for LiveBatch {
         let mut workspace = Workspace::new(batch.users, channels);
         // Secrets pasted in messages are replaced, as in a Slack export.
         let mut conversations = batch.conversations;
-        let mut redacted = 0;
         for m in conversations.values_mut().flat_map(|c| &mut c.messages) {
             let (text, n) = crate::redact::redact_tokens(&m.text);
             if n > 0 {
                 m.text = text;
-                redacted += n;
+                m.redacted = n;
             }
         }
-        super::note_redacted(&mut writer.report, redacted);
         let people = wanted(conversations.values().flat_map(|c| &c.messages));
         write_people(&mut workspace, &people, &mut writer).map_err(chat_error)?;
         let mut files = Files::empty();

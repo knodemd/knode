@@ -22,6 +22,12 @@ final class SpaceFoldersModel {
     private(set) var notice: String?
     /// Called when adding a folder created a project, so the sidebar lists it.
     @ObservationIgnored var projectsChanged: (@MainActor () async -> Void)?
+    /// The project folders that overlap, in this space or with another, as the core finds them.
+    private(set) var overlaps: [FolderOverlap] = []
+    /// Where the space is, to tell its folders in `overlaps` apart from those of other spaces.
+    @ObservationIgnored var spaceURL: URL?
+    /// The spaces capture routes over (`config.toml`), compared for overlaps.
+    @ObservationIgnored var captureSpaces: (@MainActor () -> [URL])?
 
     @ObservationIgnored private let store: any SpaceStore
     @ObservationIgnored private var changesTask: Task<Void, Never>?
@@ -59,6 +65,20 @@ final class SpaceFoldersModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+        await loadOverlaps()
+    }
+
+    /// Asks the core which project folders of the spaces capture routes over overlap. Without
+    /// Knode Service none are shown.
+    private func loadOverlaps() async {
+        guard let captureSpaces, spaceURL != nil else { return }
+        overlaps = (try? await store.folderOverlaps(spaces: captureSpaces())) ?? []
+    }
+
+    /// What the core says about each overlap of one folder of this space.
+    func overlapMessages(for folder: SpaceFolder) -> [String] {
+        guard let spaceURL, folder.knownKind == .project else { return [] }
+        return overlaps.filter { $0.involves(folder: folder.id, inSpace: spaceURL) }.map(\.message)
     }
 
     /// Turns capture into the whole space on or off.
@@ -97,16 +117,21 @@ final class SpaceFoldersModel {
         let title = "\u{201C}\(project.title)\u{201D}"
         var notice: String
         if let other = project.passedOver {
-            let holder = "\u{201C}\(other)\u{201D} already holds the files of \(project.passedOverFolders.joined(separator: ", "))."
+            let folders = project.passedOverFolders.joined(separator: ", ")
+            let holder = project.passedOverReleased
+                ? "\u{201C}\(other)\u{201D} is kept for \(folders), which held it before."
+                : "\u{201C}\(other)\u{201D} already holds the files of \(folders)."
             notice = project.created
                 ? "Added the project \(title), named after its parent folder too: \(holder) Removing the folder later keeps the project and its notes."
-                : "This folder holds the files of \(title), the project this space already had: \(holder)"
+                : "This folder holds the files of \(title), the project this space already had and no folder held before: \(holder)"
         } else if project.created {
             notice = "Added the project \(title). Removing the folder later keeps the project and its notes."
         } else if project.alreadyHeld {
             notice = "This folder already holds the files of \(title)."
+        } else if project.heldBefore {
+            notice = "This folder holds the files of \(title) again, as it did before it was removed."
         } else {
-            notice = "This folder holds the files of \(title), the project this space already had."
+            notice = "This folder holds the files of \(title), the project this space already had and no folder held before."
         }
         if !project.sharedWith.isEmpty {
             notice += " \(title) also holds the files of \(project.sharedWith.joined(separator: ", "))."

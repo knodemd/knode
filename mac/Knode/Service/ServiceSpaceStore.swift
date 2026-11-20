@@ -242,6 +242,13 @@ public actor ServiceSpaceStore: CoeditingStore {
         _ = try await call("folders.remove", ["space": .string(path), "id": .string(folder), "by": author], as: Bool.self)
     }
 
+    public func folderOverlaps(spaces: [URL]) async throws -> [FolderOverlap] {
+        guard !spaces.isEmpty else { return [] }
+        let paths = spaces.map { JSONValue.string(Self.path(of: $0)) }
+        let data = try await callJSON("folders.overlaps", ["spaces": .array(paths)])
+        return try JSONDecoder().decode([FolderOverlap].self, from: data)
+    }
+
     private func settings(of space: Space.ID) async throws -> [String: String] {
         let path = try path(space)
         return try await call("settings.get", ["space": .string(path)], as: [String: String].self)
@@ -534,8 +541,10 @@ extension SpaceFolder {
                     title: title,
                     created: project["created"] as? Bool ?? false,
                     alreadyHeld: project["already_held"] as? Bool ?? false,
+                    heldBefore: project["held_before"] as? Bool ?? false,
                     passedOver: passedOver?["title"] as? String,
                     passedOverFolders: passedOver?["folders"] as? [String] ?? [],
+                    passedOverReleased: passedOver?["released"] as? Bool ?? false,
                     sharedWith: project["shared_with"] as? [String] ?? []
                 )
             }

@@ -1221,6 +1221,198 @@ fn a_message_to_many_people_and_bcc_of_mail_received_add_no_people() {
     );
 }
 
+/// The titles of the people a thread links to, sorted.
+fn people_of(space: &Space, title: &str) -> Vec<String> {
+    let node = thread(space, title);
+    let mut titles: Vec<String> = space
+        .links_from(&node.id)
+        .unwrap()
+        .into_iter()
+        .filter(|l| l.kind == link_kinds::RELATED)
+        .filter_map(|l| space.get_node(&l.to).unwrap())
+        .filter(|n| n.kind == kinds::PERSON)
+        .map(|n| n.title)
+        .collect();
+    titles.sort();
+    titles
+}
+
+#[test]
+fn mailing_list_mail_adds_no_people() {
+    let tmp = tempfile::tempdir().unwrap();
+    let list = |id: &str, from: &str, subject: &str, header: (&str, &str)| {
+        message(
+            &[
+                ("Message-ID", id),
+                ("From", from),
+                ("To", "Dev List <dev-list@lists.example.org>"),
+                ("Subject", subject),
+                ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+                header,
+            ],
+            "A post.\n",
+        )
+    };
+    let posts = vec![
+        list(
+            "<p1@example.org>",
+            "Poster One <one@example.org>",
+            "Release plan",
+            ("List-Id", "Dev <dev-list.lists.example.org>"),
+        ),
+        list(
+            "<p2@example.org>",
+            "Poster Two <two@example.org>",
+            "Build broken",
+            ("List-Unsubscribe", "<mailto:leave@lists.example.org>"),
+        ),
+        list(
+            "<p3@example.org>",
+            "Poster Three <three@example.org>",
+            "Sale",
+            ("Precedence", "bulk"),
+        ),
+        list(
+            "<p4@example.org>",
+            "Bruno Sample <bruno@example.org>",
+            "Docs",
+            ("Precedence", "List"),
+        ),
+        // Bruno also writes to Ada himself, so he is a person.
+        simple(
+            "<own@example.org>",
+            "Bruno Sample <bruno@example.org>",
+            "Lunch",
+            "Wed, 04 Mar 2026 09:00:00 +0100",
+            &[],
+        ),
+    ];
+    let file = write_mbox(tmp.path(), "list.mbox", &posts);
+    let mut space = space(tmp.path());
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+
+    let titles: Vec<String> = of_kind(&space, kinds::PERSON)
+        .into_iter()
+        .map(|p| p.title)
+        .collect();
+    assert_eq!(
+        titles,
+        ["Ada Example", "Bruno Sample"],
+        "no poster of a list and not the list become people"
+    );
+    assert_eq!(report.people, 2);
+    assert_eq!(report.people_left_out, 4, "three posters and the list");
+    assert_eq!(
+        people_of(&space, "Docs"),
+        ["Bruno Sample"],
+        "a list post still links to who is a person"
+    );
+    assert!(people_of(&space, "Release plan").is_empty());
+    assert!(
+        thread(&space, "Release plan")
+            .body
+            .contains("one@example.org")
+    );
+}
+
+#[test]
+fn a_message_to_many_people_adds_those_already_people_or_written_to() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Chloe is a person from an earlier import.
+    let earlier = write_mbox(
+        &tmp.path().join("earlier"),
+        "earlier.mbox",
+        &[simple(
+            "<hello@example.org>",
+            "Chloe Test <chloe@example.org>",
+            "Hello",
+            "Mon, 02 Mar 2026 09:00:00 +0100",
+            &[],
+        )],
+    );
+    let mut space = space(tmp.path());
+    import(
+        &mut space,
+        MailSource::Mbox,
+        &earlier,
+        &MailOptions::default(),
+    );
+
+    let mut team: Vec<String> = (0..23).map(|i| format!("member{i}@example.org")).collect();
+    team.push("Chloe Test <chloe@example.org>".into());
+    team.push("Dana Sample <dana@example.org>".into());
+    let all_hands = message(
+        &[
+            ("Message-ID", "<team@example.org>"),
+            ("From", "Bruno Sample <bruno@example.org>"),
+            ("To", &team.join(", ")),
+            ("Subject", "All hands"),
+            ("Date", "Tue, 03 Mar 2026 09:00:00 +0100"),
+        ],
+        "Meeting at ten.\n",
+    );
+    // Ada wrote to Dana, in a message read after the one to the team.
+    let to_dana = message(
+        &[
+            ("X-Gmail-Labels", "Sent"),
+            ("Message-ID", "<dana@example.com>"),
+            ("From", "Ada Example <ada@example.com>"),
+            ("To", "Dana Sample <dana@example.org>"),
+            ("Subject", "Notes"),
+            ("Date", "Wed, 04 Mar 2026 09:00:00 +0100"),
+        ],
+        "Here.\n",
+    );
+    let file = write_mbox(tmp.path(), "team.mbox", &[all_hands, to_dana]);
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+
+    assert_eq!(
+        people_of(&space, "All hands"),
+        ["Bruno Sample", "Chloe Test", "Dana Sample"],
+        "the sender, a person already in the space, and someone Ada wrote to"
+    );
+    assert_eq!(report.people, 2, "Bruno and Dana; Ada is a person already");
+    assert_eq!(report.people_left_out, 23, "the other members");
+}
+
+#[test]
+fn addresses_already_people_are_not_counted_as_left_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let earlier = write_mbox(
+        &tmp.path().join("earlier"),
+        "earlier.mbox",
+        &[simple(
+            "<hello@example.org>",
+            "Chloe Test <chloe@example.org>",
+            "Hello",
+            "Mon, 02 Mar 2026 09:00:00 +0100",
+            &[],
+        )],
+    );
+    let mut space = space(tmp.path());
+    import(
+        &mut space,
+        MailSource::Mbox,
+        &earlier,
+        &MailOptions::default(),
+    );
+
+    let received = message(
+        &[
+            ("Message-ID", "<blind@example.org>"),
+            ("From", "Ada Example <ada@example.com>"),
+            ("To", "Bruno Sample <bruno@example.org>"),
+            ("Bcc", "Chloe Test <chloe@example.org>"),
+            ("Subject", "A blind copy"),
+            ("Date", "Wed, 04 Mar 2026 09:00:00 +0100"),
+        ],
+        "Hi.\n",
+    );
+    let file = write_mbox(tmp.path(), "blind.mbox", &[received]);
+    let report = import(&mut space, MailSource::Mbox, &file, &MailOptions::default());
+    assert_eq!(report.people_left_out, 0, "Chloe is a person already");
+}
+
 #[test]
 fn a_message_larger_than_the_most_is_skipped_and_listed() {
     let tmp = tempfile::tempdir().unwrap();

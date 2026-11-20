@@ -1,6 +1,6 @@
 //! The name, settings and folders of a space: the shapes of `space.rename`, `settings.get`,
-//! `settings.set`, `folders.list`, `folders.set` and `folders.remove`, and the rules they follow
-//! (section 15 of the .knode specification).
+//! `settings.set`, `folders.list`, `folders.set`, `folders.remove` and `folders.overlaps`, and the
+//! rules they follow (section 15 of the .knode specification).
 //!
 //! These functions work on an open space, so the CLI can use them when the service cannot run.
 //! Only a person changes the name, the settings and the folders of a space.
@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use knode_format::{
     ActorKind, Folder, FolderProject, FolderSpec, Provenance, Space, folder_kinds, setting_keys,
 };
@@ -34,8 +35,9 @@ pub struct FolderInfo {
     pub missing: bool,
     /// For a project folder, the `project` node named after it that it holds the files of: when
     /// it was just added, `created` when that made the project, `already_held` when the folder
-    /// had been added before, `passed_over` when another folder of the same name holds the
-    /// project of that name, and `shared_with` for the folders it shares the project with. `None`
+    /// had been added before, `held_before` when it was removed and took its project back,
+    /// `passed_over` when another folder holds, or held, the project of that name, and
+    /// `shared_with` for the folders it shares the project with. `None`
     /// for other folders, and for a project folder added before Knode made these, until it is
     /// added again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,13 +175,54 @@ pub fn capture_enabled(space: &Space) -> knode_format::Result<bool> {
         .is_none_or(|value| value == "on"))
 }
 
+/// The receipt onboarding leaves in a space it set up (`knode_vault::onboarding`).
+const ONBOARDING_RECEIPT: &str = "onboarding.json";
+
+/// The setting that records when the person turned capture on for the space (RFC 3339, UTC).
+/// Knode Service writes it, not the person: see [`set_setting`].
+pub const CAPTURE_SINCE: &str = "capture.since";
+
+/// When the person turned capture on for the space, if they did after it was off or waiting
+/// for setup: capture writes to it only the conversations started since, so "keep my
+/// conversations from now on" does not also bring every earlier one. `None` for a space whose
+/// capture was never turned on that way, which takes earlier conversations as before, and for a
+/// value that cannot be read.
+pub fn capture_since(space: &Space) -> knode_format::Result<Option<DateTime<Utc>>> {
+    Ok(space
+        .setting(CAPTURE_SINCE)?
+        .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+        .map(|time| time.with_timezone(&Utc)))
+}
+
+/// Whether capture waits before writing anything into the space, because it is a new space
+/// nobody has set up yet: its `capture.enabled` was never chosen, it has no onboarding receipt,
+/// no folders and no nodes at all. Capture into such a space starts, earlier sessions included,
+/// as soon as one of these changes: the person turns capture on (or off), onboarding sets the
+/// space up, a folder is added or anything is written into it. A space capture already wrote
+/// to has nodes, so it never waits again.
+///
+/// This keeps a space that `knode init` or the app has just created, and that `knode connect`
+/// starts Knode Service on, from filling with every earlier agent conversation of the machine
+/// before the person was asked about capture.
+pub fn capture_waits_for_setup(space: &Space) -> knode_format::Result<bool> {
+    Ok(space.setting(setting_keys::CAPTURE_ENABLED)?.is_none()
+        && !space.path().join(ONBOARDING_RECEIPT).exists()
+        && space.folders()?.is_empty()
+        && space.recent(1)?.is_empty())
+}
+
 /// Changes a setting of the space, or puts it back to its default with `None`, and records the
 /// change. Returns whether anything changed. Only a person can change settings.
 ///
 /// The settings that can be changed this way are `space.icon` (one emoji) and
 /// `capture.enabled` (`on` or `off`). `space.id` never changes, and the live Markdown folder
 /// (`markdown.folder`) is changed with `markdown.folder.set`. A value equal to the default is
-/// stored as no value, as the specification asks.
+/// stored as no value, as the specification asks, except `capture.enabled` turned `on`: it is
+/// kept as the person's choice, so a new space does not wait for setup
+/// ([`capture_waits_for_setup`]).
+///
+/// Turning capture on for a space whose capture was off or waiting for setup also records the
+/// time ([`CAPTURE_SINCE`]): capture starts from now, and earlier conversations stay out.
 pub fn set_setting(
     space: &mut Space,
     key: &str,
@@ -194,8 +237,8 @@ pub fn set_setting(
             Some(icon) => Some(check_icon(icon)?),
         },
         setting_keys::CAPTURE_ENABLED => match value {
-            None | Some("on") => None,
-            Some("off") => Some("off"),
+            None => None,
+            Some(value @ ("on" | "off")) => Some(value),
             Some(other) => {
                 return Err(invalid(format!(
                     "capture.enabled is \"on\" or \"off\", not {other:?}"
@@ -215,7 +258,16 @@ pub fn set_setting(
             )));
         }
     };
-    space.set_setting(key, value, by)
+    let capturing = |space: &Space| -> knode_format::Result<bool> {
+        Ok(capture_enabled(space)? && !capture_waits_for_setup(space)?)
+    };
+    let started = key == setting_keys::CAPTURE_ENABLED && !capturing(space)?;
+    let changed = space.set_setting(key, value, by)?;
+    if started && capture_enabled(space)? {
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        space.set_setting(CAPTURE_SINCE, Some(&now), by)?;
+    }
+    Ok(changed)
 }
 
 /// Checks an icon: one emoji. Plain text, such as letters or words, is refused.
@@ -236,11 +288,11 @@ fn check_icon(icon: &str) -> knode_format::Result<&str> {
 
 /// The folders that feed the space, oldest first, with where each one is on this machine.
 pub fn folders(space: &Space) -> knode_format::Result<Vec<FolderInfo>> {
-    space
-        .folders()?
+    Ok(space
+        .folders_with_projects()?
         .into_iter()
-        .map(|folder| FolderInfo::read(space, folder))
-        .collect()
+        .map(|(folder, project)| FolderInfo::of(folder, project.map(FolderProject::found)))
+        .collect())
 }
 
 /// Adds a folder to the space, or changes one, and records the change. Only a person can
@@ -248,8 +300,8 @@ pub fn folders(space: &Space) -> knode_format::Result<Vec<FolderInfo>> {
 ///
 /// Adding a project folder (no `id`) also creates the `project` node named after it, or finds
 /// the one the space has ([`Space::add_folder`]), so every client that adds folders gets the same
-/// project; it is returned in [`FolderInfo::project`]. Changing a folder by its id creates
-/// nothing.
+/// project; it is returned in [`FolderInfo::project`]. Changing a folder by its id into a project
+/// folder does the same; any other change by id creates nothing.
 pub fn set_folder(
     space: &mut Space,
     input: &FolderInput,
@@ -282,7 +334,18 @@ pub fn set_folder(
         capture: input.capture,
         rules: input.rules.clone(),
     };
-    if spec.id.is_some() {
+    // A folder changed to a project folder by its id records its project the way an added one
+    // does; any other change by id keeps what the folder holds.
+    let records_project = match &spec.id {
+        Some(id) => {
+            kind == folder_kinds::PROJECT
+                && space.folder(id)?.is_some_and(|f| {
+                    f.kind != folder_kinds::PROJECT || f.rules.get("project").is_none()
+                })
+        }
+        None => true,
+    };
+    if !records_project {
         let folder = space.set_folder(&spec, by)?;
         return FolderInfo::read(space, folder);
     }
@@ -340,6 +403,240 @@ fn check_rules(kind: &str, rules: &Value) -> knode_format::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether the recorded path `path` is the folder `folder` or inside it.
+pub(crate) fn inside(folder: &str, path: &str) -> bool {
+    if folder == "/" {
+        return path.starts_with('/');
+    }
+    path.strip_prefix(folder)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// The folders of one space, for [`folder_overlaps`] and [`project_destinations`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceFolders {
+    /// The space.
+    pub space: PathBuf,
+    /// Its name.
+    pub name: String,
+    /// Its folders, as the space records them.
+    pub folders: Vec<Folder>,
+    /// Whether captured conversations are written to it: its
+    /// [`capture.enabled`](setting_keys::CAPTURE_ENABLED) setting.
+    pub capture: bool,
+}
+
+impl SpaceFolders {
+    /// The folders of an open space.
+    pub fn of(space: &Space) -> knode_format::Result<Self> {
+        Ok(SpaceFolders {
+            space: space.path().to_path_buf(),
+            name: space.manifest().name.clone(),
+            folders: space.folders()?,
+            capture: capture_enabled(space)?,
+        })
+    }
+}
+
+/// A project folder of a space, as [`folder_overlaps`] and [`project_destinations`] name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MappedFolder {
+    /// The space it belongs to.
+    pub space: PathBuf,
+    /// The name of that space: where the folder's conversations go.
+    pub space_name: String,
+    /// The id of the folder.
+    pub folder: String,
+    /// The folder as the space records it.
+    pub path: String,
+    /// Whether its conversations are captured.
+    pub capture: bool,
+    /// Whether its space keeps captured conversations: with this or [`capture`](Self::capture)
+    /// off, the folder's conversations are captured nowhere.
+    #[serde(default = "yes")]
+    pub space_capture: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl MappedFolder {
+    fn of(space: &SpaceFolders, folder: &Folder) -> Self {
+        MappedFolder {
+            space: space.space.clone(),
+            space_name: space.name.clone(),
+            folder: folder.id.clone(),
+            path: folder.path.clone(),
+            capture: folder.capture,
+            space_capture: space.capture,
+        }
+    }
+
+    /// Whether conversations held in the folder are written to its space.
+    fn captures(&self) -> bool {
+        self.capture && self.space_capture
+    }
+
+    /// Why its conversations are not captured, for a message: its own capture or its space's.
+    fn off(&self) -> String {
+        if self.capture {
+            format!("capture is off in \"{}\"", self.space_name)
+        } else {
+            format!(
+                "capture is off for {} in \"{}\"",
+                self.path, self.space_name
+            )
+        }
+    }
+}
+
+/// How two project folders overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlapKind {
+    /// The same folder is a project folder of two spaces: its conversations go to both.
+    Same,
+    /// One folder is inside the other: its conversations go to the inner folder's space only.
+    Nested,
+}
+
+/// Two project folders that overlap, as `folders.overlaps` returns them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderOverlap {
+    /// How they overlap.
+    pub kind: OverlapKind,
+    /// The outer folder; for [`OverlapKind::Same`], the folder of the first space.
+    pub outer: MappedFolder,
+    /// The folder inside it; for [`OverlapKind::Same`], the folder of the second space.
+    pub inner: MappedFolder,
+    /// What it means for capture, in a sentence, for people.
+    pub message: String,
+}
+
+/// The project folders of `spaces` that overlap: the same folder in two spaces, or a folder
+/// inside another. Capture sends a conversation to the project folder nearest to where it was
+/// held, and to every space that has that folder, so both are worth a look: the same folder in
+/// two spaces is captured into both, and a nested folder takes its conversations away from the
+/// folder around it. Each pair once, in the order of `spaces` and their folders.
+pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
+    let projects: Vec<MappedFolder> = spaces
+        .iter()
+        .flat_map(|space| {
+            space
+                .folders
+                .iter()
+                .filter(|f| f.kind == folder_kinds::PROJECT)
+                .map(move |f| MappedFolder::of(space, f))
+        })
+        .collect();
+    let mut overlaps = Vec::new();
+    for (i, a) in projects.iter().enumerate() {
+        for b in &projects[i + 1..] {
+            if a.path == b.path {
+                if a.space == b.space {
+                    continue; // A space keeps one folder per kind and path.
+                }
+                let what = match (a.captures(), b.captures()) {
+                    (true, true) => "its conversations are captured into both".to_string(),
+                    (true, false) => format!(
+                        "its conversations are captured into \"{}\" only ({})",
+                        a.space_name,
+                        b.off()
+                    ),
+                    (false, true) => format!(
+                        "its conversations are captured into \"{}\" only ({})",
+                        b.space_name,
+                        a.off()
+                    ),
+                    (false, false) => format!(
+                        "its conversations are captured into neither ({}; {})",
+                        a.off(),
+                        b.off()
+                    ),
+                };
+                overlaps.push(FolderOverlap {
+                    kind: OverlapKind::Same,
+                    message: format!(
+                        "{} is a project folder of both \"{}\" and \"{}\": {what}.",
+                        a.path, a.space_name, b.space_name
+                    ),
+                    outer: a.clone(),
+                    inner: b.clone(),
+                });
+                continue;
+            }
+            let (outer, inner) = if inside(&a.path, &b.path) {
+                (a, b)
+            } else if inside(&b.path, &a.path) {
+                (b, a)
+            } else {
+                continue;
+            };
+            let message = if outer.space == inner.space {
+                format!(
+                    "{} is inside {}, both in \"{}\": conversations held in it belong to its own \
+                     project, not to the one around it.",
+                    inner.path, outer.path, inner.space_name
+                )
+            } else if inner.captures() {
+                format!(
+                    "{} (\"{}\") is inside {} (\"{}\"): conversations held in it are captured \
+                     into \"{}\" only, not into \"{}\".",
+                    inner.path,
+                    inner.space_name,
+                    outer.path,
+                    outer.space_name,
+                    inner.space_name,
+                    outer.space_name
+                )
+            } else {
+                format!(
+                    "{} (\"{}\") is inside {} (\"{}\"): conversations held in it are not \
+                     captured, since {}, and do not go to \"{}\" either.",
+                    inner.path,
+                    inner.space_name,
+                    outer.path,
+                    outer.space_name,
+                    inner.off(),
+                    outer.space_name
+                )
+            };
+            overlaps.push(FolderOverlap {
+                kind: OverlapKind::Nested,
+                outer: outer.clone(),
+                inner: inner.clone(),
+                message,
+            });
+        }
+    }
+    overlaps
+}
+
+/// The project folders a folder on this machine belongs to, as capture routes it: those
+/// nearest to it, one per space (several when the same folder is in several spaces). Empty when
+/// no project folder holds it. Whether capture is on is not considered.
+pub fn project_destinations(spaces: &[SpaceFolders], folder: &Path) -> Vec<MappedFolder> {
+    let recorded = record_path(folder);
+    let matching: Vec<MappedFolder> = spaces
+        .iter()
+        .flat_map(|space| {
+            space
+                .folders
+                .iter()
+                .filter(|f| f.kind == folder_kinds::PROJECT && inside(&f.path, &recorded))
+                .map(move |f| MappedFolder::of(space, f))
+        })
+        .collect();
+    let Some(longest) = matching.iter().map(|f| f.path.len()).max() else {
+        return Vec::new();
+    };
+    matching
+        .into_iter()
+        .filter(|f| f.path.len() == longest)
+        .collect()
 }
 
 /// The patterns of a folder's rule (`include` or `exclude`).
@@ -441,5 +738,169 @@ mod tests {
         assert!(check_icon("x").is_err());
         assert!(check_icon("🌱 🌱").is_err());
         assert!(check_icon("é").is_err());
+    }
+
+    fn folder(id: &str, kind: &str, path: &str) -> Folder {
+        let by = Provenance::person("Ada");
+        Folder {
+            id: id.into(),
+            kind: kind.into(),
+            path: path.into(),
+            capture: true,
+            rules: empty_object(),
+            created_at: knode_format::Timestamp(0),
+            created_by: by.clone(),
+            updated_at: knode_format::Timestamp(0),
+            updated_by: by,
+        }
+    }
+
+    fn space(name: &str, folders: Vec<Folder>) -> SpaceFolders {
+        SpaceFolders {
+            space: PathBuf::from(format!("/k/{name}.knode")),
+            name: name.into(),
+            folders,
+            capture: true,
+        }
+    }
+
+    #[test]
+    fn overlapping_project_folders_are_found_once() {
+        let spaces = [
+            space(
+                "Work",
+                vec![
+                    folder("w1", folder_kinds::PROJECT, "/code/site"),
+                    folder("w2", folder_kinds::PROJECT, "/code/site/docs"),
+                    folder("w3", folder_kinds::PROJECT, "/code/sitemap"),
+                    // Notes and agent folders are not routed by project.
+                    folder("w4", folder_kinds::NOTES, "/code/site/notes"),
+                ],
+            ),
+            space(
+                "Personal",
+                vec![
+                    folder("p1", folder_kinds::PROJECT, "/code/site"),
+                    folder("p2", folder_kinds::PROJECT, "/code/site/blog"),
+                    folder("p3", folder_kinds::PROJECT, "/elsewhere"),
+                ],
+            ),
+        ];
+        let found = folder_overlaps(&spaces);
+        let pairs: Vec<(OverlapKind, &str, &str)> = found
+            .iter()
+            .map(|o| (o.kind, o.outer.folder.as_str(), o.inner.folder.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                (OverlapKind::Nested, "w1", "w2"),
+                (OverlapKind::Same, "w1", "p1"),
+                (OverlapKind::Nested, "w1", "p2"),
+                (OverlapKind::Nested, "p1", "w2"),
+                (OverlapKind::Nested, "p1", "p2"),
+            ]
+        );
+        assert!(found[1].message.contains("captured into both"), "{found:?}");
+        assert!(
+            found[2]
+                .message
+                .contains("into \"Personal\" only, not into \"Work\"")
+        );
+        assert!(found[0].message.contains("both in \"Work\""));
+        assert!(folder_overlaps(&spaces[1..]).len() == 1);
+        assert!(folder_overlaps(&[]).is_empty());
+    }
+
+    #[test]
+    fn overlap_messages_say_captured_only_where_capture_is_on() {
+        let off = |mut f: Folder| {
+            f.capture = false;
+            f
+        };
+        let same = |work: Folder, personal: Folder, personal_on: bool| {
+            let mut spaces = [space("Work", vec![work]), space("Personal", vec![personal])];
+            spaces[1].capture = personal_on;
+            folder_overlaps(&spaces).remove(0).message
+        };
+        let site = |id: &str| folder(id, folder_kinds::PROJECT, "/code/site");
+
+        let both = same(site("w"), site("p"), true);
+        assert!(both.contains("captured into both"), "{both}");
+        let folder_off = same(site("w"), off(site("p")), true);
+        assert!(!folder_off.contains("captured into both"), "{folder_off}");
+        assert!(
+            folder_off.contains(
+                "captured into \"Work\" only (capture is off for /code/site in \"Personal\")"
+            ),
+            "{folder_off}"
+        );
+        let space_off = same(site("w"), site("p"), false);
+        assert!(
+            space_off.contains("captured into \"Work\" only (capture is off in \"Personal\")"),
+            "{space_off}"
+        );
+        let neither = same(off(site("w")), site("p"), false);
+        assert!(neither.contains("captured into neither"), "{neither}");
+
+        // Nested in another space: the inner folder takes them, captured or not.
+        let nested = |inner: Folder, inner_on: bool| {
+            let mut spaces = [
+                space("Work", vec![site("w")]),
+                space(
+                    "Personal",
+                    vec![folder(&inner.id, folder_kinds::PROJECT, "/code/site/blog")]
+                        .into_iter()
+                        .map(|mut f| {
+                            f.capture = inner.capture;
+                            f
+                        })
+                        .collect(),
+                ),
+            ];
+            spaces[1].capture = inner_on;
+            folder_overlaps(&spaces).remove(0).message
+        };
+        let on = nested(site("p"), true);
+        assert!(on.contains("captured into \"Personal\" only"), "{on}");
+        let inner_off = nested(off(site("p")), true);
+        assert!(!inner_off.contains("captured into"), "{inner_off}");
+        assert!(
+            inner_off.contains("are not captured, since capture is off for /code/site/blog"),
+            "{inner_off}"
+        );
+        let inner_space_off = nested(site("p"), false);
+        assert!(
+            inner_space_off.contains("since capture is off in \"Personal\""),
+            "{inner_space_off}"
+        );
+    }
+
+    #[test]
+    fn a_folder_goes_to_its_nearest_project_folders() {
+        let spaces = [
+            space(
+                "Work",
+                vec![
+                    folder("w1", folder_kinds::PROJECT, "/code/site"),
+                    folder("w2", folder_kinds::PROJECT, "/code/site/docs"),
+                ],
+            ),
+            space(
+                "Personal",
+                vec![folder("p1", folder_kinds::PROJECT, "/code/site")],
+            ),
+        ];
+        let ids = |path: &str| -> Vec<String> {
+            project_destinations(&spaces, Path::new(path))
+                .into_iter()
+                .map(|f| f.folder)
+                .collect()
+        };
+        assert_eq!(ids("/code/site/docs/api"), ["w2"]);
+        assert_eq!(ids("/code/site/src"), ["w1", "p1"]);
+        assert_eq!(ids("/code/site"), ["w1", "p1"]);
+        assert!(ids("/code/sitemap").is_empty());
+        assert!(ids("/other").is_empty());
     }
 }

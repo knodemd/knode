@@ -115,7 +115,7 @@ struct SpaceFoldersForm: View {
                 }
                 ForEach(Array(folders.folders.enumerated()), id: \.element.id) { offset, folder in
                     if offset > 0 { KHairline() }
-                    FolderRow(folder: folder, isBusy: folders.isBusy, setCapture: { on in
+                    FolderRow(folder: folder, spaceName: folders.spaceName, spaceCaptures: folders.captureEnabled, overlaps: folders.overlapMessages(for: folder), isBusy: folders.isBusy, setCapture: { on in
                         Task { await folders.setCapture(on, for: folder) }
                     }, remove: { confirmRemove(folder) })
                 }
@@ -166,12 +166,28 @@ struct RoutingExplanation: View {
 /// One folder: what it is, where, whether it is on this Mac, and capture on or off.
 struct FolderRow: View {
     let folder: SpaceFolder
+    /// The space the folder feeds: where a project folder's conversations go.
+    var spaceName: String
+    /// Whether that space keeps captured conversations.
+    var spaceCaptures = true
+    /// What the core says about each project folder this one overlaps.
+    var overlaps: [String] = []
     let isBusy: Bool
     let setCapture: (Bool) -> Void
     let remove: () -> Void
     @Environment(\.kTheme) private var theme
 
     var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x2) {
+            row
+            ForEach(overlaps, id: \.self) { message in
+                KWarningText(message).padding(.leading, 18 + KSpace.x3)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var row: some View {
         HStack(alignment: .center, spacing: KSpace.x3) {
             KIcon(Self.glyph(folder.knownKind), size: .sm, color: theme.muted)
                 .frame(width: 18)
@@ -202,12 +218,11 @@ struct FolderRow: View {
             KIconButton(.delete, title: "Remove this folder from the space", size: .small, action: remove)
                 .disabled(isBusy)
         }
-        .accessibilityElement(children: .contain)
     }
 
     private var kindLabel: String {
         switch folder.knownKind {
-        case .project: "\(projectName), \(folder.capture ? "captured" : "capture off: nothing of it is kept")"
+        case .project: "\(projectName), \(!folder.capture ? "capture off: nothing of it is kept" : spaceCaptures ? "captured into \(spaceName)" : "goes to \(spaceName), where capture is off")"
         case .notes: folder.capture ? "Notes" : "Notes, not read"
         case .agent: "Sessions of \(folder.agent.map(CaptureAgent.name(of:)) ?? "an agent")\(folder.capture ? "" : ", not read")"
         case nil: "\(folder.kind.capitalized) folder, from a newer version of Knode"

@@ -99,6 +99,31 @@ fn the_tools_write_and_read_through_the_service() {
 }
 
 #[test]
+fn the_service_says_whether_a_space_is_set_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let space = dir.path().join("Fresh.knode");
+    let client = Client::connect(&socket).unwrap();
+    client.create_space(&space, "Fresh").unwrap();
+
+    let backend = backend_for(socket.clone(), space.clone());
+    assert!(!backend.is_set_up().unwrap());
+    // What an agent writes is not the person's notes.
+    for title in ["One", "Two", "Three"] {
+        run(&backend, "write_node", json!({"title": title}));
+    }
+    assert!(!backend.is_set_up().unwrap());
+
+    let mut project = knode_format::NewNode::note("Web", "");
+    project.kind = knode_format::kinds::PROJECT.into();
+    client
+        .create_node(&space, project, &knode_format::Provenance::person("Ada"))
+        .unwrap();
+    assert!(backend.is_set_up().unwrap());
+}
+
+#[test]
 fn a_missing_space_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let service = start(Config::new(dir.path().join("home"))).unwrap();
