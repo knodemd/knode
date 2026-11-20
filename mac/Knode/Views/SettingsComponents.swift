@@ -212,6 +212,7 @@ struct KSheetSurface<Content: View>: View {
 final class KOverlays {
     var confirmation: KConfirmation?
     var connecting: ConnectableAgent?
+    var connectingSource: SourceConnectFlow?
     var addingProject: PendingProject?
 }
 
@@ -229,6 +230,9 @@ extension View {
             .environment(\.kOverlays, overlays)
             .kSheet(item: $overlays.connecting, width: 520) { agent in
                 ConnectAgentView(initial: agent) { overlays.connecting = nil }
+            }
+            .kSheet(item: $overlays.connectingSource, width: 560) { flow in
+                ConnectSourceSheet(flow: flow) { overlays.connectingSource = nil }
             }
             .kSheet(item: $overlays.addingProject, width: 540) { project in
                 AddProjectSheet(project: project) { overlays.addingProject = nil }

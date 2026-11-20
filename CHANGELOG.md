@@ -25,6 +25,16 @@ belongs to, newest first.
   with when each last ran, how much it brought in and its last error, and connects, pauses,
   resumes, excludes, includes and disconnects them. Secrets connectors need stay in the system
   keychain. `sources = false` in `config.toml`, or `capture = false`, stops every connector.
+- **Settings > Sources** in the Mac app: every source of a space, with what it reads, the
+  permission it needs, whether it is on, when it last ran, how many items it brought in and its
+  last error, and a clear **Needs an update** when another app's database changed. **Connect**
+  goes step by step: Full Disk Access with a button to its pane of System Settings, the
+  sign-in (Telegram's phone number, code and password; Gmail and Slack in the browser, waiting
+  until it comes back; an IMAP address, server and app password), the history (**From today**
+  or **Everything**) and every chat, channel or folder with a switch to leave it out: it is
+  connected paused and reads nothing until you start it. A switch pauses and resumes it, **Run
+  now** runs it at once, **Sign out** ends its session, and **Disconnect** asks first and keeps
+  what it brought in.
 - **Apple Mail connector**: new mail of every account you added to Apple Mail on your Mac
   (Gmail, iCloud, Outlook, Exchange, any IMAP account, and the mailboxes On My Mac) comes into
   your space within a minute, through the same mail import, so threads, people and your edits

@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The panes of the settings window.
 enum SettingsTab: String, CaseIterable, Hashable {
-    case agents, spaces, search, general
+    case agents, sources, spaces, search, general
 
     /// The pane the settings window shows, kept between openings; the menu bar panel sets it to
     /// open the window on a pane.
@@ -13,6 +13,7 @@ enum SettingsTab: String, CaseIterable, Hashable {
     var title: String {
         switch self {
         case .agents: "Agents and access"
+        case .sources: "Sources"
         case .spaces: "Spaces"
         case .search: "Search"
         case .general: "General"
@@ -22,6 +23,7 @@ enum SettingsTab: String, CaseIterable, Hashable {
     var glyph: KGlyph {
         switch self {
         case .agents: .private
+        case .sources: .import
         case .spaces: .folder
         case .search: .search
         case .general: .settings
@@ -58,6 +60,7 @@ private struct SettingsWindow: View {
             Group {
                 switch tab {
                 case .agents: AgentsSettingsView()
+                case .sources: SourcesSettingsView()
                 case .spaces: SpacesSettingsView()
                 case .search: SearchSettingsView()
                 case .general: GeneralSettingsView()

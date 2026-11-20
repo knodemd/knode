@@ -229,6 +229,8 @@ struct KConfirmation {
     var confirmTitle: String
     var cancelTitle = "Cancel"
     var isDestructive = false
+    /// The icon of the action's button, and with it a close icon on the cancel button.
+    var confirmIcon: KGlyph? = nil
     var confirm: @MainActor () -> Void
 }
 
@@ -241,12 +243,15 @@ private struct KConfirmCard: View {
             KSheetHeader(title: confirmation.title, message: confirmation.message)
             HStack(spacing: KSpace.x2) {
                 Spacer()
-                KButton(confirmation.cancelTitle, kind: .secondary, action: close)
+                KButton(confirmation.cancelTitle, icon: confirmation.confirmIcon == nil ? nil : .close, kind: .secondary, action: close)
                 Button {
                     close()
                     confirmation.confirm()
                 } label: {
-                    Text(confirmation.confirmTitle)
+                    HStack(spacing: 8) {
+                        if let icon = confirmation.confirmIcon { KIcon(icon, size: .sm) }
+                        Text(confirmation.confirmTitle)
+                    }
                 }
                 .buttonStyle(KButtonStyle(kind: confirmation.isDestructive ? .destructive : .primary))
                 .keyboardShortcut(.defaultAction)

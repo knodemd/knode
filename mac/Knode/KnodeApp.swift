@@ -11,6 +11,7 @@ struct KnodeApp: App {
     @State private var service: ServiceMonitor
     @State private var agents: AgentsModel
     @State private var searchIndex: SearchIndexModel
+    @State private var sources: SourcesModel
 
     init() {
         KFont.register()
@@ -32,6 +33,11 @@ struct KnodeApp: App {
         ))
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
+        _sources = State(initialValue: SourcesModel(
+            client: ServiceSourcesClient(),
+            openURL: { NSWorkspace.shared.open($0) },
+            startService: { await service.startService() }
+        ))
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }
 
@@ -87,6 +93,7 @@ struct KnodeApp: App {
                 .environment(model)
                 .environment(agents)
                 .environment(searchIndex)
+                .environment(sources)
                 .environment(service)
         }
         .windowResizability(.contentSize)
