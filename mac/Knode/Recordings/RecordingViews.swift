@@ -28,6 +28,7 @@ enum RecordingText {
 /// indicator, the time, pause and stop.
 struct RecordingMenuSection: View {
     let controller: RecordingController
+    let processor: RecordingsProcessor
     @Environment(\.openWindow) private var openWindow
     @Environment(\.kTheme) private var theme
 
@@ -71,6 +72,18 @@ struct RecordingMenuSection: View {
                 }
                 .padding(.horizontal, -KSpace.x1)
             }
+            if !controller.isProcessing, let job = processor.current {
+                // A recording the app did not just make, such as a voice memo.
+                HStack(spacing: KSpace.x2) {
+                    KSpinner()
+                    Text(RecordingStatusText.job(job)).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
+                }
+                .padding(.horizontal, KSpace.x1)
+                .kTooltip(job.title)
+            }
+            ForEach(processor.failures) { failure in
+                RecordingFailureRow(failure: failure, processor: processor)
+            }
         }
     }
 
@@ -85,6 +98,46 @@ struct RecordingMenuSection: View {
     private func show() {
         openWindow(id: RecordingWindow.id)
         NSApp.activate()
+    }
+}
+
+/// A recording whose transcript or minutes failed, with Retry.
+private struct RecordingFailureRow: View {
+    let failure: RecordingsProcessor.Failure
+    let processor: RecordingsProcessor
+    @State private var retrying = false
+    @State private var error: String?
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            HStack(spacing: KSpace.x2) {
+                KIcon(.warning, size: .xs, color: theme.danger)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(failure.title).font(KFont.ui(12, .semibold)).lineLimit(1)
+                    Text(RecordingStatusText.failure(failure)).font(KFont.ui(11)).foregroundStyle(theme.muted).lineLimit(2)
+                }
+                Spacer(minLength: KSpace.x2)
+                KButton("Retry", size: .small) { retry() }
+                    .disabled(retrying)
+            }
+            if let error { KErrorText(error) }
+        }
+        .padding(.horizontal, KSpace.x1)
+        .kTooltip(failure.message)
+    }
+
+    private func retry() {
+        retrying = true
+        Task {
+            do {
+                try await processor.retry(failure)
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
+            retrying = false
+        }
     }
 }
 
@@ -108,6 +161,20 @@ enum RecordingStatusText {
         case .transcribing(let progress): "Transcribing on this Mac, \(Int(progress * 100))%"
         case .summarising(let progress): "Writing the minutes on this Mac, \(Int(progress * 100))%"
         default: ""
+        }
+    }
+
+    static func job(_ job: RecordingsProcessor.Job) -> String {
+        switch job.step {
+        case .transcribing: "Transcribing \(job.title), \(Int(job.progress * 100))%"
+        case .summarising: "Writing minutes for \(job.title), \(Int(job.progress * 100))%"
+        }
+    }
+
+    static func failure(_ failure: RecordingsProcessor.Failure) -> String {
+        switch failure.stage {
+        case .transcript: "Transcript failed: \(failure.message)"
+        case .summary: "Minutes failed: \(failure.message)"
         }
     }
 }

@@ -12,6 +12,7 @@ enum RecordingError: Error, LocalizedError, Equatable {
     case alreadyRecording
     case notRecording
     case writeFailed(String)
+    case tooLarge(file: String, size: Int64, limit: Int64, folder: String)
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +30,8 @@ enum RecordingError: Error, LocalizedError, Equatable {
             "Nothing is being recorded."
         case .writeFailed(let reason):
             "The recording could not be written: \(reason)."
+        case .tooLarge(let file, let size, let limit, let folder):
+            "The recording is too long to keep: \(file) is \(size.formatted(.byteCount(style: .file))), and a space keeps files up to \(limit.formatted(.byteCount(style: .file))) (about three hours of a meeting). Nothing was saved; the audio is still in \(folder)."
         }
     }
 }
@@ -212,6 +215,7 @@ final class MeetingRecorder: MeetingRecording, @unchecked Sendable {
 /// Writes one track: mixes each buffer down to mono and encodes it to AAC on its own queue, off the
 /// audio thread, and keeps the level of the latest buffer for the meter.
 final class TrackWriter: @unchecked Sendable {
+    static let bitRate = 64_000
     let role: RecordedTrack.Role
     let url: URL
     private let format: AVAudioFormat
@@ -231,7 +235,10 @@ final class TrackWriter: @unchecked Sendable {
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
+            // Constant 64 kbps mono: about 29 MB an hour, so a meeting of up to three hours fits
+            // the 100 MB a space keeps in one file.
+            AVEncoderBitRateKey: TrackWriter.bitRate,
+            AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant,
         ]
         do {
             file = Mutex(try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false))

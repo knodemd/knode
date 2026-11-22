@@ -631,3 +631,140 @@ extension CoreSpaceStore: DeletedNotesStore {
         try await run { try core.deleteNode(id: id, by: author) }
     }
 }
+
+// MARK: - Recordings
+
+extension CoreSpaceStore: RecordingStore {
+    func createRecording(_ recording: NewRecordingDraft, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        let author = author
+        let new = KnodeCore.NewRecording(
+            kind: KnodeCore.RecordingKind(recording.kind), title: recording.title,
+            startedAt: RecordingWire.milliseconds(recording.startedAt), endedAt: RecordingWire.milliseconds(recording.endedAt),
+            project: recording.project,
+            audio: recording.audio.map { AudioInput(path: $0.url.standardizedFileURL.path(percentEncoded: false), track: RecordingTrack($0.role)) },
+            key: recording.key, app: recording.app, summaries: recording.summaries
+        )
+        return StoredRecording(try await run { try core.createRecording(recording: new, by: author) })
+    }
+
+    func pendingRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        let core = try self.core(space)
+        return try await run { try core.pendingRecordings() }.map(StoredRecording.init)
+    }
+
+    func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        return StoredRecording(try await run { try core.recording(id: id) })
+    }
+
+    func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        let value = RecordingTranscript(
+            language: transcript.locale.isEmpty ? nil : transcript.locale, engine: engine.name,
+            segments: transcript.segments.map {
+                KnodeCore.TranscriptSegment(startMs: Int64($0.startMs), endMs: Int64($0.endMs), speaker: $0.speaker ?? TranscriptSegment.unnamedSpeaker, text: $0.text)
+            }
+        )
+        let by = Self.provenance(engine)
+        return StoredRecording(try await run { try core.setRecordingTranscript(id: id, transcript: value, by: by) })
+    }
+
+    func setSummary(_ summary: MeetingSummary, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        let value = RecordingSummary(
+            model: summary.model, overview: summary.overview, keyPoints: summary.keyPoints, decisions: summary.decisions,
+            actionItems: summary.actionItems.map { KnodeCore.ActionItem(task: $0.task, owner: $0.owner) },
+            openQuestions: summary.openQuestions
+        )
+        let by = Self.provenance(engine)
+        return StoredRecording(try await run { try core.setRecordingSummary(id: id, summary: value, by: by) })
+    }
+
+    func failRecording(_ id: Node.ID, stage: StoredRecording.Stage, failure: StoredRecording.Failure, error: String, by engine: RecordingEngine, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        let by = Self.provenance(engine)
+        let stage = RecordingStage(stage)
+        let state: RecordingFailure = failure == .unavailable ? .unavailable : .failed
+        return StoredRecording(try await run { try core.failRecording(id: id, stage: stage, state: state, error: error, by: by) })
+    }
+
+    func retryRecording(_ id: Node.ID, stage: StoredRecording.Stage, in space: Space.ID) async throws -> StoredRecording {
+        let core = try self.core(space)
+        let author = author
+        let stage = RecordingStage(stage)
+        return StoredRecording(try await run { try core.retryRecording(id: id, stage: stage, by: author) })
+    }
+
+    func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool {
+        let core = try self.core(space)
+        return RecordingSummariesSetting.isOn(try await run { try core.setting(key: RecordingSummariesSetting.key) })
+    }
+
+    static func provenance(_ engine: RecordingEngine) -> Provenance {
+        Provenance(kind: .system, actor: RecordingEngine.actor, session: nil, source: engine.id)
+    }
+}
+
+extension KnodeCore.RecordingKind {
+    init(_ kind: StoredRecording.Kind) {
+        self = switch kind {
+        case .meeting: .meeting
+        case .voiceMemo: .voiceMemo
+        case .recording: .recording
+        }
+    }
+}
+
+extension RecordingTrack {
+    init(_ role: RecordedTrack.Role) {
+        self = switch role {
+        case .microphone: .microphone
+        case .system: .system
+        case .mixed: .mixed
+        }
+    }
+}
+
+extension RecordingStage {
+    init(_ stage: StoredRecording.Stage) {
+        self = stage == .transcript ? .transcript : .summary
+    }
+}
+
+extension StoredRecording {
+    init(_ recording: KnodeCore.Recording) {
+        let kind: Kind = switch recording.kind {
+        case .meeting: .meeting
+        case .voiceMemo: .voiceMemo
+        case .recording: .recording
+        }
+        let transcript: TranscriptState = switch recording.transcript {
+        case .pending: .pending
+        case .done: .done
+        case .failed: .failed
+        }
+        let summary: SummaryState = switch recording.summary {
+        case .pending: .pending
+        case .done: .done
+        case .off: .off
+        case .unavailable: .unavailable
+        case .failed: .failed
+        }
+        self.init(
+            id: recording.id, kind: kind, title: recording.title,
+            startedAt: Date(unixMilliseconds: recording.startedAt), endedAt: Date(unixMilliseconds: recording.endedAt),
+            language: recording.language, transcript: transcript, summary: summary, error: recording.error,
+            project: recording.project,
+            tracks: recording.tracks.map { track in
+                let role: RecordedTrack.Role = switch track.track {
+                case .microphone: .microphone
+                case .system: .system
+                case .mixed: .mixed
+                }
+                return Track(name: track.name, role: role)
+            },
+            transcriptID: recording.transcriptId
+        )
+    }
+}

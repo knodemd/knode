@@ -368,6 +368,17 @@ final class AppModel {
         return items
     }
 
+    /// The spaces whose recordings the app transcribes and summarises: the open ones, and the
+    /// default space, where connectors such as Voice Memos write.
+    var recordingSpaceURLs: [URL] {
+        var urls: [URL] = []
+        let open = spaces.filter { !exampleSpaceIDs.contains($0.id) }.compactMap { $0.url?.standardizedFileURL }
+        for url in open + [defaultSpaceURL?.standardizedFileURL].compactMap({ $0 }) where !urls.contains(url) {
+            urls.append(url)
+        }
+        return urls
+    }
+
     /// The sidebar item of the selected space.
     var selectedSpaceURL: URL? {
         guard let space = selectedSpace else { return nil }

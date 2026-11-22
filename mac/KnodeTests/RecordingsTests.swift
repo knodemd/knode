@@ -11,6 +11,7 @@ final class FakeRecorder: MeetingRecording {
         var mode: RecordingMode?
         var calls: [String] = []
         var paused = false
+        var folder: URL?
     }
 
     let state = Mutex(State())
@@ -21,6 +22,8 @@ final class FakeRecorder: MeetingRecording {
     }
 
     var calls: [String] { state.withLock { $0.calls } }
+    /// The private folder its files were written to, once stopped.
+    var folder: URL? { state.withLock { $0.folder } }
 
     func start(_ mode: RecordingMode) async throws {
         state.withLock { $0.calls.append("start") }
@@ -36,69 +39,23 @@ final class FakeRecorder: MeetingRecording {
             state.calls.append("stop")
             return state.mode
         }
-        let folder = URL(filePath: "/tmp/knode-test-recording", directoryHint: .isDirectory)
-        if mode == .inPerson { return [RecordedTrack(role: .mixed, url: folder.appending(path: "microphone.m4a"))] }
-        return [
-            RecordedTrack(role: .microphone, url: folder.appending(path: "microphone.m4a")),
-            RecordedTrack(role: .system, url: folder.appending(path: "system.m4a")),
-        ]
+        let folder = FileManager.default.temporaryDirectory.appending(path: "knode-test-recording-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        state.withLock { $0.folder = folder }
+        let tracks = mode == .inPerson
+            ? [RecordedTrack(role: .mixed, url: folder.appending(path: "microphone.m4a"))]
+            : [
+                RecordedTrack(role: .microphone, url: folder.appending(path: "microphone.m4a")),
+                RecordedTrack(role: .system, url: folder.appending(path: "system.m4a")),
+            ]
+        for track in tracks { try Data("audio".utf8).write(to: track.url) }
+        return tracks
     }
 
     func cancel() { state.withLock { $0.calls.append("cancel") } }
     var elapsed: Duration { .seconds(65) }
     var level: Float { 0.5 }
     var isPaused: Bool { state.withLock { $0.paused } }
-}
-
-struct FakeTranscriber: Transcriber {
-    var error: TranscriptionError?
-
-    func transcribe(_ tracks: [RecordedTrack], locale: Locale?, progress: @escaping @Sendable (Double) -> Void) async throws -> Transcript {
-        if let error { throw error }
-        progress(1)
-        return Transcript(locale: "es-ES", segments: tracks.enumerated().map { index, track in
-            TranscriptSegment(startMs: index * 1000, endMs: index * 1000 + 900, speaker: track.speaker, text: "Hola \(index)")
-        })
-    }
-}
-
-struct FakeSummarizer: Summarizer {
-    var available: SummarizerAvailability = .available
-
-    func availability(for transcript: Transcript) async -> SummarizerAvailability { available }
-
-    func summarize(_ transcript: Transcript, progress: @escaping @Sendable (Double) -> Void) async throws -> MeetingSummary {
-        MeetingSummary(model: "fake", overview: "Resumen", keyPoints: ["Punto"], decisions: [], actionItems: [], openQuestions: [])
-    }
-}
-
-/// A sink that keeps every call in memory.
-final class FakeSink: RecordingSink {
-    struct State {
-        var saved: [FinishedRecording] = []
-        var transcripts: [String: Transcript] = [:]
-        var summaries: [String: MeetingSummary] = [:]
-        var failures: [String: String] = [:]
-    }
-
-    let state = Mutex(State())
-
-    func save(_ recording: FinishedRecording) async throws -> String {
-        state.withLock { $0.saved.append(recording) }
-        return "rec-1"
-    }
-
-    func saveTranscript(_ transcript: Transcript, for recording: String) async throws {
-        state.withLock { $0.transcripts[recording] = transcript }
-    }
-
-    func saveSummary(_ summary: MeetingSummary, for recording: String) async throws {
-        state.withLock { $0.summaries[recording] = summary }
-    }
-
-    func fail(_ recording: String, reason: String) async {
-        state.withLock { $0.failures[recording] = reason }
-    }
 }
 
 /// A model that answers from the chunk itself: every line becomes a key point, lines with
@@ -363,21 +320,25 @@ struct TranscriptMergeTests {
 
 @MainActor
 struct RecordingControllerTests {
-    let target = RecordingTarget(spaceURL: URL(filePath: "/tmp/Work.knode", directoryHint: .isDirectory), spaceName: "Work")
-
     private func controller(
         recorder: FakeRecorder = FakeRecorder(),
-        transcriber: FakeTranscriber = FakeTranscriber(),
-        summarizer: FakeSummarizer = FakeSummarizer(),
-        sink: FakeSink = FakeSink(),
+        transcriber: RecordingTranscriber = RecordingTranscriber(),
+        summarizer: RecordingSummarizer = RecordingSummarizer(),
+        store: FakeRecordingsBackend,
         consent: MemoryRecordingConsentStore = MemoryRecordingConsentStore()
     ) -> RecordingController {
-        RecordingController(recorder: recorder, transcriber: transcriber, summarizer: summarizer, sink: sink, consent: consent)
+        let url = store.spaceURL
+        let processor = RecordingsProcessor(store: store, transcriber: transcriber, summarizer: summarizer, spaceURLs: { [url] })
+        return RecordingController(recorder: recorder, sink: StoreRecordingSink(store: store), processor: processor, consent: consent)
     }
 
-    @Test func asksForConsentOnlyTheFirstTime() {
+    private func target(_ store: FakeRecordingsBackend) -> RecordingTarget {
+        RecordingTarget(spaceURL: store.spaceURL, spaceName: "Work")
+    }
+
+    @Test func asksForConsentOnlyTheFirstTime() throws {
         let consent = MemoryRecordingConsentStore()
-        let controller = controller(consent: consent)
+        let controller = controller(store: try FakeRecordingsBackend(), consent: consent)
         controller.request(.inPerson)
         #expect(controller.phase == .consentNeeded(.inPerson))
         controller.acknowledgeConsent()
@@ -389,22 +350,23 @@ struct RecordingControllerTests {
         #expect(controller.phase == .choosingTarget(.online(.allApps)))
     }
 
-    @Test func neverStartsWithoutTheConsentAndATarget() async {
+    @Test func neverStartsWithoutTheConsentAndATarget() async throws {
+        let store = try FakeRecordingsBackend()
         let recorder = FakeRecorder()
-        let controller = controller(recorder: recorder)
-        await controller.start(target: target)
+        let controller = controller(recorder: recorder, store: store)
+        await controller.start(target: target(store))
         controller.request(.inPerson)
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         #expect(recorder.calls.isEmpty)
         #expect(controller.phase == .consentNeeded(.inPerson))
     }
 
     @Test func stopSavesBothTracksThenTheTranscriptAndTheMinutes() async throws {
+        let store = try FakeRecordingsBackend()
         let recorder = FakeRecorder()
-        let sink = FakeSink()
-        let controller = controller(recorder: recorder, sink: sink, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
+        let controller = controller(recorder: recorder, store: store, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
         controller.request(.online(.allApps))
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         #expect(controller.isRecording)
         controller.pause()
         #expect(controller.isPaused)
@@ -413,67 +375,56 @@ struct RecordingControllerTests {
         await controller.waitUntilProcessed()
 
         #expect(recorder.calls == ["start", "pause", "resume", "stop"])
-        let state = sink.state.withLock { $0 }
-        let saved = try #require(state.saved.first)
-        #expect(saved.tracks.map(\.role) == [.microphone, .system])
-        #expect(saved.target == target)
-        #expect(saved.duration == .seconds(65))
-        #expect(state.transcripts["rec-1"]?.segments.map(\.speaker) == ["Me", "Others"])
-        #expect(state.summaries["rec-1"]?.overview == "Resumen")
+        let saved = try #require(await store.created.first)
+        #expect(saved.audio.map(\.role) == [.microphone, .system])
+        let id = try #require(await store.recordings.keys.first)
+        #expect(await store.transcript(of: id)?.transcript.segments.map(\.speaker) == ["Me", "Others"])
+        #expect(await store.summary(of: id)?.summary.overview == "Resumen")
         #expect(controller.phase == .done(note: nil))
     }
 
-    @Test func recordsOnlyTheMicrophoneInPerson() async throws {
-        let sink = FakeSink()
-        let controller = controller(sink: sink, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
+    @Test func failsWhenTheMicrophoneIsRefused() async throws {
+        let store = try FakeRecordingsBackend()
+        let controller = controller(recorder: FakeRecorder(startError: .microphonePermissionDenied), store: store, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
         controller.request(.inPerson)
-        await controller.start(target: target)
-        controller.stop()
-        await controller.waitUntilProcessed()
-        #expect(sink.state.withLock { $0.saved.first?.tracks.map(\.role) } == [.mixed])
-    }
-
-    @Test func failsWhenTheMicrophoneIsRefused() async {
-        let controller = controller(recorder: FakeRecorder(startError: .microphonePermissionDenied), consent: MemoryRecordingConsentStore(hasAcknowledged: true))
-        controller.request(.inPerson)
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         #expect(controller.phase == .failed(RecordingError.microphonePermissionDenied.localizedDescription))
     }
 
-    @Test func marksTheRecordingFailedWhenTranscriptionFails() async {
-        let sink = FakeSink()
-        let controller = controller(transcriber: FakeTranscriber(error: .unsupportedLocale("xx")), sink: sink, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
+    @Test func marksTheRecordingFailedWhenTranscriptionFails() async throws {
+        let store = try FakeRecordingsBackend()
+        let controller = controller(transcriber: RecordingTranscriber(error: .unsupportedLocale("xx")), store: store, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
         controller.request(.inPerson)
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         controller.stop()
         await controller.waitUntilProcessed()
         let reason = TranscriptionError.unsupportedLocale("xx").localizedDescription
-        #expect(sink.state.withLock { $0.failures["rec-1"] } == reason)
+        #expect(await store.failed.map(\.error) == [reason])
         #expect(controller.phase == .failed(reason))
     }
 
-    @Test func keepsTheTranscriptAndSaysWhyWhenMinutesCannotBeWritten() async {
-        let sink = FakeSink()
-        let controller = controller(summarizer: FakeSummarizer(available: .unavailable(.appleIntelligenceNotEnabled)), sink: sink, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
+    @Test func keepsTheTranscriptAndSaysWhyWhenMinutesCannotBeWritten() async throws {
+        let store = try FakeRecordingsBackend()
+        let controller = controller(summarizer: RecordingSummarizer(available: .unavailable(.appleIntelligenceNotEnabled)), store: store, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
         controller.request(.online(.allApps))
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         controller.stop()
         await controller.waitUntilProcessed()
-        let state = sink.state.withLock { $0 }
-        #expect(state.transcripts["rec-1"] != nil)
-        #expect(state.summaries.isEmpty)
+        let id = try #require(await store.recordings.keys.first)
+        #expect(await store.transcript(of: id) != nil)
+        #expect(await store.summaries.isEmpty)
         #expect(controller.phase == .done(note: SummarizerUnavailableReason.appleIntelligenceNotEnabled.message))
     }
 
-    @Test func discardingThrowsTheRecordingAway() async {
+    @Test func discardingThrowsTheRecordingAway() async throws {
+        let store = try FakeRecordingsBackend()
         let recorder = FakeRecorder()
-        let sink = FakeSink()
-        let controller = controller(recorder: recorder, sink: sink, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
+        let controller = controller(recorder: recorder, store: store, consent: MemoryRecordingConsentStore(hasAcknowledged: true))
         controller.request(.inPerson)
-        await controller.start(target: target)
+        await controller.start(target: target(store))
         controller.discard()
         #expect(recorder.calls == ["start", "cancel"])
-        #expect(sink.state.withLock { $0.saved.isEmpty })
+        #expect(await store.created.isEmpty)
         #expect(controller.phase == .idle)
     }
 

@@ -249,7 +249,7 @@ public actor ServiceSpaceStore: CoeditingStore {
         return try JSONDecoder().decode([FolderOverlap].self, from: data)
     }
 
-    private func settings(of space: Space.ID) async throws -> [String: String] {
+    func settings(of space: Space.ID) async throws -> [String: String] {
         let path = try path(space)
         return try await call("settings.get", ["space": .string(path)], as: [String: String].self)
     }

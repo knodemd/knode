@@ -1,18 +1,71 @@
 import Foundation
 import Observation
 
-/// Where a finished recording, its transcript and its minutes go. It will map to Knode Service's
-/// `recordings.create`, `recordings.transcript`, `recordings.summary` and `recordings.fail`.
+/// Where a finished recording goes: its space, through `recordings.create`.
 protocol RecordingSink: Sendable {
-    /// Saves the recording and its audio files, and returns its id. The files stay where they are
-    /// until the sink has copied them.
-    func save(_ recording: FinishedRecording) async throws -> String
-    /// Saves the whole transcript of a recording.
-    func saveTranscript(_ transcript: Transcript, for recording: String) async throws
-    /// Saves the minutes of a recording, next to its transcript.
-    func saveSummary(_ summary: MeetingSummary, for recording: String) async throws
-    /// Marks a recording as failed, so it can be retried; its audio is kept.
-    func fail(_ recording: String, reason: String) async
+    /// Stores the recording and its audio files, then removes the files it was given.
+    func save(_ recording: FinishedRecording) async throws -> SavedRecording
+}
+
+/// A recording stored in its space.
+struct SavedRecording: Hashable, Sendable {
+    var space: Space.ID
+    var spaceURL: URL
+    var recording: StoredRecording
+}
+
+/// Stores finished recordings through the app's store: Knode Service when it runs, the core in
+/// the app when it does not. The recording is the person's; whether minutes are written comes
+/// from the space (`recordings.summaries`).
+struct StoreRecordingSink: RecordingSink {
+    let store: any RecordingsBackend
+    /// The most bytes one audio file may have: what the space keeps in one attachment.
+    var limit: Int64 = AttachmentInfo.maxSize
+    var locale: Locale = .current
+
+    func save(_ recording: FinishedRecording) async throws -> SavedRecording {
+        try RecordingAudio.check(recording.tracks, limit: limit)
+        let space = try await store.openSpace(at: recording.target.spaceURL)
+        let summaries = try await store.recordingSummariesEnabled(in: space.id)
+        let app: String? = if case .online(.apps(let ids)) = recording.mode { ids.first } else { nil }
+        let draft = NewRecordingDraft(
+            kind: .meeting,
+            title: RecordingTitle.of(recording.mode, startedAt: recording.startedAt, locale: locale),
+            startedAt: recording.startedAt,
+            endedAt: recording.endedAt,
+            project: recording.target.projectID,
+            audio: recording.tracks,
+            key: recording.key,
+            app: app,
+            summaries: summaries
+        )
+        let stored = try await store.createRecording(draft, in: space.id)
+        RecordingAudio.remove(recording.tracks)
+        return SavedRecording(space: space.id, spaceURL: space.url ?? recording.target.spaceURL, recording: stored)
+    }
+}
+
+/// The audio files of a recording before they are stored.
+enum RecordingAudio {
+    /// Fails, before anything is stored, when a file is larger than a space keeps.
+    static func check(_ tracks: [RecordedTrack], limit: Int64) throws {
+        for track in tracks {
+            let size = (try? track.url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { Int64($0) } ?? 0
+            if size > limit {
+                throw RecordingError.tooLarge(
+                    file: track.url.lastPathComponent, size: size, limit: limit,
+                    folder: track.url.deletingLastPathComponent().path(percentEncoded: false)
+                )
+            }
+        }
+    }
+
+    /// Removes the private folder the files were recorded into.
+    static func remove(_ tracks: [RecordedTrack]) {
+        for folder in Set(tracks.map { $0.url.deletingLastPathComponent() }) {
+            try? FileManager.default.removeItem(at: folder)
+        }
+    }
 }
 
 /// Whether the person has read the first-run explanation about consent.
@@ -74,34 +127,30 @@ final class RecordingController {
     private(set) var isPaused = false
     /// Whole seconds recorded, pauses left out, updated every second for the indicator.
     private(set) var elapsedSeconds = 0
-    /// Whether minutes are written after the transcript.
-    var summarizes: Bool
 
     @ObservationIgnored private let recorder: any MeetingRecording
-    @ObservationIgnored private let transcriber: any Transcriber
-    @ObservationIgnored private let summarizer: any Summarizer
     @ObservationIgnored private let sink: any RecordingSink
+    @ObservationIgnored private let processor: RecordingsProcessor
     @ObservationIgnored private let consent: any RecordingConsentStore
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var startedAt = Date()
+    @ObservationIgnored private var key = UUID()
+    /// The recording being transcribed or summarised, once stored.
+    @ObservationIgnored private var stored: Node.ID?
     @ObservationIgnored private var processing: Task<Void, Never>?
     @ObservationIgnored private var ticker: Task<Void, Never>?
 
     init(
         recorder: any MeetingRecording,
-        transcriber: any Transcriber,
-        summarizer: any Summarizer,
         sink: any RecordingSink,
+        processor: RecordingsProcessor,
         consent: any RecordingConsentStore,
-        summarizes: Bool = true,
         now: @escaping () -> Date = Date.init
     ) {
         self.recorder = recorder
-        self.transcriber = transcriber
-        self.summarizer = summarizer
         self.sink = sink
+        self.processor = processor
         self.consent = consent
-        self.summarizes = summarizes
         self.now = now
     }
 
@@ -154,6 +203,7 @@ final class RecordingController {
         do {
             try await recorder.start(mode)
             startedAt = now()
+            key = UUID()
             isPaused = false
             elapsedSeconds = 0
             phase = .recording(mode, target)
@@ -188,10 +238,11 @@ final class RecordingController {
     func stop() {
         guard case .recording(let mode, let target) = phase else { return }
         let duration = recorder.elapsed
+        let endedAt = now()
         stopTicking()
         phase = .saving
         isPaused = false
-        processing = Task { await self.finish(mode: mode, target: target, duration: duration) }
+        processing = Task { await self.finish(mode: mode, target: target, duration: duration, endedAt: endedAt) }
     }
 
     /// Waits for the background work started by `stop()`.
@@ -199,9 +250,14 @@ final class RecordingController {
         await processing?.value
     }
 
-    /// Stops saving, transcribing or summarising. What was saved stays saved.
+    /// Stops saving, transcribing or summarising. What was saved stays saved, and the stage
+    /// cancelled can be retried.
     func cancelProcessing() {
-        processing?.cancel()
+        if let stored {
+            processor.cancel(stored)
+        } else {
+            processing?.cancel()
+        }
     }
 
     /// Clears a finished or failed recording.
@@ -229,75 +285,34 @@ final class RecordingController {
         ticker = nil
     }
 
-    private func finish(mode: RecordingMode, target: RecordingTarget, duration: Duration) async {
-        let tracks: [RecordedTrack]
-        let id: String
+    /// Stores the recording, then hands it to the processor, the one pipeline that transcribes
+    /// and summarises every recording, and follows its progress.
+    private func finish(mode: RecordingMode, target: RecordingTarget, duration: Duration, endedAt: Date) async {
+        let saved: SavedRecording
         do {
-            tracks = try await recorder.stop()
-            id = try await sink.save(FinishedRecording(mode: mode, target: target, startedAt: startedAt, duration: duration, tracks: tracks))
+            let tracks = try await recorder.stop()
+            saved = try await sink.save(FinishedRecording(
+                mode: mode, target: target, startedAt: startedAt, endedAt: endedAt, duration: duration,
+                tracks: tracks, key: "recorder:\(key.uuidString)"
+            ))
         } catch {
-            phase = .failed(error.localizedDescription)
+            phase = .failed(error is CancellationError ? RecordingsProcessor.cancelled : error.localizedDescription)
             return
         }
-
-        let transcript: Transcript
-        do {
-            phase = .transcribing(progress: 0)
-            transcript = try await transcriber.transcribe(tracks, locale: nil) { value in
-                Task { @MainActor in self.report(transcribing: value) }
+        stored = saved.recording.id
+        defer { stored = nil }
+        phase = .transcribing(progress: 0)
+        let outcome = await processor.process(saved.recording.id, in: saved.space, spaceURL: saved.spaceURL) { [weak self] job in
+            guard let self else { return }
+            switch job.step {
+            case .transcribing: self.phase = .transcribing(progress: job.progress)
+            case .summarising: self.phase = .summarising(progress: job.progress)
             }
-            try Task.checkCancellation()
-            try await sink.saveTranscript(transcript, for: id)
-        } catch {
-            await fail(id, error)
-            return
         }
-
-        guard summarizes else {
-            phase = .done(note: nil)
-            return
-        }
-        if case .unavailable(let reason) = await summarizer.availability(for: transcript) {
-            phase = .done(note: reason.message)
-            return
-        }
-        do {
-            phase = .summarising(progress: 0)
-            let summary = try await summarizer.summarize(transcript) { value in
-                Task { @MainActor in self.report(summarising: value) }
-            }
-            try Task.checkCancellation()
-            try await sink.saveSummary(summary, for: id)
-            phase = .done(note: nil)
-        } catch is CancellationError {
-            phase = .done(note: "Minutes were cancelled. The transcript is kept.")
-        } catch {
-            phase = .done(note: "Minutes could not be written: \(error.localizedDescription) The transcript is kept.")
+        switch outcome {
+        case .done(let note): phase = .done(note: note)
+        case .failed(let message): phase = .failed(message)
+        case .deferred: phase = .done(note: "The recording is saved. Knode will transcribe it when the space can be written again.")
         }
     }
-
-    private func fail(_ id: String, _ error: any Error) async {
-        let reason = error is CancellationError ? "Cancelled" : error.localizedDescription
-        await sink.fail(id, reason: reason)
-        phase = .failed(reason)
-    }
-
-    private func report(transcribing value: Double) {
-        guard case .transcribing = phase else { return }
-        phase = .transcribing(progress: value)
-    }
-
-    private func report(summarising value: Double) {
-        guard case .summarising = phase else { return }
-        phase = .summarising(progress: value)
-    }
-}
-
-/// Until Knode Service has `recordings.*`, a sink that keeps the files where they are and
-/// remembers nothing: the shell runs end to end without saving to a space.
-struct UnwiredRecordingSink: RecordingSink {
-    func save(_ recording: FinishedRecording) async throws -> String { UUID().uuidString }
-    func saveTranscript(_ transcript: Transcript, for recording: String) async throws {}
-    func saveSummary(_ summary: MeetingSummary, for recording: String) async throws {}
-    func fail(_ recording: String, reason: String) async {}
 }

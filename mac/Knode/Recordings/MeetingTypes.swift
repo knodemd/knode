@@ -59,15 +59,20 @@ struct FinishedRecording: Hashable, Sendable {
     var mode: RecordingMode
     var target: RecordingTarget
     var startedAt: Date
+    var endedAt: Date
     /// How long it recorded, pauses left out.
     var duration: Duration
     var tracks: [RecordedTrack]
+    /// Finds the stored recording again, so storing it twice keeps one.
+    var key: String
 }
 
 /// A stretch of speech, in milliseconds from the start of the recording.
 struct TranscriptSegment: Hashable, Sendable, Codable {
     static let me = "Me"
     static let others = "Others"
+    /// The speaker stored for words heard by one microphone in a room, where no one is told apart.
+    static let unnamedSpeaker = "Speaker"
 
     var startMs: Int
     var endMs: Int

@@ -112,15 +112,37 @@ require every participant's consent; after that, each recording starts only by h
 meeting, after choosing its space and project, with a notice to copy into the meeting chat. While it
 records, the menu bar shows a red dot and the time.
 
-When it stops, the recording is transcribed on the Mac with `SpeechAnalyzer` (sentences with their
-times, `Me` and `Others` from the two tracks) and the minutes are written by Apple's on-device model
-(Foundation Models): an overview, the key points, every decision, action item and open question,
-by map-reduce over the transcript so a long meeting fits the model. The transcript is always kept.
-Nothing leaves the Mac.
+When it stops, the two tracks (AAC, mono, a constant 64 kbps: about 29 MB an hour) are stored in
+the chosen space with `recordings.create`, as a node of kind `meeting` titled like
+`Meeting, 22 November 2026 10:30` (or `In-person meeting, …`), linked to its project, and the
+temporary files are removed. A file larger than the 100 MB a space keeps in one attachment (a
+meeting of more than about three hours) is refused before anything is stored, and the audio stays
+in its temporary folder, which the error names. Whether minutes are written is the space setting
+`recordings.summaries` (on unless it says `off`).
+
+Transcribing and summarising are one pipeline, `RecordingsProcessor`, for every recording a space
+says is still to do (`recordings.pending`): the meetings recorded here and recordings the app did
+not make, such as voice memos a connector brings in with one `mixed` track. It looks for work at
+launch, when Knode Service starts again, when the open spaces change and when a space announces a
+change to a node, in the open spaces and the default space, one recording at a time. Each audio
+file is read from the space (`attachment.path`) and transcribed on the Mac with `SpeechAnalyzer`
+(sentences with their times; `Me` and `Others` from the two tracks of an online meeting, `Speaker`
+for one microphone), then stored with `recordings.transcript`. The minutes are written by Apple's
+on-device model (Foundation Models): an overview, the key points, every decision, action item and
+open question, by map-reduce over the transcript so a long meeting fits the model, and stored with
+`recordings.summary`. A transcription error marks the transcript `failed`; minutes the Mac cannot
+write mark the summary `unavailable`, with why. The transcript is always kept. Nothing leaves the
+Mac. Because what is left to do is kept in the space, work interrupted by quitting the app goes on
+at the next launch.
+
+The recording is the person's; transcripts, minutes and failures are written by Knode itself:
+`{ "kind": "system", "actor": "recordings", "source": "apple-speech" }` (or
+`apple-foundation-models`). The menu bar shows the recording being worked on and, for a stage
+that failed, **Retry** (`recordings.retry`).
 
 The pieces are in `Knode/Recordings`, behind protocols (`MeetingRecording`, `Transcriber`,
-`Summarizer`, `RecordingSink`). Knode Service has no `recordings.*` methods in the app yet, so a
-finished recording is saved nowhere: `UnwiredRecordingSink` stands in until it does.
+`Summarizer`, `RecordingSink`), and the store calls in `RecordingStore`: through Knode Service when
+it runs, through the core in the app when it does not.
 
 To check transcription against the real model, run the manual test with a Spanish file:
 

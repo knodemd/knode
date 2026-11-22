@@ -13,25 +13,42 @@ struct KnodeApp: App {
     @State private var searchIndex: SearchIndexModel
     @State private var sources: SourcesModel
     @State private var recording: RecordingController
+    @State private var recordings: RecordingsProcessor
 
     init() {
         KFont.register()
         let store = RoutingSpaceStore()
         let command: @MainActor () -> KnodeCommand = { KnodeCommand(executable: CommandLineTool.forThisApp.executable()) }
         let service = ServiceMonitor(command: command)
-        service.onRunningChange = { running in
-            if running { Task { await store.serviceDidStart() } }
-        }
-        service.start()
         // While tests run in the app, the list of spaces stays in memory.
         let testing = ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
-        _model = State(initialValue: AppModel(
+        let model = AppModel(
             store: store,
             recentSpaces: RecentSpaces(),
             library: testing ? nil : SpaceLibrary(),
             settings: CoreKnodeSettings(),
             preferences: testing ? nil : .standard
-        ))
+        )
+        _model = State(initialValue: model)
+        // The one pipeline that transcribes and summarises recordings on this Mac: the meetings
+        // recorded here and those that connectors bring in, such as voice memos.
+        let recordings = RecordingsProcessor(
+            store: store,
+            transcriber: SpeechAnalyzerTranscriber(),
+            summarizer: FoundationModelsSummarizer(),
+            spaceURLs: { [model] in model.recordingSpaceURLs }
+        )
+        _recordings = State(initialValue: recordings)
+        service.onRunningChange = { running in
+            if running {
+                Task {
+                    await store.serviceDidStart()
+                    recordings.serviceDidStart()
+                }
+            }
+        }
+        service.start()
+        if !testing { recordings.start() }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
         _sources = State(initialValue: SourcesModel(
@@ -39,13 +56,10 @@ struct KnodeApp: App {
             openURL: { NSWorkspace.shared.open($0) },
             startService: { await service.startService() }
         ))
-        // Until Knode Service has `recordings.*`, a finished recording is transcribed and summarised
-        // but saved nowhere.
         _recording = State(initialValue: RecordingController(
             recorder: MeetingRecorder(),
-            transcriber: SpeechAnalyzerTranscriber(),
-            summarizer: FoundationModelsSummarizer(),
-            sink: UnwiredRecordingSink(),
+            sink: StoreRecordingSink(store: store),
+            processor: recordings,
             consent: DefaultsRecordingConsentStore()
         ))
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
@@ -125,7 +139,7 @@ struct KnodeApp: App {
         #endif
 
         MenuBarExtra {
-            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex, recording: recording)
+            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex, recording: recording, recordings: recordings)
         } label: {
             if recording.isRecording {
                 // Always visible while recording: a dot and the time, beside the icon.

@@ -343,9 +343,9 @@ final class FakeKnodeService: @unchecked Sendable {
             var value = params["value"] as? String
             switch key {
             case "space.icon": break
-            case "capture.enabled":
+            case "capture.enabled", "recordings.summaries":
                 guard value == nil || value == "on" || value == "off" else {
-                    throw RPCError(code: -32004, kind: "invalid", message: "capture.enabled is on or off")
+                    throw RPCError(code: -32004, kind: "invalid", message: "\(key) is on or off")
                 }
                 if value == "on" { value = nil }
             default: throw RPCError(code: -32004, kind: "invalid", message: "\(key) is not a setting Knode knows")
