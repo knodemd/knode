@@ -201,10 +201,7 @@ SHA-256, `photo.key` or `recording.key`) is found, not copied twice. `MediaImpor
 - A file larger than the 100 MB a space keeps in one attachment is never changed. For audio or
   video, its audio is extracted on this Mac as mono AAC at 64 kbit/s (about 30 MB an hour) and
   attached instead, and the recording says the original stays where it was (`recording.original`);
-  audio still over 100 MB, or a photo over 100 MB, is refused with why. A space that keeps large
-  originals (Settings > Spaces > Storage, `media.keep_large_originals`, off by default) attaches
-  the original too, up to 4 GB: the app always hands its path (`original_path`) and the core
-  decides.
+  audio still over 100 MB, or a photo over 100 MB, is refused with why.
 - Files that would take the space past its size limit (`storage.check`) are added only after
   **Add Anyway**.
 
@@ -222,19 +219,32 @@ reached only by the app, so the connector is app-driven (`PROTOCOL.md`, "Photos 
   before; the albums step then lists the albums of the Mac to switch on (`picks`: switching one
   on is `sources.include`, off is `sources.exclude`). `NSPhotoLibraryUsageDescription` and the
   `com.apple.security.personal-information.photos-library` entitlement allow it.
-- A run, for each space: `photos_library.plan`, every asset of the albums picked, which the space
-  has (`photos_library.known`), then each new one exported with `PHAssetResourceManager` (a
-  photo's original HEIC or JPEG unchanged; a video, or its audio as AAC when the video is over
-  100 MB, with the original's path for a space that keeps large originals) and handed to
-  `photos_library.add`. The export is deleted after the call. `photos_library.sync` ends the run
-  with every identifier still in the albums, so the assets that left them are marked, never
-  deleted, and the library's change token.
-- Nothing is duplicated: each node keeps the asset's `localIdentifier`, stable for a library on
-  one Mac, and the same asset is never exported twice. Photos are then read by
-  `PhotosProcessor` and videos transcribed by `RecordingsProcessor`, like any other.
+- Albums are picked per Mac: Knode Service gives each Knode home a library id and names the
+  albums `<library id>/<album id>`, so another Mac's picks are not this Mac's, and the source's
+  options say "No albums picked on this Mac" when only other Macs picked some. Every node the
+  library adds keeps that id (`photos_library.library`), and only this library's nodes are marked.
+- A run, for each space: `photos_library.plan` (this Mac's picks), the assets of the albums picked,
+  which the space has or does not want (`photos_library.known`: held, deleted by the person, or
+  failed for good), then each new one exported with `PHAssetResourceManager`, written and hashed
+  (SHA-256) as it comes, and handed to `photos_library.add` with its hash: a photo's original
+  HEIC or JPEG unchanged; a video, or for a video over 100 MB only its audio as AAC (the video is
+  deleted as soon as its audio is out). The export is deleted after the call. Assets that can
+  never be added (audio still over 100 MB, no original) are reported with `photos_library.sync`
+  and not exported again. `photos_library.sync` ends the run with every identifier still in the
+  albums, so the assets that left them are marked (`photos_library.state`, never in the body),
+  never deleted, and the library's change token; when an album picked is not found, nothing is
+  marked.
+- Nothing is duplicated: each node keeps the asset's `localIdentifier` and its library, a photo is
+  found again by its file's hash and a video by its original's, so a rebuilt library adds nothing
+  twice. A photo the person added themselves is never taken over. A node the person deletes is
+  never brought back. Photos are then read by `PhotosProcessor` and videos transcribed by
+  `RecordingsProcessor`, like any other.
 - It runs every minute, at once when the library changes (`PHPhotoLibraryChangeObserver`), when
   the albums picked change or when the service asks (Run now). With the same change token as the
-  last run and no request, nothing is read.
+  last run and no request, nothing is read. Once a space was read in full since the app started,
+  later runs read only what changed since the saved token (`fetchPersistentChanges(since:)`); an
+  expired token reads everything again. Listing never reads an asset's resources. The scratch
+  folder is emptied when the syncer starts.
 - An original kept only in iCloud waits until the Mac has it, unless **Download from iCloud** is
   on for the space (`photos_library.configure`). History From today leaves out what was taken
   before the day it was connected. Once the space is past its size limit nothing new is added;
@@ -246,8 +256,7 @@ Settings > Spaces shows **Storage** for the space chosen: its total size; by kin
 videos, audio, other files, and files of deleted nodes that a purge frees); who added how much;
 the largest files with **Show** (opens the node) and **Remove** (after a confirmation; the node
 keeps its text and the history can undo it); the size past which imports ask first and the
-Photos library holds back (10 GB unless changed, or Never); and whether large video originals are
-kept. Every size is computed by the core (`storage.summary`, `storage.check`,
+Photos library holds back (10 GB unless changed, or Never). Every size is computed by the core (`storage.summary`, `storage.check`,
 `storage.configure`, or `KnodeSpace.storageSummary` and friends when the app holds the space);
 `SpaceStorageModel` only shows them.
 

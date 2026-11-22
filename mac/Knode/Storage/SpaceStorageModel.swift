@@ -63,15 +63,8 @@ final class SpaceStorageModel {
 
     func setWarnAt(_ bytes: Int64) async {
         await busy {
-            _ = try await self.storage.setStorageLimits(warnAt: bytes, keepLargeOriginals: nil, in: self.spaceID)
+            _ = try await self.storage.setStorageLimits(warnAt: bytes, in: self.spaceID)
             self.summary = try await self.storage.storageSummary(top: Self.top, in: self.spaceID)
-        }
-    }
-
-    func setKeepLargeOriginals(_ on: Bool) async {
-        await busy {
-            let limits = try await self.storage.setStorageLimits(warnAt: nil, keepLargeOriginals: on, in: self.spaceID)
-            self.summary?.limits = limits
         }
     }
 

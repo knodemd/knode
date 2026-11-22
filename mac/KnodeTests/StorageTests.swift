@@ -5,7 +5,7 @@ import Testing
 /// The storage of a space in memory.
 actor FakeSpaceStorage: SpaceStorage {
     var summary: StorageSummary
-    var limitsSet: [(warnAt: Int64?, keep: Bool?)] = []
+    var limitsSet: [Int64?] = []
 
     init(summary: StorageSummary) { self.summary = summary }
 
@@ -21,10 +21,9 @@ actor FakeSpaceStorage: SpaceStorage {
                             warn: summary.limits.warnAt > 0 && after > summary.limits.warnAt)
     }
 
-    func setStorageLimits(warnAt: Int64?, keepLargeOriginals: Bool?, in space: Space.ID) async throws -> StorageLimits {
-        limitsSet.append((warnAt, keepLargeOriginals))
+    func setStorageLimits(warnAt: Int64?, in space: Space.ID) async throws -> StorageLimits {
+        limitsSet.append(warnAt)
         if let warnAt { summary.limits.warnAt = warnAt }
-        if let keepLargeOriginals { summary.limits.keepLargeOriginals = keepLargeOriginals }
         return summary.limits
     }
 
@@ -60,7 +59,7 @@ private func summary(total: Int64 = 3_000, warnAt: Int64 = 10 * 1024 * 1024 * 10
             StorageFile(node: "n1", title: "Trip", kind: "photo", name: "IMG_1.HEIC", size: 1_500, mediaType: "image/heic", addedBy: "photos-library"),
             StorageFile(node: "n2", title: "Talk", kind: "recording", name: "Talk.m4a", size: 500, mediaType: "audio/mp4", addedBy: "Ada"),
         ],
-        limits: StorageLimits(maxFile: 100 * 1024 * 1024, maxOriginal: 4 * 1024 * 1024 * 1024, keepLargeOriginals: false, warnAt: warnAt),
+        limits: StorageLimits(maxFile: 100 * 1024 * 1024, warnAt: warnAt),
         over: false
     )
 }
@@ -91,11 +90,9 @@ struct SpaceStorageModelTests {
         let model = SpaceStorageModel(space: "space-1", storage: storage, attachments: nil)
         await model.load()
         #expect(!model.canRemove)
-        await model.setKeepLargeOriginals(true)
-        #expect(model.summary?.limits.keepLargeOriginals == true)
         await model.setWarnAt(0)
         #expect(model.summary?.limits.warnAt == 0)
-        #expect(await storage.limitsSet.count == 2)
+        #expect(await storage.limitsSet == [0])
         #expect(SpaceStorageSection.warnOptions(current: 0).first?.title == "Never")
         #expect(SpaceStorageSection.warnOptions(current: 3).count == SpaceStorageModel.warnChoices.count + 1)
     }

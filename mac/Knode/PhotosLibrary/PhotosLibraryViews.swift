@@ -11,6 +11,7 @@ struct PhotosLibraryOptionsRows: View {
     let space: URL
     @Environment(\.photosLibraryClient) private var client
     @State private var icloud = false
+    @State private var elsewhere = false
     @State private var loaded = false
     @State private var error: String?
 
@@ -23,7 +24,7 @@ struct PhotosLibraryOptionsRows: View {
                                icloud = on
                                Task {
                                    do {
-                                       icloud = try await client.setICloud(on, in: space)
+                                       icloud = try await client.setICloud(on, in: space).icloud
                                        error = nil
                                    } catch {
                                        icloud = before
@@ -31,13 +32,21 @@ struct PhotosLibraryOptionsRows: View {
                                    }
                                }
                            }))
+            if elsewhere {
+                Text("No albums picked on this Mac. Albums are picked on each Mac, as each has its own Photos library: pick the ones this Mac reads.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let error { KErrorText(error) }
         }
         .disabled(!loaded)
         .task(id: space) {
             loaded = false
             do {
-                icloud = try await client.icloud(in: space)
+                let options = try await client.options(in: space)
+                icloud = options.icloud
+                elsewhere = options.elsewhere
                 error = nil
             } catch {
                 self.error = error.localizedDescription

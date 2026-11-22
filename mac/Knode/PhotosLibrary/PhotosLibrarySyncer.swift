@@ -4,16 +4,23 @@ import Foundation
 /// keeps its settings and state, but only the app can read PhotoKit (`PROTOCOL.md`, "Photos
 /// library").
 ///
-/// A run, for each space: ask its plan (`photos_library.plan`: on, the albums picked, From today,
-/// iCloud, room), list every asset of those albums, ask which the space has
-/// (`photos_library.known`), export each new one (a photo's original unchanged; a video, or only
-/// its audio when it is larger than a space attaches) and hand it to `photos_library.add`, then
-/// end with `photos_library.sync`, which marks the assets that left the albums. A space is read
-/// again when the service asks (its `next_run` came, or the person chose Run now), when the
-/// library changed (its change token differs from the one saved by the last run), or when the
-/// albums picked changed. Originals kept only in iCloud wait unless the space allows
-/// downloading them; nothing new is added once the space is past its size limit. Without access,
-/// each space is told why once (`photos_library.fail`).
+/// A run, for each space: ask its plan (`photos_library.plan`: on, the albums picked on this Mac,
+/// From today, iCloud, room), list the assets of those albums, ask which the space has or does not
+/// want (`photos_library.known`: held, deleted by the person, or failed for good), export each new
+/// one (a photo's original unchanged; a video, keeping only its audio when it is larger than a
+/// space attaches) and hand it to `photos_library.add`, then end with `photos_library.sync`,
+/// which marks the assets that left the albums, but only when every album picked was found.
+///
+/// A space is read again when the service asks (its `next_run` came, or the person chose Run
+/// now), when the library changed (its change token differs from the one saved by the last run),
+/// or when the albums picked changed. Once a space was read in full since the app started, a run
+/// with a valid saved token reads only what changed since it (`changes(since:)`): nothing when no
+/// asset or album picked changed, else only the assets that changed, those of an album that
+/// changed, and those to try again. Listing never reads an asset's resources; only exporting
+/// does. Originals kept only in iCloud wait unless the space allows downloading them; nothing new
+/// is added once the space is past its size limit. Without access, each space is told why once
+/// (`photos_library.fail`). The scratch folder is emptied when the syncer starts, so exports a
+/// crash left behind go.
 actor PhotosLibrarySyncer {
     private let library: any PhotoLibrary
     private let client: any PhotosLibraryClient
@@ -23,6 +30,12 @@ actor PhotosLibrarySyncer {
     private let now: @Sendable () -> Date
     /// The albums each space read last, to read it again when they change.
     private var lastAlbums: [URL: [String]] = [:]
+    /// The spaces read in full since the app started: only these are read by changes.
+    private var scanned: Set<URL> = []
+    /// The assets of each space to try again: they waited for iCloud or for room, or failed
+    /// for a reason that may pass.
+    private var retry: [URL: Set<String>] = [:]
+    private var cleared = false
     private var libraryChanged = true
     private var deniedReported: Set<URL> = []
     private var loop: Task<Void, Never>?
@@ -72,9 +85,18 @@ actor PhotosLibrarySyncer {
         }
     }
 
+    /// Empties the scratch folder once: exports are deleted after each add, so anything there was
+    /// left by a crash.
+    private func clearScratch() {
+        guard !cleared else { return }
+        cleared = true
+        try? FileManager.default.removeItem(at: scratch)
+    }
+
     /// One run over every space the source is connected to. Errors of one space never stop the
     /// others; a service that is not running ends the run quietly.
     func runOnce() async {
+        clearScratch()
         let spaces: [URL]
         do {
             spaces = try await client.connectedSpaces()
@@ -82,6 +104,8 @@ actor PhotosLibrarySyncer {
             return
         }
         lastAlbums = lastAlbums.filter { spaces.contains($0.key) }
+        scanned = scanned.filter { spaces.contains($0) }
+        retry = retry.filter { spaces.contains($0.key) }
         guard !spaces.isEmpty else { return }
         guard library.access == .authorized else {
             for space in spaces where !deniedReported.contains(space) {
@@ -119,19 +143,40 @@ actor PhotosLibrarySyncer {
         let albumsChanged = lastAlbums[space] != picked
         let tokenChanged = token == nil || token != plan.token
         guard asked || albumsChanged || (libraryChanged && tokenChanged) else { return }
-        let assets = library.assets(inAlbums: Set(picked))
-        let present = assets.map(\.id)
-        let wanted = assets.filter { asset in
+        let again = retry[space] ?? []
+        // What changed since the last run, when it can be told: else everything is read.
+        var changes: PhotoLibraryChanges?
+        if !albumsChanged, scanned.contains(space), let saved = plan.token {
+            changes = saved == token ? PhotoLibraryChanges() : library.changes(since: saved)
+        }
+        let albumChanged = changes.map { !$0.albums.isDisjoint(with: picked) } ?? true
+        if let changes, changes.assets.isEmpty, !albumChanged, again.isEmpty {
+            try await client.sync(present: nil, failed: [], albums: albums, token: token, added: 0, waiting: 0, held: 0, in: space)
+            lastAlbums[space] = picked
+            return
+        }
+        let contents = library.assets(inAlbums: Set(picked))
+        // An album picked that is not found (deleted, or of another library) says nothing about
+        // what left: nothing is marked.
+        let present = contents.found == Set(picked) ? contents.assets.map(\.id) : nil
+        let candidates = contents.assets.filter { asset in
+            guard let changes, !albumChanged else { return true }
+            return changes.assets.contains(asset.id) || again.contains(asset.id)
+        }
+        let wanted = candidates.filter { asset in
             guard let since = plan.since, let created = asset.createdAt else { return true }
             return RecordingWire.milliseconds(created) >= since
         }
         let known = wanted.isEmpty ? [] : try await client.known(wanted.map(\.id), in: space)
         let new = wanted.filter { !known.contains($0.id) }
         var added = 0, waiting = 0, held = 0
+        var failures: [PhotosLibraryFailure] = []
+        var later = Set<String>()
         var room = plan.room
         for (index, asset) in new.enumerated() {
             guard room else {
                 held = new.count - index
+                later.formUnion(new[index...].map(\.id))
                 break
             }
             do {
@@ -140,22 +185,38 @@ actor PhotosLibrarySyncer {
                 room = result.room
             } catch PhotoExportError.inCloud {
                 waiting += 1
+                later.insert(asset.id)
+            } catch let error where Self.isPermanent(error) {
+                // Never addable: the core remembers it, and it is not exported again.
+                failures.append(PhotosLibraryFailure(id: asset.id, reason: error.localizedDescription))
             } catch {
                 // One asset that cannot be exported or added does not stop the others; the next
                 // run tries it again.
-                continue
+                later.insert(asset.id)
             }
         }
-        try await client.sync(present: present, albums: albums, token: token, added: added, waiting: waiting, held: held, in: space)
+        try await client.sync(present: present, failed: failures, albums: albums, token: token, added: added, waiting: waiting, held: held, in: space)
         lastAlbums[space] = picked
+        scanned.insert(space)
+        retry[space] = later
+    }
+
+    /// Whether an asset failed for good: its audio alone is too large, or it has no original.
+    private static func isPermanent(_ error: Error) -> Bool {
+        switch error {
+        case MediaImportError.audioTooLong, MediaImportError.tooLarge, PhotoExportError.noOriginal: true
+        default: false
+        }
     }
 
     private func add(_ asset: PhotoAsset, allowNetwork: Bool, in space: URL) async throws -> PhotosLibraryAdded {
         let folder = scratch.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
-        let file = try await library.exportOriginal(of: asset, into: folder, allowNetwork: allowNetwork)
-        var export = PhotosLibraryExport(asset: asset, file: file, metadata: PhotoMetadataDraft(), original: nil)
+        let exported = try await library.exportOriginal(of: asset, into: folder, allowNetwork: allowNetwork)
+        let file = exported.file
+        var export = PhotosLibraryExport(asset: asset, file: file, metadata: PhotoMetadataDraft(), originalName: file.lastPathComponent,
+                                         original: nil, content: exported.content)
         switch asset.kind {
         case .photo:
             var metadata = PhotoMetadataReader.read(file) ?? PhotoMetadataDraft()
@@ -167,13 +228,16 @@ actor PhotosLibrarySyncer {
             export.metadata = metadata
         case .video:
             if Self.size(of: file) > limit {
-                let stem = (asset.originalName as NSString).deletingPathExtension
+                // PhotoKit can export only the audio, but the whole original is read here anyway
+                // for its hash: it is deleted as soon as its audio is out.
+                let stem = file.deletingPathExtension().lastPathComponent
                 let audio = try await extractor.extractAudio(from: file, named: stem, into: folder)
+                try? FileManager.default.removeItem(at: file)
                 guard Self.size(of: audio) <= limit else {
-                    throw MediaImportError.audioTooLong(asset.originalName, limit: limit)
+                    throw MediaImportError.audioTooLong(file.lastPathComponent, limit: limit)
                 }
                 export.file = audio
-                export.original = file
+                export.original = file.lastPathComponent
             }
         }
         return try await client.add(export, in: space)

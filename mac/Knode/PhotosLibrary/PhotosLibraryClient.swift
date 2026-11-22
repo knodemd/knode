@@ -9,8 +9,13 @@ struct PhotosLibraryPlan: Hashable, Sendable, Decodable {
 
     /// Whether the source is on there; when off, nothing is read for it.
     var on: Bool
-    /// The albums picked: only these are read.
+    /// The id of this Mac's library in Knode: albums are picked, and nodes found and marked, per
+    /// library, as identifiers mean something only in one library.
+    var library: String
+    /// The albums picked on this Mac: only these are read.
     var albums: [Album]
+    /// Whether albums are picked only on other Macs: this one reads nothing yet.
+    var elsewhere: Bool
     /// With the history From today, older assets are left out (Unix milliseconds).
     var since: Int64?
     /// Whether originals kept only in iCloud are downloaded.
@@ -40,8 +45,28 @@ struct PhotosLibraryExport: Hashable, Sendable {
     /// The original, or the audio taken from a video too large to attach.
     var file: URL
     var metadata: PhotoMetadataDraft
-    /// A video's original when only its audio is in `file`.
-    var original: URL?
+    /// The name of the original, as exported.
+    var originalName: String
+    /// A video's original's name when only its audio is in `file`; the original stays in the
+    /// library.
+    var original: String?
+    /// The hash of the original (`sha256:<hex>`), computed while exporting it: how the core finds
+    /// a video again after the library is rebuilt.
+    var content: String?
+}
+
+/// An asset that can never be added, for `photos_library.sync`: it is not exported again.
+struct PhotosLibraryFailure: Hashable, Sendable {
+    var id: String
+    var reason: String
+}
+
+/// The Photos library options of a space: `photos_library.options`.
+struct PhotosLibraryOptions: Hashable, Sendable, Decodable {
+    /// Whether originals kept only in iCloud are downloaded.
+    var icloud: Bool
+    /// Whether albums are picked only on other Macs.
+    var elsewhere: Bool
 }
 
 /// The Photos library source in Knode Service (`PROTOCOL.md`, "Photos library"): the app reads
@@ -54,10 +79,12 @@ protocol PhotosLibraryClient: Sendable {
     /// The identifiers of `ids` the space holds already.
     func known(_ ids: [String], in space: URL) async throws -> Set<String>
     func add(_ export: PhotosLibraryExport, in space: URL) async throws -> PhotosLibraryAdded
-    func sync(present: [String]?, albums: [PhotoAlbum], token: String?, added: Int, waiting: Int, held: Int, in space: URL) async throws
+    /// Ends a run. `present` is every asset of the albums picked, or `nil` when an album picked
+    /// was not found: then nothing is marked.
+    func sync(present: [String]?, failed: [PhotosLibraryFailure], albums: [PhotoAlbum], token: String?, added: Int, waiting: Int, held: Int, in space: URL) async throws
     func fail(kind: String, message: String, in space: URL) async throws
-    func icloud(in space: URL) async throws -> Bool
-    func setICloud(_ on: Bool, in space: URL) async throws -> Bool
+    func options(in space: URL) async throws -> PhotosLibraryOptions
+    func setICloud(_ on: Bool, in space: URL) async throws -> PhotosLibraryOptions
 }
 
 /// The JSON of the `photos_library.*` params.
@@ -73,15 +100,13 @@ enum PhotosLibraryWire {
         var asset: [String: JSONValue] = [
             "id": .string(a.id), "kind": .string(a.kind.rawValue),
             "path": .string(export.file.standardizedFileURL.path(percentEncoded: false)),
-            "title": .string((a.originalName as NSString).deletingPathExtension),
+            "title": .string((export.originalName as NSString).deletingPathExtension),
             "metadata": PhotoWire.metadata(export.metadata),
         ]
         if let createdAt = a.createdAt { asset["created_at"] = .int(RecordingWire.milliseconds(createdAt)) }
         if a.kind == .video { asset["duration_ms"] = .int(Int64((max(a.duration, 0) * 1000).rounded())) }
-        if let original = export.original {
-            asset["original"] = .string(original.lastPathComponent)
-            asset["original_path"] = .string(original.standardizedFileURL.path(percentEncoded: false))
-        }
+        if let original = export.original { asset["original"] = .string(original) }
+        if a.kind == .video, let content = export.content { asset["content"] = .string(content) }
         return .object(asset)
     }
 }
@@ -119,10 +144,11 @@ struct ServicePhotosLibraryClient: PhotosLibraryClient {
         try await call("photos_library.add", ["space": self.space(space), "asset": PhotosLibraryWire.asset(export)], as: PhotosLibraryAdded.self)
     }
 
-    func sync(present: [String]?, albums: [PhotoAlbum], token: String?, added: Int, waiting: Int, held: Int, in space: URL) async throws {
+    func sync(present: [String]?, failed: [PhotosLibraryFailure], albums: [PhotoAlbum], token: String?, added: Int, waiting: Int, held: Int, in space: URL) async throws {
         var params: [String: JSONValue] = [
             "space": self.space(space), "albums": PhotosLibraryWire.albums(albums),
             "added": .int(Int64(added)), "waiting": .int(Int64(waiting)), "held": .int(Int64(held)),
+            "failed": .array(failed.map { ["id": .string($0.id), "reason": .string($0.reason)] }),
         ]
         if let present { params["present"] = .array(present.map(JSONValue.string)) }
         if let token { params["token"] = .string(token) }
@@ -133,8 +159,6 @@ struct ServicePhotosLibraryClient: PhotosLibraryClient {
         _ = try await call("photos_library.fail", ["space": self.space(space), "kind": .string(kind), "message": .string(message)], as: SourceStatus.self)
     }
 
-    private struct Options: Decodable { var icloud: Bool }
-
     private struct Synced: Decodable {
         struct Marked: Decodable {
             var removed: Int
@@ -144,14 +168,14 @@ struct ServicePhotosLibraryClient: PhotosLibraryClient {
         var marked: Marked
     }
 
-    func icloud(in space: URL) async throws -> Bool {
-        try await call("photos_library.options", ["space": self.space(space)], as: Options.self).icloud
+    func options(in space: URL) async throws -> PhotosLibraryOptions {
+        try await call("photos_library.options", ["space": self.space(space)], as: PhotosLibraryOptions.self)
     }
 
-    func setICloud(_ on: Bool, in space: URL) async throws -> Bool {
+    func setICloud(_ on: Bool, in space: URL) async throws -> PhotosLibraryOptions {
         try await call("photos_library.configure", [
             "space": self.space(space), "icloud": .bool(on), "by": ["kind": "person", "actor": .string(person)],
-        ], as: Options.self).icloud
+        ], as: PhotosLibraryOptions.self)
     }
 
     private func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type) async throws -> Result {

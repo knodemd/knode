@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Photos
 
@@ -29,12 +30,55 @@ struct PhotoAsset: Hashable, Sendable, Identifiable {
     var createdAt: Date?
     /// How long a video lasts.
     var duration: TimeInterval
-    /// The name of its original file, such as `IMG_0042.HEIC`.
+    /// A name for its original file when the export has none, such as `IMG_0042.HEIC`. Listing
+    /// assets never reads their resources (that is slow): the real name comes with the export.
     var originalName: String
     var latitude: Double?
     var longitude: Double?
     var width: Int?
     var height: Int?
+}
+
+/// The assets of the albums asked for, each once, and which of those albums were found: an album
+/// picked on this Mac can be deleted since.
+struct PhotoAlbumContents: Hashable, Sendable {
+    var assets: [PhotoAsset]
+    var found: Set<String>
+}
+
+/// What changed in the library since a change token.
+struct PhotoLibraryChanges: Hashable, Sendable {
+    /// Assets inserted, updated or deleted.
+    var assets: Set<String> = []
+    /// Albums inserted, updated (such as what they hold) or deleted.
+    var albums: Set<String> = []
+}
+
+/// An original written by `exportOriginal`, with the hash of its bytes, computed while writing.
+struct ExportedOriginal: Hashable, Sendable {
+    var file: URL
+    /// `sha256:` and the hex SHA-256 of the file.
+    var content: String
+}
+
+/// Hashes bytes as they come: `sha256:<hex>`.
+struct ContentHasher {
+    private var hasher = SHA256()
+
+    mutating func update(_ data: Data) { hasher.update(data: data) }
+
+    mutating func finish() -> String {
+        "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The content of a file, read in chunks.
+    static func content(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = ContentHasher()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(chunk) }
+        return hasher.finish()
+    }
 }
 
 enum PhotoExportError: Error, LocalizedError, Equatable {
@@ -59,16 +103,19 @@ protocol PhotoLibrary: Sendable {
     /// Asks the person for access: only when they connect the source.
     func requestAccess() async -> PhotoLibraryAccess
     func albums() -> [PhotoAlbum]
-    /// Every photo and video in these albums, each once.
-    func assets(inAlbums albums: Set<String>) -> [PhotoAsset]
+    /// Every photo and video in these albums, each once, and which albums were found.
+    func assets(inAlbums albums: Set<String>) -> PhotoAlbumContents
     /// The change token of the library now, archived as text, when the system has one: a run
     /// with the same token as the last one has nothing new to read.
     func changeToken() -> String?
+    /// What changed since `token` (from `changeToken()`): `nil` when the system cannot tell any
+    /// more (the token expired or is not one), and everything must be read.
+    func changes(since token: String) -> PhotoLibraryChanges?
     /// Says when the library changed.
     func changes() -> AsyncStream<Void>
-    /// Writes the asset's original into `folder` and returns it. Without `allowNetwork`, an
-    /// original kept only in iCloud throws `PhotoExportError.inCloud`.
-    func exportOriginal(of asset: PhotoAsset, into folder: URL, allowNetwork: Bool) async throws -> URL
+    /// Writes the asset's original into `folder` and returns it with its hash. Without
+    /// `allowNetwork`, an original kept only in iCloud throws `PhotoExportError.inCloud`.
+    func exportOriginal(of asset: PhotoAsset, into folder: URL, allowNetwork: Bool) async throws -> ExportedOriginal
 }
 
 /// The Photos library through PhotoKit.
@@ -105,29 +152,29 @@ final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         return out.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    func assets(inAlbums albums: Set<String>) -> [PhotoAsset] {
-        guard access == .authorized, !albums.isEmpty else { return [] }
+    func assets(inAlbums albums: Set<String>) -> PhotoAlbumContents {
+        guard access == .authorized, !albums.isEmpty else { return PhotoAlbumContents(assets: [], found: []) }
         let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: Array(albums), options: nil)
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "mediaType == %d || mediaType == %d", PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
         var seen = Set<String>()
+        var found = Set<String>()
         var out: [PhotoAsset] = []
         collections.enumerateObjects { collection, _, _ in
+            found.insert(collection.localIdentifier)
             PHAsset.fetchAssets(in: collection, options: options).enumerateObjects { asset, _, _ in
                 guard seen.insert(asset.localIdentifier).inserted else { return }
                 out.append(Self.asset(asset))
             }
         }
-        return out
+        return PhotoAlbumContents(assets: out, found: found)
     }
 
     private static func asset(_ asset: PHAsset) -> PhotoAsset {
-        let resources = PHAssetResource.assetResources(for: asset)
-        let original = resources.first { [.photo, .video].contains($0.type) } ?? resources.first
-        return PhotoAsset(
+        PhotoAsset(
             id: asset.localIdentifier, kind: asset.mediaType == .video ? .video : .photo,
             createdAt: asset.creationDate, duration: asset.duration,
-            originalName: original?.originalFilename ?? (asset.mediaType == .video ? "Video.mov" : "Photo.heic"),
+            originalName: asset.mediaType == .video ? "Video.mov" : "Photo.heic",
             latitude: asset.location?.coordinate.latitude, longitude: asset.location?.coordinate.longitude,
             width: asset.pixelWidth, height: asset.pixelHeight
         )
@@ -139,6 +186,31 @@ final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         return (try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true))?.base64EncodedString()
     }
 
+    func changes(since token: String) -> PhotoLibraryChanges? {
+        guard access == .authorized, let data = Data(base64Encoded: token),
+              let saved = try? NSKeyedUnarchiver.unarchivedObject(ofClass: PHPersistentChangeToken.self, from: data)
+        else { return nil }
+        do {
+            let result = try PHPhotoLibrary.shared().fetchPersistentChanges(since: saved)
+            var out = PhotoLibraryChanges()
+            // The overlay makes the result a sequence of changes, oldest first.
+            for change in result {
+                let assets = try change.changeDetails(for: .asset)
+                out.assets.formUnion(assets.insertedLocalIdentifiers)
+                out.assets.formUnion(assets.updatedLocalIdentifiers)
+                out.assets.formUnion(assets.deletedLocalIdentifiers)
+                let albums = try change.changeDetails(for: .assetCollection)
+                out.albums.formUnion(albums.insertedLocalIdentifiers)
+                out.albums.formUnion(albums.updatedLocalIdentifiers)
+                out.albums.formUnion(albums.deletedLocalIdentifiers)
+            }
+            return out
+        } catch {
+            // The token expired or its details are gone: read everything.
+            return nil
+        }
+    }
+
     func changes() -> AsyncStream<Void> {
         AsyncStream { continuation in
             let observer = ChangeObserver { continuation.yield() }
@@ -147,7 +219,7 @@ final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         }
     }
 
-    func exportOriginal(of asset: PhotoAsset, into folder: URL, allowNetwork: Bool) async throws -> URL {
+    func exportOriginal(of asset: PhotoAsset, into folder: URL, allowNetwork: Bool) async throws -> ExportedOriginal {
         guard let found = PHAsset.fetchAssets(withLocalIdentifiers: [asset.id], options: nil).firstObject else {
             throw PhotoExportError.noOriginal
         }
@@ -159,15 +231,61 @@ final class PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         try? FileManager.default.removeItem(at: output)
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = allowNetwork
+        guard FileManager.default.createFile(atPath: output.path(percentEncoded: false), contents: nil),
+              let handle = try? FileHandle(forWritingTo: output)
+        else { throw PhotoExportError.failed("cannot write \(name)") }
+        // Written and hashed as the bytes come, so the original is read once.
+        let writer = ExportWriter(handle: handle)
         do {
-            try await PHAssetResourceManager.default().writeData(for: resource, toFile: output, options: options)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                PHAssetResourceManager.default().requestData(for: resource, options: options) { data in
+                    writer.write(data)
+                } completionHandler: { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                }
+            }
+            let content = try writer.finish()
+            return ExportedOriginal(file: output, content: content)
         } catch let error as NSError {
+            try? writer.finish()
+            try? FileManager.default.removeItem(at: output)
             if error.domain == PHPhotosErrorDomain, error.code == PHPhotosError.Code.networkAccessRequired.rawValue {
                 throw PhotoExportError.inCloud
             }
             throw PhotoExportError.failed(error.localizedDescription)
         }
-        return output
+    }
+}
+
+/// Writes the chunks of an export to its file and hashes them. PhotoKit calls `write` one chunk
+/// at a time, in order.
+private final class ExportWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+    private var hasher = ContentHasher()
+    private var error: Error?
+
+    init(handle: FileHandle) { self.handle = handle }
+
+    func write(_ data: Data) {
+        lock.withLock {
+            guard error == nil else { return }
+            do {
+                try handle.write(contentsOf: data)
+                hasher.update(data)
+            } catch {
+                self.error = error
+            }
+        }
+    }
+
+    @discardableResult
+    func finish() throws -> String {
+        try lock.withLock {
+            try? handle.close()
+            if let error { throw error }
+            return hasher.finish()
+        }
     }
 }
 

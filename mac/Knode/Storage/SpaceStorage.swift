@@ -11,9 +11,8 @@ protocol SpaceStorage: Sendable {
     func storageSummary(top: Int, in space: Space.ID) async throws -> StorageSummary
     /// What the space would take after adding `size` bytes, and whether to ask first.
     func storageCheck(adding size: Int64, in space: Space.ID) async throws -> StorageCheck
-    /// Changes the soft limit (`0` never warns) or whether large originals are kept; `nil` leaves
-    /// one as it is.
-    func setStorageLimits(warnAt: Int64?, keepLargeOriginals: Bool?, in space: Space.ID) async throws -> StorageLimits
+    /// Changes the soft limit (`0` never warns); `nil` leaves it as it is.
+    func setStorageLimits(warnAt: Int64?, in space: Space.ID) async throws -> StorageLimits
 }
 
 /// The bytes a space takes, by kind.
@@ -50,11 +49,8 @@ struct StorageFile: Hashable, Sendable, Decodable, Identifiable {
 
 /// The limits of a space.
 struct StorageLimits: Hashable, Sendable, Decodable {
-    /// The largest file a space attaches: 100 MB.
+    /// The largest file a space attaches: 100 MB. A video larger than that keeps only its audio.
     var maxFile: Int64
-    /// The largest original kept when the space keeps large originals: 4 GB.
-    var maxOriginal: Int64
-    var keepLargeOriginals: Bool
     /// The soft limit; `0` never warns.
     var warnAt: Int64
 }
@@ -112,11 +108,10 @@ extension ServiceSpaceStore: SpaceStorage {
         return try await call("storage.check", ["space": .string(path), "size": .int(max(size, 0))], as: StorageCheck.self)
     }
 
-    func setStorageLimits(warnAt: Int64?, keepLargeOriginals: Bool?, in space: Space.ID) async throws -> StorageLimits {
+    func setStorageLimits(warnAt: Int64?, in space: Space.ID) async throws -> StorageLimits {
         let path = try path(space)
         var params: [String: JSONValue] = ["space": .string(path), "by": author]
         if let warnAt { params["warn_at"] = .int(max(warnAt, 0)) }
-        if let keepLargeOriginals { params["keep_large_originals"] = .bool(keepLargeOriginals) }
         return try await call("storage.configure", params, as: StorageLimits.self)
     }
 }
@@ -151,18 +146,17 @@ extension CoreSpaceStore: SpaceStorage {
         return StorageCheck(total: Int64(clamping: c.total), after: Int64(clamping: c.after), warnAt: Int64(clamping: c.warnAt), warn: c.warn)
     }
 
-    func setStorageLimits(warnAt: Int64?, keepLargeOriginals: Bool?, in space: Space.ID) async throws -> StorageLimits {
+    func setStorageLimits(warnAt: Int64?, in space: Space.ID) async throws -> StorageLimits {
         let core = try self.core(space)
         let author = author
         let warn = warnAt.map { UInt64(max($0, 0)) }
-        return StorageLimits(try await run { try core.setStorageLimits(warnAt: warn, keepLargeOriginals: keepLargeOriginals, by: author) })
+        return StorageLimits(try await run { try core.setStorageLimits(warnAt: warn, by: author) })
     }
 }
 
 extension StorageLimits {
     init(_ l: KnodeCore.StorageLimits) {
-        self.init(maxFile: Int64(clamping: l.maxFile), maxOriginal: Int64(clamping: l.maxOriginal),
-                  keepLargeOriginals: l.keepLargeOriginals, warnAt: Int64(clamping: l.warnAt))
+        self.init(maxFile: Int64(clamping: l.maxFile), warnAt: Int64(clamping: l.warnAt))
     }
 }
 
@@ -177,8 +171,8 @@ extension RoutingSpaceStore: SpaceStorage {
         try await storage(space) { try await $0.storageCheck(adding: size, in: space) }
     }
 
-    func setStorageLimits(warnAt: Int64?, keepLargeOriginals: Bool?, in space: Space.ID) async throws -> StorageLimits {
-        try await storage(space) { try await $0.setStorageLimits(warnAt: warnAt, keepLargeOriginals: keepLargeOriginals, in: space) }
+    func setStorageLimits(warnAt: Int64?, in space: Space.ID) async throws -> StorageLimits {
+        try await storage(space) { try await $0.setStorageLimits(warnAt: warnAt, in: space) }
     }
 
     private func storage<T: Sendable>(_ space: Space.ID, _ work: (any SpaceStorage) async throws -> T) async throws -> T {

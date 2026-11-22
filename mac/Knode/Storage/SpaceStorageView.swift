@@ -33,10 +33,6 @@ struct SpaceStorageSection: View {
                               options: Self.warnOptions(current: summary.limits.warnAt))
                         .frame(width: 140)
                 }
-                KHairline()
-                KSettingToggle("Keep large video originals",
-                               detail: "Off: a video larger than \(StorageText.size(summary.limits.maxFile)) keeps only its audio, and the original stays where it was. On: the original is kept in the space too, up to \(StorageText.size(summary.limits.maxOriginal)).",
-                               isOn: Binding(get: { summary.limits.keepLargeOriginals }, set: { on in Task { await model.setKeepLargeOriginals(on) } }))
                 if !summary.largest.isEmpty {
                     KHairline()
                     KSectionLabel("Largest files")
