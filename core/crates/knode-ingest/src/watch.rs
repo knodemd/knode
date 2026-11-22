@@ -256,6 +256,7 @@ fn is_session(path: &Path) -> bool {
         || path.file_name() == Some(OsStr::new(crate::aider::HISTORY_FILE))
         || crate::opencode::is_database_file(path)
         || crate::vscdb::is_database_file(path)
+        || crate::cursor_cli::is_database_file(path)
 }
 
 /// Collects events into batches and hands them over, until told to stop.

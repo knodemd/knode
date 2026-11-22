@@ -56,6 +56,7 @@ mod cline;
 pub mod codex;
 mod copilot;
 mod cursor;
+mod cursor_cli;
 mod discover;
 mod exports;
 mod filter;
@@ -115,6 +116,7 @@ pub(crate) fn apply(conversation: &mut Conversation, record: &serde_json::Value)
         | Agent::Amp
         | Agent::Aider
         | Agent::Cursor
+        | Agent::CursorCli
         | Agent::Windsurf
         | Agent::Cline
         | Agent::RooCode

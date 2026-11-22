@@ -33,6 +33,9 @@ pub enum Agent {
     /// Cursor, which keeps chats and agent sessions in the SQLite database `state.vscdb` in
     /// its `User/globalStorage` folder.
     Cursor,
+    /// The Cursor CLI (`cursor-agent`), which keeps each chat in its own SQLite database,
+    /// `~/.cursor/chats/<workspace hash>/<chat id>/store.db`.
+    CursorCli,
     /// Windsurf, which keeps workspace chats in the SQLite database `state.vscdb` of each
     /// folder in its `User/workspaceStorage` folder.
     Windsurf,
@@ -55,7 +58,7 @@ pub enum Agent {
 impl Agent {
     /// Every agent capture reads sessions from, in a stable order. Agents whose conversations
     /// only come from an export are in [`Agent::EXPORTED`].
-    pub const ALL: [Agent; 11] = [
+    pub const ALL: [Agent; 12] = [
         Agent::ClaudeCode,
         Agent::Codex,
         Agent::GeminiCli,
@@ -64,6 +67,7 @@ impl Agent {
         Agent::Amp,
         Agent::Aider,
         Agent::Cursor,
+        Agent::CursorCli,
         Agent::Windsurf,
         Agent::Cline,
         Agent::RooCode,
@@ -84,6 +88,7 @@ impl Agent {
             Agent::Amp => "amp",
             Agent::Aider => "aider",
             Agent::Cursor => "cursor",
+            Agent::CursorCli => "cursor-cli",
             Agent::Windsurf => "windsurf",
             Agent::Cline => "cline",
             Agent::RooCode => "roo-code",
@@ -112,6 +117,7 @@ impl Agent {
             Agent::Amp => "Amp",
             Agent::Aider => "Aider",
             Agent::Cursor => "Cursor",
+            Agent::CursorCli => "Cursor CLI",
             Agent::Windsurf => "Windsurf",
             Agent::Cline => "Cline",
             Agent::RooCode => "Roo Code",

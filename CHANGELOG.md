@@ -14,6 +14,10 @@ belongs to, newest first.
 
 #### Added
 
+- **Cursor CLI chats are captured**: what you talk about with `cursor-agent` in the terminal
+  becomes one conversation per chat, with its title, project, model and date, read from
+  `~/.cursor/chats` (or `KNODE_CURSOR_CLI_ROOT`). They are apart from the Cursor editor's
+  conversations, so nothing is captured twice. Thinking and tool results are left out.
 - **Sources**: one list of everything that brings things into a space, the importers you run once
   and the connectors that keep bringing in what is new. A connector is off until you connect it
   to a space, choosing to bring in what happens from today on (the default) or everything it
