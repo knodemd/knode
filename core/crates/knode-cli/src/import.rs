@@ -13,7 +13,7 @@ use knode_vault::migration::{DELETED_REASON, FileStatus, MigrationReport};
 use crate::service;
 
 /// The kinds `--from` takes.
-pub const FROM: [&str; 18] = [
+pub const FROM: [&str; 19] = [
     "export",
     "markdown",
     "session",
@@ -32,6 +32,7 @@ pub const FROM: [&str; 18] = [
     "telegram",
     "slack",
     "claude-code-memory",
+    "media",
 ];
 
 /// How many nodes the summary lists one by one.

@@ -70,7 +70,8 @@ grant takes effect on the next call:
 - With `read`, `recordings.get`, `recordings.pending` and `recordings.failed` are allowed; the
   other `recordings.*`
   methods store files of this machine and what the app made on the device, and are for people
-  only.
+  only. The same goes for `photos.*`: `photos.get`, `photos.pending` and `photos.failed` with
+  `read`, the others for people only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
   `purge`, `markdown.folder.set`, `doc.peer`, `doc.merge` and every other method are for people
   only and fail with `forbidden`. (The authorship of merged Loro updates comes from their peers,
@@ -134,7 +135,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `onboarding.apply_into` | `space`, `plan` (a reviewed `knode onboard analyze` plan), `by` | The onboarding receipt. Applies the plan into this space instead of a new one, only while `space.set_up` is `false`: the source is checked against the plan, the plan is rehearsed in a throwaway space, then its documents, a `project` node per project with the documents `part-of` it and `onboarding.json` are written into the space, and `capture.enabled` is set to `off`. What the space held stays. Fails with `invalid` when the space is set up, the source changed or a note of the source has the id of a node already in the space, and then writes nothing. People only. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
 | `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
-| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` and `recordings.summaries` are `on` or `off`, all stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
+| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled`, `recordings.summaries` and `photos.location` are `on` or `off`, all stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
 | `folders.remove` | `space`, `id`, `by` | `true` if there was such a folder. Nothing captured or imported from it is removed. People only. |
@@ -264,7 +265,7 @@ and their summary. Transcribing and summarising happen in the app, on the device
 store what it produces and say what is still to do. A recording is a node of kind `meeting`,
 `voice-memo` or `recording` with its audio files attached, its properties under `recording.`
 (`started_at`, `ended_at`, `duration_ms`, `source`, `key`, `language`, `transcript`, `summary`,
-`error`, `app`, `tracks`) and a `part-of` link to its project. Its transcript is a node of kind
+`error`, `app`, `tracks`, `original`) and a `part-of` link to its project. Its transcript is a node of kind
 `transcript`, `derived-from` it.
 
 Every method returns a recording, or a list of them:
@@ -275,7 +276,7 @@ Every method returns a recording, or a list of them:
   "started_at": 1795343400000, "ended_at": 1795345200000, "duration_ms": 1800000,
   "source": "recorder", "key": null, "language": "es-ES",
   "transcript": "done", "summary": "pending", "error": null, "app": "zoom.us",
-  "project": "01J…", "transcript_id": "01J…",
+  "project": "01J…", "transcript_id": "01J…", "original": null,
   "tracks": [{ "name": "microphone.m4a", "track": "microphone" }, { "name": "system.m4a", "track": "system" }]
 }
 ```
@@ -284,11 +285,15 @@ Every method returns a recording, or a list of them:
 or `file`. `track` is `microphone` (the person), `system` (the others in an online meeting) or
 `mixed` (everyone in one file). `transcript` is `pending`, `done` or `failed`; `summary` is
 `pending`, `done`, `off`, `unavailable` or `failed`; `error` says why a stage failed or is
-unavailable. Times are Unix milliseconds.
+unavailable. Times are Unix milliseconds. An audio file or a video added by hand is a
+`recording` with source `file`, the file attached as its one `mixed` track (a video's audio track
+is what the app transcribes) and `key` `sha256:<hex>` of the file, so the same file added again is
+the same recording. `original` names the file the audio was taken from when that file is not
+attached: a video larger than 100 MB, whose audio the app extracts and attaches instead.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
+| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `original`?, `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long (when `ended_at` is `started_at`, only when it was recorded) and, with `original`, a line saying the audio was taken from it and it is not in the space, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
 | `recordings.pending` | `space` | The recordings whose transcript is `pending`, or whose summary is `pending` while the transcript is `done`, oldest first (by `started_at`). A recording that cannot be read is left out (and logged) rather than failing the list. |
 | `recordings.failed` | `space` | The recordings whose transcript is `failed`, or whose summary is `failed` or `unavailable`, newest first (by `started_at`): those the app offers to try again with `recordings.retry`. A recording that cannot be read is left out (and logged). |
 | `recordings.get` | `space`, `id` | The recording. Fails with `not_found` without such a node and `invalid` for a node that is not a recording. |
@@ -304,6 +309,44 @@ changed with `settings.get` and `settings.set`; the app passes it as `summaries`
 recording. Agents with `read` may call `recordings.get`, `recordings.pending` and
 `recordings.failed`; the other
 methods are for people only.
+
+### Photos
+
+Photos added to a space, with what the device reads in them. Reading happens in the app, on the
+device (Vision on the Mac: the text in the photo and labels for what it shows); these methods
+store what it finds and say what is still to read. A photo is a node of kind `photo` with its
+original file attached unchanged, its properties under `photo.` (`taken_at`, `latitude`,
+`longitude`, `place`, `camera`, `width`, `height`, `key`, `file`, `reading`, `error`) and a
+`part-of` link to its project. Where the space setting `photos.location` is `off`, no
+`latitude`, `longitude` or `place` is stored (`on`, the default also when it is not set; read and
+changed with `settings.get` and `settings.set`).
+
+Every method returns a photo, or a list of them:
+
+```json
+{
+  "id": "01J…", "title": "IMG_0001", "file": "IMG_0001.HEIC", "key": "sha256:…",
+  "metadata": { "taken_at": 1795343400000, "latitude": 40.416775, "longitude": -3.70379,
+                "place": "Madrid", "camera": "Apple iPhone 16 Pro", "width": 4032, "height": 3024 },
+  "reading": "done", "error": null, "project": "01J…"
+}
+```
+
+Every part of `metadata` may be missing. `place` is there only when the device named the place
+without the network. `reading` is `pending`, `done` or `failed`; `error` says why it failed.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `photos.create` | `space`, `path` (absolute), `title`? (the file's name without its extension when empty), `project`?, `metadata`?, `by` | The photo. The file is checked first (it must exist, up to 100 MB), then the node is created with a first line saying when and where it was taken (`Taken on Sunday 22 November 2026 at 10:30, in Madrid, with Apple iPhone 16 Pro.`, or `A photo.`), an `![[name]]` embed, the file attached (copied, unchanged) and a `part-of` link to `project`; `photo.key`, the `sha256:<hex>` of the file, is written last, and a node left half made by a failed step is deleted. `reading` is `pending`. The same file (by hash) the space already holds returns that photo, with the `part-of` link to `project` added. A latitude outside -90..90 or a longitude outside -180..180 fails with `invalid`. People only. |
+| `photos.pending` | `space` | The photos whose `reading` is `pending`, oldest first. A photo that cannot be read is left out (and logged). |
+| `photos.failed` | `space` | The photos whose `reading` is `failed`, newest first. |
+| `photos.get` | `space`, `id` | The photo. Fails with `not_found` without such a node and `invalid` for a node that is not a photo. |
+| `photos.reading` | `space`, `id`, `reading` (`{ "engine", "text", "labels": [..], "description"?, "metadata"? }`), `by` | The photo. Writes what was read into its body between a `<!-- knode:photo-reading -->` line and a `<!-- /knode:photo-reading -->` line: `## Text in the photo` (the lines found, each kept on its own line; a line starting with `#` or `>` is kept as text), `## What it shows` (the labels, once each, comma separated), `## Description`, leaving out empty ones (`Nothing to read in this photo.` when all are), and a line saying `engine` read it on this Mac. When the body has the two lines once, in order, only what is between them is replaced; otherwise the block is added after the embed. `metadata` adds to the photo's properties (no location where `photos.location` is `off`), and the first line is said again when it is still the one Knode wrote. Sets `reading` to `done` and removes `error`. People only. |
+| `photos.fail` | `space`, `id`, `error`, `by` | The photo, with `reading` `failed` and `error` set. People only. |
+| `photos.retry` | `space`, `id`, `by` | The photo, with `reading` back to `pending` and `error` removed. People only. |
+
+The writes announce the photo as a change. The app writes readings as `{ "kind": "system",
+"actor": "photos", "source": "apple-vision" }`.
 
 ### Data exports
 
@@ -337,6 +380,7 @@ file. With `from` `apple-notes` or `bear` and no `path`, the app's own notes on 
 | `telegram` | A Telegram Desktop export in JSON: the folder with `result.json` (one chat, or the whole account), a `.zip` of it, or the `result.json`. One `chat` node per chat, as for `whatsapp`; formatted text becomes Markdown and replies name the message they answer |
 | `slack` | A Slack workspace export: the `.zip` or its folder (`users.json`, `channels.json`, and a folder of day files per conversation). One `chat` node per channel, group or direct message; each thread its own `chat` node, `part-of` its channel; the members who wrote or were mentioned `person` nodes, found again by `slack.user`, mentions `[[links]]` to them and chats `related` to who wrote in them. Files are links, or attached when the export has them in `__uploads/` |
 | `claude-code-memory` | Claude Code's `.claude` folder or its `projects` folder; without `path`, `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`, of the service. Each `<folder>/memory/*.md` but `MEMORY.md` becomes a note (`markdown.path` `claude-code-memory/<folder>/<file>`), `part-of` the project its folder belongs to; folders that are symbolic links are left out |
+| `media` | A photo (`.heic`, `.heif`, `.jpg`, `.jpeg`, `.png`), an audio file (`.m4a`, `.mp3`, `.wav`, `.aac`, `.aif`, `.aiff`, `.caf`, `.flac`, `.qta`) or a video (`.mov`, `.mp4`, `.m4v`), found by its extension; or, named with `from`, a folder, read three folders deep. Each file becomes a `photo` (`photos.create`, without metadata: the app reads it) or a `recording` with source `file` (`recordings.create`, titled after the file, started when it was last changed, of unknown length), its original attached; `key` `sha256:<hex>` finds the same file again, `unchanged`. A file larger than 100 MB is refused (the Mac app takes larger videos and keeps their audio); in a folder it is `skipped`. `attached` counts the new files |
 
 ```json
 { "source": "kindle", "format": "Kindle clippings", "from": "/Users/ada/Downloads/My Clippings.txt",

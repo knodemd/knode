@@ -195,7 +195,10 @@ enum Access {
 }
 
 fn access(method: &str) -> Access {
-    if crate::maps::READS.contains(&method) || crate::recordings::READS.contains(&method) {
+    if crate::maps::READS.contains(&method)
+        || crate::recordings::READS.contains(&method)
+        || crate::photos::READS.contains(&method)
+    {
         return Access::Read;
     }
     if crate::maps::WRITES.contains(&method) {

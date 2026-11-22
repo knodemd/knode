@@ -46,6 +46,7 @@ fn meeting(dir: &Path, project: Option<NodeId>) -> NewRecording {
         key: None,
         app: Some("zoom.us".into()),
         summaries: true,
+        original: None,
     }
 }
 
@@ -146,6 +147,40 @@ fn the_header_says_when_and_how_long() {
     assert_eq!(duration_words(60_000), "1 minute");
     assert_eq!(duration_words(3_900_000), "1 hour 5 minutes");
     assert_eq!(duration_words(7_200_000), "2 hours");
+    assert_eq!(
+        header(START, START, &Utc),
+        "Recorded on Sunday 22 November 2026 at 10:30."
+    );
+}
+
+#[test]
+fn a_recording_taken_from_a_large_file_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let new = NewRecording {
+        kind: RecordingKind::Recording,
+        title: "Talk".into(),
+        started_at: START,
+        ended_at: START + 60_000,
+        project: None,
+        audio: vec![AudioInput {
+            path: audio(dir.path(), "Talk.m4a", b"aac"),
+            track: Track::Mixed,
+        }],
+        key: Some("sha256:abc".into()),
+        app: None,
+        summaries: false,
+        original: Some("Talk.mov".into()),
+    };
+    let recording = create(&mut space, &new, &me()).unwrap();
+    assert_eq!(recording.original.as_deref(), Some("Talk.mov"));
+    assert_eq!(recording.source, Source::File);
+    let body = space.get_node(&recording.id).unwrap().unwrap().body;
+    assert!(
+        body.contains("taken from Talk.mov, which is larger than 100 MB"),
+        "{body}"
+    );
+    assert!(body.contains("![[Talk.m4a]]"));
 }
 
 #[test]

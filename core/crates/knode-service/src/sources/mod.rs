@@ -246,6 +246,11 @@ fn importer_info(source: ImportSource) -> SourceInfo {
             "The memory Claude Code keeps for each folder it works in",
             &[],
         ),
+        ImportSource::Media => (
+            "Photos, videos and audio",
+            "Photos, videos and audio files, read and transcribed on this Mac",
+            &[],
+        ),
     };
     SourceInfo {
         id: source.id().to_string(),

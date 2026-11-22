@@ -210,6 +210,25 @@ pub mod methods {
     /// Puts the transcript or the summary of a recording back to pending. People only.
     pub const RECORDINGS_RETRY: &str = "recordings.retry";
 
+    // Photos: photos added to a space, with what the device reads in them.
+
+    /// What every `photos.*` method starts with.
+    pub const PHOTOS_PREFIX: &str = "photos.";
+    /// Adds a photo, copying its file into the space. People only.
+    pub const PHOTOS_CREATE: &str = "photos.create";
+    /// The photos still to read.
+    pub const PHOTOS_PENDING: &str = "photos.pending";
+    /// The photos whose reading failed.
+    pub const PHOTOS_FAILED: &str = "photos.failed";
+    /// A photo.
+    pub const PHOTOS_GET: &str = "photos.get";
+    /// Writes what the device read in a photo. People only.
+    pub const PHOTOS_READING: &str = "photos.reading";
+    /// Marks the reading of a photo as failed. People only.
+    pub const PHOTOS_FAIL: &str = "photos.fail";
+    /// Puts the reading of a photo back to pending. People only.
+    pub const PHOTOS_RETRY: &str = "photos.retry";
+
     // Sources: importers and connectors, people only.
 
     /// What every `sources.*` method starts with.

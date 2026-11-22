@@ -254,6 +254,15 @@ pub fn set_setting(
                 )));
             }
         },
+        setting_keys::PHOTOS_LOCATION => match value {
+            None => None,
+            Some(value @ ("on" | "off")) => Some(value),
+            Some(other) => {
+                return Err(invalid(format!(
+                    "photos.location is \"on\" or \"off\", not {other:?}"
+                )));
+            }
+        },
         setting_keys::SPACE_ID => return Err(invalid("the id of a space never changes")),
         setting_keys::MARKDOWN_FOLDER => {
             return Err(invalid(
@@ -263,8 +272,8 @@ pub fn set_setting(
         }
         other => {
             return Err(invalid(format!(
-                "{other:?} is not a setting Knode knows: use space.icon, capture.enabled or \
-                 recordings.summaries"
+                "{other:?} is not a setting Knode knows: use space.icon, capture.enabled, \
+                 recordings.summaries or photos.location"
             )));
         }
     };

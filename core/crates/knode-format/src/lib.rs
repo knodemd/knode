@@ -273,4 +273,7 @@ pub mod setting_keys {
     /// `on` (the default, also when absent) or `off`: whether recordings are summarised on the
     /// device once they are transcribed. Only `off` turns it off.
     pub const RECORDINGS_SUMMARIES: &str = "recordings.summaries";
+    /// `on` (the default, also when absent) or `off`: whether photos keep where they were taken
+    /// (coordinates and place). Only `off` turns it off.
+    pub const PHOTOS_LOCATION: &str = "photos.location";
 }

@@ -48,7 +48,8 @@
 //! Slack Web API, into the same nodes as a Slack export.
 //!
 //! Meetings recorded on the device, voice memos and audio files added by hand are stored by
-//! [`recordings`], with their transcript and their summary.
+//! [`recordings`], with their transcript and their summary. Photos are stored by [`photos`],
+//! with what the device reads in them, and [`media`] adds any photo, audio file or video.
 
 mod aider;
 mod amp;
@@ -63,8 +64,10 @@ mod discover;
 mod exports;
 mod filter;
 mod gemini;
+pub mod media;
 mod model;
 mod opencode;
+pub mod photos;
 mod reader;
 pub mod recordings;
 mod redact;
