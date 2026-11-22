@@ -14,6 +14,7 @@ use knode_format as format;
 use knode_format::NodeId;
 
 mod attachments;
+mod calendar;
 mod maps;
 mod recordings;
 mod spaces;

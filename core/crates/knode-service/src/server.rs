@@ -34,6 +34,7 @@ use crate::search::{Index, IndexOptions};
 use crate::sources::{Registry, SourcesOptions, SourcesTask};
 use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
+mod calendar;
 mod import;
 mod maps;
 mod recordings;
@@ -1225,6 +1226,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         | methods::DOC_UPDATES => crate::coedit::call(state, method, raw),
         methods::IMPORT_RUN => import::run(state, raw),
         m if m.starts_with(methods::SOURCES_PREFIX) => sources::call(state, m, raw),
+        m if m.starts_with(methods::CALENDAR_PREFIX) => calendar::call(state, m, raw),
         m if m.starts_with(methods::RECORDINGS_PREFIX) => recordings::call(state, m, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(

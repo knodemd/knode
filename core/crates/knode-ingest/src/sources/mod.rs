@@ -212,6 +212,14 @@ pub enum Trigger {
     },
     /// Every so often: for network APIs.
     Interval(Duration),
+    /// Never by Knode Service: the app runs it. For a source only the app can read, through a
+    /// system API the service has no access to (EventKit, PhotoKit). The service lists it,
+    /// keeps its settings and its state like any other connector's, and asks the app to run it
+    /// by setting its `next_run`; the app reads the source and hands what it read to the
+    /// service with a method of that source (such as `calendar.sync`), which writes it through
+    /// the source's importer. Its [`Connector::fetch`] is never called by the service, and its
+    /// containers are the ones the app last reported.
+    App,
 }
 
 impl Default for Trigger {

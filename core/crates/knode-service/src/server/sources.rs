@@ -55,7 +55,21 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
                     "{id} is not connected and on in this space"
                 ))));
             }
-            state.wake_sources(Wake::Run(state_key(&space.manifest().id, &id)));
+            let key = state_key(&space.manifest().id, &id);
+            if registry.is_app_driven(&id) {
+                // The app runs it: it reads `next_run` and runs it once that time comes.
+                let mut states = registry.states();
+                states.entry(&key).next_run = Some(knode_format::Timestamp::now());
+                states.save(registry.home()).map_err(|e| {
+                    RpcError::new(
+                        codes::STORAGE,
+                        format!("the state of {id} could not be saved: {e}"),
+                    )
+                })?;
+                drop(states);
+                return to_value(registry.get(&space, &id)?);
+            }
+            state.wake_sources(Wake::Run(key));
             to_value(status)
         }
         methods::SOURCES_CONNECT
