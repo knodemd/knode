@@ -210,6 +210,37 @@ fn a_file_named_by_another_path_is_not_blamed_on_failed_files() {
 }
 
 #[test]
+fn files_named_by_a_path_that_comes_back_or_from_the_top_are_attached() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Vault");
+    put(&dir, "sub/s.md", "# S\n\n![x](../sub/p.png)\n");
+    put(&dir, "sub/t.md", "# T\n\n![[sub/q.png]]\n");
+    put(&dir, "sub/u.md", "# U\n\n![[attachments/a.png]]\n");
+    put(&dir, "sub/p.png", [1]);
+    put(&dir, "sub/q.png", [2]);
+    put(&dir, "attachments/a.png", [3]);
+    let mut space = Space::create(tmp.path().join("V.knode"), "V").unwrap();
+    let imported = import(&mut space, &dir, &me()).unwrap();
+    let r = report(&space, &dir, &imported).unwrap();
+    assert_eq!(
+        (r.counts.attached, r.counts.skipped, r.counts.failed),
+        (2, 1, 0),
+        "{:#?}",
+        r.files
+    );
+    assert_eq!(
+        r.missing_attachments.len(),
+        1,
+        "{:?}",
+        r.missing_attachments
+    );
+    let missing = &r.missing_attachments[0];
+    assert_eq!(missing.path, "sub/u.md");
+    assert_eq!(missing.found, ["attachments/a.png"]);
+    assert!(missing.reason.contains("elsewhere"), "{}", missing.reason);
+}
+
+#[test]
 fn a_file_next_to_the_note_that_could_not_be_attached_points_to_the_failed_files() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("Vault");

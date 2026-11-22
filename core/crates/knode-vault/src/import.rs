@@ -11,10 +11,10 @@ use knode_format::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::attachments::{files_to_blob_urls, link_names, wiki_names};
+use crate::attachments::{files_to_blob_urls, linked_paths};
 use crate::frontmatter::{Entry, entries, parse_flow_list, parse_scalar, split};
 use crate::mirror::{read_attachment_map, read_link_kinds};
-use crate::names::{folder_of, join, stem_of, title_from_stem};
+use crate::names::{folder_of, join, normalize, stem_of, title_from_stem};
 use crate::property_keys as keys;
 use crate::{Error, LINK_KINDS_FILE, Result, STATE_DIR, STYLE_VAULT, io_error, tags, time};
 
@@ -363,18 +363,22 @@ impl Batch {
                 return Ok(None);
             }
         };
-        // Next to the note, by name, and the files export wrote for it.
+        // The files export wrote for it, and the files next to the note it names: by name, by
+        // a path relative to the note (`../sub/p.png`) or by a path from the top of the folder
+        // (Obsidian's "absolute path in vault", `sub/p.png`). Export writes them back next to
+        // the note, where those paths find them again.
         let mut wanted: BTreeMap<String, String> = written
             .iter()
             .map(|(name, path, _)| (name.clone(), path.clone()))
             .collect();
-        for name in wiki_names(&note.body)
-            .into_iter()
-            .chain(link_names(&note.body))
-        {
-            let path = join(folder_of(rel), &name);
-            if files.contains(&path) {
-                wanted.entry(name).or_insert(path);
+        let folder = folder_of(rel);
+        for target in linked_paths(&note.body) {
+            let found = [normalize(&join(folder, &target)), normalize(&target)]
+                .into_iter()
+                .flatten()
+                .find(|path| folder_of(path) == folder && files.contains(path));
+            if let Some(path) = found {
+                wanted.entry(file_name(&path).to_string()).or_insert(path);
             }
         }
         let mut hashes: BTreeMap<String, String> = BTreeMap::new();

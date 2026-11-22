@@ -249,6 +249,11 @@ belongs to, newest first.
 
 #### Fixed
 
+- **Importing a Markdown folder or Obsidian vault also attaches a file next to the note that the
+  note names by a path**: one relative to the note that comes back to its folder
+  (`![p](../notes/p.png)`), or one from the top of the vault, as Obsidian writes with "Absolute
+  path in vault" (`![[notes/p.png]]`). Files in another folder, such as a shared `attachments/`
+  folder, are still not attached, and the migration report says they are elsewhere.
 - **Importing a Markdown folder or Obsidian vault attaches the files a note embeds with standard
   Markdown**, `![alt](pic.png)`, `![alt](<my pic.png>)` or `my%20pic.png`, or links to with
   `[text](file.pdf)`, when they are next to the note, as it already did for `![[pic.png]]`. Web
