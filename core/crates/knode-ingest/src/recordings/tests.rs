@@ -414,5 +414,19 @@ fn other_nodes_are_not_recordings() {
     let mut space = space(dir.path());
     let note = space.create_node(NewNode::note("A", ""), &me()).unwrap();
     assert!(matches!(get(&space, &note.id), Err(Error::Invalid(_))));
+}
+
+#[test]
+fn minutes_are_on_unless_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    assert!(summaries_enabled(&space).unwrap(), "on by default");
+    space
+        .set_setting(SUMMARIES_SETTING, Some("off"), &me())
+        .unwrap();
     assert!(!summaries_enabled(&space).unwrap());
+    space
+        .set_setting(SUMMARIES_SETTING, Some("on"), &me())
+        .unwrap();
+    assert!(summaries_enabled(&space).unwrap());
 }

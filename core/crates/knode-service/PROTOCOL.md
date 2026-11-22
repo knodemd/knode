@@ -296,7 +296,7 @@ unavailable. Times are Unix milliseconds.
 | `recordings.retry` | `space`, `id`, `stage`, `by` | The recording, with the stage back to `pending` and `error` removed. A summary fails with `invalid` until the transcript is `done`. People only. |
 
 The writes announce the recording and its transcript as changes. Whether the app summarises
-recordings is the space setting `recordings.summaries` (`on` or `off`, the default), read and
+recordings is the space setting `recordings.summaries` (`on`, the default, or `off`), read and
 changed with `settings.get` and `settings.set`; the app passes it as `summaries` when it stores a
 recording. Agents with `read` may call `recordings.get` and `recordings.pending`; the other
 methods are for people only.

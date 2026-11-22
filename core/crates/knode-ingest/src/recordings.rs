@@ -62,13 +62,15 @@ pub mod keys {
     pub const TRACKS: &str = "recording.tracks";
 }
 
-/// The space setting that says whether recordings are summarised: `on` or `off` (the default).
+/// The space setting that says whether recordings are summarised: `on` (the default) or `off`.
+/// Minutes are written on the device and the transcript is always kept, so they are on unless
+/// the person turns them off.
 pub const SUMMARIES_SETTING: &str = setting_keys::RECORDINGS_SUMMARIES;
 
 /// Whether the space asks for recordings to be summarised: its `recordings.summaries` setting is
-/// `on`.
+/// not `off`.
 pub fn summaries_enabled(space: &Space) -> Result<bool> {
-    Ok(space.setting(SUMMARIES_SETTING)?.as_deref() == Some("on"))
+    Ok(space.setting(SUMMARIES_SETTING)?.as_deref() != Some("off"))
 }
 
 macro_rules! string_enum {
