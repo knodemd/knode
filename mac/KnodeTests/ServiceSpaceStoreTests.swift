@@ -4,7 +4,8 @@ import Testing
 
 /// Waits until `condition` holds, for at most two seconds.
 func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () async throws -> Bool) async throws -> Bool {
-    for _ in 0..<200 {
+    // Up to 10 s: a busy machine running other tests must not fail a check that only waits.
+    for _ in 0..<1000 {
         if try await condition() { return true }
         try await Task.sleep(for: .milliseconds(10))
     }

@@ -654,12 +654,8 @@ extension CoreSpaceStore: RecordingStore {
     }
 
     func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
-        _ = try self.core(space)
-        // TODO(recordings.failed): call `core.failedRecordings()` once the core on
-        // feat/recordings-core adds `KnodeSpace.failedRecordings()` to knode-ffi and the binding
-        // is regenerated. Until then a space held by the app reports no stored failures, and the
-        // processor keeps the ones it knows from this run.
-        throw SpaceStoreError.unsupported("this version of the core does not list failed recordings")
+        let core = try self.core(space)
+        return try await run { try core.failedRecordings() }.map(StoredRecording.init)
     }
 
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {

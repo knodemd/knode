@@ -180,6 +180,8 @@ final class RecordingTranscriber: Transcriber {
     }
 
     let state: Mutex<State>
+    /// Runs while a transcription is under way, after its first progress, before it ends.
+    let during = Mutex<(@Sendable () async -> Void)?>(nil)
 
     init(error: TranscriptionError? = nil) {
         state = Mutex(State(error: error))
@@ -193,6 +195,7 @@ final class RecordingTranscriber: Transcriber {
         }
         if let error { throw error }
         progress(0.5)
+        if let during = during.withLock({ $0 }) { await during() }
         return Transcript(locale: "es-ES", segments: tracks.enumerated().map { index, track in
             TranscriptSegment(startMs: index * 1000, endMs: index * 1000 + 900, speaker: track.speaker, text: "Hola \(index)")
         })
@@ -375,11 +378,14 @@ struct RecordingHandOffTests {
         let processor = RecordingsProcessor(store: store, transcriber: transcriber, summarizer: RecordingSummarizer(), spaceURLs: { [url] })
         let sink = StoreRecordingSink(store: store, locale: Locale(identifier: "en_GB"))
         let controller = RecordingController(recorder: recorder, sink: sink, processor: processor, consent: consent, unsaved: store.unsaved)
-        var phases: [RecordingController.Phase] = []
-        let watcher = Task { @MainActor in
-            while !Task.isCancelled {
-                if phases.last != controller.phase { phases.append(controller.phase) }
-                try? await Task.sleep(for: .milliseconds(1))
+        // While the transcriber works, the controller shows it: waited for, so it is never missed.
+        let sawTranscribing = Mutex(false)
+        transcriber.during.withLock {
+            $0 = { @Sendable in
+                let saw = (try? await eventually { @MainActor in
+                    if case .transcribing = controller.phase { true } else { false }
+                }) ?? false
+                sawTranscribing.withLock { $0 = saw }
             }
         }
 
@@ -387,7 +393,6 @@ struct RecordingHandOffTests {
         await controller.start(target: RecordingTarget(spaceURL: url, spaceName: "Work", projectID: "project-1", projectTitle: "Launch"))
         controller.stop()
         await controller.waitUntilProcessed()
-        watcher.cancel()
 
         let draft = try #require(await store.created.first)
         #expect(draft.kind == .meeting)
@@ -404,7 +409,7 @@ struct RecordingHandOffTests {
         #expect(await store.recordings[id]?.summary == .done)
         #expect(transcriber.state.withLock { $0.calls } == [[.microphone, .system]])
         #expect(controller.phase == .done(note: nil))
-        #expect(phases.contains { if case .transcribing = $0 { true } else { false } })
+        #expect(sawTranscribing.withLock { $0 })
     }
 
     @Test func noMinutesWhenTheSpaceTurnedThemOff() async throws {
@@ -686,9 +691,11 @@ final class CoreRecordingsTests {
         let unavailable = try await store.failRecording(created.id, stage: .summary, failure: .unavailable, error: "Off", by: .minutes, in: space.id)
         #expect(unavailable.summary == .unavailable)
         #expect(unavailable.error == "Off")
+        #expect(try await store.failedRecordings(in: space.id).map(\.id) == [created.id])
         #expect(try await store.retryRecording(created.id, stage: .summary, in: space.id).summary == .pending)
         let summary = MeetingSummary(model: "Apple Foundation Models", overview: "Short.", keyPoints: [], decisions: ["Ship"], actionItems: [ActionItem(task: "Call", owner: nil)], openQuestions: [])
         #expect(try await store.setSummary(summary, by: .minutes, of: created.id, in: space.id).summary == .done)
         #expect(try await store.pendingRecordings(in: space.id).isEmpty)
+        #expect(try await store.failedRecordings(in: space.id).isEmpty)
     }
 }
