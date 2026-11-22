@@ -5,7 +5,7 @@
 use std::fs;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use knode_format::{Provenance, Space, Timestamp};
 use knode_ingest::voice_memos::{ID, VoiceMemosConnector};
@@ -37,6 +37,13 @@ fn the_service_brings_in_a_voice_memo_as_a_pending_recording() {
     )
     .unwrap();
     fs::write(library.join("MEMO-1.m4a"), b"fake audio").unwrap();
+    // Recorded a minute ago: settled, so it comes in on the run after the one that first sees it.
+    fs::File::options()
+        .write(true)
+        .open(library.join("MEMO-1.m4a"))
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
     let connector = VoiceMemosConnector::new(&library);
 
     drop(Space::create(dir.path().join("Personal.knode"), "Personal").unwrap());
@@ -51,6 +58,7 @@ fn the_service_brings_in_a_voice_memo_as_a_pending_recording() {
     let options = SourcesOptions {
         settings_poll: Duration::from_millis(50),
         quiet: Duration::from_millis(100),
+        watch_every: Duration::from_millis(200),
         ..SourcesOptions::with_connectors(vec![Arc::new(connector)])
     };
     let service = start(Config::new(&home).with_sources(options)).unwrap();

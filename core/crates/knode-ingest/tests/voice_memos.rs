@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 
 use knode_format::{Space, Timestamp};
 use knode_ingest::recordings::{self, RecordingKind, SummaryState, Track, TranscriptState};
@@ -23,6 +24,9 @@ const FULL: &str = "CREATE TABLE ZCLOUDRECORDING (Z_PK INTEGER PRIMARY KEY, Z_EN
      Z_OPT INTEGER, ZFLAGS INTEGER, ZFOLDER INTEGER, ZDATE TIMESTAMP, ZDURATION FLOAT, \
      ZEVICTIONDATE TIMESTAMP, ZLOCALDURATION FLOAT, ZCUSTOMLABEL VARCHAR, \
      ZENCRYPTEDTITLE VARCHAR, ZPATH VARCHAR, ZUNIQUEID VARCHAR);
+     CREATE TABLE Z_PRIMARYKEY (Z_ENT INTEGER PRIMARY KEY, Z_NAME VARCHAR, Z_SUPER INTEGER, \
+     Z_MAX INTEGER);
+     INSERT INTO Z_PRIMARYKEY VALUES (1, 'CloudRecording', 0, 0), (2, 'Folder', 0, 0);
      CREATE TABLE ZFOLDER (Z_PK INTEGER PRIMARY KEY, Z_ENT INTEGER, Z_OPT INTEGER, \
      ZRANK INTEGER, ZENCRYPTEDNAME VARCHAR, ZUUID VARCHAR);";
 
@@ -82,8 +86,9 @@ impl Library {
         if self.full {
             self.db
                 .execute(
-                    "INSERT INTO ZCLOUDRECORDING (ZDATE, ZDURATION, ZENCRYPTEDTITLE, ZPATH, \
-                     ZUNIQUEID, ZFOLDER) VALUES (?1, 12.5, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO ZCLOUDRECORDING (Z_PK, ZDATE, ZDURATION, ZENCRYPTEDTITLE, \
+                     ZPATH, ZUNIQUEID, ZFOLDER) VALUES ((SELECT Z_MAX + 1 FROM Z_PRIMARYKEY \
+                     WHERE Z_NAME = 'CloudRecording'), ?1, 12.5, ?2, ?3, ?4, ?5)",
                     rusqlite::params![date, title, path, uid, folder],
                 )
                 .unwrap();
@@ -96,11 +101,53 @@ impl Library {
                 )
                 .unwrap();
         }
-        self.db.last_insert_rowid()
+        let pk = self.db.last_insert_rowid();
+        if self.full {
+            // Core Data gives each memo the number after the highest it gave, and counts it.
+            self.db
+                .execute(
+                    "UPDATE Z_PRIMARYKEY SET Z_MAX = MAX(Z_MAX, ?1) WHERE Z_NAME = 'CloudRecording'",
+                    [pk],
+                )
+                .unwrap();
+        }
+        pk
     }
 
+    fn file(&self, uid: &str) -> PathBuf {
+        self.root.join(format!("{uid}.m4a"))
+    }
+
+    /// Writes a memo's file, last changed a minute ago: done being written.
     fn write(&self, uid: &str) {
-        fs::write(self.root.join(format!("{uid}.m4a")), format!("audio {uid}")).unwrap();
+        fs::write(self.file(uid), format!("audio {uid}")).unwrap();
+        self.touch(uid, now() - 60);
+    }
+
+    /// Sets when a memo's file last changed (Unix seconds).
+    fn touch(&self, uid: &str, at: i64) {
+        let file = fs::File::options()
+            .write(true)
+            .open(self.file(uid))
+            .unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(at as u64))
+            .unwrap();
+    }
+
+    /// Removes a memo from the database, as emptying Recently Deleted does.
+    fn purge(&self, pk: i64) {
+        self.db
+            .execute("DELETE FROM ZCLOUDRECORDING WHERE Z_PK = ?1", [pk])
+            .unwrap();
+    }
+
+    fn restore(&self, pk: i64) {
+        self.db
+            .execute(
+                "UPDATE ZCLOUDRECORDING SET ZEVICTIONDATE = NULL WHERE Z_PK = ?1",
+                [pk],
+            )
+            .unwrap();
     }
 
     fn add(&self, uid: &str, at: i64, title: Option<&str>) -> i64 {
@@ -131,8 +178,24 @@ fn space(dir: &Path) -> Space {
     Space::create(dir.join("Personal.knode"), "Personal").unwrap()
 }
 
-/// What the service does in one run: check, then fetch and write until there is no more.
+/// Two runs of the service, as a memo's file is brought in only once it is the same in two
+/// runs. The fetches are those of the second run.
 fn run(
+    connector: &VoiceMemosConnector,
+    space: &mut Space,
+    cursor: &mut Option<Cursor>,
+    history: History,
+    excluded: &[Container],
+    max_items: usize,
+) -> Result<(Written, usize), SourceError> {
+    let (mut written, _) = run_once(connector, space, cursor, history, excluded, max_items)?;
+    let (second, fetches) = run_once(connector, space, cursor, history, excluded, max_items)?;
+    written += second;
+    Ok((written, fetches))
+}
+
+/// What the service does in one run: check, then fetch and write until there is no more.
+fn run_once(
     connector: &VoiceMemosConnector,
     space: &mut Space,
     cursor: &mut Option<Cursor>,
@@ -602,4 +665,121 @@ fn a_rebuilt_database_starts_the_cursor_again_without_duplicates() {
     )
     .unwrap();
     assert_eq!(titles(&space), ["One"]);
+}
+
+#[test]
+fn purging_the_newest_memo_does_not_bring_back_memos_deleted_in_the_space() {
+    let lib = Library::new();
+    lib.add("A", now(), Some("One"));
+    let newest = lib.add("B", now(), Some("Two"));
+    let connector = lib.connector();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let mut cursor = None;
+    let everything = History::Everything;
+    run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(titles(&space), ["One", "Two"]);
+    // The person deletes "One" in the space, and empties Recently Deleted of "Two".
+    let one = recordings::find_by_key(&space, "voice-memos:A")
+        .unwrap()
+        .unwrap();
+    space
+        .delete_node(&one, &knode_format::Provenance::person("Ada"))
+        .unwrap();
+    lib.purge(newest);
+    let (written, _) = run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(written.created, 0);
+    assert_eq!(titles(&space), ["Two"]);
+    // A memo recorded after that still comes in.
+    lib.add("C", now(), Some("Three"));
+    run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(titles(&space), ["Three", "Two"]);
+}
+
+#[test]
+fn a_memo_restored_from_recently_deleted_comes_in() {
+    let lib = Library::new();
+    let gone = lib.add("GONE", now(), Some("Restored"));
+    lib.evict(gone);
+    let purged = lib.add("PURGED", now(), Some("Purged"));
+    lib.evict(purged);
+    lib.add("KEPT", now(), Some("Kept"));
+    let connector = lib.connector();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let mut cursor = None;
+    let everything = History::Everything;
+    run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(titles(&space), ["Kept"]);
+
+    lib.restore(gone);
+    lib.purge(purged);
+    let (written, _) = run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(written.created, 1);
+    assert_eq!(titles(&space), ["Kept", "Restored"]);
+    // Nothing is looked at again: the restored memo is in, the purged one is gone.
+    let state = cursor.unwrap();
+    assert!(!state.as_str().contains("evicted"), "{}", state.as_str());
+    assert!(!connector.waiting(&state));
+}
+
+#[test]
+fn a_file_still_being_written_is_brought_in_once_it_settles() {
+    let lib = Library::new();
+    lib.list("REC", now(), Some("Still recording"), None);
+    fs::write(lib.file("REC"), "partial").unwrap();
+    let connector = lib.connector();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let mut cursor = None;
+    let everything = History::Everything;
+    // Just written: not brought in, however many runs see it.
+    run(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert!(titles(&space).is_empty());
+    assert!(connector.waiting(cursor.as_ref().unwrap()));
+
+    // Quiet for a while, but larger than in the run before: still waited for.
+    fs::write(lib.file("REC"), "partial and the rest").unwrap();
+    lib.touch("REC", now() - 60);
+    run_once(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert!(titles(&space).is_empty());
+
+    // The same in two runs: brought in, whole.
+    let (written, _) = run_once(&connector, &mut space, &mut cursor, everything, &[], 10).unwrap();
+    assert_eq!(written.created, 1);
+    let id = recordings::find_by_key(&space, "voice-memos:REC")
+        .unwrap()
+        .unwrap();
+    let rec = recordings::get(&space, &id).unwrap();
+    assert_eq!(rec.tracks.len(), 1);
+    assert!(!connector.waiting(cursor.as_ref().unwrap()));
+    // Nothing is reported as late: it was never in iCloud.
+    assert_eq!(connector.notice(cursor.as_ref().unwrap()), None);
+}
+
+#[test]
+fn cursors_of_the_earlier_format_still_read() {
+    let lib = Library::new();
+    lib.list("CLOUD", now(), Some("From the iPhone"), None);
+    lib.write("CLOUD");
+    let connector = lib.connector();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let mut cursor = Some(Cursor::new(format!(
+        r#"{{"pk":1,"waiting":[[1,{}]],"too_large":[7]}}"#,
+        Timestamp::now().0
+    )));
+    assert!(connector.waiting(cursor.as_ref().unwrap()));
+    let (written, _) = run(
+        &connector,
+        &mut space,
+        &mut cursor,
+        History::Everything,
+        &[],
+        10,
+    )
+    .unwrap();
+    assert_eq!(written.created, 1);
+    assert_eq!(titles(&space), ["From the iPhone"]);
+    assert!(cursor.unwrap().as_str().contains("\"too_large\":[7]"));
 }

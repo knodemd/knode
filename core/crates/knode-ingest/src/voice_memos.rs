@@ -18,13 +18,24 @@
 //!   `voice-memos:<unique id>`, so a memo read twice (a run cut short, a lost cursor, a rebuilt
 //!   database, two Macs writing one space) is stored once. The app transcribes it, and
 //!   summarises it when the space asks for summaries, on the device.
-//! - Memos in Recently Deleted (with an eviction date) are left out.
-//! - The cursor is the number (`Z_PK`) of the last memo read, with the memos whose audio file is
-//!   not on this Mac yet (synced from iCloud, still downloading). Those are read again on every
-//!   run until their file is there; none is dropped, and those still waiting after a day are
-//!   counted in the connector's [notice](Connector::notice). A memo whose file is larger than a
-//!   space attaches is left out and counted in the notice too. When the numbers start again (a
-//!   rebuilt database), so does the cursor.
+//! - Memos in Recently Deleted (with an eviction date) are left out, and looked at again on
+//!   every run: one restored comes in then, one removed for good is forgotten.
+//! - A memo's audio file is brought in only once it is settled: the same size and modification
+//!   time in two runs, and not changed for [`SETTLED_AFTER_MS`]. A memo still being recorded, or
+//!   a file iCloud or Voice Memos is still writing, is waited for instead of being attached cut
+//!   short; so a memo comes in one run after it is first seen.
+//! - The cursor is the number (`Z_PK`) of the last memo read, with the memos waited for (their
+//!   audio file is not on this Mac yet, synced from iCloud and still downloading, or not settled)
+//!   and those in Recently Deleted. Those are read again on every run; none is dropped, and those
+//!   whose file is still not on this Mac after a day are counted in the connector's
+//!   [notice](Connector::notice). A memo whose file is larger than a space attaches is left out
+//!   and counted in the notice too.
+//! - The cursor starts again only for a rebuilt database: one whose Core Data count of the
+//!   memo numbers it gave (`Z_PRIMARYKEY.Z_MAX`, which never goes down) is below the cursor.
+//!   Removing the newest memo does not start it again. Without that table, a cursor above the
+//!   highest number left starts again. Memos read again then are found by their key and stored
+//!   once, but a memo whose recording was deleted in the space would come back, which is why
+//!   the cursor starts again only then.
 //! - The containers are the folders of Voice Memos, when the database has them: a memo in an
 //!   excluded folder is never read. Memos in no folder are always read.
 //! - With [`History::FromToday`], nothing recorded before the day the connector was connected
@@ -91,6 +102,12 @@ const RUN_AT_LEAST_EVERY: Duration = Duration::from_secs(60);
 
 /// After how long a memo whose file is still not on this Mac is reported in the notice.
 const LATE_AFTER_MS: i64 = 24 * 3600 * 1000;
+
+/// How long a memo's audio file must not have changed before it is brought in.
+pub const SETTLED_AFTER_MS: i64 = 10_000;
+
+/// The name Core Data gives the memo entity in `Z_PRIMARYKEY`.
+const MEMO_ENTITY: &str = "CloudRecording";
 
 /// The Voice Memos library of the person running Knode.
 pub fn default_library_dir() -> Option<PathBuf> {
@@ -165,11 +182,73 @@ impl VoiceMemosConnector {
     }
 
     /// The memo's audio file in the library, when it is there with something in it.
-    fn audio(&self, path: Option<&str>) -> Option<PathBuf> {
+    fn audio(&self, path: Option<&str>) -> Option<(PathBuf, fs::Metadata)> {
         let file = audio_path(&self.dir, path?)?;
         let meta = fs::metadata(&file).ok()?;
-        (meta.is_file() && meta.len() > 0).then_some(file)
+        (meta.is_file() && meta.len() > 0).then_some((file, meta))
     }
+
+    /// Sorts out one memo read from the database: brought in, waited for, in Recently Deleted,
+    /// too large, or left out. `seen` is how it was waited for until now.
+    fn take(
+        &self,
+        request: &FetchRequest<'_>,
+        row: MemoRow,
+        seen: Option<Waiting>,
+        now: i64,
+        found: &mut Found,
+        too_large: &mut Vec<i64>,
+    ) {
+        if row.unique_id.trim().is_empty() {
+            return;
+        }
+        if row.evicted {
+            if !found.evicted.contains(&row.pk) {
+                found.evicted.push(row.pk);
+            }
+            return;
+        }
+        if row
+            .folder
+            .as_deref()
+            .is_some_and(|f| request.is_excluded(f))
+        {
+            return;
+        }
+        let first_seen = seen.map_or(now, |w| w.1);
+        let Some((file, meta)) = self.audio(row.path.as_deref()) else {
+            found.waiting.push(Waiting(row.pk, first_seen, 0, 0));
+            return;
+        };
+        if meta.len() > MAX_ATTACHMENT_SIZE {
+            if !too_large.contains(&row.pk) {
+                too_large.push(row.pk);
+            }
+            return;
+        }
+        let size = meta.len();
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let same = seen.is_some_and(|w| w.2 == size && w.3 == modified);
+        if same && modified <= now - SETTLED_AFTER_MS {
+            found.memos.push(Memo::new(&row, file));
+        } else {
+            found
+                .waiting
+                .push(Waiting(row.pk, first_seen, size, modified));
+        }
+    }
+}
+
+/// What one fetch found.
+#[derive(Default)]
+struct Found {
+    memos: Vec<Memo>,
+    waiting: Vec<Waiting>,
+    evicted: Vec<i64>,
 }
 
 fn no_library(dir: &Path) -> SourceError {
@@ -244,7 +323,11 @@ impl Connector for VoiceMemosConnector {
     fn notice(&self, cursor: &Cursor) -> Option<String> {
         let state = State::read(Some(cursor));
         let late_since = Timestamp::now().0 - LATE_AFTER_MS;
-        let late = state.waiting.iter().filter(|w| w.1 < late_since).count();
+        let late = state
+            .waiting
+            .iter()
+            .filter(|w| w.2 == 0 && w.1 < late_since)
+            .count();
         let mut notes = Vec::new();
         match late {
             0 => {}
@@ -285,58 +368,40 @@ impl Connector for VoiceMemosConnector {
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
         let snapshot = self.snapshot()?;
         let newest = snapshot.last_pk().map_err(failed)?;
+        let given = snapshot.given_pk().map_err(failed)?.unwrap_or(0);
         let mut state = State::read(request.cursor);
         // A rebuilt database: its numbers start again. What was read before is found again by
         // its key and stored once.
-        if state.pk > newest {
+        if state.pk > newest.max(given) {
             state = State::default();
         }
-        let now = Timestamp::now();
+        let now = Timestamp::now().0;
         let max = request.max_items.max(1);
-        let mut memos: Vec<Memo> = Vec::new();
-        let mut waiting: Vec<Waiting> = Vec::new();
+        let mut found = Found::default();
         let mut more = false;
 
-        let take = |row: MemoRow,
-                    first_seen: i64,
-                    memos: &mut Vec<Memo>,
-                    waiting: &mut Vec<Waiting>,
-                    too_large: &mut Vec<i64>| {
-            if row.evicted || row.unique_id.trim().is_empty() {
-                return;
-            }
-            if row
-                .folder
-                .as_deref()
-                .is_some_and(|f| request.is_excluded(f))
-            {
-                return;
-            }
-            match self.audio(row.path.as_deref()) {
-                Some(file) => {
-                    let large = fs::metadata(&file).is_ok_and(|m| m.len() > MAX_ATTACHMENT_SIZE);
-                    if large {
-                        if !too_large.contains(&row.pk) {
-                            too_large.push(row.pk);
-                        }
-                    } else {
-                        memos.push(Memo::new(&row, file));
-                    }
-                }
-                None => waiting.push(Waiting(row.pk, first_seen)),
-            }
-        };
-
-        // The memos waited for, first. One that left the database, went to Recently Deleted
-        // or is in a folder now excluded is not waited for any more.
+        // The memos waited for, first. One that left the database or is in a folder now
+        // excluded is not waited for any more.
         for w in std::mem::take(&mut state.waiting) {
-            if memos.len() >= max {
-                waiting.push(w);
+            if found.memos.len() >= max {
+                found.waiting.push(w);
                 more = true;
                 continue;
             }
             if let Some(row) = snapshot.memo(w.0).map_err(failed)? {
-                take(row, w.1, &mut memos, &mut waiting, &mut state.too_large);
+                self.take(request, row, Some(w), now, &mut found, &mut state.too_large);
+            }
+        }
+
+        // Then those in Recently Deleted, which come in once restored.
+        for pk in std::mem::take(&mut state.evicted) {
+            if found.memos.len() >= max {
+                found.evicted.push(pk);
+                more = true;
+                continue;
+            }
+            if let Some(row) = snapshot.memo(pk).map_err(failed)? {
+                self.take(request, row, None, now, &mut found, &mut state.too_large);
             }
         }
 
@@ -344,7 +409,7 @@ impl Connector for VoiceMemosConnector {
         let mut last = state.pk;
         if !more {
             for row in snapshot.memos_after(state.pk).map_err(failed)? {
-                if memos.len() >= max {
+                if found.memos.len() >= max {
                     more = true;
                     break;
                 }
@@ -352,19 +417,20 @@ impl Connector for VoiceMemosConnector {
                 if !request.wants(Timestamp(row.started_at)) {
                     continue;
                 }
-                take(row, now.0, &mut memos, &mut waiting, &mut state.too_large);
+                self.take(request, row, None, now, &mut found, &mut state.too_large);
             }
             if !more {
                 last = last.max(newest);
             }
         }
         state.pk = last;
-        state.waiting = waiting;
+        state.waiting = found.waiting;
+        state.evicted = found.evicted;
         let cursor = state.write();
-        if memos.is_empty() {
+        if found.memos.is_empty() {
             return Ok(Fetched::nothing(cursor).with_more(more));
         }
-        Ok(Fetched::batch(VoiceMemosBatch { memos }, cursor).with_more(more))
+        Ok(Fetched::batch(VoiceMemosBatch { memos: found.memos }, cursor).with_more(more))
     }
 }
 
@@ -374,17 +440,21 @@ fn sqlite_wal(db: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// A memo waited for: its number (`Z_PK`) and when it was first seen without its file
-/// (milliseconds since 1970).
+/// A memo waited for: its number (`Z_PK`), when it was first seen (milliseconds since 1970),
+/// and the size and modification time (milliseconds since 1970) its file had then, both 0 while
+/// it has none. Cursors written before the last two were kept have only the first two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct Waiting(i64, i64);
+struct Waiting(i64, i64, #[serde(default)] u64, #[serde(default)] i64);
 
-/// The cursor: the last memo read, the memos waited for, and those left out as too large.
+/// The cursor: the last memo read, the memos waited for, those in Recently Deleted, and those
+/// left out as too large.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct State {
     pk: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     waiting: Vec<Waiting>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evicted: Vec<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     too_large: Vec<i64>,
 }
@@ -500,6 +570,31 @@ impl Snapshot {
             [],
             |r| r.get(0),
         )
+    }
+
+    /// The highest memo number Core Data has given in this database (`Z_PRIMARYKEY.Z_MAX`),
+    /// which never goes down when memos are removed; `None` without that table.
+    fn given_pk(&self) -> rusqlite::Result<Option<i64>> {
+        let keys = columns(self.conn(), "Z_PRIMARYKEY")?;
+        if !has(&keys, "Z_MAX") || !has(&keys, "Z_NAME") {
+            return Ok(None);
+        }
+        // The entity by name, or else by the entity number the memos carry.
+        let by_ent = if has(&keys, "Z_ENT") && has(&columns(self.conn(), MEMOS)?, "Z_ENT") {
+            format!(" OR Z_ENT IN (SELECT DISTINCT Z_ENT FROM {MEMOS})")
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT Z_MAX FROM Z_PRIMARYKEY WHERE Z_NAME = ?1{by_ent} \
+             ORDER BY Z_NAME = ?1 DESC LIMIT 1"
+        );
+        let mut stmt = self.conn().prepare(&sql)?;
+        let mut rows = stmt.query([MEMO_ENTITY])?;
+        match rows.next()? {
+            Some(row) => row.get::<_, Option<i64>>(0),
+            None => Ok(None),
+        }
     }
 
     fn folders(&self) -> rusqlite::Result<Vec<Container>> {
@@ -664,10 +759,27 @@ mod tests {
     fn cursors_keep_the_memos_waited_for() {
         let state = State {
             pk: 7,
-            waiting: vec![Waiting(5, 1000)],
+            waiting: vec![Waiting(5, 1000, 12, 900), Waiting(6, 1000, 0, 0)],
+            evicted: vec![4],
             too_large: vec![3],
         };
         assert_eq!(State::read(Some(&state.write())), state);
+        assert_eq!(
+            state.write().as_str(),
+            r#"{"pk":7,"waiting":[[5,1000,12,900],[6,1000,0,0]],"evicted":[4],"too_large":[3]}"#
+        );
+        // The format before the evicted memos and the file of those waited for were kept.
+        assert_eq!(
+            State::read(Some(&Cursor::new(
+                r#"{"pk":7,"waiting":[[5,1000]],"too_large":[3]}"#
+            ))),
+            State {
+                pk: 7,
+                waiting: vec![Waiting(5, 1000, 0, 0)],
+                evicted: vec![],
+                too_large: vec![3],
+            }
+        );
         assert_eq!(State::read(Some(&Cursor::new("junk"))), State::default());
         assert_eq!(State::read(None), State::default());
         assert_eq!(State::default().write().as_str(), r#"{"pk":0}"#);
