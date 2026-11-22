@@ -49,6 +49,8 @@
 //!
 //! Meetings recorded on the device, voice memos and audio files added by hand are stored by
 //! [`recordings`], with their transcript and their summary.
+//! [`voice_memos::VoiceMemosConnector`] brings in the memos of Voice Memos on the Mac as
+//! recordings, with their audio attached, for the app to transcribe.
 
 mod aider;
 mod amp;
@@ -74,6 +76,7 @@ pub mod sources;
 /// The Slack connector: see [`slack::SlackConnector`].
 pub use chats::slack_live as slack;
 mod text;
+pub mod voice_memos;
 mod vscdb;
 mod watch;
 mod windsurf;
