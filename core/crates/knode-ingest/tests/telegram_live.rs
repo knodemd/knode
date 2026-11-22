@@ -40,6 +40,8 @@ struct State {
     gap: bool,
     files: HashMap<(i64, i64), Vec<u8>>,
     floods: VecDeque<Duration>,
+    /// A flood wait returned by the download of this message, once.
+    download_flood: Option<(i64, Duration)>,
     calls: Vec<String>,
     /// While set, `history` waits until a message comes through it.
     hold: Option<std::sync::mpsc::Receiver<()>>,
@@ -236,7 +238,11 @@ impl TelegramApi for MockApi {
         max_bytes: u64,
     ) -> Result<Option<Vec<u8>>, ApiError> {
         self.call("download")?;
-        let s = self.state();
+        let mut s = self.state();
+        if s.download_flood.is_some_and(|(id, _)| id == message) {
+            let (_, wait) = s.download_flood.take().unwrap();
+            return Err(ApiError::FloodWait(wait));
+        }
         let bytes = s
             .files
             .get(&(chat.id, message))
@@ -728,6 +734,46 @@ fn short_flood_waits_are_slept_and_long_ones_stop_asking() {
     // Until the wait is over Telegram is not asked anything.
     assert!(run.run(&c, &secrets).is_err());
     assert_eq!(api.state().calls.len(), after);
+}
+
+#[test]
+fn a_flood_wait_during_a_download_keeps_what_came_before() {
+    let api = MockApi::new();
+    api.chat(10, "Book Club", ChatKind::Group);
+    {
+        let mut s = api.state();
+        let mut messages = Vec::new();
+        for id in 1..=3 {
+            let mut m = message(10, id, T0 + 60 * id, "Ada", "a photo");
+            m.media = Some(MessageMedia::Photo { size: Some(4) });
+            messages.push(m);
+            s.files.insert((10, id), b"jpeg".to_vec());
+        }
+        messages.push(message(10, 4, T0 + 240, "Grace", "nice"));
+        s.history.insert(10, messages);
+        s.dialogs[0].top_message = 4;
+        s.dialogs[0].top_date = T0 + 240;
+        s.download_flood = Some((2, Duration::from_secs(60)));
+    }
+    let secrets = signed_in_secrets();
+    let (c, _) = connector(&api);
+    let mut run = Run::new(History::Everything);
+
+    // The batch stops before message 2: message 1 is written, and the wait ends the run.
+    let error = run.run(&c, &secrets).unwrap_err();
+    assert!(error.to_string().contains("asked Knode to wait"), "{error}");
+    let node = run.node(10).expect("what came before the wait is written");
+    assert_eq!(run.prop(&node, chat_keys::MESSAGES).as_deref(), Some("1"));
+    assert_eq!(run.space.attachments(&node.id).unwrap().len(), 1);
+    assert_eq!(api.calls("download"), 2);
+
+    // Once the wait is over, the rest comes in with its files, nothing downloaded twice.
+    let (c, _) = connector(&api);
+    assert_eq!(run.run(&c, &secrets).unwrap(), 3);
+    let node = run.node(10).unwrap();
+    assert_eq!(run.prop(&node, chat_keys::MESSAGES).as_deref(), Some("4"));
+    assert_eq!(run.space.attachments(&node.id).unwrap().len(), 3);
+    assert_eq!(api.calls("download"), 4);
 }
 
 #[test]
