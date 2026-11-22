@@ -46,6 +46,9 @@
 //! of the Messages database of the Mac, into the same `chat` nodes, and
 //! [`slack::SlackConnector`] brings in the Slack conversations the person is in, through the
 //! Slack Web API, into the same nodes as a Slack export.
+//!
+//! Meetings recorded on the device, voice memos and audio files added by hand are stored by
+//! [`recordings`], with their transcript and their summary.
 
 mod aider;
 mod amp;
@@ -63,6 +66,7 @@ mod gemini;
 mod model;
 mod opencode;
 mod reader;
+pub mod recordings;
 mod redact;
 mod render;
 pub mod sources;

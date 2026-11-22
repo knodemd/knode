@@ -32,6 +32,7 @@ use crate::{Error, Result, paths};
 
 mod import;
 mod maps;
+mod recordings;
 mod sources;
 
 /// How long [`connect_or_spawn`] waits for a new service to listen.
@@ -255,9 +256,9 @@ impl Client {
         self.request(methods::SETTINGS_GET, params)
     }
 
-    /// Changes a setting of a space (`space.icon` or `capture.enabled`), or puts it back to its
-    /// default with `None`. Returns every setting as it is now. Only a person can change
-    /// settings.
+    /// Changes a setting of a space (`space.icon`, `capture.enabled` or `recordings.summaries`),
+    /// or puts it back to its default with `None`. Returns every setting as it is now. Only a
+    /// person can change settings.
     pub fn set_setting(
         &self,
         space: impl AsRef<Path>,

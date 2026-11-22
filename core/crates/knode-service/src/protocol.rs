@@ -189,6 +189,25 @@ pub mod methods {
     /// export, Markdown, a session, reading or another app's notes. People only.
     pub const IMPORT_RUN: &str = "import.run";
 
+    // Recordings: meetings, voice memos and audio files, with their transcript and summary.
+
+    /// What every `recordings.*` method starts with.
+    pub const RECORDINGS_PREFIX: &str = "recordings.";
+    /// Stores a recording, copying its audio files into the space. People only.
+    pub const RECORDINGS_CREATE: &str = "recordings.create";
+    /// The recordings whose transcript or summary is still to be made.
+    pub const RECORDINGS_PENDING: &str = "recordings.pending";
+    /// A recording.
+    pub const RECORDINGS_GET: &str = "recordings.get";
+    /// Writes the transcript of a recording. People only.
+    pub const RECORDINGS_TRANSCRIPT: &str = "recordings.transcript";
+    /// Writes the summary of a recording. People only.
+    pub const RECORDINGS_SUMMARY: &str = "recordings.summary";
+    /// Marks the transcript or the summary of a recording as failed or unavailable. People only.
+    pub const RECORDINGS_FAIL: &str = "recordings.fail";
+    /// Puts the transcript or the summary of a recording back to pending. People only.
+    pub const RECORDINGS_RETRY: &str = "recordings.retry";
+
     // Sources: importers and connectors, people only.
 
     /// What every `sources.*` method starts with.

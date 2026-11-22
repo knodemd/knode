@@ -24,6 +24,7 @@ bindgen = ["uniffi/cli"]
 [dependencies]
 knode-config = { path = "../knode-config", version = "=0.0.0" }
 knode-format = { path = "../knode-format", version = "=0.0.0" }
+knode-ingest = { path = "../knode-ingest", version = "=0.0.0" }
 # Only the rules of spaces: search by meaning stays in Knode Service.
 knode-service = { path = "../knode-service", version = "=0.0.0", default-features = false }
 serde_json = "=1.0.154"
