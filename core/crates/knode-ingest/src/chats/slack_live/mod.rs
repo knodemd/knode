@@ -157,16 +157,29 @@ impl SlackConfig {
     /// The client id and limits of this build ([`CLIENT_ID_VARIABLE`], [`LIMITS_VARIABLE`]),
     /// overridden by the environment.
     pub fn from_env() -> Self {
-        let read = |name: &str, built: Option<&'static str>| {
-            std::env::var(name)
-                .ok()
-                .or(built.map(str::to_string))
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
+        let client_id = std::env::var(CLIENT_ID_VARIABLE).ok();
+        let limits = std::env::var(LIMITS_VARIABLE).ok();
+        SlackConfig::resolve(
+            (client_id.as_deref(), option_env!("KNODE_SLACK_CLIENT_ID")),
+            (limits.as_deref(), option_env!("KNODE_SLACK_LIMITS")),
+        )
+    }
+
+    /// The config from the client id and the limits, each as given at run time and as built.
+    /// A value at run time wins over the built one; a blank value counts as none.
+    pub fn resolve(
+        client_id: (Option<&str>, Option<&str>),
+        limits: (Option<&str>, Option<&str>),
+    ) -> Self {
+        fn value(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let pick = |(runtime, built): (Option<&str>, Option<&str>)| {
+            value(runtime).or_else(|| value(built)).map(str::to_string)
         };
         SlackConfig {
-            client_id: read(CLIENT_ID_VARIABLE, option_env!("KNODE_SLACK_CLIENT_ID")),
-            limits: read(LIMITS_VARIABLE, option_env!("KNODE_SLACK_LIMITS"))
+            client_id: pick(client_id),
+            limits: pick(limits)
                 .map(|l| Limits::from_name(&l))
                 .unwrap_or_default(),
         }
@@ -1275,6 +1288,32 @@ fn chat_error(error: ChatImportError) -> SourceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_config_comes_from_run_time_then_build_time() {
+        let config = SlackConfig::resolve(
+            (Some(" run-id "), Some("built-id")),
+            (Some("marketplace"), None),
+        );
+        assert_eq!(config.client_id.as_deref(), Some("run-id"));
+        assert_eq!(config.limits, Limits::Marketplace);
+
+        let config = SlackConfig::resolve((None, Some("built-id")), (None, Some("marketplace")));
+        assert_eq!(config.client_id.as_deref(), Some("built-id"));
+        assert_eq!(config.limits, Limits::Marketplace);
+
+        let config = SlackConfig::resolve((Some(""), Some("built-id")), (Some(" "), None));
+        assert_eq!(
+            config.client_id.as_deref(),
+            Some("built-id"),
+            "a blank value at run time falls back to the built one"
+        );
+        assert_eq!(config.limits, Limits::NotListed);
+
+        let config = SlackConfig::resolve((None, None), (Some("other"), Some("marketplace")));
+        assert_eq!(config.client_id, None);
+        assert_eq!(config.limits, Limits::NotListed, "the run-time value wins");
+    }
 
     #[test]
     fn limits_by_name() {

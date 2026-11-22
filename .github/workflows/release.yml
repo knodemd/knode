@@ -87,6 +87,23 @@ jobs:
         with:
           submodules: recursive
 
+      # The client ids of the services the connectors sign in to (Google, Telegram, Slack),
+      # embedded by cargo through option_env!. A stable release without them fails here; a
+      # pre-release gets a warning. Values come from the repository secrets of the same names
+      # (handbook, 07-releasing.md, "Service registrations").
+      - name: Check the service clients
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then mode=; else mode=--require; fi
+          scripts/check-service-clients.sh $mode
+
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal \
@@ -96,6 +113,13 @@ jobs:
 
       - name: Build
         working-directory: core
+        env:
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
         run: |
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             cargo build --release --locked -p knode-cli --target "$target"
@@ -111,6 +135,20 @@ jobs:
           lipo -create -output dist/bin/universal-apple-darwin/knode \
             dist/bin/aarch64-apple-darwin/knode dist/bin/x86_64-apple-darwin/knode
           lipo -info dist/bin/universal-apple-darwin/knode
+
+      - name: Check the binaries embed the service clients
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then mode=; else mode=--require; fi
+          scripts/check-service-clients.sh $mode \
+            --binary dist/bin/aarch64-apple-darwin/knode --binary dist/bin/x86_64-apple-darwin/knode
 
       - name: Import the Developer ID certificate
         env:
@@ -161,6 +199,12 @@ jobs:
       - name: Build the universal Mac app
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
         run: |
           # Notarisation needs the hardened runtime and a secure timestamp on every signature.
           # scripts/embed-knode-cli.sh signs the embedded knode command the same way.
@@ -186,6 +230,20 @@ jobs:
             echo "$details" | grep -Eq '^CodeDirectory .*flags=.*runtime' \
               || { echo "::error::$code is not signed with the hardened runtime"; exit 1; }
           done
+
+      - name: Check the app's knode embeds the service clients
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then mode=; else mode=--require; fi
+          scripts/check-service-clients.sh $mode \
+            --binary mac/build/ReleaseData/Build/Products/Release/Knode.app/Contents/Helpers/knode
 
       - name: Notarise and staple the app
         env:
@@ -310,9 +368,46 @@ jobs:
           # declares but musl does not by default; map them to the standard ones.
           echo "TARGET_CFLAGS=-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t" >> "$GITHUB_ENV"
 
+      # The client ids of the services the connectors sign in to (Google, Telegram, Slack),
+      # embedded by cargo through option_env!. A stable release without them fails here; a
+      # pre-release gets a warning. Values come from the repository secrets of the same names
+      # (handbook, 07-releasing.md, "Service registrations").
+      - name: Check the service clients
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then mode=; else mode=--require; fi
+          scripts/check-service-clients.sh $mode
+
       - name: Build
         working-directory: core
+        env:
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
         run: cargo build --release --locked -p knode-cli --target "$TARGET"
+
+      - name: Check the binary embeds the service clients
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          KNODE_GOOGLE_CLIENT_ID: ${{ secrets.KNODE_GOOGLE_CLIENT_ID }}
+          KNODE_GOOGLE_CLIENT_SECRET: ${{ secrets.KNODE_GOOGLE_CLIENT_SECRET }}
+          KNODE_TELEGRAM_API_ID: ${{ secrets.KNODE_TELEGRAM_API_ID }}
+          KNODE_TELEGRAM_API_HASH: ${{ secrets.KNODE_TELEGRAM_API_HASH }}
+          KNODE_SLACK_CLIENT_ID: ${{ secrets.KNODE_SLACK_CLIENT_ID }}
+          KNODE_SLACK_LIMITS: ${{ vars.KNODE_SLACK_LIMITS }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then mode=; else mode=--require; fi
+          scripts/check-service-clients.sh $mode --binary "core/target/$TARGET/release/knode"
 
       - name: Check the binary
         run: |

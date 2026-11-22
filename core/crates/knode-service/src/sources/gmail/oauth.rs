@@ -52,17 +52,34 @@ impl GoogleClient {
     /// The client of this build: `KNODE_GOOGLE_CLIENT_ID` (and `KNODE_GOOGLE_CLIENT_SECRET`)
     /// at run time, else as they were when Knode was built; `None` when there is none.
     pub fn from_env() -> Option<GoogleClient> {
-        let runtime = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        let id = runtime(CLIENT_ID_VAR)
-            .or_else(|| option_env!("KNODE_GOOGLE_CLIENT_ID").map(str::to_string))
-            .filter(|v| !v.trim().is_empty())?;
-        let secret = runtime(CLIENT_SECRET_VAR)
-            .or_else(|| option_env!("KNODE_GOOGLE_CLIENT_SECRET").map(str::to_string))
-            .filter(|v| !v.trim().is_empty());
-        Some(GoogleClient {
-            id: id.trim().to_string(),
-            secret: secret.map(|s| s.trim().to_string()),
-        })
+        let id = std::env::var(CLIENT_ID_VAR).ok();
+        let secret = std::env::var(CLIENT_SECRET_VAR).ok();
+        GoogleClient::resolve(
+            (id.as_deref(), secret.as_deref()),
+            (
+                option_env!("KNODE_GOOGLE_CLIENT_ID"),
+                option_env!("KNODE_GOOGLE_CLIENT_SECRET"),
+            ),
+        )
+    }
+
+    /// The client from the values given at run time, else those of the build, each an id and
+    /// a secret. A pair counts when its id is there; the secret always comes from the same
+    /// pair as the id, since a secret belongs to one client only.
+    pub fn resolve(
+        runtime: (Option<&str>, Option<&str>),
+        build: (Option<&str>, Option<&str>),
+    ) -> Option<GoogleClient> {
+        fn value(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let pair = |(id, secret): (Option<&str>, Option<&str>)| {
+            Some(GoogleClient {
+                id: value(id)?.to_string(),
+                secret: value(secret).map(str::to_string),
+            })
+        };
+        pair(runtime).or_else(|| pair(build))
     }
 }
 

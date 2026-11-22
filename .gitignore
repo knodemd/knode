@@ -13,3 +13,5 @@ node_modules/
 dist/
 # System
 .DS_Store
+# Service client ids and secrets for developer builds (see core/.env.services.example)
+core/.env.services
