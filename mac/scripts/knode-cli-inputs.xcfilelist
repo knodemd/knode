@@ -61,6 +61,8 @@ $(SRCROOT)/../core/crates/knode-format/src/views.rs
 $(SRCROOT)/../core/crates/knode-ingest/Cargo.toml
 $(SRCROOT)/../core/crates/knode-ingest/src/aider.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/amp.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/calendar.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/calendar/tests.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/capture.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/files.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/chats/imessage/db.rs
@@ -144,11 +146,13 @@ $(SRCROOT)/../core/crates/knode-service/src/readwise.rs
 $(SRCROOT)/../core/crates/knode-service/src/recordings.rs
 $(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/calendar.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/recordings.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/sources.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/apple_mail.rs
+$(SRCROOT)/../core/crates/knode-service/src/sources/calendar.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/gmail/http.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/gmail/mod.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/gmail/oauth.rs

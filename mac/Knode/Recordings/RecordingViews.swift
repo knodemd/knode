@@ -343,6 +343,7 @@ private struct RecordingTargetView: View {
     @Environment(AppModel.self) private var model
     @State private var space: URL?
     @State private var project: Node.ID?
+    @State private var event: CalendarEventSummary?
     @State private var projects: [ProjectSummary] = []
     @State private var starting = false
     @State private var minutes = true
@@ -367,6 +368,7 @@ private struct RecordingTargetView: View {
                     KDropdown(selection: $project, options: [KOption(nil, "None")] + projects.map { KOption(Optional($0.id), $0.title) })
                         .frame(width: 220)
                 }
+                RecordingEventRow(space: space, event: $event)
                 VStack(alignment: .leading, spacing: KSpace.x1) {
                     KToggle("Write minutes", isOn: Binding(get: { minutes }, set: { setMinutes($0) }))
                         .disabled(!minutesLoaded)
@@ -420,7 +422,10 @@ private struct RecordingTargetView: View {
         let chosen = projects.first { $0.id == project }
         starting = true
         Task {
-            await controller.start(target: RecordingTarget(spaceURL: space, spaceName: item.name, projectID: chosen?.id, projectTitle: chosen?.title))
+            await controller.start(target: RecordingTarget(
+                spaceURL: space, spaceName: item.name, projectID: chosen?.id, projectTitle: chosen?.title,
+                eventID: event?.id, eventTitle: event?.title
+            ))
             starting = false
         }
     }
