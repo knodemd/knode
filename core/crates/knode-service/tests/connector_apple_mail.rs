@@ -769,6 +769,36 @@ fn messages_without_a_file_after_a_day_are_reported_and_still_read() {
 }
 
 #[test]
+fn a_run_copies_the_index_once_and_lets_the_copy_go_when_it_ends() {
+    let mut store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let connector = store.connector();
+    let mut cursor = None;
+    for i in 0..7 {
+        let rowid = store.list(&all_mail(), now(), "ada@gmail.example.com");
+        store.write(
+            &all_mail(),
+            rowid,
+            &message(&format!("m{i}@x"), ADA, "Hello", now(), ""),
+        );
+    }
+    let written = run(&connector, &mut space, &mut cursor, History::FromToday, &[]).unwrap();
+    assert_eq!(written.items, 7);
+    assert_eq!(
+        connector.copies_made(),
+        1,
+        "the check and every batch read one copy"
+    );
+    assert!(connector.holds_a_copy());
+    connector.finished();
+    assert!(
+        !connector.holds_a_copy(),
+        "no copy stays on disk between runs"
+    );
+}
+
+#[test]
 fn a_mailbox_with_messages_waiting_is_not_read_again_every_run() {
     let mut store = Store::new();
     let dir = tempfile::tempdir().unwrap();

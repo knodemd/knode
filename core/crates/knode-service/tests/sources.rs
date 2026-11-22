@@ -51,6 +51,8 @@ struct Store {
     slow_fetch: Duration,
     /// Whether it waits for something its watched files do not show.
     waiting: bool,
+    /// How many times it was told a run or a listing ended.
+    finished: usize,
 }
 
 #[derive(Clone)]
@@ -105,6 +107,10 @@ impl Connector for Fake {
 
     fn waiting(&self, _cursor: &Cursor) -> bool {
         self.store().waiting
+    }
+
+    fn finished(&self) {
+        self.store().finished += 1;
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
@@ -355,6 +361,8 @@ fn from_today_reads_only_what_is_new_and_the_cursor_moves_on() {
     f.wait_until("three messages", |f| f.written().len() == 3);
     assert_eq!(f.written(), vec!["family 2", "work 3", "work 4"]);
     f.wait_until("the status", |f| f.status().items == 3);
+    // Told the run ended, so it can let go of what it kept for it.
+    f.wait_until("the end of the run", |f| f.fake.store().finished >= 1);
     let status = f.status();
     assert!(matches!(
         status.state,
@@ -529,7 +537,11 @@ fn a_changed_schema_writes_nothing_and_says_so() {
     );
     assert_eq!(f.fake.store().fetches, 0);
     assert!(f.written().is_empty());
+    // A run stopped by its check ends too, and so does a listing that failed.
+    f.wait_until("the end of the run", |f| f.fake.store().finished >= 1);
+    let finished = f.fake.store().finished;
     assert!(f.client().sources_containers(f.space(), ID).is_err());
+    assert!(f.fake.store().finished > finished);
 }
 
 #[test]

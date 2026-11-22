@@ -9,11 +9,16 @@
 //! [`check_schema`] then checks the tables and columns the connector reads, and returns
 //! [`SourceError::NeedsUpdate`] when they changed, before anything is read. Copies left behind
 //! by a process that ended without removing them are removed with [`remove_stale_copies`].
+//! [`Reused`] keeps a copy for the rest of a run while the database does not change, so a run
+//! of many batches copies it once.
 
+use std::fmt;
 use std::fs;
 use std::io;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -60,21 +65,11 @@ const ATTEMPTS: u32 = 5;
 /// [`open_copy`], calling `between` after the database is copied and before its `-wal` is, so
 /// tests can change the files during a copy.
 fn open_copy_with(path: &Path, between: &mut dyn FnMut()) -> Result<DatabaseCopy, SourceError> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "{COPY_PREFIX}{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
     let name = path
         .file_name()
         .ok_or_else(|| SourceError::Unavailable(format!("{} is not a file", path.display())))?;
-    let made = private_dir(&dir);
-    if let Err(e) = made {
-        return Err(SourceError::Failed(format!(
-            "a temporary copy could not be made: {e}"
-        )));
-    }
+    let dir = copy_dir(&std::env::temp_dir())
+        .map_err(|e| SourceError::Failed(format!("a temporary copy could not be made: {e}")))?;
     let mut copy = DatabaseCopy { conn: None, dir };
     let target = copy.dir.join(name);
     // The database and its -wal are copied one after the other: if the app wrote or
@@ -220,6 +215,24 @@ fn remove_stale_copies_in(temp: &Path, running: impl Fn(u32) -> bool) -> usize {
     removed
 }
 
+/// Makes a new private folder for a copy in `temp`: `knode-source-<pid>-<n>`. A folder of that
+/// name left by an earlier process with the same id (one that crashed before its copies were
+/// removed) is never reused: the next number is tried.
+fn copy_dir(temp: &Path) -> io::Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
+    let mut tries = 0;
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = temp.join(format!("{COPY_PREFIX}{pid}-{n}"));
+        match private_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && tries < 1000 => tries += 1,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -246,6 +259,102 @@ fn read_error(path: &Path, error: io::Error) -> SourceError {
             ),
         ),
         _ => SourceError::Failed(format!("{} could not be read: {error}", path.display())),
+    }
+}
+
+/// A copy (or anything made from one, such as a checked snapshot) kept while the files it was
+/// made from do not change, so the batches of one run read the same copy instead of copying a
+/// database of a gigabyte for each one.
+///
+/// A connector keeps one, takes its copy with [`Reused::get`] and lets it go with
+/// [`Reused::release`] when the run ends, so no copy of another app's data stays on disk
+/// between runs. Clones share the copy.
+pub struct Reused<T> {
+    held: Arc<Mutex<Kept<T>>>,
+    made: Arc<AtomicU64>,
+}
+
+impl<T> Reused<T> {
+    /// The copy kept, when the files are still as `stamp` says they were when it was made;
+    /// otherwise the one kept is removed first and a new one is made with `take` and kept. A
+    /// copy made while the files could not be told (`stamp` is `None`) is never reused.
+    ///
+    /// The copy stays locked while the guard returned lives.
+    pub fn get<E>(
+        &self,
+        stamp: Option<FileStamp>,
+        take: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Held<'_, T>, E> {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh =
+            matches!((&stamp, held.as_ref()), (Some(now), Some((Some(then), _))) if now == then);
+        if !fresh {
+            // Removed before the new copy is made, so two are never on disk at once.
+            *held = None;
+            let value = take()?;
+            self.made.fetch_add(1, Ordering::Relaxed);
+            *held = Some((stamp, value));
+        }
+        Ok(Held(held))
+    }
+
+    /// Removes the copy kept, if any.
+    pub fn release(&self) {
+        let taken = self.held.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(taken);
+    }
+
+    /// How many copies were made so far.
+    pub fn made(&self) -> u64 {
+        self.made.load(Ordering::Relaxed)
+    }
+
+    /// Whether a copy is kept now.
+    pub fn is_held(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+}
+
+impl<T> Default for Reused<T> {
+    fn default() -> Self {
+        Reused {
+            held: Arc::new(Mutex::new(None)),
+            made: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl<T> Clone for Reused<T> {
+    fn clone(&self) -> Self {
+        Reused {
+            held: Arc::clone(&self.held),
+            made: Arc::clone(&self.made),
+        }
+    }
+}
+
+impl<T> fmt::Debug for Reused<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never waits: it may be printed while the copy is held.
+        let held = self.held.try_lock().map(|h| h.is_some()).ok();
+        f.debug_struct("Reused").field("held", &held).finish()
+    }
+}
+
+/// What a [`Reused`] keeps: the copy, with the files as they were when it was made.
+type Kept<T> = Option<(Option<FileStamp>, T)>;
+
+/// The copy kept by a [`Reused`], locked while this lives.
+pub struct Held<'a, T>(MutexGuard<'a, Kept<T>>);
+
+impl<T> Deref for Held<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0.as_ref().expect("kept while held").1
     }
 }
 
@@ -517,5 +626,83 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = open_copy(&dir.path().join("none.sqlite")).unwrap_err();
         assert_eq!(err.kind(), "unavailable");
+    }
+    #[test]
+    fn a_folder_left_with_the_same_process_id_is_not_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        // Folders an earlier process with this id left behind: every next number is taken.
+        let first = copy_dir(temp.path()).unwrap();
+        let next: u64 = first
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.rsplit('-').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap();
+        for n in next + 1..next + 4 {
+            fs::create_dir(temp.path().join(format!("{COPY_PREFIX}{me}-{n}"))).unwrap();
+        }
+        let dir = copy_dir(temp.path()).unwrap();
+        assert_ne!(dir, first);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "a new, empty folder"
+        );
+    }
+
+    #[test]
+    fn a_copy_is_reused_until_the_database_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Synthetic.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        drop(conn);
+        let stamp = || FileStamp::of(std::slice::from_ref(&path));
+        let reused: Reused<DatabaseCopy> = Reused::default();
+        let copies = std::cell::Cell::new(0);
+        let take = || {
+            copies.set(copies.get() + 1);
+            open_copy(&path)
+        };
+        let first = reused.get(stamp(), take).unwrap().dir().to_path_buf();
+        let again = reused.get(stamp(), take).unwrap().dir().to_path_buf();
+        assert_eq!(first, again);
+        assert_eq!(
+            copies.get(),
+            1,
+            "copied once while the database did not change"
+        );
+
+        // Changed: the old copy is removed and a new one made.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("INSERT INTO t VALUES (2); INSERT INTO t VALUES (3);")
+            .unwrap();
+        drop(conn);
+        let held = reused.get(stamp(), take).unwrap();
+        let n: i64 = held
+            .conn()
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+        assert!(!first.exists(), "the old copy is gone");
+        let last = held.dir().to_path_buf();
+        drop(held);
+        assert_eq!(copies.get(), 2);
+
+        // Not told: never reused.
+        reused.get(None, take).unwrap();
+        reused.get(None, take).unwrap();
+        assert_eq!(copies.get(), 4);
+        assert!(!last.exists());
+
+        // Released: nothing stays on disk.
+        let dir = reused.get(stamp(), take).unwrap().dir().to_path_buf();
+        assert!(reused.is_held());
+        reused.release();
+        assert!(!reused.is_held());
+        assert!(!dir.exists());
     }
 }

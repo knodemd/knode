@@ -674,6 +674,12 @@ pub trait Connector: Send + Sync {
     /// leaving out excluded containers and what is older than the history chosen.
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError>;
 
+    /// Called when a run ends, however it ended, and after the containers are listed: lets go
+    /// of what was kept for it, such as the copy of another app's database its batches read
+    /// (see [`sqlite::Reused`]), so none stays on disk between runs. Nothing unless the
+    /// connector says otherwise.
+    fn finished(&self) {}
+
     /// Whether the connector is signed in to the account it reads, for a connector that
     /// needs [`Permission::SignIn`]. The account is the same for every space: it belongs to
     /// this machine. Unavailable unless the connector says otherwise.

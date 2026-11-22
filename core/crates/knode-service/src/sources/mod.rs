@@ -630,9 +630,11 @@ impl Registry {
             max_items: 0,
             secrets: &secrets,
         };
-        connector.check()?;
-        let mut out: Vec<ContainerInfo> = connector
-            .containers(&request)?
+        let listed = connector
+            .check()
+            .and_then(|()| connector.containers(&request));
+        connector.finished();
+        let mut out: Vec<ContainerInfo> = listed?
             .into_iter()
             .map(|container| ContainerInfo {
                 excluded: setting.exclude.iter().any(|e| e.id == container.id),
