@@ -19,6 +19,9 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     if method == methods::SOURCES_STATUS {
         return to_value(status(state, &p)?);
     }
+    if method == methods::SOURCES_CONTACT_NAMES {
+        return contact_names(state, p);
+    }
     if matches!(
         method,
         methods::SOURCES_ACCOUNT | methods::SOURCES_SIGN_IN | methods::SOURCES_SIGN_OUT
@@ -163,6 +166,26 @@ fn account(state: &State, method: &str, p: SourceParams) -> Result<Value, RpcErr
         }
         _ => to_value(connector.sign_out(&secrets).map_err(rpc)?),
     }
+}
+
+/// `sources.contact_names`: the names from Contacts belong to this machine, not to a space.
+/// They are kept in the Knode home, never in a space, and named people only in what connectors
+/// bring in from now on.
+fn contact_names(state: &State, p: SourceParams) -> Result<Value, RpcError> {
+    let names = p.names.ok_or_else(|| {
+        RpcError::invalid_params(format!("{} needs names", methods::SOURCES_CONTACT_NAMES))
+    })?;
+    let registry = state.registry();
+    let count = registry
+        .contacts()
+        .replace(registry.home(), names)
+        .map_err(|e| {
+            RpcError::new(
+                codes::STORAGE,
+                format!("the names from Contacts could not be kept: {e}"),
+            )
+        })?;
+    to_value(count)
 }
 
 /// Signs a connector out of its account once no space this service knows has it connected:

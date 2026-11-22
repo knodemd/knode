@@ -36,7 +36,9 @@ struct KnodeApp: App {
         _sources = State(initialValue: SourcesModel(
             client: ServiceSourcesClient(),
             openURL: { NSWorkspace.shared.open($0) },
-            startService: { await service.startService() }
+            startService: { await service.startService() },
+            contacts: testing ? NoContactStore() : SystemContactStore(),
+            preferences: testing ? nil : .standard
         ))
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }

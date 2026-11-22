@@ -508,6 +508,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
 | `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
 | `sources.sign_out` | `source` | Whether it was signed in. Ends the session with the service and forgets it |
+| `sources.contact_names` | `names` | How many it kept. `names` is `{ "<phone number or email address>": "<name>" }`, the names from Contacts that connectors showing people by phone number or email address (`imessage`) use from now on, instead of the ones given before; `{}` forgets them all. Phone numbers are compared in E.164 (`+15550100123`); one without a country code matches the end of one with it (7 digits or more) |
 
 ```json
 { "id": "whatsapp", "name": "WhatsApp", "kind": "connector", "reads": "The chats of WhatsApp for Mac",
@@ -572,6 +573,13 @@ files up to 20 MB are attached; larger ones are named in the text. When Telegram
 (a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
 until the wait is over. A build of Knode without a Telegram app id lists the connector, which
 reports `unavailable`.
+
+Knode Service never reads Contacts. The Mac app asks for access when the person wants names in
+Messages and gives them with `sources.contact_names`, again when they change. The service keeps
+them in memory and in `$KNODE_HOME/sources/contact-names.json`, which only its owner can read, so
+they are there after a restart before the app opens; they are never written to a space, except
+as the names of people in what a connector brings in. Nodes already brought in keep the names
+they had.
 
 The `imap` connector reads any mail account over IMAP with TLS (port 993; never plain text or
 `STARTTLS`), signed in with the address and an app password, checked by signing in once. Every

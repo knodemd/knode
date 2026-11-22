@@ -52,6 +52,11 @@ targets:
         CFBundleIconName: AppIcon
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSContactsUsageDescription: Knode shows the people in your Messages conversations by their names in Contacts instead of their phone numbers and email addresses. The names stay on this Mac.
+    entitlements:
+      path: Knode/Knode.entitlements
+      properties:
+        com.apple.security.personal-information.addressbook: true
     settings:
       base:
         PRODUCT_NAME: Knode

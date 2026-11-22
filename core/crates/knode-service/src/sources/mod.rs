@@ -27,6 +27,7 @@
 //! person changes the settings of a source.
 
 pub mod apple_mail;
+pub mod contacts;
 pub mod gmail;
 pub mod imap;
 mod mail_live;
@@ -54,6 +55,8 @@ use serde::{Deserialize, Serialize};
 use crate::import::ImportSource;
 use crate::keys::{KeyStore, default_key_store, write_private};
 
+pub use contacts::{ContactBook, normalize_handle};
+
 pub(crate) use runtime::SourcesTask;
 
 /// The prefix of the setting of a source in a space: `source.<id>`.
@@ -63,12 +66,20 @@ pub const SOURCES_DIR: &str = "sources";
 /// The file in [`SOURCES_DIR`] with the [`RunState`] of every space and source.
 pub const STATE_FILE: &str = "state.json";
 
-/// The connectors built into this version of Knode, for this system.
+/// The connectors built into this version of Knode, for this system, naming no one from
+/// Contacts.
+pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
+    builtin_connectors_with(&Arc::new(ContactBook::new()))
+}
+
+/// The connectors built into this version of Knode, for this system, the ones that show people
+/// by phone number or email address naming them from `contacts`.
 ///
 /// Each connector adds itself here once it implements [`Connector`].
 // Off macOS the connectors of the Mac are left out, and the first push follows `Vec::new()`.
 #[allow(clippy::vec_init_then_push)]
-pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
+pub fn builtin_connectors_with(contacts: &Arc<ContactBook>) -> Vec<Arc<dyn Connector>> {
+    let _ = contacts;
     let mut connectors: Vec<Arc<dyn Connector>> = Vec::new();
     #[cfg(target_os = "macos")]
     if let Some(apple_mail) = apple_mail::AppleMailConnector::local() {
@@ -76,7 +87,7 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     }
     #[cfg(target_os = "macos")]
     if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
-        connectors.push(Arc::new(imessage));
+        connectors.push(Arc::new(imessage.with_names(contacts.clone())));
     }
     // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
     // in the spaces it is switched on in.
@@ -98,8 +109,13 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
 /// How Knode Service runs connectors.
 #[derive(Clone)]
 pub struct SourcesOptions {
-    /// The connectors it knows. [`builtin_connectors`] by default.
+    /// The connectors it knows. By default [`builtin_connectors_with`] the
+    /// [`contacts`](Self::contacts).
     pub connectors: Vec<Arc<dyn Connector>>,
+    /// The names from Contacts the app gives with `sources.contact_names`, read from the Knode
+    /// home when the service starts. Connectors given here should name people from the same
+    /// book.
+    pub contacts: Arc<ContactBook>,
     /// How often `config.toml` and the settings of the spaces are read again, besides when a
     /// client changes them.
     pub settings_poll: Duration,
@@ -122,8 +138,10 @@ pub struct SourcesOptions {
 
 impl Default for SourcesOptions {
     fn default() -> Self {
+        let contacts = Arc::new(ContactBook::new());
         SourcesOptions {
-            connectors: builtin_connectors(),
+            connectors: builtin_connectors_with(&contacts),
+            contacts,
             settings_poll: Duration::from_secs(5),
             backoff: Duration::from_secs(30),
             max_backoff: Duration::from_secs(3600),
@@ -430,11 +448,15 @@ pub(crate) struct SourceParams {
     /// The step of signing in, for `sources.sign_in`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<SignInStep>,
+    /// Phone numbers and email addresses to names, for `sources.contact_names`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names: Option<BTreeMap<String, String>>,
 }
 
 /// The connectors a service knows, with what they did on this machine.
 pub(crate) struct Registry {
     connectors: Vec<Arc<dyn Connector>>,
+    contacts: Arc<ContactBook>,
     home: PathBuf,
     states: Mutex<StateFile>,
     /// The keys of the sources running now: `<space id>/<source id>`.
@@ -446,8 +468,20 @@ pub(crate) struct Registry {
 
 impl Registry {
     pub(crate) fn new(home: &Path, connectors: Vec<Arc<dyn Connector>>) -> Self {
+        Self::with_contacts(home, connectors, Arc::new(ContactBook::new()))
+    }
+
+    /// A registry whose connectors name people from `contacts`, filled with the names kept in
+    /// the Knode home.
+    pub(crate) fn with_contacts(
+        home: &Path,
+        connectors: Vec<Arc<dyn Connector>>,
+        contacts: Arc<ContactBook>,
+    ) -> Self {
+        contacts.load(home);
         Registry {
             connectors,
+            contacts,
             home: home.to_path_buf(),
             states: Mutex::new(StateFile::load(home)),
             running: Mutex::new(Vec::new()),
@@ -457,6 +491,10 @@ impl Registry {
 
     pub(crate) fn connector(&self, id: &str) -> Option<&Arc<dyn Connector>> {
         self.connectors.iter().find(|c| c.info().id == id)
+    }
+
+    pub(crate) fn contacts(&self) -> &ContactBook {
+        &self.contacts
     }
 
     pub(crate) fn connectors(&self) -> &[Arc<dyn Connector>] {

@@ -219,6 +219,8 @@ pub mod methods {
     pub const SOURCES_SIGN_IN: &str = "sources.sign_in";
     /// Signs a connector out and forgets its session.
     pub const SOURCES_SIGN_OUT: &str = "sources.sign_out";
+    /// Replaces the names from Contacts that connectors show people with.
+    pub const SOURCES_CONTACT_NAMES: &str = "sources.contact_names";
 }
 
 /// The JSON-RPC error codes the service answers with.

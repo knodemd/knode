@@ -1,5 +1,6 @@
 //! [`Client`] methods for `sources.*`. People only.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use knode_format::Provenance;
@@ -193,5 +194,13 @@ impl Client {
     /// signed in.
     pub fn sources_sign_out(&self, source: &str) -> Result<bool> {
         self.sources_call(methods::SOURCES_SIGN_OUT, None, Some(source), |_| {})
+    }
+
+    /// Replaces the names from Contacts that connectors show people with: phone numbers and
+    /// email addresses to names. An empty map forgets them all. Returns how many it kept.
+    pub fn sources_contact_names(&self, names: BTreeMap<String, String>) -> Result<usize> {
+        self.sources_call(methods::SOURCES_CONTACT_NAMES, None, None, |p| {
+            p.names = Some(names);
+        })
     }
 }

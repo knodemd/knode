@@ -17,6 +17,8 @@ final class FakeSourcesClient: SourcesClient {
         var browserWaits: [String: Int] = [:]
         /// What a mail account was started with, until its app password comes.
         var mailAccount: String?
+        /// The names from Contacts last given.
+        var contactNames: [String: String]?
     }
 
     let state = Mutex(State())
@@ -174,6 +176,14 @@ final class FakeSourcesClient: SourcesClient {
             state.accounts[source] = next.isSignedIn ? next : state.accounts[source] ?? .signedOut
             return next
         }
+    }
+
+    var contactNames: [String: String]? { state.withLock { $0.contactNames } }
+
+    func setContactNames(_ names: [String: String]) async throws -> Int {
+        try record("contact-names \(names.count)", "contact-names")
+        state.withLock { $0.contactNames = names }
+        return names.count
     }
 
     func signOut(_ source: String) async throws -> Bool {
