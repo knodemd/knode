@@ -3,17 +3,20 @@
 //!
 //! A recording is one node of kind [`MEETING_KIND`], [`VOICE_MEMO_KIND`] or [`RECORDING_KIND`]:
 //! a short header saying when it was recorded and for how long, an `![[name]]` embed for each
-//! audio file attached to it and, once written, the minutes ([`set_summary`]). Its properties
-//! ([`keys`]) say when it started and ended, where it came from, which audio track is which and
-//! how far its transcript and summary are. A recording made for a project is `part-of` it.
+//! audio file attached to it and, once written, the minutes between two HTML comment lines
+//! ([`set_summary`]). Its properties ([`keys`]) say when it started and ended, where it came
+//! from, which audio track is which and how far its transcript and summary are. A recording made
+//! for a project is `part-of` it.
 //!
 //! The transcript is a node of its own, of kind [`TRANSCRIPT_KIND`], `derived-from` the
 //! recording, written as Markdown turns: one paragraph per run of the same speaker, broken after
 //! a pause or when it grows long so one microphone for a whole room still reads in paragraphs,
-//! each with the time it started ([`set_transcript`]). The recording's body links to it.
+//! each with the time it started ([`set_transcript`]). Its title says when the recording started,
+//! so it is unique, and the recording's body links to it.
 //!
 //! Transcribing and summarising happen on the device, in the app; this module only stores what
-//! they produce and keeps track of what is still to do ([`pending`]). Nothing is sent anywhere.
+//! they produce and keeps track of what is still to do ([`pending`]) and what did not get through
+//! ([`failed`]). Nothing is sent anywhere.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -253,15 +256,19 @@ pub struct NewRecording {
     #[serde(default)]
     pub audio: Vec<AudioInput>,
     /// A key that finds it again: storing a recording with a key the space already has returns
-    /// that recording unchanged.
+    /// that recording, with any audio file or project link it lacks added.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// The meeting app, such as `zoom.us`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
-    /// Whether to summarise it once it is transcribed.
-    #[serde(default)]
+    /// Whether to summarise it once it is transcribed. True when omitted.
+    #[serde(default = "yes")]
     pub summaries: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A stored recording, as its node and properties say.
@@ -360,15 +367,20 @@ pub struct ActionItem {
 
 /// Stores a new recording: its node, with its audio files attached (copied into the space), its
 /// properties, and a `part-of` link to its project. Its transcript is pending, and so is its
-/// summary when `summaries` is set (else off).
+/// summary when `summaries` is set (else off). Every audio file is checked before anything is
+/// written.
 ///
-/// When the recording has a `key` that a recording of the space already has, that recording is
-/// returned unchanged. Every audio file is checked before anything is written.
+/// The `recording.key` is written last, once the files are attached and the link made, and a
+/// node left half made by a failed step is deleted, so a key the space has always names a whole
+/// recording. When the recording has a `key` that a recording of the space already has, that
+/// recording is returned, with the audio files of `new` it lacks (by track) attached and its
+/// project link added.
 pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<Recording> {
-    if let Some(key) = new.key.as_deref().map(str::trim).filter(|k| !k.is_empty())
+    let key = new.key.as_deref().map(str::trim).filter(|k| !k.is_empty());
+    if let Some(key) = key
         && let Some(id) = find_by_key(space, key)?
     {
-        return get(space, &id);
+        return complete(space, &id, new, by);
     }
     if new.ended_at < new.started_at {
         return Err(Error::Invalid(
@@ -376,21 +388,7 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
         ));
     }
     for audio in &new.audio {
-        let metadata = fs::metadata(&audio.path)
-            .map_err(|e| Error::Invalid(format!("cannot read {}: {e}", audio.path.display())))?;
-        if !metadata.is_file() {
-            return Err(Error::Invalid(format!(
-                "{} is not a file",
-                audio.path.display()
-            )));
-        }
-        if metadata.len() > MAX_ATTACHMENT_SIZE {
-            return Err(Error::Invalid(format!(
-                "{} is larger than {} MB, the most a space attaches",
-                audio.path.display(),
-                MAX_ATTACHMENT_SIZE / (1024 * 1024)
-            )));
-        }
+        check_audio(audio)?;
     }
     if let Some(project) = &new.project
         && space.get_node(project)?.is_none()
@@ -402,11 +400,7 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
         .audio
         .iter()
         .map(|a| AudioTrack {
-            name: a
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            name: file_name(a),
             track: a.track,
         })
         .collect();
@@ -429,9 +423,6 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
     };
     props.insert(keys::SUMMARY.into(), summary.to_string());
     props.insert(keys::TRACKS.into(), tracks_json(&planned));
-    if let Some(key) = new.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
-        props.insert(keys::KEY.into(), key.to_string());
-    }
     if let Some(app) = new.app.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
         props.insert(keys::APP.into(), app.to_string());
     }
@@ -443,12 +434,30 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
         by,
     )?;
     let id = node.id;
+    let filled = fill(space, &id, new, key, &header, &planned, by);
+    if let Err(e) = filled {
+        // Best effort: the error says what went wrong either way.
+        let _ = space.delete_node(&id, by);
+        return Err(e);
+    }
+    get(space, &id)
+}
 
+/// The steps of [`create`] after its node is made: the files, the link, and the key last.
+fn fill(
+    space: &mut Space,
+    id: &NodeId,
+    new: &NewRecording,
+    key: Option<&str>,
+    header: &str,
+    planned: &[AudioTrack],
+    by: &Provenance,
+) -> Result<()> {
     // A name the node already uses for other content is attached under another one: the body
     // and the tracks then say so.
     let mut attached = Vec::with_capacity(new.audio.len());
     for audio in &new.audio {
-        let attachment = space.attach_file(&id, &audio.path, by)?;
+        let attachment = space.attach_file(id, &audio.path, by)?;
         attached.push(AudioTrack {
             name: attachment.name,
             track: audio.track,
@@ -456,19 +465,121 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
     }
     if attached != planned {
         space.update_node(
-            &id,
+            id,
             NodeUpdate {
-                body: Some(header_body(&header, &attached)),
+                body: Some(header_body(header, &attached)),
                 ..Default::default()
             },
             by,
         )?;
-        space.set_property(&id, keys::TRACKS, &tracks_json(&attached), by)?;
+        space.set_property(id, keys::TRACKS, &tracks_json(&attached), by)?;
     }
     if let Some(project) = &new.project {
-        space.link(&id, project, link_kinds::PART_OF, by)?;
+        space.link(id, project, link_kinds::PART_OF, by)?;
     }
-    get(space, &id)
+    if let Some(key) = key {
+        space.set_property(id, keys::KEY, key, by)?;
+    }
+    Ok(())
+}
+
+/// A recording found again by its key, made whole: each audio file of `new` it lacks (no
+/// attached track of the same kind) is attached and embedded, and its project link is added.
+/// Its tracks then list only what is attached.
+fn complete(
+    space: &mut Space,
+    id: &NodeId,
+    new: &NewRecording,
+    by: &Provenance,
+) -> Result<Recording> {
+    let recording = get(space, id)?;
+    let names: Vec<String> = space.attachments(id)?.into_iter().map(|a| a.name).collect();
+    let mut tracks: Vec<AudioTrack> = recording
+        .tracks
+        .iter()
+        .filter(|t| names.contains(&t.name))
+        .cloned()
+        .collect();
+    let mut used = vec![false; tracks.len()];
+    let mut missing = Vec::new();
+    for audio in &new.audio {
+        let name = file_name(audio);
+        let same = |exact: bool| {
+            tracks
+                .iter()
+                .enumerate()
+                .position(|(i, t)| !used[i] && t.track == audio.track && (!exact || t.name == name))
+        };
+        match same(true).or_else(|| same(false)) {
+            Some(i) => used[i] = true,
+            None => missing.push(audio),
+        }
+    }
+    for audio in &missing {
+        check_audio(audio)?;
+    }
+    let original = space.get_node(id)?.ok_or(Error::NotFound(*id))?.body;
+    let mut body = original.clone();
+    let mut anchors: Vec<String> = tracks.iter().map(|t| format!("![[{}]]", t.name)).collect();
+    for audio in missing {
+        let attachment = space.attach_file(id, &audio.path, by)?;
+        let embed = format!("![[{}]]", attachment.name);
+        if !body.contains(&embed) {
+            body = insert_after(&body, &anchors, &embed);
+        }
+        anchors.push(embed);
+        tracks.push(AudioTrack {
+            name: attachment.name,
+            track: audio.track,
+        });
+    }
+    if body != original {
+        space.update_node(
+            id,
+            NodeUpdate {
+                body: Some(body),
+                ..Default::default()
+            },
+            by,
+        )?;
+    }
+    if tracks != recording.tracks {
+        space.set_property(id, keys::TRACKS, &tracks_json(&tracks), by)?;
+    }
+    if let Some(project) = &new.project
+        && space.get_node(project)?.is_some()
+    {
+        space.link(id, project, link_kinds::PART_OF, by)?;
+    }
+    get(space, id)
+}
+
+fn file_name(audio: &AudioInput) -> String {
+    audio
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Fails unless `audio` is a file a space can attach.
+fn check_audio(audio: &AudioInput) -> Result<()> {
+    let metadata = fs::metadata(&audio.path)
+        .map_err(|e| Error::Invalid(format!("cannot read {}: {e}", audio.path.display())))?;
+    if !metadata.is_file() {
+        return Err(Error::Invalid(format!(
+            "{} is not a file",
+            audio.path.display()
+        )));
+    }
+    if metadata.len() > MAX_ATTACHMENT_SIZE {
+        return Err(Error::Invalid(format!(
+            "{} is larger than {} MB, the most a space attaches",
+            audio.path.display(),
+            MAX_ATTACHMENT_SIZE / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 /// The recording of the space with this key, if any.
@@ -532,29 +643,68 @@ pub fn get(space: &Space, id: &NodeId) -> Result<Recording> {
 }
 
 /// The recordings with work to do, oldest first (by when they started): those whose transcript
-/// is pending, and those whose summary is pending once their transcript is done.
+/// is pending, and those whose summary is pending once their transcript is done. A recording that
+/// cannot be read is left out, and said on standard error, so it does not hide the others.
 pub fn pending(space: &Space) -> Result<Vec<Recording>> {
+    let mut list = find(
+        space,
+        &[
+            (keys::TRANSCRIPT, TranscriptState::Pending.as_str()),
+            (keys::SUMMARY, SummaryState::Pending.as_str()),
+        ],
+        |r| {
+            r.transcript == TranscriptState::Pending
+                || (r.summary == SummaryState::Pending && r.transcript == TranscriptState::Done)
+        },
+    )?;
+    list.sort_by_key(|r| (r.started_at, r.id));
+    Ok(list)
+}
+
+/// The recordings that did not get through, newest first (by when they started): those whose
+/// transcript failed, and those whose summary failed or is unavailable. A recording that cannot
+/// be read is left out, and said on standard error.
+pub fn failed(space: &Space) -> Result<Vec<Recording>> {
+    let mut list = find(
+        space,
+        &[
+            (keys::TRANSCRIPT, TranscriptState::Failed.as_str()),
+            (keys::SUMMARY, SummaryState::Failed.as_str()),
+            (keys::SUMMARY, SummaryState::Unavailable.as_str()),
+        ],
+        |r| {
+            r.transcript == TranscriptState::Failed
+                || matches!(r.summary, SummaryState::Failed | SummaryState::Unavailable)
+        },
+    )?;
+    list.sort_by_key(|r| std::cmp::Reverse((r.started_at, r.id)));
+    Ok(list)
+}
+
+/// The recordings with any of these properties for which `keep` holds, each once. One that
+/// cannot be read is skipped.
+fn find(
+    space: &Space,
+    properties: &[(&str, &str)],
+    keep: impl Fn(&Recording) -> bool,
+) -> Result<Vec<Recording>> {
     let mut found = BTreeMap::new();
-    for (key, value) in [
-        (keys::TRANSCRIPT, TranscriptState::Pending.as_str()),
-        (keys::SUMMARY, SummaryState::Pending.as_str()),
-    ] {
+    for (key, value) in properties {
         for summary in space.find_by_property(key, value)? {
             if RecordingKind::of_node(&summary.kind).is_none() || found.contains_key(&summary.id) {
                 continue;
             }
-            let recording = get(space, &summary.id)?;
-            let waiting = recording.transcript == TranscriptState::Pending
-                || (recording.summary == SummaryState::Pending
-                    && recording.transcript == TranscriptState::Done);
-            if waiting {
-                found.insert(summary.id, recording);
+            match get(space, &summary.id) {
+                Ok(recording) => {
+                    if keep(&recording) {
+                        found.insert(summary.id, recording);
+                    }
+                }
+                Err(e) => eprintln!("Knode: skipping recording {}: {e}", summary.id),
             }
         }
     }
-    let mut list: Vec<Recording> = found.into_values().collect();
-    list.sort_by_key(|r| (r.started_at, r.id));
-    Ok(list)
+    Ok(found.into_values().collect())
 }
 
 /// Writes the transcript of a recording: creates its node, `derived-from` the recording, or
@@ -567,8 +717,13 @@ pub fn set_transcript(
     by: &Provenance,
 ) -> Result<Recording> {
     let recording = get(space, id)?;
-    let title = format!("Transcript: {}", recording.title);
+    let base = transcript_title(&recording.title, recording.started_at, &Local);
+    let title = free_title(space, &base, recording.transcript_id)?;
     let body = render_transcript(transcript);
+    let old_title = match recording.transcript_id {
+        Some(existing) => space.get_node(&existing)?.map(|n| n.title),
+        None => None,
+    };
     let transcript_id = match recording.transcript_id {
         Some(existing) => {
             space.update_node(
@@ -598,12 +753,15 @@ pub fn set_transcript(
     let current = space.get_node(id)?.ok_or(Error::NotFound(*id))?;
     let link = format!("[[{link_title}]]");
     if !current.body.contains(&link) {
-        let (head, summary, rest) = split_body(&current.body);
-        let head = format!("{}\n\n{link}", head.trim_end());
+        let old_link = old_title.map(|t| format!("[[{t}]]"));
+        let body = match old_link.filter(|l| current.body.contains(l.as_str())) {
+            Some(old_link) => current.body.replacen(&old_link, &link, 1),
+            None => insert_after(&current.body, &embeds(&recording.tracks), &link),
+        };
         space.update_node(
             id,
             NodeUpdate {
-                body: Some(join_body(&head, summary, rest)),
+                body: Some(body),
                 ..Default::default()
             },
             by,
@@ -628,9 +786,10 @@ pub fn set_transcript(
     get(space, id)
 }
 
-/// Writes the minutes of a recording into its body, after its header, audio files and
-/// transcript link, replacing the minutes written before and nothing else. Its summary is then
-/// done.
+/// Writes the minutes of a recording into its body, between the lines [`MINUTES_START`] and
+/// [`MINUTES_END`]: replacing what is between them when the body has them once, in that order,
+/// and else as a new block after its header, audio files and transcript link. Nothing outside
+/// the markers changes. Its summary is then done.
 pub fn set_summary(
     space: &mut Space,
     id: &NodeId,
@@ -639,9 +798,22 @@ pub fn set_summary(
 ) -> Result<Recording> {
     let recording = get(space, id)?;
     let current = space.get_node(id)?.ok_or(Error::NotFound(*id))?;
-    let (head, _, rest) = split_body(&current.body);
-    let minutes = render_summary(summary);
-    let body = join_body(head, &minutes, rest);
+    let block = format!(
+        "{MINUTES_START}\n{}\n{MINUTES_END}",
+        render_summary(summary)
+    );
+    let body = match minutes_range(&current.body) {
+        Some((start, end)) => format!("{}{block}{}", &current.body[..start], &current.body[end..]),
+        None => {
+            let mut anchors = embeds(&recording.tracks);
+            if let Some(tid) = recording.transcript_id
+                && let Some(t) = space.get_node(&tid)?
+            {
+                anchors.push(format!("[[{}]]", t.title));
+            }
+            insert_after(&current.body, &anchors, &block)
+        }
+    };
     if body != current.body {
         space.update_node(
             id,
@@ -806,47 +978,97 @@ const SECTIONS: [&str; 5] = [
 const WRITTEN_BY: &str = "_Written on this Mac by ";
 const FROM_TRANSCRIPT: &str = " from the transcript._";
 
-/// Splits a recording's body into what comes before the minutes, the minutes (from their first
-/// heading to the line saying who wrote them) and what comes after.
-fn split_body(body: &str) -> (&str, &str, &str) {
+/// The line before the minutes in a recording's body. An HTML comment: Markdown hides it, and
+/// it comes back unchanged from a Markdown file.
+pub const MINUTES_START: &str = "<!-- knode:minutes -->";
+/// The line after the minutes in a recording's body.
+pub const MINUTES_END: &str = "<!-- /knode:minutes -->";
+
+/// Where the minutes are in a body, from the start of its [`MINUTES_START`] line to the end of
+/// its [`MINUTES_END`] line (without the line break): only when the body has one start line, and
+/// an end line after it.
+fn minutes_range(body: &str) -> Option<(usize, usize)> {
     let mut offset = 0;
     let mut start = None;
     let mut end = None;
     for line in body.split_inclusive('\n') {
-        let trimmed = line.trim_end();
-        if start.is_none() && SECTIONS.contains(&trimmed) {
+        let trimmed = line.trim();
+        if trimmed == MINUTES_START {
+            if start.is_some() {
+                return None;
+            }
             start = Some(offset);
-        }
-        if start.is_some() && trimmed.starts_with(WRITTEN_BY) && trimmed.ends_with(FROM_TRANSCRIPT)
-        {
-            end = Some(offset + line.len());
-            break;
+        } else if trimmed == MINUTES_END && start.is_some() && end.is_none() {
+            end = Some(offset + line.trim_end_matches(['\n', '\r']).len());
         }
         offset += line.len();
     }
-    match start {
-        None => (body, "", ""),
-        Some(start) => {
-            let end = end.unwrap_or(body.len());
-            (&body[..start], &body[start..end], &body[end..])
+    Some((start?, end?))
+}
+
+/// The `![[name]]` embeds of these tracks.
+fn embeds(tracks: &[AudioTrack]) -> Vec<String> {
+    tracks.iter().map(|t| format!("![[{}]]", t.name)).collect()
+}
+
+/// `body` with `block` added as a paragraph of its own after the last line that holds one of
+/// `anchors`, or after the first line when none does. The rest of the body stays as it is.
+fn insert_after(body: &str, anchors: &[String], block: &str) -> String {
+    let line_end = |at: usize| body[at..].find('\n').map_or(body.len(), |i| at + i);
+    let at = anchors
+        .iter()
+        .filter_map(|a| body.rfind(a.as_str()).map(line_end))
+        .max()
+        .unwrap_or_else(|| line_end(0));
+    let (head, rest) = body.split_at(at);
+    let mut out = String::with_capacity(body.len() + block.len() + 4);
+    out.push_str(head);
+    if !head.trim().is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(block);
+    if rest.trim().is_empty() {
+        out.push('\n');
+    } else {
+        if !rest.starts_with("\n\n") {
+            out.push('\n');
         }
+        out.push_str(rest);
+    }
+    out
+}
+
+/// The title of a recording's transcript: `Transcript: <title> (<YYYY-MM-DD HH:MM>)`, when it
+/// started in the time zone given.
+fn transcript_title<Tz: TimeZone>(title: &str, started_at: i64, zone: &Tz) -> String
+where
+    Tz::Offset: fmt::Display,
+{
+    let title = one_line(title);
+    match zone.timestamp_millis_opt(started_at).single() {
+        Some(start) => format!("Transcript: {title} ({})", start.format("%Y-%m-%d %H:%M")),
+        None => format!("Transcript: {title}"),
     }
 }
 
-fn join_body(head: &str, minutes: &str, rest: &str) -> String {
-    let mut body = head.trim_end().to_string();
-    let minutes = minutes.trim();
-    if !minutes.is_empty() {
-        body.push_str("\n\n");
-        body.push_str(minutes);
+/// `base`, or `base 2`, `base 3`... the first that no node but `own` has as its title, so a
+/// `[[link]]` to it finds that node and no other.
+fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> {
+    for n in 1.. {
+        let title = if n == 1 {
+            base.to_string()
+        } else {
+            format!("{base} {n}")
+        };
+        if space
+            .find_by_title(&title)?
+            .iter()
+            .all(|s| Some(s.id) == own)
+        {
+            return Ok(title);
+        }
     }
-    let rest = rest.trim();
-    if !rest.is_empty() {
-        body.push_str("\n\n");
-        body.push_str(rest);
-    }
-    body.push('\n');
-    body
+    unreachable!("some title is free")
 }
 
 fn one_line(text: &str) -> String {

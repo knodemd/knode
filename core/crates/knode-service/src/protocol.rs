@@ -197,6 +197,8 @@ pub mod methods {
     pub const RECORDINGS_CREATE: &str = "recordings.create";
     /// The recordings whose transcript or summary is still to be made.
     pub const RECORDINGS_PENDING: &str = "recordings.pending";
+    /// The recordings whose transcript failed, or whose summary failed or is unavailable.
+    pub const RECORDINGS_FAILED: &str = "recordings.failed";
     /// A recording.
     pub const RECORDINGS_GET: &str = "recordings.get";
     /// Writes the transcript of a recording. People only.

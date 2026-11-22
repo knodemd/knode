@@ -1,7 +1,8 @@
 //! The shapes of the `recordings.*` methods: meetings recorded on the device, voice memos and
 //! audio files, with their transcript and summary ([`knode_ingest::recordings`]).
 //!
-//! Agents may read recordings (`recordings.get`, `recordings.pending`) with `read`; storing
+//! Agents may read recordings (`recordings.get`, `recordings.pending`, `recordings.failed`) with
+//! `read`; storing
 //! one names files on this machine, and transcripts and summaries are written by the app on the
 //! device, so every write is for people only. `PROTOCOL.md` describes each method.
 
@@ -17,7 +18,11 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::methods;
 
 /// The methods an agent may call with `read` in a space. The others are for people only.
-pub(crate) const READS: &[&str] = &[methods::RECORDINGS_GET, methods::RECORDINGS_PENDING];
+pub(crate) const READS: &[&str] = &[
+    methods::RECORDINGS_GET,
+    methods::RECORDINGS_PENDING,
+    methods::RECORDINGS_FAILED,
+];
 
 /// `recordings.create`: a recording and the space to store it in.
 #[derive(Debug, Clone, Serialize, Deserialize)]

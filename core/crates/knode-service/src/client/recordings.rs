@@ -39,6 +39,15 @@ impl Client {
         self.request(methods::RECORDINGS_PENDING, params)
     }
 
+    /// The recordings whose transcript failed, or whose summary failed or is unavailable,
+    /// newest first: those the app offers to try again.
+    pub fn failed_recordings(&self, space: impl AsRef<Path>) -> Result<Vec<Recording>> {
+        let params = SpaceParams {
+            space: space_path(space.as_ref())?,
+        };
+        self.request(methods::RECORDINGS_FAILED, params)
+    }
+
     /// A recording.
     pub fn recording(&self, space: impl AsRef<Path>, id: &NodeId) -> Result<Recording> {
         let params = NodeParams {

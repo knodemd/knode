@@ -20,6 +20,12 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = lock_ignoring_poison(&space);
             to_value(recordings::pending(&space)?)
         }
+        methods::RECORDINGS_FAILED => {
+            let p: SpaceParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            to_value(recordings::failed(&space)?)
+        }
         methods::RECORDINGS_GET => {
             let p: NodeParams = params(method, raw)?;
             let space = state.space(&p.space)?;

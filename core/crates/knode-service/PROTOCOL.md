@@ -67,7 +67,8 @@ grant takes effect on the next call:
   `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path`,
   `conversations.import` and `import.run` name files on this machine (or fetch a web page) and
   are for people only.
-- With `read`, `recordings.get` and `recordings.pending` are allowed; the other `recordings.*`
+- With `read`, `recordings.get`, `recordings.pending` and `recordings.failed` are allowed; the
+  other `recordings.*`
   methods store files of this machine and what the app made on the device, and are for people
   only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
@@ -287,18 +288,21 @@ unavailable. Times are Unix milliseconds.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries` (bool), `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording unchanged. People only. |
-| `recordings.pending` | `space` | The recordings whose transcript is `pending`, or whose summary is `pending` while the transcript is `done`, oldest first (by `started_at`). |
+| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
+| `recordings.pending` | `space` | The recordings whose transcript is `pending`, or whose summary is `pending` while the transcript is `done`, oldest first (by `started_at`). A recording that cannot be read is left out (and logged) rather than failing the list. |
+| `recordings.failed` | `space` | The recordings whose transcript is `failed`, or whose summary is `failed` or `unavailable`, newest first (by `started_at`): those the app offers to try again with `recordings.retry`. A recording that cannot be read is left out (and logged). |
 | `recordings.get` | `space`, `id` | The recording. Fails with `not_found` without such a node and `invalid` for a node that is not a recording. |
-| `recordings.transcript` | `space`, `id`, `transcript` (`{ "language"?, "engine", "segments": [{ "start_ms", "end_ms", "speaker", "text" }] }`), `by` | The recording. Creates its transcript node, `Transcript: <title>`, or replaces the one written before: a line naming the engine, then one paragraph per turn (a run of segments by the same speaker), `**Speaker** (HH:MM:SS): text`. Sets `transcript` to `done` and `language`, removes `error` (unless the summary failed) and adds a `[[Transcript: …]]` line to the recording's body. People only. |
-| `recordings.summary` | `space`, `id`, `summary` (`{ "model", "overview", "key_points", "decisions", "action_items": [{ "task", "owner"? }], "open_questions" }`), `by` | The recording. Writes the minutes into its body after the header, embeds and transcript link: `## Summary`, `## Key points`, `## Decisions`, `## Action items` (`- [ ] task — owner`) and `## Open questions`, leaving out empty ones, and a line saying `model` wrote them on this Mac from the transcript. Writing it again replaces only the minutes; what the person wrote after them stays. Sets `summary` to `done`. People only. |
+| `recordings.transcript` | `space`, `id`, `transcript` (`{ "language"?, "engine", "segments": [{ "start_ms", "end_ms", "speaker", "text" }] }`), `by` | The recording. Creates its transcript node, `Transcript: <title> (<YYYY-MM-DD HH:MM>)` with the local time the recording started (followed by ` 2`, ` 3`... when another node already has that title, so the link finds this transcript), or replaces the one written before (keeping its title while no other node takes it): a line naming the engine, then one paragraph per turn (a run of segments by the same speaker), `**Speaker** (HH:MM:SS): text`. Sets `transcript` to `done` and `language`, removes `error` (unless the summary failed) and adds a `[[Transcript: …]]` line to the recording's body, after its embeds. People only. |
+| `recordings.summary` | `space`, `id`, `summary` (`{ "model", "overview", "key_points", "decisions", "action_items": [{ "task", "owner"? }], "open_questions" }`), `by` | The recording. Writes the minutes into its body between a `<!-- knode:minutes -->` line and a `<!-- /knode:minutes -->` line (HTML comments: hidden in Markdown, kept as they are in Markdown files): `## Summary`, `## Key points`, `## Decisions`, `## Action items` (`- [ ] task — owner`) and `## Open questions`, leaving out empty ones, and a line saying `model` wrote them on this Mac from the transcript. When the body has the two lines once, in order, only what is between them is replaced; otherwise the block is added after the header, embeds and transcript link. Text outside the markers is never changed. Sets `summary` to `done`. People only. |
 | `recordings.fail` | `space`, `id`, `stage` (`transcript` or `summary`), `state` (`failed`, or `unavailable` for a summary), `error`, `by` | The recording, with the stage in that state and `error` set. People only. |
 | `recordings.retry` | `space`, `id`, `stage`, `by` | The recording, with the stage back to `pending` and `error` removed. A summary fails with `invalid` until the transcript is `done`. People only. |
 
 The writes announce the recording and its transcript as changes. Whether the app summarises
-recordings is the space setting `recordings.summaries` (`on`, the default, or `off`), read and
+recordings is the space setting `recordings.summaries` (`on`, the default also when it is not
+set, or `off`; only `off` turns it off), read and
 changed with `settings.get` and `settings.set`; the app passes it as `summaries` when it stores a
-recording. Agents with `read` may call `recordings.get` and `recordings.pending`; the other
+recording. Agents with `read` may call `recordings.get`, `recordings.pending` and
+`recordings.failed`; the other
 methods are for people only.
 
 ### Data exports

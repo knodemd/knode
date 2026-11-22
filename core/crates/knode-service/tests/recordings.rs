@@ -201,7 +201,10 @@ fn a_meeting_goes_from_recorded_to_summarised() {
     assert_eq!(summarised.summary, SummaryState::Done);
     let body = f.person.get_node(&space, &rec.id).unwrap().unwrap().body;
     assert!(body.contains("## Action items\n\n- [ ] Send notes — Me"));
-    assert!(body.contains("[[Transcript: Weekly sync]]"));
+    let transcript_title = f.person.get_node(&space, &tid).unwrap().unwrap().title;
+    assert!(transcript_title.starts_with("Transcript: Weekly sync ("));
+    assert!(body.contains(&format!("[[{transcript_title}]]")));
+    assert!(body.contains("<!-- knode:minutes -->\n## Summary"));
     assert!(f.person.pending_recordings(&space).unwrap().is_empty());
     assert_eq!(f.person.recording(&space, &rec.id).unwrap(), summarised);
 }
@@ -263,6 +266,54 @@ fn the_protocol_takes_and_gives_plain_json() {
                 "by": { "kind": "person", "actor": "Ada" } }),
     ));
     assert_eq!(refused.code, codes::INVALID_PARAMS);
+
+    // Without `summaries`, the recording is summarised.
+    let other = f.audio("other.m4a");
+    let value = f
+        .person
+        .call(
+            "recordings.create",
+            json!({ "space": space, "kind": "recording", "title": "Talk", "started_at": 0,
+                    "ended_at": 1000, "audio": [{ "path": other, "track": "mixed" }],
+                    "by": { "kind": "person", "actor": "Ada" } }),
+        )
+        .unwrap();
+    assert_eq!(value["summary"], "pending");
+}
+
+#[test]
+fn failed_recordings_are_listed_for_retry() {
+    let f = Fixture::new();
+    let space = f.space();
+    let rec = f
+        .person
+        .create_recording(&space, &f.meeting(None), &me())
+        .unwrap();
+    assert!(f.person.failed_recordings(&space).unwrap().is_empty());
+    f.person
+        .fail_recording(
+            &space,
+            &rec.id,
+            Stage::Transcript,
+            Failure::Failed,
+            "no speech",
+            &me(),
+        )
+        .unwrap();
+    let failed = f.person.failed_recordings(&space).unwrap();
+    assert_eq!(failed.iter().map(|r| r.id).collect::<Vec<_>>(), [rec.id]);
+    assert_eq!(failed[0].error.as_deref(), Some("no speech"));
+    let value = f
+        .person
+        .call("recordings.failed", json!({ "space": space }))
+        .unwrap();
+    assert_eq!(value[0]["transcript"], "failed");
+    let reader = f.agent("reader", GrantLevel::Read);
+    assert_eq!(reader.failed_recordings(&space).unwrap().len(), 1);
+    f.person
+        .retry_recording(&space, &rec.id, Stage::Transcript, &me())
+        .unwrap();
+    assert!(f.person.failed_recordings(&space).unwrap().is_empty());
 }
 
 #[test]

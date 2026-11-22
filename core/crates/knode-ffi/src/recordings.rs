@@ -351,6 +351,15 @@ impl KnodeSpace {
             .collect())
     }
 
+    /// The recordings whose transcript failed, or whose summary failed or is unavailable,
+    /// newest first: those the app offers to try again.
+    pub fn failed_recordings(&self) -> Result<Vec<Recording>> {
+        Ok(rec::failed(&self.lock())?
+            .into_iter()
+            .map(Recording::from)
+            .collect())
+    }
+
     /// A recording, read from its node.
     pub fn recording(&self, id: String) -> Result<Recording> {
         let id = parse_id(&id)?;
@@ -512,11 +521,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(failed.summary, SummaryState::Unavailable);
+        let ids = |list: Vec<Recording>| list.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(space.failed_recordings().unwrap()),
+            std::slice::from_ref(&created.id)
+        );
         let retried = space
             .retry_recording(created.id.clone(), RecordingStage::Summary, me.clone())
             .unwrap();
         assert_eq!(retried.summary, SummaryState::Pending);
         assert_eq!(retried.error, None);
+        assert!(space.failed_recordings().unwrap().is_empty());
 
         let summary = RecordingSummary {
             model: "Apple Foundation Models".into(),
