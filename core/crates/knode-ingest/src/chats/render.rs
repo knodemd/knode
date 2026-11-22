@@ -21,6 +21,11 @@ pub(crate) enum Shown {
     Omitted(String),
     /// Not on this device, read from an app's own database: its name or what it was.
     NotOnDevice(String),
+    /// Not downloaded by a connector: its name or what it was, and why.
+    NotDownloaded {
+        name: String,
+        reason: Option<String>,
+    },
     /// Only a link to it.
     Link { name: String, url: String },
 }
@@ -254,6 +259,10 @@ fn shown_markdown(shown: &Shown) -> String {
         Shown::Missing(name) => format!("*[missing from the export: {}]*", escape_name(name)),
         Shown::Omitted(what) => format!("*[{} left out of the export]*", escape_name(what)),
         Shown::NotOnDevice(name) => format!("*[not on this Mac: {}]*", escape_name(name)),
+        Shown::NotDownloaded { name, reason } => match reason {
+            Some(reason) => format!("*[not downloaded: {}, {reason}]*", escape_name(name)),
+            None => format!("*[not downloaded: {}]*", escape_name(name)),
+        },
         Shown::Link { name, url } => format!(
             "[{}](<{}>) *(not in the export)*",
             escape_name(name),
@@ -424,12 +433,21 @@ mod tests {
                 name: "notes.txt".into(),
                 url: "https://example.com/f".into(),
             },
+            Shown::NotDownloaded {
+                name: "film.mp4".into(),
+                reason: Some("larger than 20 MB".into()),
+            },
+            Shown::NotDownloaded {
+                name: "contact".into(),
+                reason: None,
+            },
         ];
         assert_eq!(
             message_markdown(&m, &shown),
             "**Ada** (09:05, replying to Grace at 09:00: \"Lunch?\"): ![[photo.jpg]]\n[[plan.pdf]]\n\
              *[missing from the export: voice.opus]*\n*[media left out of the export]*\n\
-             [notes.txt](<https://example.com/f>) *(not in the export)*"
+             [notes.txt](<https://example.com/f>) *(not in the export)*\n\
+             *[not downloaded: film.mp4, larger than 20 MB]*\n*[not downloaded: contact]*"
         );
     }
 

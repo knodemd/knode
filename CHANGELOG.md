@@ -60,8 +60,10 @@ belongs to, newest first.
   space) ends it. While Knode Service runs new messages come in as they happen, and after a
   restart it catches up from the last message it brought in of each chat. Messages land in the
   same `chat` nodes a Telegram Desktop export makes, so an export and the connector never write a
-  message twice. Photos and files up to 20 MB are attached. Secret chats are not read. It needs a
-  build of Knode with its Telegram app id.
+  message twice. Photos and files up to 20 MB are attached; `knode sources media telegram <MB>`
+  (or `sources.media`) sets another limit for a space, `0` for none, and the ones left out are
+  named in the text as *not downloaded*, saying why. Secret chats are not read. It needs a build
+  of Knode with its Telegram app id.
 - **Gmail and mail over IMAP, live**: two connectors bring new mail into a space as it arrives,
   as threads with their people, like a mail import. **Gmail** signs in with Google in your
   browser and only asks to read mail; mail goes from Google straight to your machine. **Mail

@@ -86,6 +86,7 @@ pub(crate) fn request<'a>(
         excluded,
         max_items: 500,
         secrets,
+        media_max_bytes: None,
     }
 }
 

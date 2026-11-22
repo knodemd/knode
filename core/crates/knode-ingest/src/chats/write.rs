@@ -385,6 +385,7 @@ impl ChatWriter<'_> {
                 | Media::Omitted { .. }
                 | Media::NotAttached { .. }
                 | Media::NotOnDevice { .. }
+                | Media::NotDownloaded { .. }
         ) {
             self.report.missing += 1;
         }
@@ -398,6 +399,10 @@ fn shown(media: &Media) -> Shown {
         Media::Missing { name } => Shown::Missing(name.clone()),
         Media::Omitted { what } => Shown::Omitted(what.clone()),
         Media::NotOnDevice { name } => Shown::NotOnDevice(name.clone()),
+        Media::NotDownloaded { name, reason } => Shown::NotDownloaded {
+            name: name.clone(),
+            reason: reason.clone(),
+        },
         Media::Link { name, url } => Shown::Link {
             name: name.clone(),
             url: url.clone(),

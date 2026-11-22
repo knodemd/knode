@@ -140,6 +140,10 @@ pub struct SourceInfo {
     /// when nothing can be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// Whether it downloads photos and files, up to a largest size the person can set for each
+    /// space ([`FetchRequest::media_max_bytes`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub media: bool,
 }
 
 impl SourceInfo {
@@ -156,12 +160,19 @@ impl SourceInfo {
             reads: reads.into(),
             permissions: Vec::new(),
             container: None,
+            media: false,
         }
     }
 
     /// The same source, needing these permissions.
     pub fn needing(mut self, permissions: impl IntoIterator<Item = Permission>) -> Self {
         self.permissions.extend(permissions);
+        self
+    }
+
+    /// The same source, downloading photos and files up to a size the person can set.
+    pub fn with_media(mut self) -> Self {
+        self.media = true;
         self
     }
 
@@ -356,6 +367,10 @@ pub struct FetchRequest<'a> {
     pub max_items: usize,
     /// The connector's secrets.
     pub secrets: &'a dyn Secrets,
+    /// The largest photo or file to download, in bytes, as the person set it for this space
+    /// (`0` downloads none); `None` for the connector's own default. Only connectors with
+    /// [`SourceInfo::media`] read it.
+    pub media_max_bytes: Option<u64>,
 }
 
 impl FetchRequest<'_> {
@@ -732,6 +747,7 @@ mod tests {
             excluded: &excluded,
             max_items: 10,
             secrets: &NoSecrets,
+            media_max_bytes: None,
         };
         assert!(request.is_excluded("c1"));
         assert!(!request.is_excluded("c2"));

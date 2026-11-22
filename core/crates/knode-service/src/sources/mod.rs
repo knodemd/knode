@@ -254,6 +254,7 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         reads: reads.to_string(),
         permissions: permissions.to_vec(),
         container: None,
+        media: false,
     }
 }
 
@@ -274,6 +275,17 @@ pub struct SourceSetting {
     /// The chats, channels or folders excluded: never read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<Container>,
+    /// The largest photo or file it downloads, in megabytes (`0` for none), for a connector
+    /// with [`SourceInfo::media`]; `None` for the connector's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_max_mb: Option<u64>,
+}
+
+impl SourceSetting {
+    /// [`media_max_mb`](Self::media_max_mb) in bytes, as a [`FetchRequest`] takes it.
+    pub fn media_max_bytes(&self) -> Option<u64> {
+        self.media_max_mb.map(|mb| mb.saturating_mul(1024 * 1024))
+    }
 }
 
 /// What a connector did on this machine for one space, kept in [`STATE_FILE`].
@@ -430,6 +442,10 @@ pub(crate) struct SourceParams {
     /// The step of signing in, for `sources.sign_in`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<SignInStep>,
+    /// The largest photo or file downloaded, in megabytes, for `sources.media`; none for the
+    /// connector's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_mb: Option<u64>,
 }
 
 /// The connectors a service knows, with what they did on this machine.
@@ -629,6 +645,7 @@ impl Registry {
             excluded: &setting.exclude,
             max_items: 0,
             secrets: &secrets,
+            media_max_bytes: None,
         };
         connector.check()?;
         let mut out: Vec<ContainerInfo> = connector
@@ -953,7 +970,24 @@ pub fn connect_with(
         connected_at: Timestamp::now(),
         since: start_of_today(),
         exclude: Vec::new(),
+        media_max_mb: None,
     };
+    write_setting(space, id, Some(&setting), by)?;
+    Ok(setting)
+}
+
+/// Sets the largest photo or file a connected source downloads, in megabytes (`0` for none), or
+/// `None` for the connector's own default. It counts from its next run; what was brought in
+/// stays as it is. Returns its settings.
+pub fn set_media_limit(
+    space: &mut Space,
+    id: &str,
+    max_mb: Option<u64>,
+    by: &Provenance,
+) -> knode_format::Result<SourceSetting> {
+    person(by)?;
+    let mut setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
+    setting.media_max_mb = max_mb;
     write_setting(space, id, Some(&setting), by)?;
     Ok(setting)
 }

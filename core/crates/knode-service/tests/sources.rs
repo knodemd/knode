@@ -43,6 +43,8 @@ struct Store {
     times: Vec<Instant>,
     /// The cursor and the excluded ids of every fetch.
     requests: Vec<(Option<String>, Vec<String>)>,
+    /// The largest media size of every fetch.
+    media: Vec<Option<u64>>,
     /// A synthetic database each fetch reads a copy of, as connectors to local apps do.
     reads: Option<PathBuf>,
     /// How long listing the containers takes, as over the network.
@@ -116,6 +118,7 @@ impl Connector for Fake {
                 request.cursor.map(|c| c.as_str().to_string()),
                 request.excluded.iter().map(|c| c.id.clone()).collect(),
             ));
+            store.media.push(request.media_max_bytes);
             store.slow_fetch
         };
         thread::sleep(slow);
@@ -375,6 +378,29 @@ fn from_today_reads_only_what_is_new_and_the_cursor_moves_on() {
     let node = client.get_node(f.space(), &node.id).unwrap().unwrap();
     assert_eq!(node.created_by.kind, ActorKind::System);
     assert_eq!(node.created_by.actor, ID);
+}
+
+#[test]
+fn the_media_limit_set_for_the_space_reaches_the_connector() {
+    let f = Fixture::new();
+    f.fake.add("family", Timestamp::now(), "One");
+    let client = f.client();
+    client
+        .sources_connect_paused(f.space(), ID, None, &me())
+        .unwrap();
+    let set = client
+        .sources_set_media(f.space(), ID, Some(5), &me())
+        .unwrap();
+    assert_eq!(set.setting.as_ref().unwrap().media_max_mb, Some(5));
+    client.sources_set_on(f.space(), ID, true, &me()).unwrap();
+    f.wait_until("the message", |f| f.written().len() == 1);
+    assert_eq!(f.fake.store().media[0], Some(5 * 1024 * 1024));
+
+    // Back to the connector's default.
+    let set = client
+        .sources_set_media(f.space(), ID, None, &me())
+        .unwrap();
+    assert_eq!(set.setting.as_ref().unwrap().media_max_mb, None);
 }
 
 #[test]

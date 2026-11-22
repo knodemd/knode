@@ -148,6 +148,14 @@ pub(crate) enum Media {
         /// Its file name, or what it was ("photo").
         name: String,
     },
+    /// Read live from a service by a connector, which did not download it: too large, media
+    /// downloads off, or something it never downloads (a contact, a poll...).
+    NotDownloaded {
+        /// Its file name, or what it was ("contact").
+        name: String,
+        /// Why, when there is more to say: "larger than 20 MB".
+        reason: Option<String>,
+    },
     /// Only a link to it is in the export, such as a file on Slack.
     Link {
         /// Its file name.

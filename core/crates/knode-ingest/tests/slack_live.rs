@@ -471,6 +471,7 @@ impl Setup {
             excluded: &self.excluded,
             max_items: 500,
             secrets: &self.secrets,
+            media_max_bytes: None,
         }
     }
 
@@ -546,6 +547,7 @@ fn a_build_without_a_slack_app_says_so() {
         excluded: &[],
         max_items: 10,
         secrets: &secrets,
+        media_max_bytes: None,
     };
     assert!(matches!(
         connector.fetch(&request),

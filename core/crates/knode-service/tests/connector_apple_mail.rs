@@ -316,6 +316,7 @@ fn run_by(
             excluded,
             max_items,
             secrets: &NoSecrets,
+            media_max_bytes: None,
         };
         let fetched = connector.fetch(&request)?;
         if let Some(batch) = fetched.batch {
@@ -555,6 +556,7 @@ fn excluded_mailboxes_spam_and_trash_are_never_read() {
         excluded: &[],
         max_items: 10,
         secrets: &NoSecrets,
+        media_max_bytes: None,
     };
     let containers = connector.containers(&request).unwrap();
     let names: Vec<&str> = containers.iter().map(|c| c.name.as_str()).collect();

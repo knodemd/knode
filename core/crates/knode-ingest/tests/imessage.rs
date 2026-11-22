@@ -307,6 +307,7 @@ fn run(
             excluded: &setting.excluded,
             max_items: setting.max_items,
             secrets: &NoSecrets,
+            media_max_bytes: None,
         };
         let fetched = connector.fetch(&request)?;
         if let Some(batch) = fetched.batch {
@@ -581,6 +582,7 @@ fn never_changes_the_messages_database() {
         excluded: &[],
         max_items: 10,
         secrets: &NoSecrets,
+        media_max_bytes: None,
     };
     m.connector().containers(&request).unwrap();
 
@@ -712,6 +714,7 @@ fn lists_the_conversations_to_exclude() {
         excluded: &[],
         max_items: 10,
         secrets: &NoSecrets,
+        media_max_bytes: None,
     };
     let listed = m.connector().containers(&request).unwrap();
     assert_eq!(
@@ -796,6 +799,7 @@ fn a_changed_database_writes_nothing_and_asks_for_an_update() {
         excluded: &[],
         max_items: 10,
         secrets: &NoSecrets,
+        media_max_bytes: None,
     };
     assert_eq!(
         connector.fetch(&request).unwrap_err().kind(),
