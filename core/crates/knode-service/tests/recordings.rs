@@ -95,6 +95,7 @@ impl Fixture {
             app: Some("zoom.us".into()),
             summaries: true,
             original: None,
+            original_path: None,
         }
     }
 }

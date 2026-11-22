@@ -68,11 +68,13 @@ pub mod media;
 mod model;
 mod opencode;
 pub mod photos;
+pub mod photos_library;
 mod reader;
 pub mod recordings;
 mod redact;
 mod render;
 pub mod sources;
+pub mod storage;
 
 /// The Slack connector: see [`slack::SlackConnector`].
 pub use chats::slack_live as slack;

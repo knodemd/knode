@@ -37,8 +37,10 @@ use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 mod import;
 mod maps;
 mod photos;
+mod photos_library;
 mod recordings;
 mod sources;
+mod storage;
 
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
 const CHANGE_BUFFER: usize = 1024;
@@ -1231,6 +1233,8 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         m if m.starts_with(methods::SOURCES_PREFIX) => sources::call(state, m, raw),
         m if m.starts_with(methods::RECORDINGS_PREFIX) => recordings::call(state, m, raw),
         m if m.starts_with(methods::PHOTOS_PREFIX) => photos::call(state, m, raw),
+        m if m.starts_with(methods::PHOTOS_LIBRARY_PREFIX) => photos_library::call(state, m, raw),
+        m if m.starts_with(methods::STORAGE_PREFIX) => storage::call(state, m, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(
                 codes::METHOD_NOT_FOUND,

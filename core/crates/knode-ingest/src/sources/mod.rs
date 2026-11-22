@@ -140,6 +140,10 @@ pub struct SourceInfo {
     /// when nothing can be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// Whether only the containers the person picks are read, none until they pick some
+    /// (`true`), instead of every one but those excluded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub picks: bool,
 }
 
 impl SourceInfo {
@@ -156,6 +160,7 @@ impl SourceInfo {
             reads: reads.into(),
             permissions: Vec::new(),
             container: None,
+            picks: false,
         }
     }
 
@@ -168,6 +173,14 @@ impl SourceInfo {
     /// The same source, whose `container`s (`chat`, `channel`, `folder`) can be excluded.
     pub fn excluding(mut self, container: impl Into<String>) -> Self {
         self.container = Some(container.into());
+        self
+    }
+
+    /// The same source, which reads only the `container`s (`album`) the person picks: none
+    /// until they pick one.
+    pub fn picking(mut self, container: impl Into<String>) -> Self {
+        self.container = Some(container.into());
+        self.picks = true;
         self
     }
 }
@@ -212,6 +225,14 @@ pub enum Trigger {
     },
     /// Every so often: for network APIs.
     Interval(Duration),
+    /// Never by Knode Service: the app runs it. For a source only the app can read, through a
+    /// system API the service has no access to (EventKit, PhotoKit). The service lists it,
+    /// keeps its settings and its state like any other connector's, and asks the app to run it
+    /// by setting its `next_run`; the app reads the source and hands what it read to the
+    /// service with a method of that source (such as `calendar.sync`), which writes it through
+    /// the source's importer. Its [`Connector::fetch`] is never called by the service, and its
+    /// containers are the ones the app last reported.
+    App,
 }
 
 impl Default for Trigger {

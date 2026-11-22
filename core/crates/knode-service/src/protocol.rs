@@ -231,6 +231,38 @@ pub mod methods {
     /// Puts the reading of a photo back to pending. People only.
     pub const PHOTOS_RETRY: &str = "photos.retry";
 
+    // Photos library: the albums the Knode app reads through PhotoKit, people only.
+
+    /// What every `photos_library.*` method starts with.
+    pub const PHOTOS_LIBRARY_PREFIX: &str = "photos_library.";
+    /// What a space wants from the Photos library now: the albums picked, the history, iCloud.
+    pub const PHOTOS_LIBRARY_PLAN: &str = "photos_library.plan";
+    /// The albums this machine has, reported by the app.
+    pub const PHOTOS_LIBRARY_ALBUMS: &str = "photos_library.albums";
+    /// Which assets of a list a space holds already.
+    pub const PHOTOS_LIBRARY_KNOWN: &str = "photos_library.known";
+    /// Adds one asset the app exported.
+    pub const PHOTOS_LIBRARY_ADD: &str = "photos_library.add";
+    /// Ends a run: marks the assets that left the albums and records the run.
+    pub const PHOTOS_LIBRARY_SYNC: &str = "photos_library.sync";
+    /// Says why the app could not read the library, such as a missing permission.
+    pub const PHOTOS_LIBRARY_FAIL: &str = "photos_library.fail";
+    /// The Photos library options of a space.
+    pub const PHOTOS_LIBRARY_OPTIONS: &str = "photos_library.options";
+    /// Changes the Photos library options of a space.
+    pub const PHOTOS_LIBRARY_CONFIGURE: &str = "photos_library.configure";
+
+    // Storage: how much room a space takes and its limits, people only.
+
+    /// What every `storage.*` method starts with.
+    pub const STORAGE_PREFIX: &str = "storage.";
+    /// How much room a space takes, by kind and by source, and its largest files.
+    pub const STORAGE_SUMMARY: &str = "storage.summary";
+    /// What a space would take after adding some bytes, and whether to ask first.
+    pub const STORAGE_CHECK: &str = "storage.check";
+    /// Changes the limits of a space.
+    pub const STORAGE_CONFIGURE: &str = "storage.configure";
+
     // Sources: importers and connectors, people only.
 
     /// What every `sources.*` method starts with.

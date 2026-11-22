@@ -8,12 +8,29 @@ use std::io::Read;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use knode_format::{Error, MAX_ATTACHMENT_SIZE, NodeId, Provenance, Result, Space};
+use knode_format::{Error, MAX_ATTACHMENT_SIZE, NodeId, Provenance, Result, Space, setting_keys};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::photos::{self, NewPhoto, Photo};
 use crate::recordings::{self, AudioInput, NewRecording, Recording, RecordingKind, Track};
+
+/// The space setting that says whether videos larger than a space attaches keep their original:
+/// `on`, or `off` (the default).
+pub const KEEP_LARGE_ORIGINALS_SETTING: &str = setting_keys::MEDIA_KEEP_LARGE_ORIGINALS;
+
+/// Whether the space keeps the original of a video larger than [`MAX_ATTACHMENT_SIZE`], next to
+/// the audio taken from it: its `media.keep_large_originals` setting is `on`. Off by default, so
+/// a space stays quick to copy, back up and sync.
+pub fn keep_large_originals(space: &Space) -> Result<bool> {
+    Ok(space.setting(KEEP_LARGE_ORIGINALS_SETTING)?.as_deref() == Some("on"))
+}
+
+/// Sets whether the space keeps large originals. Returns whether it changed.
+pub fn set_keep_large_originals(space: &mut Space, on: bool, by: &Provenance) -> Result<bool> {
+    let value = if on { Some("on") } else { None };
+    space.set_setting(KEEP_LARGE_ORIGINALS_SETTING, value, by)
+}
 
 /// What a media file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -209,6 +226,7 @@ pub fn add_file(
                     app: None,
                     summaries: recordings::summaries_enabled(space)?,
                     original: None,
+                    original_path: None,
                 },
                 by,
             )?;

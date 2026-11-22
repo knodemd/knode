@@ -293,7 +293,7 @@ attached: a video larger than 100 MB, whose audio the app extracts and attaches 
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `original`?, `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long (when `ended_at` is `started_at`, only when it was recorded) and, with `original`, a line saying the audio was taken from it and it is not in the space, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
+| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `original`?, `original_path`?, `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long (when `ended_at` is `started_at`, only when it was recorded) and, with `original`, a line saying the audio was taken from it and it is not in the space (or, with `original_path` in a space that keeps large originals, that the space keeps it too, attached up to 4 GB: see Storage), an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
 | `recordings.pending` | `space` | The recordings whose transcript is `pending`, or whose summary is `pending` while the transcript is `done`, oldest first (by `started_at`). A recording that cannot be read is left out (and logged) rather than failing the list. |
 | `recordings.failed` | `space` | The recordings whose transcript is `failed`, or whose summary is `failed` or `unavailable`, newest first (by `started_at`): those the app offers to try again with `recordings.retry`. A recording that cannot be read is left out (and logged). |
 | `recordings.get` | `space`, `id` | The recording. Fails with `not_found` without such a node and `invalid` for a node that is not a recording. |
@@ -604,7 +604,12 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
-| `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
+
+A connector whose status has `"picks": true` (`photos-library`) reads only the containers the
+person picks, none until they pick one: its containers show `excluded` `true` unless picked;
+`sources.include` (with `name`?) picks one and `sources.exclude` drops it, and its setting keeps
+them as `include`.
+| `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish; for a connector the app runs (`calendar`), sets its `next_run` to now so the app runs it |
 | `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected (a space it cannot read counts as having it) |
 | `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
 | `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
@@ -695,6 +700,79 @@ space from a Google Takeout `.mbox`, Apple Mail or the other connector is found 
 `Message-ID` and not added again. Their secrets (the app password, the refresh token) are kept
 only in the system keychain, and are forgotten when the connector signs out or is disconnected
 from the last space that had it.
+
+The `photos-library` connector is run by the Knode app, not by the service (see Photos library,
+below).
+
+## Photos library
+
+The Photos library of a Mac is reached only through PhotoKit, which only the app can use. So the
+`photos-library` connector is *app-driven*, like the calendar: Knode Service lists it with the
+other connectors (`permissions` `["photos"]`, `container` `album`, `picks` `true`), keeps its
+settings in each space (on, the history, the albums picked) and its state on this machine, and
+never runs it itself; it asks the app to run it by setting its `next_run` (15 minutes after a run;
+at once after `sources.run` or a change of `photos_library.configure`). Only the albums the person
+picks are read, none until they pick one. A run of the app, for each space: `photos_library.plan`;
+list the identifiers of every asset in the albums picked; ask `photos_library.known` which the
+space has; export each new one and hand it to `photos_library.add`; end with
+`photos_library.sync`. Everything is written with the provenance
+`{ "kind": "system", "actor": "photos-library" }`. All `photos_library.*` methods are for people
+only.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `photos_library.plan` | `space` | `{ "on", "albums", "since"?, "icloud", "room", "token"?, "next_run"? }`: whether to read anything (off when paused or when `sources` or `capture` is off in `config.toml`), the albums picked (`[{ "id", "name" }]`), with the history `from-today` the start of the day it was connected (Unix milliseconds; older assets are left out), whether assets kept only in iCloud are downloaded, whether the space is under its soft limit (`storage.check`; when not, nothing new is added), the change token saved by the last run, and when the next run is asked for. Fails with `invalid` when the source is not connected. |
+| `photos_library.albums` | `albums` (`[{ "id", "name" }]`) | `true`. The albums this Mac has, for `sources.containers`. Kept in memory. |
+| `photos_library.known` | `space`, `ids` | The identifiers of `ids` the space holds already, in order. |
+| `photos_library.add` | `space`, `asset` | `{ "node", "created", "room" }`: the node (`{ "type": "photo", ... }` as `photos.get`, or `{ "type": "recording", ... }` as `recordings.get`), whether it is new, and whether the space is still under its soft limit. An asset the space holds is returned unchanged. Fails with `invalid` when the source is paused, or for an asset taken before the day a `from-today` source was connected. |
+| `photos_library.sync` | `space`, `albums`?, `present`?, `token`?, `added`?, `waiting`?, `held`? | `{ "marked": { "removed", "restored" }, "source" }`. With `present` (every identifier in the albums picked now), marks the nodes whose assets are not among them and restores those back. Records the run (`last_items` = `added`, the cursor = `token`) with a notice when assets `waiting` for iCloud or `held` by the soft limit, and asks for the next run in 15 minutes. Marks nothing when the source is paused. |
+| `photos_library.fail` | `space`, `kind` (`permission`, `unavailable` or `failed`), `message` | The source, with the run failed: `permission` and `unavailable` show `needs-attention`. |
+| `photos_library.options` | `space` | `{ "icloud" }`: `false` unless changed. Kept in the space setting `photos_library.icloud` (`on`, else absent). |
+| `photos_library.configure` | `space`, `icloud`?, `by` | The options, after the change. |
+
+An asset in `photos_library.add`:
+
+```json
+{ "id": "9F983DBA-EC35-42B8-8773-B597CF782EDD/L0/001", "kind": "photo",
+  "path": "/private/var/folders/…/IMG_0042.HEIC", "title": "IMG_0042",
+  "created_at": 1795510800000, "metadata": { "width": 4032, "height": 3024, "latitude": 40.4, "longitude": -3.7 } }
+```
+
+`id` is the asset's PhotoKit `localIdentifier`, stable for a library on one Mac. `kind` is `photo`
+(`path` is the original, unchanged, with the photo's `metadata` as in `photos.create`) or `video`
+(`path` is the original or, for a video larger than 100 MB, the audio taken from it, with
+`original` naming the original and `original_path` the exported original; `duration_ms` is its
+length). Paths are absolute; the app deletes its exports after the call.
+
+A photo becomes a `photo` node (`photos.create`), a video a `recording` node with source `file`
+(`recordings.create` with `key` `photos-library:<id>`); both are read or transcribed on the device
+like any other. Each keeps `photos_library.id` (the identifier) and `photos_library.state`
+(`present` or `removed`). Adding the same asset again finds it by its identifier, so nothing is
+duplicated; an asset with the same content as a photo the space has is that photo, and its
+identifier is kept as an alias (`photos_library.alias.<hash>`). An asset that left the albums
+read (deleted, taken out of the album, or an album no longer picked) is marked `removed` and its
+body starts with `**No longer in the Photos albums this space reads.**`; it is never deleted, and
+one that comes back is restored.
+
+## Storage
+
+How much room a space takes and what fills it, and its limits. Sizes are computed on the device;
+blobs are counted once. All `storage.*` methods are for people only.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `storage.summary` | `space`, `top`? (20, at most 200) | `{ "total", "kinds": { "notes", "photos", "videos", "audio", "other", "deleted" }, "nodes", "files", "photos", "recordings", "sources": [{ "actor", "kind", "size", "files" }], "largest": [{ "node", "title", "kind", "name", "size", "media_type", "added_by" }], "limits", "over" }`. `total` is the whole package on disk; `notes` the database (text, history, index) and `sync/`; `photos`, `videos`, `audio` and `other` the attached files by media type; `deleted` the files only deleted nodes use (a purge frees them). `sources` says who attached how much, largest first; `largest` lists the largest files of nodes that are not deleted. `over` is whether `total` is past the soft limit. |
+| `storage.check` | `space`, `size` | `{ "total", "after", "warn_at", "warn" }`: what the space would take after adding `size` bytes, and whether to ask the person first (`after` is past the soft limit). |
+| `storage.configure` | `space`, `warn_at`?, `keep_large_originals`?, `by` | The limits after the change. |
+
+The limits: `{ "max_file", "max_original", "keep_large_originals", "warn_at" }`. One file is at
+most `max_file` (100 MB). A video larger than that keeps only the audio taken from it, with the
+original left where it was, unless the space keeps large originals (`keep_large_originals`, the
+space setting `media.keep_large_originals`, off by default): then `recordings.create` with
+`original_path` attaches the original too, up to `max_original` (4 GB). `warn_at` is the soft
+limit in bytes (the space setting `storage.warn_at`; 10 GB when absent, `0` never warns): past
+it, imports ask first and the Photos library adds nothing new. Removing an attachment to make
+room is `attachment.remove`, which can be undone.
 
 ## Search
 

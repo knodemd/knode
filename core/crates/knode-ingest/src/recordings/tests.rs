@@ -47,6 +47,7 @@ fn meeting(dir: &Path, project: Option<NodeId>) -> NewRecording {
         app: Some("zoom.us".into()),
         summaries: true,
         original: None,
+        original_path: None,
     }
 }
 
@@ -171,6 +172,7 @@ fn a_recording_taken_from_a_large_file_names_it() {
         app: None,
         summaries: false,
         original: Some("Talk.mov".into()),
+        original_path: None,
     };
     let recording = create(&mut space, &new, &me()).unwrap();
     assert_eq!(recording.original.as_deref(), Some("Talk.mov"));
