@@ -50,6 +50,14 @@ pub enum SpacesAction {
         /// on or off.
         state: Switch,
     },
+    /// Keep where photos added to a space were taken (their coordinates), or not.
+    PhotoLocation {
+        /// The space: its name or its .knode path.
+        #[arg(value_name = "SPACE")]
+        target: String,
+        /// on or off.
+        state: Switch,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -234,6 +242,25 @@ pub fn run(paths: &Paths, action: Option<SpacesAction>, json: bool) -> Result<()
                 Switch::Off => println!(
                     "Agent conversations are no longer captured into {}; those of its projects \
                      are stored nowhere.",
+                    name_of(&path)
+                ),
+            }
+            Ok(())
+        }
+        Some(SpacesAction::PhotoLocation { target, state }) => {
+            let path = find(paths, &target)?;
+            let value = match state {
+                Switch::On => "on",
+                Switch::Off => "off",
+            };
+            set_setting(&path, setting_keys::PHOTOS_LOCATION, Some(value), &by)?;
+            match state {
+                Switch::On => println!(
+                    "Photos added to {} keep where they were taken from now on.",
+                    name_of(&path)
+                ),
+                Switch::Off => println!(
+                    "Photos added to {} no longer keep where they were taken.",
                     name_of(&path)
                 ),
             }
