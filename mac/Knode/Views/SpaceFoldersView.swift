@@ -38,11 +38,12 @@ struct SpaceFoldersSheet: View {
     }
 }
 
-/// Settings > Spaces: the folders and capture of each space in the sidebar.
+/// Settings > Spaces: the folders, capture and storage of each space in the sidebar.
 struct SpacesSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var selection: URL?
     @State private var folders: SpaceFoldersModel?
+    @State private var storage: SpaceStorageModel?
 
     private var spaces: [SpaceItem] {
         model.sidebarSpaces.filter { !$0.isExample && !$0.isMissing }
@@ -63,6 +64,9 @@ struct SpacesSettingsView: View {
                     .padding(.horizontal, KSpace.x1)
                     if let folders, folders.spaceID == model.space(at: selection ?? URL(filePath: "/"))?.id {
                         SpaceFoldersForm(folders: folders)
+                        if let storage, storage.spaceID == folders.spaceID {
+                            SpaceStorageSection(model: storage)
+                        }
                     } else {
                         HStack { Spacer(); KSpinner(); Spacer() }.frame(minHeight: 200)
                     }
@@ -75,6 +79,7 @@ struct SpacesSettingsView: View {
             folders?.stop()
             folders = await model.foldersModel(at: selection)
             await folders?.load()
+            storage = await model.storageModel(at: selection)
         }
         .onDisappear { folders?.stop() }
     }

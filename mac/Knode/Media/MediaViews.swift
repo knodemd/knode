@@ -10,10 +10,23 @@ extension MediaImporter {
             model.errorMessage = "Open a space first to add photos, recordings or videos to it."
             return
         }
+        if let warning = await largeImportWarning(for: urls, in: space.id), !Self.confirmLargeImport(warning) { return }
         let report = await add(urls, to: space.id, at: spaceURL, project: model.selectedProjectID)
         await model.refreshSpace(space.id)
         if let first = report.nodes.first { await model.openNode(first) }
         if !report.refused.isEmpty { model.errorMessage = report.refused.joined(separator: "\n") }
+    }
+}
+
+extension MediaImporter {
+    /// Asks before an import that takes the space past its soft limit.
+    static func confirmLargeImport(_ message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "This space would pass its size limit"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Add Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 

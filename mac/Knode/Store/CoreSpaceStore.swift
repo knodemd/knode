@@ -643,7 +643,8 @@ extension CoreSpaceStore: RecordingStore {
             startedAt: RecordingWire.milliseconds(recording.startedAt), endedAt: RecordingWire.milliseconds(recording.endedAt),
             project: recording.project,
             audio: recording.audio.map { AudioInput(path: $0.url.standardizedFileURL.path(percentEncoded: false), track: RecordingTrack($0.role)) },
-            key: recording.key, app: recording.app, summaries: recording.summaries, original: recording.original
+            key: recording.key, app: recording.app, summaries: recording.summaries, original: recording.original,
+            originalPath: recording.originalURL?.standardizedFileURL.path(percentEncoded: false)
         )
         return StoredRecording(try await run { try core.createRecording(recording: new, by: author) })
     }

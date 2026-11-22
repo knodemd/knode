@@ -50,7 +50,8 @@ protocol AudioExtractor: Sendable {
 /// A file larger than a space attaches (100 MB) is never changed. An audio file or a video that
 /// large keeps only its audio, extracted on this Mac as mono AAC (about 30 MB an hour) and
 /// attached in its place, so it can still be transcribed; the original stays where it was and the
-/// recording says so. A photo that large, or audio still too long, is refused with why.
+/// recording says so, unless the space keeps large originals: then the core attaches the original
+/// too. A photo that large, or audio still too long, is refused with why.
 @MainActor
 @Observable
 final class MediaImporter {
@@ -68,6 +69,7 @@ final class MediaImporter {
     private(set) var isAdding = false
 
     @ObservationIgnored private let store: any Store
+    @ObservationIgnored private let storage: (any SpaceStorage)?
     @ObservationIgnored private let inspector: any MediaInspector
     @ObservationIgnored private let extractor: any AudioExtractor
     @ObservationIgnored private let limit: Int64
@@ -76,6 +78,7 @@ final class MediaImporter {
 
     init(
         store: any Store,
+        storage: (any SpaceStorage)? = nil,
         inspector: any MediaInspector = AVMediaInspector(),
         extractor: any AudioExtractor = AACAudioExtractor(),
         limit: Int64 = AttachmentInfo.maxSize,
@@ -83,6 +86,7 @@ final class MediaImporter {
         didAdd: @escaping @MainActor (_ space: URL, _ kind: MediaKind) -> Void = { _, _ in }
     ) {
         self.store = store
+        self.storage = storage ?? (store as? any SpaceStorage)
         self.inspector = inspector
         self.extractor = extractor
         self.limit = limit
@@ -94,6 +98,17 @@ final class MediaImporter {
     nonisolated static let folderDepth = 3
     /// The most media files taken from the folders of one `add`, as `knode import` takes.
     nonisolated static let folderLimit = 10_000
+
+    /// Why to ask before adding these files: the space would go past its soft limit
+    /// (`storage.check`). `nil` when there is room, or when the space cannot tell.
+    func largeImportWarning(for urls: [URL], in space: Space.ID) async -> String? {
+        guard let storage else { return nil }
+        let size = urls.filter { MediaKind.of($0) != nil }.reduce(Int64(0)) { sum, url in
+            sum + ((try? self.size(of: url)) ?? 0)
+        }
+        guard size > 0, let check = try? await storage.storageCheck(adding: size, in: space), check.warn else { return nil }
+        return "Adding \(StorageText.size(size)) takes this space to \(StorageText.size(check.after)), past its limit of \(StorageText.size(check.warnAt)). You can change the limit or remove large files in Settings > Spaces > Storage."
+    }
 
     /// Whether any of these files is one `add` takes, or a folder.
     static func accepts(_ urls: [URL]) -> Bool { urls.contains { MediaKind.of($0) != nil || isFolder($0) } }
@@ -182,6 +197,7 @@ final class MediaImporter {
         let stem = url.deletingPathExtension().lastPathComponent
         var attach = url
         var original: String?
+        var originalURL: URL?
         var folder: URL?
         defer { if let folder { try? FileManager.default.removeItem(at: folder) } }
         if try size(of: url) > limit {
@@ -201,13 +217,14 @@ final class MediaImporter {
             attach = try await extractor.extractAudio(from: url, named: stem, into: temporary)
             guard try size(of: attach) <= limit else { throw MediaImportError.audioTooLong(url.lastPathComponent, limit: limit) }
             original = url.lastPathComponent
+            originalURL = url
         }
         let draft = NewRecordingDraft(
             kind: .recording, title: stem.isEmpty ? url.lastPathComponent : stem,
             startedAt: startedAt, endedAt: startedAt.addingTimeInterval(max(duration, 0)), project: project,
             audio: [RecordedTrack(role: .mixed, url: attach)], key: key, app: nil,
             summaries: (try? await store.recordingSummariesEnabled(in: space)) ?? true,
-            original: original
+            original: original, originalURL: originalURL
         )
         return try await store.createRecording(draft, in: space).id
     }

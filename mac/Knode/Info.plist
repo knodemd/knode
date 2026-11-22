@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Knode records the sound of your Mac, such as the other people on a call, only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Knode reads only the Photos albums you pick, after you connect the Photos library source to a space. It never changes your library, and your photos and videos stay on this Mac.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Knode records your microphone only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.</string>
 </dict>

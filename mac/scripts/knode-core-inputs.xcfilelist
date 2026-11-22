@@ -15,6 +15,7 @@ $(SRCROOT)/../core/crates/knode-ffi/src/photos.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/recordings.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/spaces.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/spaces_tests.rs
+$(SRCROOT)/../core/crates/knode-ffi/src/storage.rs
 $(SRCROOT)/../core/crates/knode-ffi/src/tests.rs
 $(SRCROOT)/../core/crates/knode-ffi/uniffi.toml
 $(SRCROOT)/../core/crates/knode-format/Cargo.toml
@@ -37,6 +38,7 @@ $(SRCROOT)/../core/crates/knode-format/src/sql/0002-properties.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0003-v02.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0004-v03.sql
 $(SRCROOT)/../core/crates/knode-format/src/sql/0005-search-path.sql
+$(SRCROOT)/../core/crates/knode-format/src/storage.rs
 $(SRCROOT)/../core/crates/knode-format/src/types.rs
 $(SRCROOT)/../core/crates/knode-format/src/vector.rs
 $(SRCROOT)/../core/crates/knode-format/src/views.rs
@@ -80,6 +82,8 @@ $(SRCROOT)/../core/crates/knode-ingest/src/model.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/opencode.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/photos.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/photos/tests.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/photos_library.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/photos_library/tests.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/reader.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/recordings.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/recordings/tests.rs
@@ -88,6 +92,7 @@ $(SRCROOT)/../core/crates/knode-ingest/src/render.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/sources/files.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/sources/mod.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/sources/sqlite.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/storage.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/text.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/vscdb.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/watch.rs
@@ -127,8 +132,10 @@ $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/photos.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/photos_library.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/recordings.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/sources.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/storage.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/apple_mail.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/gmail/http.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/gmail/mod.rs
@@ -141,6 +148,7 @@ $(SRCROOT)/../core/crates/knode-service/src/sources/imap/wire.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/mail_live.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/mail_test_support.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/mod.rs
+$(SRCROOT)/../core/crates/knode-service/src/sources/photos_library.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/runtime.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/telegram.rs
 $(SRCROOT)/../core/crates/knode-service/src/spaces.rs

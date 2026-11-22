@@ -194,6 +194,9 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     public var permissions: [SourcePermission]
     /// What it calls the things it reads: `chat`, `channel`, `folder`.
     public var container: String?
+    /// Whether only the containers the person picks are read (the Photos library's albums),
+    /// none until they pick one, instead of every one but those excluded.
+    public var picks = false
     public var state: SourceState
     public var setting: Setting?
     public var lastRun: Int64?
@@ -225,7 +228,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, reads, permissions, container, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun
+        case id, name, kind, reads, permissions, container, picks, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun
     }
 
     public init(from decoder: any Decoder) throws {
@@ -236,6 +239,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         reads = try c.decodeIfPresent(String.self, forKey: .reads) ?? ""
         permissions = try c.decodeIfPresent([SourcePermission].self, forKey: .permissions) ?? []
         container = try c.decodeIfPresent(String.self, forKey: .container)
+        picks = try c.decodeIfPresent(Bool.self, forKey: .picks) ?? false
         state = try c.decodeIfPresent(SourceState.self, forKey: .state) ?? .unknown
         setting = try c.decodeIfPresent(Setting.self, forKey: .setting)
         lastRun = try c.decodeIfPresent(Int64.self, forKey: .lastRun)

@@ -107,6 +107,10 @@ struct SourceCard: View {
                                detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
                                isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
                     .disabled(sources.isBusy || source.state == .unavailable)
+                if source.id == PhotosLibraryWire.source, let space = sources.space {
+                    KHairline()
+                    PhotosLibraryOptionsRows(space: space)
+                }
                 KHairline()
                 HStack(spacing: KSpace.x2) {
                     KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
@@ -422,7 +426,9 @@ private struct SignInStepView: View {
                         }
                     }
                 }
-                KExplanation("What you enter goes to Knode Service on this Mac, which keeps the sign-in in your Keychain.", size: 11)
+                if !step.fields.isEmpty {
+                    KExplanation("What you enter goes to Knode Service on this Mac, which keeps the sign-in in your Keychain.", size: 11)
+                }
             }
         }
     }
@@ -510,7 +516,11 @@ private struct ContainersStep: View {
     var body: some View {
         let noun = flow.containerNoun
         VStack(alignment: .leading, spacing: KSpace.x3) {
-            KExplanation("Every one of your \(noun) comes in, and new ones too, except the ones you switch off. One switched off is never read again; what came from it stays.")
+            if flow.source.picks {
+                KExplanation("Only the \(noun) you switch on are read, none until you pick one. One switched off is not read again; what came from it stays, marked as no longer read.")
+            } else {
+                KExplanation("Every one of your \(noun) comes in, and new ones too, except the ones you switch off. One switched off is never read again; what came from it stays.")
+            }
             if flow.containers.count > 8 {
                 KSearchField(placeholder: "Find", text: $filter, size: .small)
             }
