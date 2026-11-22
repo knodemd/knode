@@ -95,16 +95,12 @@ struct RecordingMenuSection: View {
     }
 
     private func request(_ mode: RecordingMode) {
-        // A request left open when its window was closed gives way to this one.
-        controller.cancelRequest()
-        controller.dismiss()
-        controller.request(mode)
+        controller.begin(mode)
         show()
     }
 
     private func show() {
-        openWindow(id: RecordingWindow.id)
-        NSApp.activate()
+        RecordingWindow.show(openWindow)
     }
 }
 
@@ -278,7 +274,7 @@ struct RecordingWindow: View {
         KSheetSurface(width: 440) {
             switch controller.phase {
             case .idle:
-                KSheetTitle(kicker: "Meetings", title: "Nothing is being recorded", message: "Start a recording from the Knode menu in the menu bar.", close: close)
+                KSheetTitle(kicker: "Meetings", title: "Nothing is being recorded", message: "Start one from the Record menu, or with Record in the Knode window.", close: close)
             case .consentNeeded(let mode):
                 RecordingConsentView(mode: mode)
             case .choosingTarget(let mode):

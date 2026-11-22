@@ -14,6 +14,7 @@ struct KnodeApp: App {
     @State private var sources: SourcesModel
     @State private var recording: RecordingController
     @State private var recordings: RecordingsProcessor
+    @State private var dockIndicator: RecordingDockIndicator
 
     init() {
         KFont.register()
@@ -47,6 +48,8 @@ struct KnodeApp: App {
             unsaved: UnsavedRecordingStore(home: .current)
         )
         _recording = State(initialValue: recording)
+        // A Dock badge for as long as it records: the menu bar item can be hidden by a full menu bar.
+        _dockIndicator = State(initialValue: RecordingDockIndicator(controller: recording, dock: AppDockBadge()))
         service.onRunningChange = { running in
             if running {
                 Task {
@@ -84,7 +87,7 @@ struct KnodeApp: App {
                 .knodeTheme(background: true)
                 .environment(model)
                 .environment(agents)
-
+                .environment(recording)
                 .task {
                     // Once the knode command is installed on the first run: Connect your agents,
                     // unless Get started is open, which shows the same step.
@@ -114,6 +117,7 @@ struct KnodeApp: App {
         .defaultSize(width: 1200, height: 760)
         .commands {
             SpaceCommands(model: model)
+            RecordingCommands(controller: recording)
             #if DEBUG
             DesignGalleryCommands()
             #endif
@@ -201,6 +205,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+}
+
+/// The Record menu: the same recordings as the menu bar item, which macOS hides when the menu
+/// bar is full.
+struct RecordingCommands: Commands {
+    let controller: RecordingController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        let state = controller.commandState
+        CommandMenu("Record") {
+            Button(state.primaryTitle) {
+                if state.isRecording {
+                    controller.stop()
+                    RecordingWindow.show(openWindow)
+                } else {
+                    begin(.online(.allApps))
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!state.canStart && !state.canStop)
+
+            Button("Record In Person…") { begin(.inPerson) }
+                .keyboardShortcut("r", modifiers: [.command, .option, .shift])
+                .disabled(!state.canStart)
+
+            Divider()
+
+            Button(state.pauseTitle) {
+                state.isPaused ? controller.resume() : controller.pause()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .option])
+            .disabled(!state.canPauseOrResume)
+
+            Button("Show Recording") { RecordingWindow.show(openWindow) }
+                .disabled(controller.phase == .idle)
+        }
+    }
+
+    private func begin(_ mode: RecordingMode) {
+        controller.begin(mode)
+        RecordingWindow.show(openWindow)
     }
 }
 

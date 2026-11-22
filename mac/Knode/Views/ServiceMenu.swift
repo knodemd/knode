@@ -132,7 +132,7 @@ private struct ServiceMenuPanel: View {
                 NSApp.activate()
             }
             ServiceMenuAction("Agents and access", icon: .private) {
-                UserDefaults.standard.set(SettingsTab.agents.rawValue, forKey: SettingsTab.storageKey)
+                SettingsTab.select(.agents)
                 NSApp.activate()
                 openSettings()
             }

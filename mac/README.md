@@ -13,7 +13,9 @@ the first time, it holds the default space, the recent spaces and the spaces in 
 
 - **New Space…** (Shift-Command-N) asks for a name and a folder, `~/Knode` by default, and can make
   the new space the default one.
-- Command-1 to Command-9 switch to the first nine spaces; clicking a space opens it.
+- Command-1 to Command-9 switch to the first nine spaces; a click on a space opens it and slides its
+  notes in. Up and Down move through the list without opening; Return opens.
+- **Sources** and the gear at the bottom of the sidebar open Settings on Sources, or Settings.
 - The **Space** menu and the context menu of a space rename it (its name in `manifest.json`; the
   package keeps its file name), choose its icon (one emoji, the `space.icon` setting of the space),
   make it the default space for agents and capture, show it in the Finder, or remove it from the
@@ -71,6 +73,14 @@ app reads and writes them through the core in the app even while the service hol
 does for renaming; making and removing a link goes through the service when it runs, so its other
 clients see it.
 
+## Settings
+
+Settings (Command-Comma, or the gear at the bottom of the sidebar) has a sidebar of sections, as in
+System Settings: **Sources**, **Spaces**, **Agents and access**, **Search** and **General**. Up and
+Down move between them. Each source shows with the icon of its app, read from the copy installed on
+this Mac (no third-party logo ships with Knode), or a Knode icon when the app is not here, such as
+Gmail or IMAP.
+
 ## Agents and access
 
 **Settings > Agents** lists the agents of this machine: their kind, when they were added and
@@ -105,14 +115,19 @@ while the service holds it (SQLite allows both), and the app reloads what it sho
 
 ## Meetings
 
-**Record Meeting…** in the menu bar menu records the sound of the Mac (everyone on the call, through
+**Record Meeting…** (Shift-Command-R) records the sound of the Mac (everyone on the call, through
 a Core Audio process tap) and the microphone (you), as two AAC tracks; **Record In Person…** records
-only the microphone, for people in a room. The first time, the app explains that some places
+only the microphone, for people in a room (Option-Shift-Command-R). Both are in the **Record** menu,
+in **Record** at the top right of the Knode window and in the menu bar menu; macOS hides the menu bar
+item when the menu bar is full, so nothing depends on it. The first time, the app explains that some places
 require every participant's consent; after that, each recording starts only by hand, for that
 meeting, after choosing its space and project, with a notice to copy into the meeting chat. The
 same sheet has **Write minutes**, the space setting `recordings.summaries` (on unless it says
-`off`), written at once; the transcript is always kept. While it records, the menu bar shows a red
-dot and the time.
+`off`), written at once; the transcript is always kept. While it records, a red bar across the top of
+the Knode window shows the time, where it goes, **Pause** and **Stop** (Command-Period), the Dock icon
+carries a **REC** badge (**Paused** while paused), and the menu bar item shows a red dot and the time.
+In the Record menu, Shift-Command-R becomes **Stop Recording**, and **Pause Recording** (Option-Command-P)
+pauses and resumes.
 
 Both tracks are resampled to 48 kHz mono before they are encoded (AAC, a constant 64 kbps: about
 29 MB an hour), so a Bluetooth headset at 8 or 16 kHz or an interface at 96 or 192 kHz records like
@@ -295,7 +310,7 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
 | `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
-| `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller and its menu and window |
+| `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller, its menus, window, Dock badge and the commands they share |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |

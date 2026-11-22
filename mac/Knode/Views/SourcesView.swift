@@ -74,8 +74,11 @@ private struct SourcesSections: View {
                 KExplanation("An importer runs once, on an export you give it, with the knode import command. Importing again brings in only what is new.")
                 ForEach(sources.importers) { source in
                     KHairline()
-                    KSettingRow(source.name, detail: source.reads) {
-                        KChip(SourceText.state(.importer), icon: .import)
+                    HStack(spacing: KSpace.x3) {
+                        SourceIcon(sourceID: source.id, size: 28)
+                        KSettingRow(source.name, detail: source.reads) {
+                            KChip(SourceText.state(.importer), icon: .import)
+                        }
                     }
                 }
             }
@@ -91,42 +94,46 @@ struct SourceCard: View {
     let spaceName: String
 
     var body: some View {
-        KSettingsSection(source.name, highlighted: source.state == .needsUpdate) {
-            SourceStateChip(state: source.state)
-        } content: {
-            KExplanation(source.reads, size: 13)
-            SourceFacts(source: source)
-            SourceNotice(source: source, spaceName: spaceName)
-            if source.needsSignIn, let account = sources.account(of: source) {
-                KHairline()
-                SourceAccountRow(source: source, account: account)
+        KCard(highlighted: source.state == .needsUpdate, padding: KSpace.x4) {
+            VStack(alignment: .leading, spacing: KSpace.x3) {
+                content
             }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        SourceHeader(source: source)
+        SourceFacts(source: source)
+        SourceNotice(source: source, spaceName: spaceName)
+        if source.needsSignIn, let account = sources.account(of: source) {
             KHairline()
-            if source.isConnected {
-                KSettingToggle("On in \(spaceName)",
-                               detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
-                               isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
+            SourceAccountRow(source: source, account: account)
+        }
+        KHairline()
+        if source.isConnected {
+            KSettingToggle("On in \(spaceName)",
+                           detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
+                           isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
+                .disabled(sources.isBusy || source.state == .unavailable)
+            KHairline()
+            HStack(spacing: KSpace.x2) {
+                KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
+                    .disabled(sources.isBusy || !source.isOn || source.state == .running || source.state == .unavailable)
+                    .kTooltip("Bring in what is new now, without waiting")
+                KButton("Choose \(SourceText.containers(source.container))", icon: .filter, size: .small) { open() }
                     .disabled(sources.isBusy || source.state == .unavailable)
-                KHairline()
-                HStack(spacing: KSpace.x2) {
-                    KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
-                        .disabled(sources.isBusy || !source.isOn || source.state == .running || source.state == .unavailable)
-                        .kTooltip("Bring in what is new now, without waiting")
-                    KButton("Choose \(SourceText.containers(source.container))", icon: .filter, size: .small) { open() }
-                        .disabled(sources.isBusy || source.state == .unavailable)
-                    Spacer()
-                    KButton("Disconnect", icon: .close, kind: .destructive, size: .small) { confirmDisconnect() }
-                        .disabled(sources.isBusy)
+                Spacer()
+                KButton("Disconnect", icon: .close, kind: .destructive, size: .small) { confirmDisconnect() }
+                    .disabled(sources.isBusy)
+            }
+        } else {
+            HStack {
+                if source.state == .unavailable {
+                    KExplanation("This Mac has no such connector.")
                 }
-            } else {
-                HStack {
-                    if source.state == .unavailable {
-                        KExplanation("This Mac has no such connector.")
-                    }
-                    Spacer()
-                    KButton("Connect", icon: .connect, kind: .primary, size: .small) { open() }
-                        .disabled(sources.isBusy || source.state == .unavailable)
-                }
+                Spacer()
+                KButton("Connect", icon: .connect, kind: .primary, size: .small) { open() }
+                    .disabled(sources.isBusy || source.state == .unavailable)
             }
         }
     }
@@ -144,6 +151,26 @@ struct SourceCard: View {
             isDestructive: true,
             confirmIcon: .close
         ) { [sources] in Task { await sources.disconnect(source) } }
+    }
+}
+
+/// The top of a source's card: its app's icon, its name, its state and what it reads.
+struct SourceHeader: View {
+    let source: SourceStatus
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .center, spacing: KSpace.x3) {
+            SourceIcon(sourceID: source.id, size: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.name).font(KFont.ui(15, .semibold)).foregroundStyle(theme.fg).lineLimit(1)
+                Text(source.reads).font(KFont.ui(12)).foregroundStyle(theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            SourceStateChip(state: source.state)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -268,8 +295,11 @@ struct ConnectSourceSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: KSpace.x5) {
-            KSheetTitle(kicker: flow.isManaging ? "What it reads" : "Connect a source", title: flow.source.name,
-                        message: flow.source.reads, close: dismiss)
+            HStack(alignment: .top, spacing: KSpace.x4) {
+                SourceIcon(sourceID: flow.source.id, size: 44)
+                KSheetTitle(kicker: flow.isManaging ? "What it reads" : "Connect a source", title: flow.source.name,
+                            message: flow.source.reads, close: dismiss)
+            }
             if !flow.isManaging {
                 SourceStepsBar(steps: flow.steps, current: flow.stepIndex)
             }
