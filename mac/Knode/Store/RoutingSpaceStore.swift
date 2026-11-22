@@ -192,7 +192,7 @@ public actor RoutingSpaceStore: SpaceStore {
     /// Runs a call on the store that holds the space. If the service stopped meanwhile, the space
     /// moves to the core and the call runs again there; with `retry` false, a call the service
     /// may have run before it stopped fails instead.
-    private func route<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any SpaceStore) async throws -> T) async throws -> T {
+    func route<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any SpaceStore) async throws -> T) async throws -> T {
         guard let entry = open[space] else { throw SpaceStoreError.spaceNotFound(space) }
         do {
             return try await work(store(entry.backend))

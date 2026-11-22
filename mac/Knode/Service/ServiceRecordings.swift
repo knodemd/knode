@@ -15,6 +15,7 @@ extension ServiceSpaceStore: RecordingStore {
         if let project = recording.project { params["project"] = .string(project) }
         if let key = recording.key { params["key"] = .string(key) }
         if let app = recording.app { params["app"] = .string(app) }
+        if let original = recording.original { params["original"] = .string(original) }
         return try await call("recordings.create", params, as: WireRecording.self).recording()
     }
 

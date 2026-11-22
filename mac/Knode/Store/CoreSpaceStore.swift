@@ -14,7 +14,7 @@ public final class CoreSpaceStore: SpaceStore {
     static let searchLimit: UInt32 = 100
 
     private let spaces = Mutex<[Space.ID: (space: Space, core: KnodeSpace)]>([:])
-    private let author: Provenance
+    let author: Provenance
     public let person: String
     private let queue = DispatchQueue(label: "md.knode.core", qos: .userInitiated, attributes: .concurrent)
 
@@ -226,13 +226,13 @@ public final class CoreSpaceStore: SpaceStore {
         }
     }
 
-    private func core(_ id: Space.ID) throws -> KnodeSpace {
+    func core(_ id: Space.ID) throws -> KnodeSpace {
         guard let core = spaces.withLock({ $0[id]?.core }) else { throw SpaceStoreError.spaceNotFound(id) }
         return core
     }
 
     /// Runs a call into the core off the main thread, with its errors as `SpaceStoreError`.
-    private func run<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    func run<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
@@ -643,7 +643,7 @@ extension CoreSpaceStore: RecordingStore {
             startedAt: RecordingWire.milliseconds(recording.startedAt), endedAt: RecordingWire.milliseconds(recording.endedAt),
             project: recording.project,
             audio: recording.audio.map { AudioInput(path: $0.url.standardizedFileURL.path(percentEncoded: false), track: RecordingTrack($0.role)) },
-            key: recording.key, app: recording.app, summaries: recording.summaries
+            key: recording.key, app: recording.app, summaries: recording.summaries, original: recording.original
         )
         return StoredRecording(try await run { try core.createRecording(recording: new, by: author) })
     }

@@ -86,6 +86,9 @@ struct NewRecordingDraft: Hashable, Sendable {
     /// The meeting app, such as `us.zoom.xos`.
     var app: String?
     var summaries: Bool
+    /// The file the audio was taken from when it is not attached: a video larger than a space
+    /// attaches, kept only where it was.
+    var original: String? = nil
 }
 
 /// A recording as the space keeps it.

@@ -177,6 +177,35 @@ TEST_RUNNER_KNODE_MANUAL_AUDIO=/tmp/x.aiff xcodebuild -scheme Knode -destination
   test -only-testing:KnodeTests/RecordingsManualTests
 ```
 
+## Photos, recordings and videos
+
+**File > Add Photos…** and **Add Recording or Video…**, or dropping files on the note list, add
+photos (HEIC, JPEG, PNG), audio files and videos to the open space, in its selected project. Each
+file becomes one node with the original attached unchanged, and the same file added again (by its
+SHA-256, `photo.key` or `recording.key`) is found, not copied twice. `MediaImporter` does it:
+
+- A photo is stored with `photos.create`, with the date, place (coordinates), camera and size its
+  file says, read with ImageIO. `PhotosProcessor` then reads every photo a space says is still to
+  read (`photos.pending`), on this Mac, with Vision: the text in it (`VNRecognizeTextRequest`,
+  accurate, the language found by itself) and up to eight labels above 30% confidence
+  (`VNClassifyImageRequest`), stored with `photos.reading` between `<!-- knode:photo-reading -->`
+  markers, so search finds "the whiteboard photo". The place is never named: that needs the
+  network, so photos keep only coordinates. The space setting `photos.location` (`off`, with
+  `knode spaces photo-location <space> off`) keeps coordinates out. Readings are written as
+  `{ "kind": "system", "actor": "photos", "source": "apple-vision" }`; a photo that cannot be
+  read is `failed`, with **Retry** in the menu bar.
+- An audio file or a video is a recording (`recordings.create`, kind `recording`, source `file`),
+  titled after the file, from its creation date and for its length, with the file as its `mixed`
+  track, so `RecordingsProcessor` transcribes it and writes minutes like a meeting. A video is
+  always decoded through `AVAssetReader`, which reads its audio track.
+- A file larger than the 100 MB a space keeps in one attachment is never changed. For audio or
+  video, its audio is extracted on this Mac as mono AAC at 64 kbit/s (about 30 MB an hour) and
+  attached instead, and the recording says the original stays where it was (`recording.original`);
+  audio still over 100 MB, or a photo over 100 MB, is refused with why.
+
+`knode import <file>` (or `--from media <folder>`) adds the same nodes without the app; the app
+reads and transcribes them once it opens the space.
+
 ## Menu bar and the knode command
 
 The menu bar item shows whether Knode Service is running, the spaces it has open and how many
@@ -296,6 +325,7 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
 | `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller and its menu and window |
+| `Knode/Media` | Adding photos, audio and video to a space (`MediaImporter`, audio extraction), reading photos with Vision (`PhotosProcessor`, `VisionPhotoReader`), the `photos.*` store calls (`PhotoStore`) and the menu items and drop target |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |

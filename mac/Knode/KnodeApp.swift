@@ -14,6 +14,8 @@ struct KnodeApp: App {
     @State private var sources: SourcesModel
     @State private var recording: RecordingController
     @State private var recordings: RecordingsProcessor
+    @State private var photos: PhotosProcessor
+    @State private var media: MediaImporter
 
     init() {
         KFont.register()
@@ -39,6 +41,12 @@ struct KnodeApp: App {
             spaceURLs: { [model] in model.recordingSpaceURLs }
         )
         _recordings = State(initialValue: recordings)
+        // Photos are read, and audio and video added by hand transcribed, on this Mac too.
+        let photos = PhotosProcessor(store: store, reader: VisionPhotoReader(), spaceURLs: { [model] in model.recordingSpaceURLs })
+        _photos = State(initialValue: photos)
+        _media = State(initialValue: MediaImporter(store: store) { url, kind in
+            if kind == .photo { photos.scan(spaceAt: url) } else { recordings.scan(spaceAt: url) }
+        })
         let recording = RecordingController(
             recorder: MeetingRecorder(),
             sink: StoreRecordingSink(store: store),
@@ -52,6 +60,7 @@ struct KnodeApp: App {
                 Task {
                     await store.serviceDidStart()
                     recordings.serviceDidStart()
+                    photos.serviceDidStart()
                     if !testing { await recording.saveUnsaved() }
                 }
             }
@@ -59,6 +68,7 @@ struct KnodeApp: App {
         service.start()
         if !testing {
             recordings.start()
+            photos.start()
             // Recordings that could not be saved before, such as when the app quit while saving.
             Task { await recording.saveUnsaved() }
         }
@@ -84,6 +94,7 @@ struct KnodeApp: App {
                 .knodeTheme(background: true)
                 .environment(model)
                 .environment(agents)
+                .environment(media)
 
                 .task {
                     // Once the knode command is installed on the first run: Connect your agents,
@@ -113,7 +124,7 @@ struct KnodeApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 760)
         .commands {
-            SpaceCommands(model: model)
+            SpaceCommands(model: model, media: media)
             #if DEBUG
             DesignGalleryCommands()
             #endif
@@ -153,6 +164,7 @@ struct KnodeApp: App {
 
         MenuBarExtra {
             ServiceMenu(monitor: service, model: model, searchIndex: searchIndex, recording: recording, recordings: recordings)
+                .environment(photos)
         } label: {
             if recording.isRecording {
                 // Always visible while recording: a dot and the time, beside the icon.
@@ -206,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct SpaceCommands: Commands {
     let model: AppModel
+    let media: MediaImporter
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -225,6 +238,10 @@ struct SpaceCommands: Commands {
                 model.sheet = .newSpace
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+
+            Divider()
+            MediaMenuItems(model: model, media: media)
+            Divider()
 
             Button("Open Space…") {
                 if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }

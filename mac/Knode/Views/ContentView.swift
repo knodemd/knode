@@ -559,6 +559,7 @@ private struct SpaceSidebar: View {
 
             NoteList(focus: $listFocused)
                 .frame(maxHeight: .infinity)
+                .mediaDropTarget()
 
             HStack(spacing: KSpace.x1) {
                 KButton("New note", icon: .add, kind: .primary, size: .small) {
