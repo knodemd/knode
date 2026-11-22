@@ -366,3 +366,59 @@ extension RoutingSpaceStore: DeletedNotesStore {
         }
     }
 }
+
+// MARK: - Recordings
+
+// Through Knode Service while it holds the space, so agents and the live folder see each
+// recording at once; through the core in the app when it does not. Every write is safe to run
+// again on the core: a create carries a `key`, and the other writes replace what they wrote.
+extension RoutingSpaceStore: RecordingsBackend {
+    func createRecording(_ recording: NewRecordingDraft, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space, retry: recording.key != nil) { store in try await store.createRecording(recording, in: space) }
+    }
+
+    func pendingRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        try await recordings(space) { store in try await store.pendingRecordings(in: space) }
+    }
+
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        try await recordings(space) { store in try await store.failedRecordings(in: space) }
+    }
+
+    func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space) { store in try await store.recording(id, in: space) }
+    }
+
+    func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space) { store in try await store.setTranscript(transcript, by: engine, of: id, in: space) }
+    }
+
+    func setSummary(_ summary: MeetingSummary, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space) { store in try await store.setSummary(summary, by: engine, of: id, in: space) }
+    }
+
+    func failRecording(_ id: Node.ID, stage: StoredRecording.Stage, failure: StoredRecording.Failure, error: String, by engine: RecordingEngine, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space) { store in try await store.failRecording(id, stage: stage, failure: failure, error: error, by: engine, in: space) }
+    }
+
+    func retryRecording(_ id: Node.ID, stage: StoredRecording.Stage, in space: Space.ID) async throws -> StoredRecording {
+        try await recordings(space) { store in try await store.retryRecording(id, stage: stage, in: space) }
+    }
+
+    func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool {
+        try await recordings(space) { store in try await store.recordingSummariesEnabled(in: space) }
+    }
+
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        try await recordings(space) { store in try await store.setRecordingSummariesEnabled(enabled, in: space) }
+    }
+
+    private func recordings<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any RecordingStore) async throws -> T) async throws -> T {
+        try await route(space, retry: retry) { store in
+            guard let store = store as? any RecordingStore else {
+                throw SpaceStoreError.unsupported("this space keeps no recordings")
+            }
+            return try await work(store)
+        }
+    }
+}

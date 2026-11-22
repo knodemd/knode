@@ -33,6 +33,7 @@ targets:
       - path: Knode
         excludes:
           - Info.plist
+          - Knode.entitlements
       - path: "../brand/07 App Icon/macOS/AppIcon.icns"
         buildPhase: resources
         group: Resources
@@ -52,6 +53,13 @@ targets:
         CFBundleIconName: AppIcon
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: Knode records your microphone only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.
+        NSAudioCaptureUsageDescription: Knode records the sound of your Mac, such as the other people on a call, only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.
+    # The hardened runtime blocks the microphone unless the app asks for it.
+    entitlements:
+      path: Knode/Knode.entitlements
+      properties:
+        com.apple.security.device.audio-input: true
     settings:
       base:
         PRODUCT_NAME: Knode

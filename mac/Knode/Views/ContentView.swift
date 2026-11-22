@@ -30,6 +30,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 TopBar(collapsed: collapsed, expand: toggleSidebar)
                 KDivider()
+                RecordingBar()
                 MainArea()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -163,6 +164,7 @@ private struct TopBar: View {
             }
             breadcrumb
             Spacer(minLength: KSpace.x4)
+            RecordButton()
             if model.editor != nil, model.canvas == nil, model.mode == .notes {
                 KIconButton(.link, title: "Links (Shift-Command-L)", isActive: model.isShowingLinks) { model.toggleLinks() }
                     .disabled(model.links == nil)
@@ -279,9 +281,10 @@ private struct SpacesSidebar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.kTheme) private var theme
     let open: () -> Void
-    /// The space the keyboard is on. Moving it does not open the space; Return does.
+    /// The space the keyboard is on. Moving it does not open the space; a click or Return does.
     @State private var cursor: URL?
     @FocusState private var listFocused: Bool
+    @Environment(\.openSettings) private var openSettingsAction
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -318,6 +321,12 @@ private struct SpacesSidebar: View {
                 KButton("Open space", icon: .folder, kind: .ghost, size: .small) {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
                 }
+                HStack(spacing: KSpace.x1) {
+                    KButton("Sources", icon: .import, kind: .ghost, size: .small) { openSettings(.sources) }
+                        .kTooltip("Mail, chats, calendars and other apps that bring things into a space")
+                    Spacer(minLength: 0)
+                    KIconButton(.settings, title: "Settings (Command-Comma)") { openSettings(nil) }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(KSpace.x3)
@@ -330,13 +339,26 @@ private struct SpacesSidebar: View {
         }
     }
 
+    /// A click or Return opens the space: its notes slide in once it is selected, also when
+    /// selecting it takes a moment, such as opening it in the store first.
     private func openSpace(_ url: URL) {
         cursor = url
-        if url != model.selectedSpaceURL {
-            Task { await model.selectSpace(at: url) }
+        if isSelected(url) {
+            open()
+            return
         }
-        open()
+        Task {
+            await model.selectSpace(at: url)
+            if isSelected(url) { open() }
+        }
     }
+
+    private func isSelected(_ url: URL) -> Bool {
+        guard let selected = model.selectedSpaceURL else { return false }
+        return selected == url || selected == url.standardizedFileURL
+    }
+
+    private func openSettings(_ tab: SettingsTab?) { SettingsTab.open(tab, with: openSettingsAction) }
 }
 
 /// One space in the sidebar: its icon, its name, and a mark on the default space.
@@ -486,6 +508,7 @@ private struct SpaceSidebar: View {
     let back: () -> Void
     @FocusState private var searchFocused: Bool
     @FocusState private var listFocused: Bool
+    @Environment(\.openSettings) private var openSettingsAction
 
     var body: some View {
         @Bindable var model = model
@@ -569,11 +592,15 @@ private struct SpaceSidebar: View {
                     .disabled(!model.hasMap)
                 KIconButton(.canvas, title: "New canvas (Option-Command-N)") { Task { await model.createCanvas() } }
                     .disabled(!model.hasMap)
+                KIconButton(.import, title: "Sources of this space") { openSettings(.sources) }
+                KIconButton(.settings, title: "Settings (Command-Comma)") { openSettings(nil) }
             }
             .padding(KSpace.x3)
             .overlay(alignment: .top) { KDivider() }
         }
     }
+
+    private func openSettings(_ tab: SettingsTab?) { SettingsTab.open(tab, with: openSettingsAction) }
 
     /// Opens the first note of the list, unless one in it is open, and gives the list the keys.
     @discardableResult

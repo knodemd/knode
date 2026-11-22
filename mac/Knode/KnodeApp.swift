@@ -12,25 +12,65 @@ struct KnodeApp: App {
     @State private var agents: AgentsModel
     @State private var searchIndex: SearchIndexModel
     @State private var sources: SourcesModel
+    @State private var recording: RecordingController
+    @State private var recordings: RecordingsProcessor
+    @State private var dockIndicator: RecordingDockIndicator
 
     init() {
         KFont.register()
         let store = RoutingSpaceStore()
         let command: @MainActor () -> KnodeCommand = { KnodeCommand(executable: CommandLineTool.forThisApp.executable()) }
         let service = ServiceMonitor(command: command)
-        service.onRunningChange = { running in
-            if running { Task { await store.serviceDidStart() } }
-        }
-        service.start()
         // While tests run in the app, the list of spaces stays in memory.
         let testing = ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
-        _model = State(initialValue: AppModel(
+        let model = AppModel(
             store: store,
             recentSpaces: RecentSpaces(),
             library: testing ? nil : SpaceLibrary(),
             settings: CoreKnodeSettings(),
             preferences: testing ? nil : .standard
-        ))
+        )
+        _model = State(initialValue: model)
+        // The one pipeline that transcribes and summarises recordings on this Mac: the meetings
+        // recorded here and those that connectors bring in, such as voice memos.
+        let recordings = RecordingsProcessor(
+            store: store,
+            transcriber: SpeechAnalyzerTranscriber(),
+            summarizer: FoundationModelsSummarizer(),
+            spaceURLs: { [model] in model.recordingSpaceURLs }
+        )
+        _recordings = State(initialValue: recordings)
+        let recording = RecordingController(
+            recorder: MeetingRecorder(),
+            sink: StoreRecordingSink(store: store),
+            processor: recordings,
+            consent: DefaultsRecordingConsentStore(),
+            unsaved: UnsavedRecordingStore(home: .current)
+        )
+        _recording = State(initialValue: recording)
+        // A Dock badge for as long as it records: the menu bar item can be hidden by a full menu bar.
+        _dockIndicator = State(initialValue: RecordingDockIndicator(controller: recording, dock: AppDockBadge()))
+        service.onRunningChange = { running in
+            if running {
+                Task {
+                    await store.serviceDidStart()
+                    recordings.serviceDidStart()
+                    if !testing { await recording.saveUnsaved() }
+                }
+            }
+        }
+        service.start()
+        if !testing {
+            recordings.start()
+            // Recordings that could not be saved before, such as when the app quit while saving.
+            Task { await recording.saveUnsaved() }
+        }
+        // Quitting while a meeting records stops it, closes its files and saves it first.
+        AppDelegate.beforeTerminating = { [recording] in
+            guard recording.shouldDelayTermination else { return false }
+            await recording.prepareForTermination(timeout: .seconds(20))
+            return true
+        }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
         _sources = State(initialValue: SourcesModel(
@@ -47,7 +87,7 @@ struct KnodeApp: App {
                 .knodeTheme(background: true)
                 .environment(model)
                 .environment(agents)
-
+                .environment(recording)
                 .task {
                     // Once the knode command is installed on the first run: Connect your agents,
                     // unless Get started is open, which shows the same step.
@@ -77,6 +117,7 @@ struct KnodeApp: App {
         .defaultSize(width: 1200, height: 760)
         .commands {
             SpaceCommands(model: model)
+            RecordingCommands(controller: recording)
             #if DEBUG
             DesignGalleryCommands()
             #endif
@@ -98,6 +139,14 @@ struct KnodeApp: App {
         }
         .windowResizability(.contentSize)
 
+        Window("Record Meeting", id: RecordingWindow.id) {
+            RecordingWindow()
+                .knodeTheme(background: true)
+                .environment(recording)
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+
         #if DEBUG
         Window("Design Gallery", id: DesignGallery.windowID) {
             DesignGallery()
@@ -107,10 +156,17 @@ struct KnodeApp: App {
         #endif
 
         MenuBarExtra {
-            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex)
+            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex, recording: recording, recordings: recordings)
         } label: {
-            KnodeMenuBarIcon.image(paused: !service.isRunning)
-                .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")
+            if recording.isRecording {
+                // Always visible while recording: a dot and the time, beside the icon.
+                Image(systemName: recording.isPaused ? "pause.circle.fill" : "record.circle.fill")
+                    .accessibilityLabel(recording.isPaused ? "Recording paused" : "Recording")
+                Text(RecordingText.elapsed(recording.elapsedSeconds))
+            } else {
+                KnodeMenuBarIcon.image(paused: !service.isRunning)
+                    .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -137,6 +193,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Work to finish before the app quits; returns false when there is none. Set by `KnodeApp`.
+    static var beforeTerminating: (@MainActor () async -> Bool)?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let work = Self.beforeTerminating else { return .terminateNow }
+        Task { @MainActor in
+            _ = await work()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
+/// The Record menu: the same recordings as the menu bar item, which macOS hides when the menu
+/// bar is full.
+struct RecordingCommands: Commands {
+    let controller: RecordingController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        let state = controller.commandState
+        CommandMenu("Record") {
+            Button(state.primaryTitle) {
+                if state.isRecording {
+                    controller.stop()
+                    RecordingWindow.show(openWindow)
+                } else {
+                    begin(.online(.allApps))
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(!state.canStart && !state.canStop)
+
+            Button("Record In Person…") { begin(.inPerson) }
+                .keyboardShortcut("r", modifiers: [.command, .option, .shift])
+                .disabled(!state.canStart)
+
+            Divider()
+
+            Button(state.pauseTitle) {
+                state.isPaused ? controller.resume() : controller.pause()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .option])
+            .disabled(!state.canPauseOrResume)
+
+            Button("Show Recording") { RecordingWindow.show(openWindow) }
+                .disabled(controller.phase == .idle)
+        }
+    }
+
+    private func begin(_ mode: RecordingMode) {
+        controller.begin(mode)
+        RecordingWindow.show(openWindow)
     }
 }
 

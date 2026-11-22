@@ -22,5 +22,9 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Knode records the sound of your Mac, such as the other people on a call, only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Knode records your microphone only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.</string>
 </dict>
 </plist>

@@ -13,7 +13,9 @@ the first time, it holds the default space, the recent spaces and the spaces in 
 
 - **New Space…** (Shift-Command-N) asks for a name and a folder, `~/Knode` by default, and can make
   the new space the default one.
-- Command-1 to Command-9 switch to the first nine spaces; clicking a space opens it.
+- Command-1 to Command-9 switch to the first nine spaces; a click on a space opens it and slides its
+  notes in. Up and Down move through the list without opening; Return opens.
+- **Sources** and the gear at the bottom of the sidebar open Settings on Sources, or Settings.
 - The **Space** menu and the context menu of a space rename it (its name in `manifest.json`; the
   package keeps its file name), choose its icon (one emoji, the `space.icon` setting of the space),
   make it the default space for agents and capture, show it in the Finder, or remove it from the
@@ -71,6 +73,14 @@ app reads and writes them through the core in the app even while the service hol
 does for renaming; making and removing a link goes through the service when it runs, so its other
 clients see it.
 
+## Settings
+
+Settings (Command-Comma, or the gear at the bottom of the sidebar) has a sidebar of sections, as in
+System Settings: **Sources**, **Spaces**, **Agents and access**, **Search** and **General**. Up and
+Down move between them. Each source shows with the icon of its app, read from the copy installed on
+this Mac (no third-party logo ships with Knode), or a Knode icon when the app is not here, such as
+Gmail or IMAP.
+
 ## Agents and access
 
 **Settings > Agents** lists the agents of this machine: their kind, when they were added and
@@ -102,6 +112,85 @@ History, the changes of a note, restore and undo go through the service when it 
 the core when it does not. Knode Service has no methods yet to rename a space or change its
 settings. For those, `RoutingSpaceStore` opens the space with the core in the app for the call, even
 while the service holds it (SQLite allows both), and the app reloads what it shows.
+
+## Meetings
+
+**Record Meeting…** (Shift-Command-R) records the sound of the Mac (everyone on the call, through
+a Core Audio process tap) and the microphone (you), as two AAC tracks; **Record In Person…** records
+only the microphone, for people in a room (Option-Shift-Command-R). Both are in the **Record** menu,
+in **Record** at the top right of the Knode window and in the menu bar menu; macOS hides the menu bar
+item when the menu bar is full, so nothing depends on it. The first time, the app explains that some places
+require every participant's consent; after that, each recording starts only by hand, for that
+meeting, after choosing its space and project, with a notice to copy into the meeting chat. The
+same sheet has **Write minutes**, the space setting `recordings.summaries` (on unless it says
+`off`), written at once; the transcript is always kept. While it records, a red bar across the top of
+the Knode window shows the time, where it goes, **Pause** and **Stop** (Command-Period), the Dock icon
+carries a **REC** badge (**Paused** while paused), and the menu bar item shows a red dot and the time.
+In the Record menu, Shift-Command-R becomes **Stop Recording**, and **Pause Recording** (Option-Command-P)
+pauses and resumes.
+
+Both tracks are resampled to 48 kHz mono before they are encoded (AAC, a constant 64 kbps: about
+29 MB an hour), so a Bluetooth headset at 8 or 16 kHz or an interface at 96 or 192 kHz records like
+the built-in microphone. When the microphone changes mid-meeting (AirPods connect, a USB microphone
+is unplugged), the engine starts again with the new input and the same `Me` track goes on; the
+window and the menu say so briefly. The system audio comes from a process tap read through a private
+aggregate device that holds the tap alone, so a headset's microphone never ends up on the `Others`
+track; only when such a device cannot be made is the default output added as its clock, and then
+only the tap's own buffers (the last ones of the list) are read.
+
+When it stops, the files are closed and moved, with a `manifest.json` (space, project, mode, start,
+duration, tracks and the key that keeps a second save from storing it twice), to
+`~/Library/Application Support/Knode/Unsaved Recordings/<id>` (under `$KNODE_HOME` when it is set).
+Then they are stored in the chosen space with `recordings.create`, as a node of kind `meeting`
+titled like `Meeting, 22 November 2026 10:30` (or `In-person meeting, …`), linked to its project,
+and removed only once the stored recording lists every track. Saving cannot be cancelled. A
+recording that could not be saved (a file larger than the 100 MB a space keeps in one attachment,
+a space that cannot be written, a track the space did not keep) stays there: the menu bar lists it
+as **Unsaved recording**, with **Save Again**, **Show in Finder** and **Delete** (which asks first,
+in the row), and the app tries to save it again at launch and whenever Knode Service starts.
+
+A track grows by 8 kB a second, so a recording warns from three hours on and stops by itself at
+95 % of what a space keeps in one file (about 3 h 27 min); it is saved, and **Record Again** goes
+on with the meeting, to the same space and project, while the first part is transcribed. Quitting
+the app while a meeting records stops it, closes its files and waits up to 20 seconds for it to be
+saved; what is not saved by then is saved at the next launch.
+
+Transcribing and summarising are one pipeline, `RecordingsProcessor`, for every recording a space
+says is still to do (`recordings.pending`): the meetings recorded here and recordings the app did
+not make, such as voice memos a connector brings in with one `mixed` track. It looks for work at
+launch, when Knode Service starts again, when the open spaces change and when a space announces a
+change to a node, in the open spaces and the default space, one recording at a time. Each audio
+file is read from the space (`attachment.path`) and transcribed on the Mac with `SpeechAnalyzer`
+(sentences with their times; `Me` and `Others` from the two tracks of an online meeting, `Speaker`
+for one microphone), then stored with `recordings.transcript`. The minutes are written by Apple's
+on-device model (Foundation Models): an overview, the key points, every decision, action item and
+open question, by map-reduce over the transcript so a long meeting fits the model, and stored with
+`recordings.summary`. A transcription error marks the transcript `failed`; minutes the Mac cannot
+write mark the summary `unavailable`, with why. The transcript is always kept. Nothing leaves the
+Mac. Audio the speech analyzer cannot open as it is, such as a QuickTime `.qta` voice memo, is
+decoded through `AVAssetReader` into a temporary file first. The minutes cut the transcript to
+what the model counts as fitting (from macOS 26.4; before, at one character a token for Chinese,
+Japanese or Korean and 2.5 for plain ASCII), and a chunk or a set of key points that still does
+not fit, or whose answer is cut off, is halved and tried again. Because what is left to do is kept in the space, work interrupted by quitting the app goes on
+at the next launch.
+
+The recording is the person's; transcripts, minutes and failures are written by Knode itself:
+`{ "kind": "system", "actor": "recordings", "source": "apple-speech" }` (or
+`apple-foundation-models`). The menu bar shows the recording being worked on and, for a stage
+that failed, **Retry** (`recordings.retry`). The failures come from the spaces
+(`recordings.failed`), read with the pending ones, so they can be retried after a restart too.
+
+The pieces are in `Knode/Recordings`, behind protocols (`MeetingRecording`, `Transcriber`,
+`Summarizer`, `RecordingSink`), and the store calls in `RecordingStore`: through Knode Service when
+it runs, through the core in the app when it does not.
+
+To check transcription against the real model, run the manual test with a Spanish file:
+
+```sh
+say -v Mónica -o /tmp/x.aiff "Hemos decidido lanzar la versión el viernes catorce."
+TEST_RUNNER_KNODE_MANUAL_AUDIO=/tmp/x.aiff xcodebuild -scheme Knode -destination 'platform=macOS' \
+  test -only-testing:KnodeTests/RecordingsManualTests
+```
 
 ## Menu bar and the knode command
 
@@ -221,6 +310,7 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
 | `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
+| `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller, its menus, window, Dock badge and the commands they share |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |

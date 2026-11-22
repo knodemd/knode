@@ -2,13 +2,31 @@ import AppKit
 import KnodeBrand
 import SwiftUI
 
-/// The panes of the settings window.
+/// The sections of the settings window, in the order of its sidebar.
 enum SettingsTab: String, CaseIterable, Hashable {
-    case agents, sources, spaces, search, general
+    case sources, spaces, agents, search, general
 
-    /// The pane the settings window shows, kept between openings; the menu bar panel sets it to
-    /// open the window on a pane.
+    /// The section the settings window shows, kept between openings; the main window and the
+    /// menu bar panel set it to open the window on a section.
     static let storageKey = "KnodeSettingsTab"
+    static let defaultTab = SettingsTab.sources
+
+    /// The section stored in `defaults`, or the first one when none or an unknown one is stored.
+    static func selected(in defaults: UserDefaults = .standard) -> SettingsTab {
+        defaults.string(forKey: storageKey).flatMap(SettingsTab.init(rawValue:)) ?? defaultTab
+    }
+
+    /// Makes the settings window show `tab`, now if it is open or the next time it opens.
+    static func select(_ tab: SettingsTab, in defaults: UserDefaults = .standard) {
+        defaults.set(tab.rawValue, forKey: storageKey)
+    }
+
+    /// Opens the settings window, on `tab` when one is given.
+    @MainActor static func open(_ tab: SettingsTab?, with openSettings: OpenSettingsAction) {
+        if let tab { select(tab) }
+        NSApp.activate()
+        openSettings()
+    }
 
     var title: String {
         switch self {
@@ -17,6 +35,17 @@ enum SettingsTab: String, CaseIterable, Hashable {
         case .spaces: "Spaces"
         case .search: "Search"
         case .general: "General"
+        }
+    }
+
+    /// One line under the title of the section.
+    var subtitle: String {
+        switch self {
+        case .agents: "Which agents reach your spaces, and what each one may do."
+        case .sources: "Mail, chats, calendars and other apps that bring things into a space."
+        case .spaces: "Where your spaces are, and what each one keeps."
+        case .search: "Search by meaning, on this Mac."
+        case .general: "Knode Service, the space for agents, and the knode command."
         }
     }
 
@@ -31,9 +60,9 @@ enum SettingsTab: String, CaseIterable, Hashable {
     }
 }
 
-/// The settings window: our own bar of tabs under the traffic lights, and the pane below it.
+/// The settings window: a sidebar of sections, as in System Settings, and the section beside it.
 struct SettingsView: View {
-    @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.agents
+    @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.defaultTab
 
     var body: some View {
         SettingsWindow(tab: $tab)
@@ -47,34 +76,81 @@ private struct SettingsWindow: View {
     @Environment(\.kTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                KTabs(selection: $tab, options: SettingsTab.allCases.map { KOption($0, $0.title, icon: $0.glyph) })
-                Spacer()
-            }
-            .padding(.top, 8)
-            .frame(height: WindowChrome.barHeight)
-            .background(theme.bg)
-            KHairline()
-            Group {
-                switch tab {
-                case .agents: AgentsSettingsView()
-                case .sources: SourcesSettingsView()
-                case .spaces: SpacesSettingsView()
-                case .search: SearchSettingsView()
-                case .general: GeneralSettingsView()
+        HStack(spacing: 0) {
+            SettingsSidebar(tab: $tab)
+                .frame(width: 210)
+            KDivider(.vertical)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tab.title).kBlockStyle(17).foregroundStyle(theme.fg)
+                    Text(tab.subtitle).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
                 }
+                .padding(.horizontal, KSpace.x8)
+                .frame(maxWidth: .infinity, minHeight: WindowChrome.barHeight + KSpace.x4, alignment: .bottomLeading)
+                .padding(.bottom, KSpace.x3)
+                .background {
+                    theme.bg.gesture(WindowDragGesture())
+                }
+                KHairline()
+                Group {
+                    switch tab {
+                    case .agents: AgentsSettingsView()
+                    case .sources: SourcesSettingsView()
+                    case .spaces: SpacesSettingsView()
+                    case .search: SearchSettingsView()
+                    case .general: GeneralSettingsView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .scrollEdgeEffectHidden(true, for: .all)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .scrollEdgeEffectHidden(true, for: .all)
+            .background(theme.bg)
         }
         .kOverlayHost(overlays)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar(removing: .title)
         .background(WindowChrome())
         .ignoresSafeArea(.container, edges: .top)
-        .frame(width: 680, height: 620)
+        .frame(minWidth: 820, idealWidth: 880, maxWidth: .infinity, minHeight: 560, idealHeight: 660, maxHeight: .infinity)
+    }
+}
+
+/// The sections of the settings window, below the traffic lights so nothing sits under them.
+private struct SettingsSidebar: View {
+    @Binding var tab: SettingsTab
+    @Environment(\.kTheme) private var theme
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // The traffic lights sit in this band, as in the main window.
+            Color.clear
+                .frame(height: WindowChrome.barHeight)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+            KSectionLabel("Settings")
+                .padding(.horizontal, KSpace.x5)
+                .padding(.bottom, KSpace.x2)
+            VStack(spacing: 2) {
+                ForEach(SettingsTab.allCases, id: \.self) { item in
+                    KRow(isSelected: item == tab, isFocused: focused && item == tab, action: { tab = item }) {
+                        KIcon(item.glyph, size: .sm, color: item == tab ? (theme.isDark ? theme.indigo : theme.fg) : theme.muted)
+                            .frame(width: 18)
+                        Text(item.title)
+                            .font(KFont.ui(13, item == tab ? .semibold : .medium))
+                            .foregroundStyle(theme.fg)
+                            .lineLimit(1)
+                    }
+                    .id(item)
+                    .accessibilityLabel(item.title)
+                }
+            }
+            .padding(.horizontal, KSpace.x2)
+            .kKeyboardList(ids: SettingsTab.allCases, selection: tab, focus: $focused, select: { tab = $0 }, activate: { tab = $0 })
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(theme.panel)
     }
 }
 

@@ -13,3 +13,10 @@ extension KGlyph {
     /// Power, for starting at login and quitting.
     static let power = KGlyph(rows: ["...#...", ".#.#.#.", "#..#..#", "#.....#", "#.....#", ".#...#.", "..###.."], title: "Power")
 }
+
+extension KGlyph {
+    /// Record: a filled dot, for starting a recording.
+    static let record = KGlyph(rows: [".......", "..###..", ".#####.", ".#####.", ".#####.", "..###..", "......."], title: "Record")
+    /// Pause: two bars.
+    static let pause = KGlyph(rows: [".......", ".##.##.", ".##.##.", ".##.##.", ".##.##.", ".##.##.", "......."], title: "Pause")
+}

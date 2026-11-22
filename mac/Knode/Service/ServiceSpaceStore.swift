@@ -249,12 +249,12 @@ public actor ServiceSpaceStore: CoeditingStore {
         return try JSONDecoder().decode([FolderOverlap].self, from: data)
     }
 
-    private func settings(of space: Space.ID) async throws -> [String: String] {
+    func settings(of space: Space.ID) async throws -> [String: String] {
         let path = try path(space)
         return try await call("settings.get", ["space": .string(path)], as: [String: String].self)
     }
 
-    private func setSetting(_ key: String, to value: String?, of space: Space.ID) async throws {
+    func setSetting(_ key: String, to value: String?, of space: Space.ID) async throws {
         let path = try path(space)
         let params: [String: JSONValue] = ["space": .string(path), "key": .string(key), "value": value.map(JSONValue.string) ?? .null, "by": author]
         _ = try await call("settings.set", params, as: [String: String].self)

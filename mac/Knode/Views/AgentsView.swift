@@ -111,7 +111,7 @@ struct SpaceAccessSheet: View {
             }
             HStack(spacing: KSpace.x2) {
                 KButton("All agents", icon: .settings, kind: .ghost) {
-                    UserDefaults.standard.set(SettingsTab.agents.rawValue, forKey: SettingsTab.storageKey)
+                    SettingsTab.select(.agents)
                     openSettings()
                 }
                 Spacer()
