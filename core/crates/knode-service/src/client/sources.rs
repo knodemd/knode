@@ -119,6 +119,26 @@ impl Client {
         )
     }
 
+    /// Sets the largest photo or file a connector downloads in the space, in megabytes (`0` for
+    /// none), or `None` for the connector's default.
+    pub fn sources_set_media(
+        &self,
+        space: impl AsRef<Path>,
+        source: &str,
+        max_mb: Option<u64>,
+        by: &Provenance,
+    ) -> Result<SourceStatus> {
+        self.sources_call(
+            methods::SOURCES_MEDIA,
+            Some(space.as_ref()),
+            Some(source),
+            |p| {
+                p.max_mb = max_mb;
+                p.by = Some(by.clone());
+            },
+        )
+    }
+
     /// Includes again the chat, channel or folder `id` of a connector.
     pub fn sources_include(
         &self,

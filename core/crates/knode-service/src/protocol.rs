@@ -207,6 +207,8 @@ pub mod methods {
     pub const SOURCES_EXCLUDE: &str = "sources.exclude";
     /// Includes again a chat, channel or folder excluded before.
     pub const SOURCES_INCLUDE: &str = "sources.include";
+    /// Sets the largest photo or file a connector downloads.
+    pub const SOURCES_MEDIA: &str = "sources.media";
     /// The chats, channels or folders of a connector, the excluded ones marked.
     pub const SOURCES_CONTAINERS: &str = "sources.containers";
     /// Runs a connector now.

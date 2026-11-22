@@ -672,6 +672,7 @@ mod connector {
             excluded,
             max_items,
             secrets: &NoSecrets,
+            media_max_bytes: None,
         }
     }
 

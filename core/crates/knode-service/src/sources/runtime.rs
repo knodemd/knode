@@ -516,6 +516,7 @@ impl Runtime {
                 excluded: &setting.exclude,
                 max_items: self.options.max_items.max(1),
                 secrets: &secrets,
+                media_max_bytes: setting.media_max_bytes(),
             };
             let fetched = entry.connector.fetch(&request).map_err(|e| (written, e))?;
             let space = self.space(entry).map_err(|e| (written, e))?;

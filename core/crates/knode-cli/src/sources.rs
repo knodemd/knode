@@ -66,6 +66,15 @@ pub enum Action {
         /// The id of the chat, channel or folder.
         id: String,
     },
+    /// Set the largest photo or file a connector downloads, such as Telegram, in megabytes: `0`
+    /// downloads none, and leaving it out goes back to the connector's default. Larger ones are
+    /// named in the text only.
+    Media {
+        /// The connector.
+        source: String,
+        /// The largest size, in megabytes.
+        max_mb: Option<u64>,
+    },
     /// List the chats, channels or folders of a connector, the excluded ones marked.
     Containers {
         /// The connector.
@@ -205,6 +214,23 @@ pub fn run(paths: &Paths, space: &Path, action: Action, by: &Provenance) -> Resu
                 }
             }
             println!("Included {id} in {source} again.");
+        }
+        Action::Media { source, max_mb } => {
+            match &client {
+                Some(client) => {
+                    client.sources_set_media(space, &source, max_mb, by)?;
+                }
+                None => {
+                    sources::set_media_limit(&mut Space::open(space)?, &source, max_mb, by)?;
+                }
+            }
+            match max_mb {
+                Some(0) => println!("{source} downloads no photos or files from now on."),
+                Some(mb) => {
+                    println!("{source} downloads photos and files up to {mb} MB from now on.")
+                }
+                None => println!("{source} downloads photos and files up to its default size."),
+            }
         }
         Action::Containers { source, json } => {
             let client = client.ok_or_else(|| {

@@ -502,6 +502,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.pause` / `sources.resume` | `space`, `source`, `by` | The source, off or on again |
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
+| `sources.media` | `space`, `source`, `max_mb`?, `by` | The source. The largest photo or file it downloads in this space from its next run, in megabytes (`0` for none), kept as `setting.media_max_mb`; without `max_mb`, the connector's default (Telegram: 20 MB). Larger ones are named in the text as not downloaded. Only sources whose `media` is `true` read it |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
 | `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
 | `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected (a space it cannot read counts as having it) |
@@ -520,6 +521,8 @@ source's id (`whatsapp`, `apple-mail`...).
 
 - `kind` is `importer` or `connector`. `permissions` are among `full-disk-access`, `sign-in`,
   `network`, `calendar`, `contacts`, `microphone` and `photos`.
+  `media`, when `true`, says the connector downloads photos and files up to a size
+  `sources.media` sets (a client shows that choice when connecting it).
 - `state` is `importer`, `off` (not connected), `paused`, `unavailable` (connected, but this
   machine has no such connector), `stopped` (`sources` or `capture` is off in `config.toml`),
   `running`, `idle`, `failing` (its last run failed; it tries again later, waiting twice as long

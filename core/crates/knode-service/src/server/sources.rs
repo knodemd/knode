@@ -63,6 +63,7 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         | methods::SOURCES_RESUME
         | methods::SOURCES_EXCLUDE
         | methods::SOURCES_INCLUDE
+        | methods::SOURCES_MEDIA
         | methods::SOURCES_DISCONNECT => {
             let by = by(&p, method)?;
             change(state, &mut space, method, &id, &p, &by)?;
@@ -116,6 +117,9 @@ fn change(
         }
         methods::SOURCES_INCLUDE => {
             sources::include(space, id, &container_id(p, method)?, by)?;
+        }
+        methods::SOURCES_MEDIA => {
+            sources::set_media_limit(space, id, p.max_mb, by)?;
         }
         _ => {
             if sources::disconnect(space, id, by)? {

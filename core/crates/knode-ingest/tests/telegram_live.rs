@@ -298,6 +298,7 @@ struct Run {
     since: Timestamp,
     excluded: Vec<Container>,
     max_items: usize,
+    media_max_bytes: Option<u64>,
 }
 
 impl Run {
@@ -312,6 +313,7 @@ impl Run {
             since: Timestamp(T0 * 1000),
             excluded: Vec::new(),
             max_items: 500,
+            media_max_bytes: None,
         }
     }
 
@@ -333,6 +335,7 @@ impl Run {
                 excluded: &self.excluded,
                 max_items: self.max_items,
                 secrets,
+                media_max_bytes: self.media_max_bytes,
             };
             let fetched = c.fetch(&request)?;
             if let Some(batch) = fetched.batch {
@@ -657,6 +660,7 @@ fn excluded_chats_are_never_read() {
         excluded: &[],
         max_items: 10,
         secrets: &secrets,
+        media_max_bytes: None,
     };
     let containers = c.containers(&request).unwrap();
     assert_eq!(
@@ -775,7 +779,8 @@ fn formatting_replies_and_media_come_in_like_an_export() {
     assert!(node.body.contains("replying to Ada at"), "{}", node.body);
     assert!(node.body.contains("![[photo_3.jpg]]"), "{}", node.body);
     assert!(
-        node.body.contains("film.mp4 (too large to download)"),
+        node.body
+            .contains("*[not downloaded: film.mp4, larger than 20 MB]*"),
         "{}",
         node.body
     );
@@ -783,6 +788,44 @@ fn formatting_replies_and_media_come_in_like_an_export() {
     let attachments = run.space.attachments(&node.id).unwrap();
     assert_eq!(attachments.len(), 1);
     assert_eq!(api.calls("download"), 1, "the large file is not downloaded");
+}
+
+#[test]
+fn the_media_limit_of_the_space_is_read_and_named_without_an_export() {
+    let api = MockApi::new();
+    api.chat(10, "Book Club", ChatKind::Group);
+    let mut photo = message(10, 1, T0 + 60, "Ada", "The cover");
+    photo.media = Some(MessageMedia::Photo { size: Some(4) });
+    let mut card = message(10, 2, T0 + 120, "Ada", "");
+    card.media = Some(MessageMedia::Other {
+        what: "contact".into(),
+    });
+    {
+        let mut s = api.state();
+        s.history.insert(10, vec![photo, card]);
+        s.dialogs[0].top_message = 2;
+        s.dialogs[0].top_date = T0 + 120;
+        s.files.insert((10, 1), b"jpeg".to_vec());
+    }
+    let (c, _) = connector(&api);
+    let mut run = Run::new(History::Everything);
+    run.media_max_bytes = Some(0);
+    assert_eq!(run.run(&c, &signed_in_secrets()).unwrap(), 2);
+    assert_eq!(api.calls("download"), 0, "media downloads are off here");
+    let node = run.node(10).unwrap();
+    assert!(
+        node.body
+            .contains(r"*[not downloaded: photo\_1.jpg, media downloads are off]*"),
+        "{}",
+        node.body
+    );
+    assert!(
+        node.body.contains("*[not downloaded: contact]*"),
+        "{}",
+        node.body
+    );
+    assert!(!node.body.contains("export"), "{}", node.body);
+    assert!(c.info().media, "Telegram says it downloads media");
 }
 
 fn fixture(name: &str) -> PathBuf {

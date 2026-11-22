@@ -764,7 +764,10 @@ impl<A: TelegramApi> TelegramConnector<A> {
         if found.is_empty() {
             return Ok(Fetched::nothing(next).with_more(more));
         }
-        let batch = self.batch(found, &dialogs)?;
+        let max = request
+            .media_max_bytes
+            .unwrap_or(self.options.media_max_bytes);
+        let batch = self.batch(found, &dialogs, max)?;
         Ok(Fetched::batch(batch, next).with_more(more))
     }
 
@@ -773,6 +776,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
         &self,
         messages: Vec<Message>,
         dialogs: &[Dialog],
+        max: u64,
     ) -> Result<TelegramBatch, SourceError> {
         let mut chats: BTreeMap<i64, ChatBatch> = BTreeMap::new();
         let mut media = MediaDir::default();
@@ -798,7 +802,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     files: BTreeMap::new(),
                 }
             });
-            if let Some(file) = self.download(&message, &mut media)? {
+            if let Some(file) = self.download(&message, &mut media, max)? {
                 entry.files.insert(message.id, file);
             }
             entry.messages.push(message);
@@ -830,8 +834,8 @@ impl<A: TelegramApi> TelegramConnector<A> {
         &self,
         message: &Message,
         dir: &mut MediaDir,
+        max: u64,
     ) -> Result<Option<Downloaded>, SourceError> {
-        let max = self.options.media_max_bytes;
         let (name, size) = match &message.media {
             Some(MessageMedia::Photo { size }) => (format!("photo_{}.jpg", message.id), *size),
             Some(MessageMedia::File { name, size, .. }) => (
@@ -843,11 +847,11 @@ impl<A: TelegramApi> TelegramConnector<A> {
             _ => return Ok(None),
         };
         if max == 0 || size.is_some_and(|s| s > max) {
-            return Ok(Some(Downloaded::TooLarge(name)));
+            return Ok(Some(Downloaded::TooLarge(name, max)));
         }
         let bytes = match self.call(|api| api.download(&message.chat, message.id, max)) {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return Ok(Some(Downloaded::TooLarge(name))),
+            Ok(None) => return Ok(Some(Downloaded::TooLarge(name, max))),
             Err(e @ (ApiError::FloodWait(_) | ApiError::SignedOut | ApiError::NoApp)) => {
                 return Err(source_error(e));
             }
@@ -903,6 +907,7 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
         )
         .needing([Permission::SignIn, Permission::Network])
         .excluding("chat")
+        .with_media()
     }
 
     fn trigger(&self) -> Trigger {
@@ -1064,8 +1069,12 @@ impl ChatCursors {
 /// A downloaded file, or why there is none.
 #[derive(Debug)]
 enum Downloaded {
-    File { name: String, entry: String },
-    TooLarge(String),
+    File {
+        name: String,
+        entry: String,
+    },
+    /// Larger than this many bytes (0 when media downloads are off).
+    TooLarge(String, u64),
     Failed(String),
 }
 
@@ -1186,6 +1195,18 @@ fn import_error(error: super::ChatImportError) -> SourceError {
 }
 
 /// The local time of a date in seconds since 1970.
+/// Why a file larger than `max` bytes was not downloaded.
+fn too_large(max: u64) -> String {
+    if max == 0 {
+        return "media downloads are off".into();
+    }
+    if max >= 1024 * 1024 {
+        format!("larger than {} MB", max / (1024 * 1024))
+    } else {
+        format!("larger than {} KB", max.div_ceil(1024))
+    }
+}
+
 fn local_time(date: i64) -> chrono::NaiveDateTime {
     use chrono::{Local, TimeZone};
     match Local.timestamp_opt(date, 0) {
@@ -1306,15 +1327,22 @@ fn to_chat(batch: &ChatBatch, replied: &BTreeMap<(i64, i64), Message>) -> Chat {
                         name: name.clone(),
                         entry: entry.clone(),
                     }),
-                    Some(Downloaded::TooLarge(name)) => message.media.push(Media::Omitted {
-                        what: format!("{name} (too large to download)"),
-                    }),
-                    Some(Downloaded::Failed(name)) => {
-                        message.media.push(Media::Missing { name: name.clone() })
+                    Some(Downloaded::TooLarge(name, max)) => {
+                        message.media.push(Media::NotDownloaded {
+                            name: name.clone(),
+                            reason: Some(too_large(*max)),
+                        })
                     }
+                    Some(Downloaded::Failed(name)) => message.media.push(Media::NotDownloaded {
+                        name: name.clone(),
+                        reason: Some("the download failed".into()),
+                    }),
                     None => {
                         if let Some(MessageMedia::Other { what }) = &m.media {
-                            message.media.push(Media::Omitted { what: what.clone() });
+                            message.media.push(Media::NotDownloaded {
+                                name: what.clone(),
+                                reason: None,
+                            });
                         }
                     }
                 }
