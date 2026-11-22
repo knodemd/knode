@@ -663,6 +663,11 @@ extension CoreSpaceStore: RecordingStore {
         return StoredRecording(try await run { try core.recording(id: id) })
     }
 
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID? {
+        let core = try self.core(space)
+        return try await run { try core.recordingByKey(key: key) }?.id
+    }
+
     func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         let core = try self.core(space)
         let value = RecordingTranscript(

@@ -223,6 +223,9 @@ pub fn capture_waits_for_setup(space: &Space) -> knode_format::Result<bool> {
 ///
 /// Turning capture on for a space whose capture was off or waiting for setup also records the
 /// time ([`CAPTURE_SINCE`]): capture starts from now, and earlier conversations stay out.
+///
+/// Turning `photos.location` off also removes where they were taken from every photo of the
+/// space ([`knode_ingest::photos::forget_locations`]); the attached originals are unchanged.
 pub fn set_setting(
     space: &mut Space,
     key: &str,
@@ -285,6 +288,9 @@ pub fn set_setting(
     if started && capture_enabled(space)? {
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         space.set_setting(CAPTURE_SINCE, Some(&now), by)?;
+    }
+    if key == setting_keys::PHOTOS_LOCATION && value == Some("off") {
+        knode_ingest::photos::forget_locations(space, by)?;
     }
     Ok(changed)
 }

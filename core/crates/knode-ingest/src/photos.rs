@@ -10,9 +10,11 @@
 //! Reading happens on the device, in the app (Vision on the Mac); this module only stores what it
 //! finds and keeps track of what is still to read ([`pending`]) and what could not be read
 //! ([`failed`]). Nothing is sent anywhere. Where the space turns location off (the space setting
-//! [`LOCATION_SETTING`]), no coordinates or place are stored.
+//! [`LOCATION_SETTING`]), no coordinates or place are stored, and turning it off removes those
+//! the photos have ([`forget_locations`]). The attached original is never changed, so its own
+//! EXIF data, location included, stays in the file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -319,8 +321,8 @@ fn find(space: &Space, state: ReadingState) -> Result<Vec<Photo>> {
 /// [`READING_END`]: replacing what is between them when the body has them once, in order, and
 /// else as a new block after the embed of its file. Nothing outside the markers changes, except
 /// the first line, said again when it is still the one Knode wrote and the metadata adds to it.
-/// The metadata read is added to the photo's properties (no location where the space turns it
-/// off). Its reading is then done.
+/// The metadata read is added to the photo's properties. Where the space turns location off, no
+/// location is added, and any the photo still has is removed. Its reading is then done.
 pub fn set_reading(
     space: &mut Space,
     id: &NodeId,
@@ -330,7 +332,11 @@ pub fn set_reading(
     let photo = get(space, id)?;
     let current = space.get_node(id)?.ok_or(Error::NotFound(*id))?;
     let added = allowed(space, &reading.metadata)?;
-    let merged = merge(&photo.metadata, &added);
+    let mut merged = merge(&photo.metadata, &added);
+    let located = location_enabled(space)?;
+    if !located {
+        merged = without_location(&merged);
+    }
     let mut body = current.body.clone();
     let old_header = header(&photo.metadata, &Local);
     let new_header = header(&merged, &Local);
@@ -358,6 +364,9 @@ pub fn set_reading(
     let mut props = metadata_properties(&added);
     props.insert(keys::READING.into(), ReadingState::Done.to_string());
     space.set_properties(id, &props, by)?;
+    if !located {
+        remove_location_properties(space, id)?;
+    }
     space.remove_property(id, keys::ERROR)?;
     get(space, id)
 }
@@ -385,25 +394,83 @@ pub fn retry(space: &mut Space, id: &NodeId, by: &Provenance) -> Result<Photo> {
     get(space, id)
 }
 
-/// `metadata` without the location where the space turns it off, checked.
+/// Removes where they were taken from every photo of the space, as `by`: their coordinates and
+/// place, and the place from the first line of their body when it is still the one Knode wrote.
+/// Called when the space turns location off. The attached originals are not changed: their own
+/// EXIF data, location included, stays in the files. Returns how many photos changed.
+pub fn forget_locations(space: &mut Space, by: &Provenance) -> Result<usize> {
+    let mut ids = BTreeSet::new();
+    for state in [
+        ReadingState::Pending,
+        ReadingState::Done,
+        ReadingState::Failed,
+    ] {
+        for summary in space.find_by_property(keys::READING, state.as_str())? {
+            if summary.kind == PHOTO_KIND {
+                ids.insert(summary.id);
+            }
+        }
+    }
+    let mut changed = 0;
+    for id in ids {
+        let photo = get(space, &id)?;
+        let node = space.get_node(&id)?.ok_or(Error::NotFound(id))?;
+        let old_header = header(&photo.metadata, &Local);
+        let new_header = header(&without_location(&photo.metadata), &Local);
+        let mut touched = false;
+        if old_header != new_header && node.body.lines().next() == Some(old_header.as_str()) {
+            space.update_node(
+                &id,
+                NodeUpdate {
+                    body: Some(format!("{new_header}{}", &node.body[old_header.len()..])),
+                    ..Default::default()
+                },
+                by,
+            )?;
+            touched = true;
+        }
+        touched |= remove_location_properties(space, &id)?;
+        if touched {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+fn without_location(metadata: &PhotoMetadata) -> PhotoMetadata {
+    PhotoMetadata {
+        latitude: None,
+        longitude: None,
+        place: None,
+        ..metadata.clone()
+    }
+}
+
+/// Removes the coordinates and place of a photo. Returns whether it had any.
+fn remove_location_properties(space: &mut Space, id: &NodeId) -> Result<bool> {
+    let mut removed = false;
+    for key in [keys::LATITUDE, keys::LONGITUDE, keys::PLACE] {
+        removed |= space.remove_property(id, key)?;
+    }
+    Ok(removed)
+}
+
+/// `metadata` without the location where the space turns it off, checked. Coordinates out of
+/// range (a bad GPS reading) are dropped, both of them, rather than refusing the photo.
 fn allowed(space: &Space, metadata: &PhotoMetadata) -> Result<PhotoMetadata> {
     let mut metadata = metadata.clone();
     if !location_enabled(space)? {
+        metadata = without_location(&metadata);
+    }
+    let bad_latitude = metadata
+        .latitude
+        .is_some_and(|v| !(-90.0..=90.0).contains(&v));
+    let bad_longitude = metadata
+        .longitude
+        .is_some_and(|v| !(-180.0..=180.0).contains(&v));
+    if bad_latitude || bad_longitude {
         metadata.latitude = None;
         metadata.longitude = None;
-        metadata.place = None;
-    }
-    if metadata
-        .latitude
-        .is_some_and(|v| !(-90.0..=90.0).contains(&v))
-    {
-        return Err(Error::Invalid("a latitude is between -90 and 90".into()));
-    }
-    if metadata
-        .longitude
-        .is_some_and(|v| !(-180.0..=180.0).contains(&v))
-    {
-        return Err(Error::Invalid("a longitude is between -180 and 180".into()));
     }
     metadata.place = metadata
         .place

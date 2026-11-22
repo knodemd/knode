@@ -40,15 +40,25 @@ enum PhotoMetadataReader {
         if let latitude = gps[kCGImagePropertyGPSLatitude] as? Double, let longitude = gps[kCGImagePropertyGPSLongitude] as? Double {
             let south = (gps[kCGImagePropertyGPSLatitudeRef] as? String)?.uppercased() == "S"
             let west = (gps[kCGImagePropertyGPSLongitudeRef] as? String)?.uppercased() == "W"
-            metadata.latitude = south ? -latitude : latitude
-            metadata.longitude = west ? -longitude : longitude
+            let lat = south ? -latitude : latitude
+            let lon = west ? -longitude : longitude
+            // A bad GPS reading is left out, not sent.
+            if (-90...90).contains(lat), (-180...180).contains(lon) {
+                metadata.latitude = lat
+                metadata.longitude = lon
+            }
         }
         let make = (tiff[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
         let model = (tiff[kCGImagePropertyTIFFModel] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
         let camera = model.hasPrefix(make) ? model : [make, model].filter { !$0.isEmpty }.joined(separator: " ")
         if !camera.isEmpty { metadata.camera = camera }
-        metadata.width = properties[kCGImagePropertyPixelWidth] as? Int
-        metadata.height = properties[kCGImagePropertyPixelHeight] as? Int
+        let width = properties[kCGImagePropertyPixelWidth] as? Int
+        let height = properties[kCGImagePropertyPixelHeight] as? Int
+        // The size as the photo is seen: EXIF orientations 5 to 8 turn it a quarter.
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let turned = (5...8).contains(orientation)
+        metadata.width = turned ? height : width
+        metadata.height = turned ? width : height
         return metadata
     }
 
@@ -79,6 +89,8 @@ struct VisionPhotoReader: PhotoReader {
     var minimumConfidence: Float = 0.3
     /// The most labels kept.
     var maximumLabels = 8
+    /// The longest side of the image Vision reads, in pixels.
+    static let maxPixelSize = 4096
 
     func read(_ url: URL) async throws -> PhotoReadingDraft {
         let minimumConfidence = minimumConfidence
@@ -89,18 +101,24 @@ struct VisionPhotoReader: PhotoReader {
     }
 
     private static func readNow(_ url: URL, minimumConfidence: Float, maximumLabels: Int) throws -> PhotoReadingDraft {
+        // A thumbnail of at most `maxPixelSize`, already turned upright: enough for Vision, and it
+        // decodes a HEIC (or a huge image) without holding it whole in memory.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { throw PhotoReadingError.unreadableImage(url.lastPathComponent) }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
-        let orientation = (properties[kCGImagePropertyOrientation] as? UInt32).flatMap(CGImagePropertyOrientation.init(rawValue:)) ?? .up
 
         let text = VNRecognizeTextRequest()
         text.recognitionLevel = .accurate
         text.usesLanguageCorrection = true
         text.automaticallyDetectsLanguage = true
         let classify = VNClassifyImageRequest()
-        let handler = VNImageRequestHandler(cgImage: image, orientation: orientation)
+        let handler = VNImageRequestHandler(cgImage: image, orientation: .up)
         try handler.perform([text, classify])
 
         let lines = (text.results ?? []).compactMap { $0.topCandidates(1).first?.string }

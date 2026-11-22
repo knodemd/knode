@@ -150,13 +150,23 @@ final class PhotosProcessor {
         } catch {
             let message = error.localizedDescription
             _ = try? await store.failPhoto(photo.id, error: message, in: space)
-            failures.removeAll { $0.id == photo.id }
-            failures.append(Failure(space: space, spaceURL: url, photo: photo.id, title: photo.title, message: message))
+            fail(photo, in: space, at: url, message: message)
             return
         }
-        if (try? await store.setPhotoReading(reading, of: photo.id, in: space)) != nil {
+        do {
+            _ = try await store.setPhotoReading(reading, of: photo.id, in: space)
             readCount += 1
+        } catch {
+            // Refused (or the space could not be written): failed with why, never read again and
+            // again.
+            fail(photo, in: space, at: url, message: error.localizedDescription)
+            _ = try? await store.failPhoto(photo.id, error: error.localizedDescription, in: space)
         }
+    }
+
+    private func fail(_ photo: StoredPhoto, in space: Space.ID, at url: URL, message: String) {
+        failures.removeAll { $0.id == photo.id }
+        failures.append(Failure(space: space, spaceURL: url, photo: photo.id, title: photo.title, message: message))
     }
 
     /// Reads the photo under its own name: the space keeps it by hash, without an extension.

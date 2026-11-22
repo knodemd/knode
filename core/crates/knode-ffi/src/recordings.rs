@@ -373,6 +373,15 @@ impl KnodeSpace {
         Ok(rec::get(&self.lock(), &id)?.into())
     }
 
+    /// The recording whose file has this hash (`sha256:<hex>`), if any.
+    pub fn recording_by_key(&self, key: String) -> Result<Option<Recording>> {
+        let space = self.lock();
+        Ok(match rec::find_by_key(&space, key.trim())? {
+            Some(id) => Some(rec::get(&space, &id)?.into()),
+            None => None,
+        })
+    }
+
     /// Writes the transcript of a recording, replacing the one written before.
     pub fn set_recording_transcript(
         &self,

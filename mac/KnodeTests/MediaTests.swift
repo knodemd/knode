@@ -17,6 +17,8 @@ actor FakePhotosBackend: PhotosBackend {
     var photos: [Node.ID: StoredPhoto] = [:]
     var readings: [Node.ID: PhotoReadingDraft] = [:]
     var failures: [Node.ID: String] = [:]
+    /// Photos whose reading the space refuses, as the core refuses a bad one.
+    var refused: Set<Node.ID> = []
     private var counter = 0
     private nonisolated let broadcast = Broadcast<SpaceChange>()
 
@@ -68,7 +70,10 @@ actor FakePhotosBackend: PhotosBackend {
         return photo
     }
 
+    func refuseReading(of id: Node.ID) { refused.insert(id) }
+
     func setPhotoReading(_ reading: PhotoReadingDraft, of id: Node.ID, in space: Space.ID) async throws -> StoredPhoto {
+        if refused.contains(id) { throw SpaceStoreError.invalid("a latitude is between -90 and 90") }
         readings[id] = reading
         photos[id]?.reading = .done
         photos[id]?.error = nil
@@ -111,6 +116,12 @@ actor FakeMediaStore: RecordingStore, PhotoStore {
     /// The size of each audio file as it was handed over, which may be a temporary file.
     var attachedSizes: [Int] = []
     var summariesOn = true
+    /// The recordings the space has, by key.
+    var keys: [String: Node.ID] = [:]
+
+    func setKey(_ key: String, for id: Node.ID) { keys[key] = id }
+
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID? { keys[key] }
 
     func createRecording(_ recording: NewRecordingDraft, in space: Space.ID) async throws -> StoredRecording {
         recordingDrafts.append(recording)
@@ -245,6 +256,23 @@ struct PhotosProcessorTests {
         await processor.stop()
     }
 
+    @Test func aReadingTheSpaceRefusesFailsThePhotoOnce() async throws {
+        let store = try FakePhotosBackend()
+        let id = try await store.add(name: "glitch.jpg")
+        await store.refuseReading(of: id)
+        let reader = FakePhotoReader()
+        let url = store.spaceURL
+        let processor = PhotosProcessor(store: store, reader: reader, spaceURLs: { [url] })
+        processor.start()
+        #expect(try await eventually { await store.photos[id]?.reading == .failed })
+        #expect(await store.failures[id]?.isEmpty == false)
+        #expect(processor.failures.map(\.photo) == [id])
+        await processor.idle()
+        // Failed, so not read again and again.
+        #expect(reader.state.withLock { $0.read } == ["glitch.jpg"])
+        await processor.stop()
+    }
+
     @Test func readsAPhotoAnnouncedLater() async throws {
         let store = try FakePhotosBackend()
         let url = store.spaceURL
@@ -329,6 +357,57 @@ struct MediaImporterTests {
         #expect((try? FileManager.default.contentsOfDirectory(atPath: scratch.path(percentEncoded: false)))?.isEmpty ?? true)
     }
 
+    @Test func aLargeVideoAddedAgainIsNotExtractedAgain() async throws {
+        let folder = try mediaFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let video = folder.appending(path: "Talk.mov")
+        try Data(repeating: 7, count: 500).write(to: video)
+        let store = FakeMediaStore()
+        await store.setKey(try MediaKey.of(video), for: "rec-known")
+        let extractor = FakeExtractor(size: 40)
+        let importer = MediaImporter(store: store, inspector: FakeInspector(), extractor: extractor, limit: 100, scratch: folder.appending(path: "scratch"))
+        let report = await importer.add([video], to: "space-1", at: folder, project: "project-1")
+        #expect(report.refused.isEmpty)
+        #expect(extractor.calls.withLock { $0 }.isEmpty)
+        let draft = try #require(await store.recordingDrafts.first)
+        #expect(draft.audio.isEmpty)
+        #expect(draft.key == (try MediaKey.of(video)))
+        #expect(draft.project == "project-1")
+    }
+
+    @Test func aDroppedFolderAddsItsMediaAsTheCommandLineDoes() async throws {
+        let folder = try mediaFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let trip = folder.appending(path: "Trip", directoryHint: .isDirectory)
+        var deep = trip
+        for level in 1...4 {
+            deep = deep.appending(path: "L\(level)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+            try Data("x\(level)".utf8).write(to: deep.appending(path: "p\(level).jpg"))
+        }
+        try Data("a".utf8).write(to: trip.appending(path: "memo.m4a"))
+        try Data("b".utf8).write(to: trip.appending(path: ".hidden.jpg"))
+        try Data("c".utf8).write(to: trip.appending(path: "notes.txt"))
+        let nothing = folder.appending(path: "Nothing", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nothing, withIntermediateDirectories: true)
+        #expect(MediaImporter.accepts([trip]))
+
+        let (files, empty) = MediaImporter.expand([trip, nothing])
+        // Down to three folders deep (L1, L2, L3), as `knode import`; hidden and other files left
+        // out. In name order: a folder (`L2`) comes before `p1.jpg`.
+        #expect(files.map(\.lastPathComponent) == ["p3.jpg", "p2.jpg", "p1.jpg", "memo.m4a"])
+        #expect(empty == [nothing])
+
+        let store = FakeMediaStore()
+        let importer = MediaImporter(store: store, inspector: FakeInspector(), extractor: FakeExtractor(size: 1), scratch: folder.appending(path: "scratch"))
+        let report = await importer.add([trip, nothing], to: "space-1", at: folder)
+        #expect(report.nodes.count == 4)
+        #expect(report.refused.count == 1)
+        #expect(report.refused[0].contains("Nothing has no photos"))
+        #expect(await store.photoDrafts.count == 3)
+        #expect(await store.recordingDrafts.count == 1)
+    }
+
     @Test func refusesWhatItCannotKeep() async throws {
         let folder = try mediaFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -393,6 +472,41 @@ struct PhotoReadingTests {
         #expect(metadata.camera == "Apple iPhone 16 Pro")
         #expect(metadata.width == 4032)
         #expect(metadata.place == nil)
+    }
+
+    @Test func aBadGpsReadingIsLeftOutAndATurnedPhotoReportsItsSeenSize() {
+        let properties: [CFString: Any] = [
+            kCGImagePropertyPixelWidth: 4032, kCGImagePropertyPixelHeight: 3024,
+            kCGImagePropertyOrientation: 6,
+            kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 140.0, kCGImagePropertyGPSLatitudeRef: "N",
+                kCGImagePropertyGPSLongitude: 3.7, kCGImagePropertyGPSLongitudeRef: "W",
+            ] as [CFString: Any],
+        ]
+        let metadata = PhotoMetadataReader.metadata(properties)
+        #expect(metadata.latitude == nil)
+        #expect(metadata.longitude == nil)
+        #expect(metadata.width == 3024)
+        #expect(metadata.height == 4032)
+    }
+
+    /// A HEIC is read through an upright thumbnail: its text is still found.
+    @Test func visionReadsAHeic() async throws {
+        let folder = try mediaFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let png = folder.appending(path: "board.png")
+        try renderTextImage("KNODE HEIC 2026", to: png)
+        let heic = folder.appending(path: "board.heic")
+        let source = try #require(CGImageSourceCreateWithURL(png as CFURL, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        guard let destination = CGImageDestinationCreateWithURL(heic as CFURL, UTType.heic.identifier as CFString, 1, nil) else {
+            return // No HEIC encoder on this Mac.
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        try #require(CGImageDestinationFinalize(destination))
+        let reading = try await VisionPhotoReader().read(heic)
+        #expect(reading.text.uppercased().contains("HEIC"))
+        #expect(reading.metadata.width == 1400)
     }
 
     /// Vision on this Mac, no network: the text drawn into an image is read back.

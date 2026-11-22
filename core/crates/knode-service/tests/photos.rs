@@ -213,6 +213,11 @@ fn the_protocol_takes_and_gives_plain_json() {
 fn photos_location_is_a_setting() {
     let f = Fixture::new();
     let space = f.space();
+    let mut located = f.photo("before.png");
+    located.metadata.latitude = Some(40.4);
+    located.metadata.longitude = Some(-3.7);
+    let before = f.person.create_photo(&space, &located, &me()).unwrap();
+    assert_eq!(before.metadata.latitude, Some(40.4));
     let settings = f
         .person
         .set_setting(&space, "photos.location", Some("off"), &me())
@@ -231,6 +236,12 @@ fn photos_location_is_a_setting() {
         .unwrap();
     assert_eq!(photo.metadata.latitude, None);
     assert_eq!(photo.metadata.width, Some(800));
+    // The photo added before lost its location when it was turned off.
+    let forgotten = f.person.photo(&space, &before.id).unwrap();
+    assert_eq!(
+        (forgotten.metadata.latitude, forgotten.metadata.longitude),
+        (None, None)
+    );
 }
 
 #[test]

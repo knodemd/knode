@@ -32,6 +32,16 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = lock_ignoring_poison(&space);
             to_value(recordings::get(&space, &p.id)?)
         }
+        methods::RECORDINGS_FIND => {
+            let p: RecordingFindParams = params(method, raw)?;
+            let space = state.space(&p.space)?;
+            let space = lock_ignoring_poison(&space);
+            let found = match recordings::find_by_key(&space, p.key.trim())? {
+                Some(id) => Some(recordings::get(&space, &id)?),
+                None => None,
+            };
+            to_value(found)
+        }
         methods::RECORDINGS_TRANSCRIPT => {
             let p: RecordingTranscriptParams = params(method, raw)?;
             write(state, &p.space, |space| {

@@ -389,6 +389,10 @@ extension RoutingSpaceStore: RecordingsBackend {
         try await recordings(space) { store in try await store.recording(id, in: space) }
     }
 
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID? {
+        try await recordings(space) { store in try await store.recordingID(withKey: key, in: space) }
+    }
+
     func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         try await recordings(space) { store in try await store.setTranscript(transcript, by: engine, of: id, in: space) }
     }

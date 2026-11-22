@@ -90,15 +90,25 @@ final class MediaImporter {
         self.didAdd = didAdd
     }
 
-    /// Whether any of these files is one `add` takes.
-    static func accepts(_ urls: [URL]) -> Bool { urls.contains { MediaKind.of($0) != nil } }
+    /// How deep into a folder its media are found, as `knode import` does.
+    nonisolated static let folderDepth = 3
+    /// The most media files taken from the folders of one `add`, as `knode import` takes.
+    nonisolated static let folderLimit = 10_000
 
-    /// Adds each photo, audio file and video of `urls` to the space; anything else is refused.
+    /// Whether any of these files is one `add` takes, or a folder.
+    static func accepts(_ urls: [URL]) -> Bool { urls.contains { MediaKind.of($0) != nil || isFolder($0) } }
+
+    /// Adds each photo, audio file and video of `urls` to the space, and those of each folder
+    /// (`expand`); anything else is refused.
     func add(_ urls: [URL], to space: Space.ID, at spaceURL: URL, project: Node.ID? = nil) async -> Report {
         isAdding = true
         defer { isAdding = false }
         var report = Report()
-        for url in urls {
+        let (files, empty) = await Task.detached(priority: .userInitiated) { Self.expand(urls) }.value
+        for folder in empty {
+            report.refused.append("\(folder.lastPathComponent) has no photos (HEIC, JPEG, PNG), audio files or videos.")
+        }
+        for url in files {
             let name = url.lastPathComponent
             guard let kind = MediaKind.of(url) else {
                 report.refused.append("\(name) is not a photo (HEIC, JPEG, PNG), an audio file or a video.")
@@ -116,6 +126,43 @@ final class MediaImporter {
             }
         }
         return report
+    }
+
+    nonisolated private static func isFolder(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    /// `urls` with each folder replaced by its photos, audio files and videos, as `knode import`
+    /// finds them: down to `folderDepth` folders deep, hidden files and folders left out, at most
+    /// `folderLimit` in all, in name order. Also the folders where none were found.
+    nonisolated static func expand(_ urls: [URL]) -> (files: [URL], empty: [URL]) {
+        var files: [URL] = []
+        var empty: [URL] = []
+        var found = 0
+        func walk(_ folder: URL, depth: Int) {
+            guard depth <= folderDepth, found < folderLimit else { return }
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            )) ?? []
+            for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                if isFolder(entry) {
+                    walk(entry, depth: depth + 1)
+                } else if MediaKind.of(entry) != nil, found < folderLimit {
+                    files.append(entry)
+                    found += 1
+                }
+            }
+        }
+        for url in urls {
+            guard isFolder(url) else {
+                files.append(url)
+                continue
+            }
+            let before = files.count
+            walk(url, depth: 0)
+            if files.count == before { empty.append(url) }
+        }
+        return (files, empty)
     }
 
     private func size(of url: URL) throws -> Int64 {
@@ -138,6 +185,16 @@ final class MediaImporter {
         var folder: URL?
         defer { if let folder { try? FileManager.default.removeItem(at: folder) } }
         if try size(of: url) > limit {
+            // Added before: found by its key, without taking its audio out again.
+            if try await store.recordingID(withKey: key, in: space) != nil {
+                let draft = NewRecordingDraft(
+                    kind: .recording, title: stem.isEmpty ? url.lastPathComponent : stem,
+                    startedAt: startedAt, endedAt: startedAt.addingTimeInterval(max(duration, 0)), project: project,
+                    audio: [], key: key, app: nil, summaries: true, original: url.lastPathComponent
+                )
+                // The same key returns that recording, with the link to `project` added.
+                return try await store.createRecording(draft, in: space).id
+            }
             let temporary = scratch.appending(path: UUID().uuidString, directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             folder = temporary

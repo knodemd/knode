@@ -34,6 +34,11 @@ extension ServiceSpaceStore: RecordingStore {
         return try await call("recordings.get", ["space": .string(path), "id": .string(id)], as: WireRecording.self, node: id).recording()
     }
 
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID? {
+        let path = try path(space)
+        return try await call("recordings.find", ["space": .string(path), "key": .string(key)], as: WireRecording?.self)?.recording().id
+    }
+
     func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         let path = try path(space)
         let params: [String: JSONValue] = [

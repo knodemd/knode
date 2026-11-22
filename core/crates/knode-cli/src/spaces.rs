@@ -50,7 +50,8 @@ pub enum SpacesAction {
         /// on or off.
         state: Switch,
     },
-    /// Keep where photos added to a space were taken (their coordinates), or not.
+    /// Keep where photos added to a space were taken (their coordinates), or not: off also removes
+    /// it from the photos the space has. The attached originals are never changed.
     PhotoLocation {
         /// The space: its name or its .knode path.
         #[arg(value_name = "SPACE")]
@@ -260,7 +261,9 @@ pub fn run(paths: &Paths, action: Option<SpacesAction>, json: bool) -> Result<()
                     name_of(&path)
                 ),
                 Switch::Off => println!(
-                    "Photos added to {} no longer keep where they were taken.",
+                    "Photos in {} no longer keep where they were taken: it was removed from the \
+                     photos it has. Their attached originals keep their own EXIF data, location \
+                     included.",
                     name_of(&path)
                 ),
             }

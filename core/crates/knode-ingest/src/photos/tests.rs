@@ -289,19 +289,129 @@ fn refuses_bad_input_and_other_nodes() {
         metadata: PhotoMetadata::default(),
     };
     assert!(create(&mut space, &missing, &me()).is_err());
-    let bad = NewPhoto {
-        path: file(dir.path(), "x.jpg", b"x"),
-        metadata: PhotoMetadata {
-            latitude: Some(120.0),
-            ..Default::default()
-        },
-        ..missing
-    };
-    assert!(matches!(
-        create(&mut space, &bad, &me()),
-        Err(Error::Invalid(_))
-    ));
     assert!(space.find_by_title("X").unwrap().is_empty());
     let note = space.create_node(NewNode::note("Note", ""), &me()).unwrap();
     assert!(matches!(get(&space, &note.id), Err(Error::Invalid(_))));
+}
+
+#[test]
+fn bad_coordinates_are_dropped_not_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let photo = create(
+        &mut space,
+        &NewPhoto {
+            title: "Glitch".into(),
+            path: file(dir.path(), "glitch.jpg", b"g"),
+            project: None,
+            metadata: PhotoMetadata {
+                latitude: Some(120.0),
+                longitude: Some(-3.7),
+                ..madrid()
+            },
+        },
+        &me(),
+    )
+    .unwrap();
+    assert_eq!(
+        (photo.metadata.latitude, photo.metadata.longitude),
+        (None, None)
+    );
+    assert_eq!(photo.metadata.place.as_deref(), Some("Madrid"));
+    let mut read = reading();
+    read.metadata = PhotoMetadata {
+        latitude: Some(40.0),
+        longitude: Some(f64::NAN),
+        ..Default::default()
+    };
+    let done = set_reading(&mut space, &photo.id, &read, &vision()).unwrap();
+    assert_eq!(done.reading, ReadingState::Done);
+    assert_eq!(
+        (done.metadata.latitude, done.metadata.longitude),
+        (None, None)
+    );
+}
+
+#[test]
+fn turning_location_off_forgets_it_and_keeps_the_original() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let new = |name: &str, bytes: &[u8]| NewPhoto {
+        title: name.into(),
+        path: file(dir.path(), name, bytes),
+        project: None,
+        metadata: madrid(),
+    };
+    let trip = create(&mut space, &new("trip.jpg", b"trip-bytes"), &me()).unwrap();
+    let other = create(&mut space, &new("other.jpg", b"other"), &me()).unwrap();
+    assert!(get_body(&space, &trip.id).contains("in Madrid"));
+    assert!(get_body(&space, &other.id).contains("in Madrid"));
+    space
+        .set_setting(LOCATION_SETTING, Some("off"), &me())
+        .unwrap();
+    assert_eq!(forget_locations(&mut space, &me()).unwrap(), 2);
+    let photo = get(&space, &trip.id).unwrap();
+    assert_eq!(
+        (
+            photo.metadata.latitude,
+            photo.metadata.longitude,
+            photo.metadata.place
+        ),
+        (None, None, None)
+    );
+    assert_eq!(
+        photo.metadata.camera.as_deref(),
+        Some("Apple iPhone 16 Pro")
+    );
+    let body = get_body(&space, &trip.id);
+    assert!(!body.contains("Madrid") && !body.contains("40.4"));
+    assert!(body.starts_with("Taken on "));
+    assert!(body.contains("![[trip.jpg]]"));
+    // Nothing more to forget.
+    assert_eq!(forget_locations(&mut space, &me()).unwrap(), 0);
+    // A reading brings no location back, neither the one read nor the one the photo had.
+    let mut read = reading();
+    read.metadata = madrid();
+    let done = set_reading(&mut space, &trip.id, &read, &vision()).unwrap();
+    assert_eq!((done.metadata.latitude, done.metadata.place), (None, None));
+    assert!(!get_body(&space, &trip.id).contains("Madrid"));
+    // The original file is attached unchanged, and the same file is still the same photo.
+    let attached = space.attachment(&trip.id, "trip.jpg").unwrap().unwrap();
+    assert_eq!(attached.size, 10);
+    let again = create(&mut space, &new("trip.jpg", b"trip-bytes"), &me()).unwrap();
+    assert_eq!(again.id, trip.id);
+}
+
+#[test]
+fn a_reading_drops_a_location_left_from_before_it_was_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let photo = create(
+        &mut space,
+        &NewPhoto {
+            title: "Old".into(),
+            path: file(dir.path(), "old.jpg", b"o"),
+            project: None,
+            metadata: madrid(),
+        },
+        &me(),
+    )
+    .unwrap();
+    space
+        .set_setting(LOCATION_SETTING, Some("off"), &me())
+        .unwrap();
+    let done = set_reading(&mut space, &photo.id, &reading(), &vision()).unwrap();
+    assert_eq!(
+        (
+            done.metadata.latitude,
+            done.metadata.longitude,
+            done.metadata.place
+        ),
+        (None, None, None)
+    );
+    assert!(!get_body(&space, &photo.id).contains("Madrid"));
+}
+
+fn get_body(space: &Space, id: &NodeId) -> String {
+    space.get_node(id).unwrap().unwrap().body
 }

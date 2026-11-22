@@ -201,6 +201,8 @@ pub mod methods {
     pub const RECORDINGS_FAILED: &str = "recordings.failed";
     /// A recording.
     pub const RECORDINGS_GET: &str = "recordings.get";
+    /// The recording of a space whose file has a hash, if any.
+    pub const RECORDINGS_FIND: &str = "recordings.find";
     /// Writes the transcript of a recording. People only.
     pub const RECORDINGS_TRANSCRIPT: &str = "recordings.transcript";
     /// Writes the summary of a recording. People only.

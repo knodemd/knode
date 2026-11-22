@@ -905,7 +905,10 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let p: SettingsSetParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
             let changed = spaces::set_setting(&mut space, &p.key, p.value.as_deref(), &p.by)?;
+            // Turning photo locations off rewrites the photos that had one.
+            state.notify_since(&space, mark)?;
             if changed {
                 state.notify_space(&space, SpaceEventKind::Settings, |e| {
                     e.key = Some(p.key.clone());
