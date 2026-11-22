@@ -14,6 +14,8 @@ struct KnodeApp: App {
     @State private var sources: SourcesModel
     @State private var recording: RecordingController
     @State private var recordings: RecordingsProcessor
+    /// Runs the Photos library source for the spaces it is connected to, for the life of the app.
+    @MainActor private static var photosLibrarySyncer: PhotosLibrarySyncer?
     @State private var photos: PhotosProcessor
     @State private var media: MediaImporter
 
@@ -80,8 +82,25 @@ struct KnodeApp: App {
         }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
+        // The Photos library is read here, through PhotoKit, and handed to Knode Service, which
+        // lists it as a source and writes its photos and videos. Access is asked for only when it
+        // is connected.
+        let photoLibrary = PhotoKitLibrary()
+        let photosLibraryClient = ServicePhotosLibraryClient()
+        let sourcesClient = ServiceSourcesClient()
+        if !testing {
+            let syncer = PhotosLibrarySyncer(library: photoLibrary, client: photosLibraryClient)
+            Self.photosLibrarySyncer = syncer
+            Task { await syncer.start() }
+        }
         _sources = State(initialValue: SourcesModel(
-            client: ServiceSourcesClient(),
+            client: sourcesClient,
+            signIns: SourceSignIns(
+                [PhotosLibraryWire.source: PhotosLibraryAccessSignIn(library: photoLibrary, client: photosLibraryClient, openURL: { url in
+                    Task { @MainActor in NSWorkspace.shared.open(url) }
+                })],
+                fallback: ServiceSourceSignIn(client: sourcesClient)
+            ),
             openURL: { NSWorkspace.shared.open($0) },
             startService: { await service.startService() }
         ))

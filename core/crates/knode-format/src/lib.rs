@@ -62,6 +62,7 @@ mod manifest;
 mod projects;
 mod schema;
 mod space;
+mod storage;
 mod types;
 mod vector;
 mod views;
@@ -84,6 +85,7 @@ pub use manifest::{FORMAT_VERSION, Manifest};
 pub use projects::{AddedFolder, FolderProject, PassedOverProject, Project, folder_project_name};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
+pub use storage::{DiskUsage, StoredBlob, StoredFile};
 pub use types::{
     ActorKind, Agent, AgentKey, Change, ChangeDetail, ChangeId, ChangeOp, Folder, FolderSpec,
     GrantLevel, HistoryEntry, ImportedNode, Link, LinkHistoryEntry, NewNode, Node, NodeId,
@@ -276,4 +278,8 @@ pub mod setting_keys {
     /// `on` (the default, also when absent) or `off`: whether photos keep where they were taken
     /// (coordinates and place). Only `off` turns it off.
     pub const PHOTOS_LOCATION: &str = "photos.location";
+    /// The size, in bytes and in decimal, past which the space warns before it takes more:
+    /// imports ask first and connectors that add media hold back. Absent for the default
+    /// (10 GB); `0` never warns.
+    pub const STORAGE_WARN_AT: &str = "storage.warn_at";
 }

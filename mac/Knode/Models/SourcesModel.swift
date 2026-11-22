@@ -297,17 +297,23 @@ final class SourceConnectFlow: Identifiable {
     var steps: [String] {
         var steps: [String] = []
         if source.needsFullDiskAccess { steps.append("Access") }
-        if signIn != nil { steps.append("Sign in") }
+        if signIn != nil { steps.append(signInStepName) }
         steps.append("History")
         steps.append(containerNoun.prefix(1).uppercased() + containerNoun.dropFirst())
         return steps
+    }
+
+    /// What the sign-in step is called: a source that needs a system permission, such as the
+    /// Photos library, asks for it there.
+    private var signInStepName: String {
+        source.permissions.contains(.calendar) || source.permissions.contains(.photos) ? "Access" : "Sign in"
     }
 
     var stepIndex: Int {
         let names = steps
         switch step {
         case .fullDiskAccess: return 0
-        case .checkingSignIn, .signIn: return names.firstIndex(of: "Sign in") ?? 0
+        case .checkingSignIn, .signIn: return names.firstIndex(of: signInStepName) ?? 0
         case .history: return names.count - 2
         case .containers: return names.count - 1
         }
@@ -498,6 +504,7 @@ enum SourceText {
         case "folder": "folders"
         case "mailbox": "mailboxes"
         case "calendar": "calendars"
+        case "album": "albums"
         default: "conversations"
         }
     }

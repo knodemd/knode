@@ -68,6 +68,7 @@ final class MediaImporter {
     private(set) var isAdding = false
 
     @ObservationIgnored private let store: any Store
+    @ObservationIgnored private let storage: (any SpaceStorage)?
     @ObservationIgnored private let inspector: any MediaInspector
     @ObservationIgnored private let extractor: any AudioExtractor
     @ObservationIgnored private let limit: Int64
@@ -76,6 +77,7 @@ final class MediaImporter {
 
     init(
         store: any Store,
+        storage: (any SpaceStorage)? = nil,
         inspector: any MediaInspector = AVMediaInspector(),
         extractor: any AudioExtractor = AACAudioExtractor(),
         limit: Int64 = AttachmentInfo.maxSize,
@@ -83,6 +85,7 @@ final class MediaImporter {
         didAdd: @escaping @MainActor (_ space: URL, _ kind: MediaKind) -> Void = { _, _ in }
     ) {
         self.store = store
+        self.storage = storage ?? (store as? any SpaceStorage)
         self.inspector = inspector
         self.extractor = extractor
         self.limit = limit
@@ -94,6 +97,17 @@ final class MediaImporter {
     nonisolated static let folderDepth = 3
     /// The most media files taken from the folders of one `add`, as `knode import` takes.
     nonisolated static let folderLimit = 10_000
+
+    /// Why to ask before adding these files: the space would go past its soft limit
+    /// (`storage.check`). `nil` when there is room, or when the space cannot tell.
+    func largeImportWarning(for urls: [URL], in space: Space.ID) async -> String? {
+        guard let storage else { return nil }
+        let size = urls.filter { MediaKind.of($0) != nil }.reduce(Int64(0)) { sum, url in
+            sum + ((try? self.size(of: url)) ?? 0)
+        }
+        guard size > 0, let check = try? await storage.storageCheck(adding: size, in: space), check.warn else { return nil }
+        return "Adding \(StorageText.size(size)) takes this space to \(StorageText.size(check.after)), past its limit of \(StorageText.size(check.warnAt)). You can change the limit or remove large files in Settings > Spaces > Storage."
+    }
 
     /// Whether any of these files is one `add` takes, or a folder.
     static func accepts(_ urls: [URL]) -> Bool { urls.contains { MediaKind.of($0) != nil || isFolder($0) } }

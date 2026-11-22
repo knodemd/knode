@@ -54,12 +54,15 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: Knode records your microphone only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.
+        NSPhotoLibraryUsageDescription: Knode reads only the Photos albums you pick, after you connect the Photos library source to a space. It never changes your library, and your photos and videos stay on this Mac.
         NSAudioCaptureUsageDescription: Knode records the sound of your Mac, such as the other people on a call, only when you start recording a meeting. The audio is transcribed on this Mac and is never sent anywhere.
     # The hardened runtime blocks the microphone unless the app asks for it.
     entitlements:
       path: Knode/Knode.entitlements
       properties:
         com.apple.security.device.audio-input: true
+        # The hardened runtime blocks the Photos library unless the app asks for it.
+        com.apple.security.personal-information.photos-library: true
     settings:
       base:
         PRODUCT_NAME: Knode

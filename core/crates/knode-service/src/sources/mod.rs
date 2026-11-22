@@ -32,6 +32,7 @@ pub mod imap;
 mod mail_live;
 #[cfg(test)]
 mod mail_test_support;
+pub mod photos_library;
 pub(crate) mod runtime;
 pub mod telegram;
 
@@ -88,6 +89,10 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
             "Me",
         )));
     }
+    // Read by the Knode app through PhotoKit, and handed to the service with
+    // `photos_library.add`.
+    #[cfg(target_os = "macos")]
+    connectors.push(Arc::new(photos_library::PhotosLibraryConnector));
     connectors.push(Arc::new(telegram::connector()));
     connectors.push(Arc::new(gmail::GmailConnector::new()));
     connectors.push(Arc::new(imap::ImapConnector::new()));
@@ -259,6 +264,7 @@ fn importer_info(source: ImportSource) -> SourceInfo {
         reads: reads.to_string(),
         permissions: permissions.to_vec(),
         container: None,
+        picks: false,
     }
 }
 
@@ -279,6 +285,10 @@ pub struct SourceSetting {
     /// The chats, channels or folders excluded: never read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<Container>,
+    /// For a source that reads only what the person picks ([`SourceInfo::picks`]), the albums
+    /// picked: only these are read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<Container>,
 }
 
 /// What a connector did on this machine for one space, kept in [`STATE_FILE`].
@@ -437,6 +447,10 @@ pub(crate) struct SourceParams {
     pub step: Option<SignInStep>,
 }
 
+/// The containers the app reported for a connector it runs, with the prefix of this machine's
+/// container ids, if any.
+type Reported = (Option<String>, Vec<Container>);
+
 /// The connectors a service knows, with what they did on this machine.
 pub(crate) struct Registry {
     connectors: Vec<Arc<dyn Connector>>,
@@ -447,6 +461,11 @@ pub(crate) struct Registry {
     /// Whether the runtime runs connectors: false when it is not started, or `sources` or
     /// `capture` is off.
     active: std::sync::atomic::AtomicBool,
+    /// The containers the app last reported for each connector it runs ([`Trigger::App`]), by
+    /// source id, with the prefix every id of this machine's containers starts with, if any
+    /// (the Photos library's id: picks of other Macs are not this machine's). Kept in memory:
+    /// the app reports them again whenever it runs the source.
+    reported: Mutex<BTreeMap<String, Reported>>,
 }
 
 impl Registry {
@@ -457,7 +476,42 @@ impl Registry {
             states: Mutex::new(StateFile::load(home)),
             running: Mutex::new(Vec::new()),
             active: std::sync::atomic::AtomicBool::new(false),
+            reported: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Whether the connector `id` is run by the app ([`Trigger::App`]), not by the service.
+    pub(crate) fn is_app_driven(&self, id: &str) -> bool {
+        self.connector(id)
+            .is_some_and(|c| matches!(c.trigger(), Trigger::App))
+    }
+
+    /// Keeps the containers the app has now for a connector it runs: `sources.containers`
+    /// lists them.
+    /// `scope` is the prefix of every id of this machine's containers, when ids are qualified by
+    /// something only this machine has: picked containers of another scope are then not listed.
+    pub(crate) fn report_containers(
+        &self,
+        id: &str,
+        scope: Option<String>,
+        containers: Vec<Container>,
+    ) {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), (scope, containers));
+    }
+
+    /// The name the app last reported for a container of a connector it runs.
+    pub(crate) fn reported_name(&self, id: &str, container: &str) -> Option<String> {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)?
+            .1
+            .iter()
+            .find(|c| c.id == container)
+            .map(|c| c.name.clone())
     }
 
     pub(crate) fn connector(&self, id: &str) -> Option<&Arc<dyn Connector>> {
@@ -636,8 +690,17 @@ impl Registry {
             secrets: &secrets,
         };
         connector.check()?;
-        let mut out: Vec<ContainerInfo> = connector
-            .containers(&request)?
+        let (scope, listed) = if matches!(connector.trigger(), Trigger::App) {
+            self.reported
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            (None, connector.containers(&request)?)
+        };
+        let mut out: Vec<ContainerInfo> = listed
             .into_iter()
             .map(|container| ContainerInfo {
                 excluded: setting.exclude.iter().any(|e| e.id == container.id),
@@ -650,6 +713,23 @@ impl Registry {
                     container: excluded.clone(),
                     excluded: true,
                 });
+            }
+        }
+        if connector.info().picks {
+            // Only the picked ones are read: every other one shows as left out, and a picked one
+            // the source no longer lists is kept, so it can be dropped. Picks of another
+            // machine (another scope) are that machine's to show.
+            for info in &mut out {
+                info.excluded = !setting.include.iter().any(|i| i.id == info.container.id);
+            }
+            let ours = |c: &Container| scope.as_deref().is_none_or(|s| c.id.starts_with(s));
+            for picked in setting.include.iter().filter(|c| ours(c)) {
+                if !out.iter().any(|c| c.container.id == picked.id) {
+                    out.push(ContainerInfo {
+                        container: picked.clone(),
+                        excluded: false,
+                    });
+                }
             }
         }
         Ok(out)
@@ -958,6 +1038,7 @@ pub fn connect_with(
         connected_at: Timestamp::now(),
         since: start_of_today(),
         exclude: Vec::new(),
+        include: Vec::new(),
     };
     write_setting(space, id, Some(&setting), by)?;
     Ok(setting)
@@ -1021,6 +1102,50 @@ pub fn include(
         )));
     }
     write_setting(space, id, Some(&setting), by)?;
+    Ok(setting)
+}
+
+/// Picks a container (an album) for a source that reads only what the person picks: it is read
+/// from now on. Picking one picked already renames it. Returns the settings.
+pub fn pick(
+    space: &mut Space,
+    id: &str,
+    container: Container,
+    by: &Provenance,
+) -> knode_format::Result<SourceSetting> {
+    person(by)?;
+    let container_id = container.id.trim().to_string();
+    if container_id.is_empty() {
+        return Err(invalid("the id of what to pick is empty"));
+    }
+    let mut setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
+    let name = match container.name.trim() {
+        "" => container_id.clone(),
+        name => name.to_string(),
+    };
+    match setting.include.iter_mut().find(|c| c.id == container_id) {
+        Some(existing) => existing.name = name,
+        None => setting.include.push(Container::new(container_id, name)),
+    }
+    write_setting(space, id, Some(&setting), by)?;
+    Ok(setting)
+}
+
+/// Drops a container picked before: it is not read any more; what came from it stays. Dropping
+/// one that is not picked changes nothing. Returns the settings.
+pub fn unpick(
+    space: &mut Space,
+    id: &str,
+    container_id: &str,
+    by: &Provenance,
+) -> knode_format::Result<SourceSetting> {
+    person(by)?;
+    let mut setting = source_setting(space, id)?.ok_or_else(|| not_connected(id))?;
+    let before = setting.include.len();
+    setting.include.retain(|c| c.id != container_id.trim());
+    if setting.include.len() != before {
+        write_setting(space, id, Some(&setting), by)?;
+    }
     Ok(setting)
 }
 

@@ -202,9 +202,63 @@ SHA-256, `photo.key` or `recording.key`) is found, not copied twice. `MediaImpor
   video, its audio is extracted on this Mac as mono AAC at 64 kbit/s (about 30 MB an hour) and
   attached instead, and the recording says the original stays where it was (`recording.original`);
   audio still over 100 MB, or a photo over 100 MB, is refused with why.
+- Files that would take the space past its size limit (`storage.check`) are added only after
+  **Add Anyway**.
 
 `knode import <file>` (or `--from media <folder>`) adds the same nodes without the app; the app
 reads and transcribes them once it opens the space.
+
+### Photos library
+
+The **Photos library** source (Settings > Sources, `photos-library`) brings in the photos and
+videos of the albums the person picks, and only those: none until they pick one. PhotoKit is
+reached only by the app, so the connector is app-driven (`PROTOCOL.md`, "Photos library"):
+`PhotosLibrarySyncer` reads it and Knode Service writes.
+
+- Connecting it asks for Photos access in the Connect sheet (`PhotosLibraryAccessSignIn`), never
+  before; the albums step then lists the albums of the Mac to switch on (`picks`: switching one
+  on is `sources.include`, off is `sources.exclude`). `NSPhotoLibraryUsageDescription` and the
+  `com.apple.security.personal-information.photos-library` entitlement allow it.
+- Albums are picked per Mac: Knode Service gives each Knode home a library id and names the
+  albums `<library id>/<album id>`, so another Mac's picks are not this Mac's, and the source's
+  options say "No albums picked on this Mac" when only other Macs picked some. Every node the
+  library adds keeps that id (`photos_library.library`), and only this library's nodes are marked.
+- A run, for each space: `photos_library.plan` (this Mac's picks), the assets of the albums picked,
+  which the space has or does not want (`photos_library.known`: held, deleted by the person, or
+  failed for good), then each new one exported with `PHAssetResourceManager`, written and hashed
+  (SHA-256) as it comes, and handed to `photos_library.add` with its hash: a photo's original
+  HEIC or JPEG unchanged; a video, or for a video over 100 MB only its audio as AAC (the video is
+  deleted as soon as its audio is out). The export is deleted after the call. Assets that can
+  never be added (audio still over 100 MB, no original) are reported with `photos_library.sync`
+  and not exported again. `photos_library.sync` ends the run with every identifier still in the
+  albums, so the assets that left them are marked (`photos_library.state`, never in the body),
+  never deleted, and the library's change token; when an album picked is not found, nothing is
+  marked.
+- Nothing is duplicated: each node keeps the asset's `localIdentifier` and its library, a photo is
+  found again by its file's hash and a video by its original's, so a rebuilt library adds nothing
+  twice. A photo the person added themselves is never taken over. A node the person deletes is
+  never brought back. Photos are then read by `PhotosProcessor` and videos transcribed by
+  `RecordingsProcessor`, like any other.
+- It runs every minute, at once when the library changes (`PHPhotoLibraryChangeObserver`), when
+  the albums picked change or when the service asks (Run now). With the same change token as the
+  last run and no request, nothing is read. Once a space was read in full since the app started,
+  later runs read only what changed since the saved token (`fetchPersistentChanges(since:)`); an
+  expired token reads everything again. Listing never reads an asset's resources. The scratch
+  folder is emptied when the syncer starts.
+- An original kept only in iCloud waits until the Mac has it, unless **Download from iCloud** is
+  on for the space (`photos_library.configure`). History From today leaves out what was taken
+  before the day it was connected. Once the space is past its size limit nothing new is added;
+  the source says how many wait.
+
+### Storage
+
+Settings > Spaces shows **Storage** for the space chosen: its total size; by kind (notes, photos,
+videos, audio, other files, and files of deleted nodes that a purge frees); who added how much;
+the largest files with **Show** (opens the node) and **Remove** (after a confirmation; the node
+keeps its text and the history can undo it); the size past which imports ask first and the
+Photos library holds back (10 GB unless changed, or Never). Every size is computed by the core (`storage.summary`, `storage.check`,
+`storage.configure`, or `KnodeSpace.storageSummary` and friends when the app holds the space);
+`SpaceStorageModel` only shows them.
 
 ## Menu bar and the knode command
 
@@ -326,6 +380,8 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
 | `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller and its menu and window |
 | `Knode/Media` | Adding photos, audio and video to a space (`MediaImporter`, audio extraction), reading photos with Vision (`PhotosProcessor`, `VisionPhotoReader`), the `photos.*` store calls (`PhotoStore`) and the menu items and drop target |
+| `Knode/PhotosLibrary` | The Photos library source: `PhotoLibrary` over PhotoKit (a fake in tests), `PhotosLibrarySyncer`, its access step and its Knode Service client |
+| `Knode/Storage` | The storage of a space: `SpaceStorage` (service, core and routing), `SpaceStorageModel` and its section in Settings > Spaces |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |

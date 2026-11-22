@@ -55,7 +55,21 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
                     "{id} is not connected and on in this space"
                 ))));
             }
-            state.wake_sources(Wake::Run(state_key(&space.manifest().id, &id)));
+            let key = state_key(&space.manifest().id, &id);
+            if registry.is_app_driven(&id) {
+                // The app runs it: it reads `next_run` and runs it once that time comes.
+                let mut states = registry.states();
+                states.entry(&key).next_run = Some(knode_format::Timestamp::now());
+                states.save(registry.home()).map_err(|e| {
+                    RpcError::new(
+                        codes::STORAGE,
+                        format!("the state of {id} could not be saved: {e}"),
+                    )
+                })?;
+                drop(states);
+                return to_value(registry.get(&space, &id)?);
+            }
+            state.wake_sources(Wake::Run(key));
             to_value(status)
         }
         methods::SOURCES_CONNECT
@@ -85,6 +99,14 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
     }
 }
 
+/// Whether the connector `id` reads only the containers the person picks.
+fn picks(state: &State, id: &str) -> bool {
+    state
+        .registry()
+        .connector(id)
+        .is_some_and(|c| c.info().picks)
+}
+
 fn change(
     state: &State,
     space: &mut Space,
@@ -108,6 +130,23 @@ fn change(
         }
         methods::SOURCES_RESUME => {
             sources::set_on(space, id, true, by)?;
+        }
+        // A source that reads only what the person picks: including picks, excluding drops.
+        methods::SOURCES_EXCLUDE | methods::SOURCES_INCLUDE if picks(state, id) => {
+            let container_id = container_id(p, method)?;
+            if method == methods::SOURCES_INCLUDE {
+                // Named as given, else as the app last reported it.
+                let name = p
+                    .name
+                    .clone()
+                    .filter(|n| !n.trim().is_empty())
+                    .or_else(|| state.registry().reported_name(id, &container_id))
+                    .unwrap_or_default();
+                let container = Container::new(container_id, name);
+                sources::pick(space, id, container, by)?;
+            } else {
+                sources::unpick(space, id, &container_id, by)?;
+            }
         }
         methods::SOURCES_EXCLUDE => {
             let container =

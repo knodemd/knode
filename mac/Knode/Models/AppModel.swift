@@ -1012,6 +1012,22 @@ final class AppModel {
         }
     }
 
+    /// The storage view of a space, opening the space if needed. Show opens a file's node here.
+    func storageModel(at url: URL) async -> SpaceStorageModel? {
+        do {
+            let space = try await openedSpace(at: url)
+            let store = store(for: space.id)
+            guard let storage = store as? any SpaceStorage else { return nil }
+            return SpaceStorageModel(space: space.id, storage: storage, attachments: store as? any AttachmentStore) { [weak self] node in
+                await self?.selectSpace(at: url)
+                await self?.openNode(node)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     /// The Folders and Capture screen of a space, opening the space if needed.
     func foldersModel(at url: URL) async -> SpaceFoldersModel? {
         do {

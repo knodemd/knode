@@ -18,6 +18,7 @@ mod maps;
 mod photos;
 mod recordings;
 mod spaces;
+mod storage;
 
 pub use attachments::*;
 pub use maps::*;

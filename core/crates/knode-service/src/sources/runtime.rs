@@ -296,6 +296,10 @@ impl Runtime {
                     continue;
                 }
                 if let Some(connector) = registry.connector(&id) {
+                    // The app runs it, and hands what it read to the service.
+                    if matches!(connector.trigger(), Trigger::App) {
+                        continue;
+                    }
                     entries.push(Entry {
                         space: space.path().to_path_buf(),
                         space_id: space_id.clone(),
@@ -599,6 +603,8 @@ fn interval(options: &SourcesOptions, connector: &dyn Connector) -> Duration {
         // Events on files kept open come late: the interval is the bound.
         Trigger::Watch { every, .. } => every.min(options.watch_every),
         Trigger::Interval(every) => every,
+        // Never run here: the app runs it.
+        Trigger::App => Duration::MAX,
     }
 }
 
@@ -619,7 +625,7 @@ fn running(pid: u32) -> bool {
 fn stamp(connector: &dyn Connector) -> Option<FileStamp> {
     match connector.trigger() {
         Trigger::Watch { paths, .. } => FileStamp::of(&paths),
-        Trigger::Interval(_) => None,
+        Trigger::Interval(_) | Trigger::App => None,
     }
 }
 
