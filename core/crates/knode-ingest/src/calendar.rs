@@ -6,9 +6,14 @@
 //! the calendar's own id, kept in step when the event changes, and marked, never deleted, when
 //! it is cancelled or removed from the calendar.
 //!
+//! An event the space has that the app did not read is not marked removed at once: it may have
+//! moved outside the days read. [`sync`] hands it back as missing ([`MissingEvent`]), the app asks
+//! its calendar whether the event is still there, and only those gone are marked ([`remove`]).
+//!
 //! An event is one node of kind [`EVENT_KIND`], written by Knode itself as the `calendar`
 //! source ([`SOURCE_ID`]). Its title is the event's title and the day it starts,
-//! `Weekly sync (2026-11-24)`, so every occurrence of a recurring event has its own; its body is
+//! `Weekly sync (2026-11-24)`, so every occurrence of a recurring event has its own (and, like a
+//! recording's, `Weekly sync (2026-11-24) 2` when another node has that title); its body is
 //! a short description (when, where, the call, who, the calendar and the notes, cut when they
 //! are long); its properties ([`keys`]) hold the same as data.
 //!
@@ -33,6 +38,7 @@ use knode_format::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::recordings::free_title;
 use crate::sources::{Container, History};
 
 /// The id of the calendar source: the actor of what it writes.
@@ -390,11 +396,11 @@ pub fn window(
 #[derive(Debug, Clone, Copy)]
 pub struct SyncRequest<'a> {
     /// Every calendar the app read. Events of a calendar read that are no longer there are
-    /// marked removed; the events of a calendar not read are left as they are.
+    /// handed back as missing; the events of a calendar not read are left as they are.
     pub calendars: &'a [Container],
     /// The calendars the person excluded: never written, and their events left as they are.
     pub excluded: &'a [Container],
-    /// The days read. Events outside are left out, and only events in it are marked removed.
+    /// The days read. Events outside are left out, and only events in it can be missing.
     pub window: Window,
     /// The events read.
     pub events: &'a [CalendarEvent],
@@ -409,8 +415,6 @@ pub struct SyncReport {
     pub created: usize,
     /// Events whose node changed.
     pub updated: usize,
-    /// Events marked removed: no longer in their calendar.
-    pub removed: usize,
     /// Events that were already as the calendar has them.
     pub unchanged: usize,
     /// Events left out: of an excluded calendar, outside the window, cancelled before they
@@ -419,10 +423,35 @@ pub struct SyncReport {
 }
 
 impl SyncReport {
-    /// The events written: created, changed or marked removed.
+    /// The events written: created or changed.
     pub fn items(&self) -> usize {
-        self.created + self.updated + self.removed
+        self.created + self.updated
     }
+}
+
+/// An event the space has, of a calendar read and in the days read, that was not among the
+/// events read: gone from its calendar, or moved outside the days read. The app tells which by
+/// asking its calendar for the event ([`remove`] marks those gone).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingEvent {
+    /// Its key ([`CalendarEvent::key`]).
+    pub key: String,
+    /// The calendar's external id of the event.
+    pub external_id: String,
+    /// For an occurrence of a recurring event, when it was planned to start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<i64>,
+    /// The id of its calendar on this device.
+    pub calendar_id: String,
+}
+
+/// What [`sync`] did, and the events it could not find among those read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Synced {
+    /// What was written.
+    pub report: SyncReport,
+    /// The events the space has, of a calendar read and in the window, not among those read.
+    pub missing: Vec<MissingEvent>,
 }
 
 /// Writes the events the app read into the space, as `by` (the `calendar` source).
@@ -431,9 +460,10 @@ impl SyncReport {
 /// brought in step (its title, body and properties), one that did not is left alone, so
 /// writing the same events twice changes nothing. A cancelled event is marked cancelled; one
 /// cancelled before it was ever written is not written. An event the space has, of a calendar
-/// read and in the window, that is no longer among the events read is marked removed. Events
-/// of excluded calendars are never written or changed.
-pub fn sync(space: &mut Space, request: &SyncRequest<'_>, by: &Provenance) -> Result<SyncReport> {
+/// read and in the window, that is no longer among the events read is handed back as missing,
+/// not changed: it may have moved outside the window ([`remove`] marks those gone). Events of
+/// excluded calendars are never written or changed.
+pub fn sync(space: &mut Space, request: &SyncRequest<'_>, by: &Provenance) -> Result<Synced> {
     sync_in(space, request, by, &Local)
 }
 
@@ -442,7 +472,7 @@ fn sync_in<Tz: TimeZone>(
     request: &SyncRequest<'_>,
     by: &Provenance,
     zone: &Tz,
-) -> Result<SyncReport>
+) -> Result<Synced>
 where
     Tz::Offset: fmt::Display,
 {
@@ -468,8 +498,9 @@ where
         match existing {
             None if event.status == EventStatus::Cancelled => report.skipped += 1,
             None => {
+                let title = free_title(space, &rendered.title, None)?;
                 space.create_node_with_properties(
-                    NewNode::note(rendered.title, rendered.body).with_kind(EVENT_KIND),
+                    NewNode::note(title, rendered.body).with_kind(EVENT_KIND),
                     &rendered
                         .properties
                         .iter()
@@ -489,6 +520,7 @@ where
             }
         }
     }
+    let mut missing = Vec::new();
     for calendar in request.calendars {
         if excluded.contains(calendar.id.as_str()) {
             continue;
@@ -512,11 +544,49 @@ where
             if status == EventStatus::Removed || !request.window.holds(start, end) {
                 continue;
             }
-            mark_removed(space, &summary.id, by)?;
-            report.removed += 1;
+            let external_id = props
+                .get(keys::EXTERNAL_ID)
+                .cloned()
+                .unwrap_or_else(|| key.clone());
+            let occurrence = key
+                .strip_prefix(&format!("{external_id}@"))
+                .and_then(|at| at.parse::<i64>().ok());
+            missing.push(MissingEvent {
+                key: key.clone(),
+                external_id,
+                occurrence,
+                calendar_id: calendar.id.clone(),
+            });
         }
     }
-    Ok(report)
+    Ok(Synced { report, missing })
+}
+
+/// Marks the events with these keys removed from their calendar, as `by`: those the app found
+/// gone among the [`MissingEvent`]s of [`sync`]. Events of excluded calendars, events already
+/// marked and keys the space does not have are left alone. Returns how many were marked.
+pub fn remove(
+    space: &mut Space,
+    event_keys: &[String],
+    excluded: &[Container],
+    by: &Provenance,
+) -> Result<usize> {
+    let excluded: BTreeSet<&str> = excluded.iter().map(|c| c.id.as_str()).collect();
+    let mut removed = 0;
+    for key in event_keys.iter().collect::<BTreeSet<_>>() {
+        let Some(id) = find(space, key)? else {
+            continue;
+        };
+        let props = space.properties(&id)?;
+        let calendar = props.get(keys::CALENDAR_ID).map_or("", |s| s);
+        let status = EventStatus::from_text(props.get(keys::STATUS).map_or("", |s| s));
+        if excluded.contains(calendar) || status == EventStatus::Removed {
+            continue;
+        }
+        mark_removed(space, &id, by)?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// The event of the space with this key, if any.
@@ -727,9 +797,10 @@ fn bring_in_step(
     by: &Provenance,
 ) -> Result<bool> {
     let node = space.get_node(id)?.ok_or(Error::NotFound(*id))?;
+    let title = free_title(space, &rendered.title, Some(*id))?;
     let mut changed = false;
     let update = NodeUpdate {
-        title: (node.title != rendered.title).then_some(rendered.title),
+        title: (node.title != title).then_some(title),
         body: (node.body != rendered.body).then_some(rendered.body),
         ..Default::default()
     };

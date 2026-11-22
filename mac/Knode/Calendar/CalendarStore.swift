@@ -46,6 +46,42 @@ struct CalendarRecord: Hashable, Sendable {
     var status: Status
 }
 
+/// How an EventKit event repeats: what tells an occurrence of a recurring event, a detached one
+/// (moved or changed on its own) included, from an event that does not repeat.
+struct EventRecurrence: Hashable, Sendable {
+    var isDetached: Bool
+    var hasRecurrenceRules: Bool
+    var occurrenceDate: Date?
+
+    init(isDetached: Bool, hasRecurrenceRules: Bool, occurrenceDate: Date?) {
+        self.isDetached = isDetached
+        self.hasRecurrenceRules = hasRecurrenceRules
+        self.occurrenceDate = occurrenceDate
+    }
+
+    init(_ event: EKEvent) {
+        self.init(isDetached: event.isDetached, hasRecurrenceRules: event.hasRecurrenceRules, occurrenceDate: event.occurrenceDate)
+    }
+
+    /// When this occurrence was planned to start, or `nil` for an event that does not repeat. A
+    /// detached occurrence has no recurrence rules of its own but is still an occurrence.
+    var occurrence: Date? { isDetached || hasRecurrenceRules ? occurrenceDate : nil }
+
+    /// Whether an event the core found missing (`calendar.sync`) is gone from its calendar, given
+    /// the events of the calendars read with its external id, and those of its series planned
+    /// near its occurrence. One that does not repeat is gone when there is no such event; an
+    /// occurrence when none of them is the occurrence planned at that time (moved or not).
+    static func isGone(_ missing: CalendarMissing, found: [EventRecurrence]) -> Bool {
+        guard !found.isEmpty else { return true }
+        guard let occurrence = missing.occurrence else { return false }
+        let planned = Date(timeIntervalSince1970: TimeInterval(occurrence) / 1000)
+        return !found.contains { item in
+            guard let date = item.occurrenceDate else { return false }
+            return abs(date.timeIntervalSince(planned)) < 1
+        }
+    }
+}
+
 /// The calendars of this Mac, behind a protocol so tests use a fake and never ask for access.
 protocol CalendarEventStore: Sendable {
     var access: CalendarAccess { get }
@@ -54,6 +90,9 @@ protocol CalendarEventStore: Sendable {
     func calendars() -> [CalendarInfo]
     /// The events from `start` to `end` of the calendars with these ids.
     func events(from start: Date, to end: Date, calendars ids: Set<String>) -> [CalendarRecord]
+    /// The keys of the missing events that are gone from the calendars with these ids, rather
+    /// than moved outside the days read.
+    func gone(_ missing: [CalendarMissing], calendars ids: Set<String>) -> [String]
     /// Yields when a calendar of this Mac changes.
     func changes() -> AsyncStream<Void>
 }
@@ -114,6 +153,30 @@ final class EventKitCalendarStore: CalendarEventStore, @unchecked Sendable {
         return out
     }
 
+    func gone(_ missing: [CalendarMissing], calendars ids: Set<String>) -> [String] {
+        guard access == .fullAccess, !missing.isEmpty else { return [] }
+        let store = self.store
+        let calendars = store.calendars(for: .event).filter { ids.contains($0.calendarIdentifier) }
+        func read(_ event: EKEvent) -> Bool { event.calendar.map { ids.contains($0.calendarIdentifier) } ?? false }
+        return missing.filter { item in
+            // A calendar not read now: nothing can be told about its events.
+            guard ids.contains(item.calendarId) else { return false }
+            var found = store.calendarItems(withExternalIdentifier: item.externalId)
+                .compactMap { $0 as? EKEvent }
+                .filter(read)
+            if let occurrence = item.occurrence, !found.isEmpty {
+                // The occurrence at its planned time, when EventKit lists only the series.
+                let planned = Date(timeIntervalSince1970: TimeInterval(occurrence) / 1000)
+                let predicate = store.predicateForEvents(
+                    withStart: planned.addingTimeInterval(-86_400), end: planned.addingTimeInterval(86_400),
+                    calendars: calendars.filter { $0.calendarIdentifier == item.calendarId }
+                )
+                found += store.events(matching: predicate).filter { $0.calendarItemExternalIdentifier == item.externalId }
+            }
+            return EventRecurrence.isGone(item, found: found.map(EventRecurrence.init))
+        }.map(\.key)
+    }
+
     func changes() -> AsyncStream<Void> {
         let store = self.store
         return AsyncStream { continuation in
@@ -136,7 +199,7 @@ final class EventKitCalendarStore: CalendarEventStore, @unchecked Sendable {
         }
         return CalendarRecord(
             externalID: event.calendarItemExternalIdentifier ?? event.calendarItemIdentifier,
-            occurrence: event.hasRecurrenceRules ? event.occurrenceDate : nil,
+            occurrence: EventRecurrence(event).occurrence,
             calendarID: event.calendar?.calendarIdentifier ?? "",
             calendarName: event.calendar?.title ?? "",
             title: event.title ?? "",

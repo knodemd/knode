@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use knode_format::{NodeId, Provenance, Space, Timestamp};
 use knode_ingest::calendar::{
-    self, CalendarEvent, CalendarOptions, EventInfo, SOURCE_ID, SyncReport, SyncRequest, Window,
+    self, CalendarEvent, CalendarOptions, EventInfo, MissingEvent, SOURCE_ID, SyncReport,
+    SyncRequest, Window,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,7 +49,7 @@ struct CalendarsParams {
 #[derive(Debug, Deserialize)]
 struct SyncParams {
     space: PathBuf,
-    /// Every calendar the app read.
+    /// The calendars the app read, for this request: only their events can be missing.
     #[serde(default)]
     calendars: Vec<Container>,
     /// The days the app read; within the plan's.
@@ -64,6 +65,24 @@ struct SyncParams {
 struct SyncResult {
     /// What was written; nothing when the source is paused.
     written: SyncReport,
+    /// The events the space has, of a calendar read and in the days read, that were not read:
+    /// the app asks its calendar which are gone, and marks those with `calendar.remove`.
+    missing: Vec<MissingEvent>,
+    /// The source, as `sources.list` shows it.
+    source: SourceStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveParams {
+    space: PathBuf,
+    /// The keys of the events found gone from their calendar.
+    keys: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoveResult {
+    /// How many events were marked removed; none when the source is paused.
+    removed: usize,
     /// The source, as `sources.list` shows it.
     source: SourceStatus,
 }
@@ -122,6 +141,7 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             to_value(true)
         }
         methods::CALENDAR_SYNC => sync(state, params(method, raw)?),
+        methods::CALENDAR_REMOVE => remove(state, params(method, raw)?),
         methods::CALENDAR_FAIL => fail(state, params(method, raw)?),
         methods::CALENDAR_CURRENT => {
             let p: CurrentParams = params(method, raw)?;
@@ -215,9 +235,6 @@ fn plan(state: &State, space: &Space) -> Result<Plan, RpcError> {
 
 fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
     let registry = state.registry();
-    if !p.calendars.is_empty() {
-        registry.report_containers(SOURCE_ID, p.calendars.clone());
-    }
     let space = state.space(&p.space)?;
     let mut space = lock_ignoring_poison(&space);
     let setting = setting(&space)?;
@@ -228,6 +245,7 @@ fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
         end: p.end.map_or(planned.end, |e| e.min(planned.end)),
     };
     let mut written = SyncReport::default();
+    let mut missing = Vec::new();
     if setting.on && sources_on(state) {
         let by = sources::provenance(SOURCE_ID);
         let mark = last_change(&space)?;
@@ -241,7 +259,10 @@ fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
         let result = calendar::sync(&mut space, &request, &by);
         state.notify_since(&space, mark)?;
         written = match result {
-            Ok(written) => written,
+            Ok(synced) => {
+                missing = synced.missing;
+                synced.report
+            }
             Err(e) => {
                 record(state, &space, Err(("space", e.to_string())))?;
                 return Err(e.into());
@@ -256,6 +277,39 @@ fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
     }
     to_value(SyncResult {
         written,
+        missing,
+        source: registry.get(&space, SOURCE_ID)?,
+    })
+}
+
+fn remove(state: &State, p: RemoveParams) -> Result<Value, RpcError> {
+    let registry = state.registry();
+    let space = state.space(&p.space)?;
+    let mut space = lock_ignoring_poison(&space);
+    let setting = setting(&space)?;
+    let mut removed = 0;
+    if setting.on && sources_on(state) && !p.keys.is_empty() {
+        let by = sources::provenance(SOURCE_ID);
+        let mark = last_change(&space)?;
+        let result = calendar::remove(&mut space, &p.keys, &setting.exclude, &by);
+        state.notify_since(&space, mark)?;
+        removed = result?;
+        if removed > 0 {
+            let key = state_key(&space.manifest().id, SOURCE_ID);
+            let mut states = registry.states();
+            let run = states.entry(&key);
+            run.last_items += removed;
+            run.items += removed as u64;
+            states.save(registry.home()).map_err(|e| {
+                RpcError::new(
+                    codes::STORAGE,
+                    format!("the state of {SOURCE_ID} could not be saved: {e}"),
+                )
+            })?;
+        }
+    }
+    to_value(RemoveResult {
+        removed,
         source: registry.get(&space, SOURCE_ID)?,
     })
 }

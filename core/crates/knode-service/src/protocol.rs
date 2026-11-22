@@ -220,6 +220,8 @@ pub mod methods {
     pub const CALENDAR_CALENDARS: &str = "calendar.calendars";
     /// Writes the events the app read into a space.
     pub const CALENDAR_SYNC: &str = "calendar.sync";
+    /// Marks the events the app found gone from their calendar removed.
+    pub const CALENDAR_REMOVE: &str = "calendar.remove";
     /// Says why the app could not read the calendars, such as a missing permission.
     pub const CALENDAR_FAIL: &str = "calendar.fail";
     /// The event happening at a time, that a meeting recorded then belongs to.

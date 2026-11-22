@@ -661,14 +661,14 @@ space what it wants (`calendar.plan`), reads those calendars and days with Event
 events to `calendar.sync`, which writes them with the provenance
 `{ "kind": "system", "actor": "calendar" }`. Without calendar access the app says so with
 `calendar.fail`, and the source shows `needs-attention`. `sources.containers` lists the calendars
-the app last reported (`calendar.calendars`, or the `calendars` of `calendar.sync`). All
-`calendar.*` methods are for people only.
+the app last reported with `calendar.calendars`. All `calendar.*` methods are for people only.
 
 | Method | Params | Result |
 | --- | --- | --- |
 | `calendar.plan` | `space` | `{ "on", "start", "end", "exclude", "attendee_emails", "next_run"? }`: whether to read anything for the space (off when paused or when `sources` or `capture` is off in `config.toml`), the days to read (Unix milliseconds), the ids of the calendars excluded (never read), whether attendees' addresses are written, and when the service asks for the next run. Fails with `invalid` when the source is not connected. |
 | `calendar.calendars` | `calendars` (`[{ "id", "name" }]`) | `true`. The calendars this Mac has, for `sources.containers`. Kept in memory. |
-| `calendar.sync` | `space`, `calendars`, `start`?, `end`?, `events` | `{ "written": { "created", "updated", "removed", "unchanged", "skipped" }, "source" }`, `source` as `sources.list` shows it. Writes nothing when the source is paused or sources are off. The window is the plan's, narrowed to `start`/`end` when given. Records the run (`last_run`, `items`, the cursor `{ "start", "end" }`) and asks for the next one in 15 minutes. |
+| `calendar.sync` | `space`, `calendars`, `start`?, `end`?, `events` | `{ "written": { "created", "updated", "unchanged", "skipped" }, "missing", "source" }`, `source` as `sources.list` shows it. `calendars` are the calendars read for this request (`[{ "id", "name" }]`, never the excluded ones): only their events can be missing. Writes nothing when the source is paused or sources are off. The window is the plan's, narrowed to `start`/`end` when given. `missing` lists the events the space has, of a calendar read and in the window, that are not among `events` (`[{ "key", "external_id", "occurrence"?, "calendar_id" }]`); nothing is marked for them (see below). Records the run (`last_run`, `items`, the cursor `{ "start", "end" }`) and asks for the next one in 15 minutes. |
+| `calendar.remove` | `space`, `keys` | `{ "removed", "source" }`. Marks the events with these keys `removed`: those of `missing` the app found gone from their calendar. Events of excluded calendars, events already removed and unknown keys are left alone; nothing is marked when the source is paused or sources are off. Adds the events marked to the run's `items`. |
 | `calendar.fail` | `space`, `kind` (`permission`, `unavailable` or `failed`), `message` | The source, with the run failed: `permission` and `unavailable` show `needs-attention`. |
 | `calendar.current` | `space`, `at`? (now) | The event happening at `at`, or `null`: a timed event (not all-day, cancelled or removed) that starts at most 10 minutes after `at` and has not ended; one with a call link first, then the one that started closest. `{ "id", "title", "start", "end", "all_day", "calendar"?, "call_link"?, "status", "project"? }`. |
 | `calendar.link` | `space`, `id` (a recording or any node), `event`, `project`?, `by` | The event. Links `id` to it `related` and, when `project` is given and the event is part of no project, the event `part-of` it. Fails with `invalid` for a node that is not an event. |
@@ -704,10 +704,25 @@ named like a `person` node of the space is written as a `[[link]]` to it.
 
 Writing the same events again changes nothing; an event that changed is brought in step. Events
 outside the window, of excluded calendars, or cancelled before they were ever written are left
-out. A cancelled event is marked (`**Cancelled.**` and its status), never deleted. An event the
-space has, of a calendar read and inside the window, that is no longer among the events read is
-marked `removed` (`**Removed from the calendar.**`); one that comes back is restored. Events of a
-calendar excluded or not read are never changed.
+out. A cancelled event is marked (`**Cancelled.**` and its status), never deleted. When two events
+would have the same title (same title, same day), the later gets `Weekly sync (2026-11-24) 2`,
+then ` 3`, so a `[[link]]` finds one node. Events of a calendar excluded or not read are never
+changed.
+
+An event the space has, of a calendar read and inside the window, that is no longer among the
+events read is either gone from its calendar or was moved outside the window (the window is
+checked against where the space last saw it). So `calendar.sync` does not mark it: it lists it in
+`missing`, and the app asks EventKit (`calendarItems(withExternalIdentifier:)`, among the
+calendars read) whether the event is still there: an event that does not repeat is gone when
+there is no such item; an occurrence is gone when its series is gone, or when the series is
+there but no occurrence planned at `occurrence` is (neither at its planned time nor detached and
+moved elsewhere). The app sends the keys found gone to `calendar.remove`, which marks them
+`removed` (`**Removed from the calendar.**`); one that comes back is restored. An event that only
+moved is left as it was, and brought in step when the window reaches it again.
+
+The app hands a window over in batches of at most 31 days, each a `calendar.sync` with its own
+`start` and `end`, so a request stays well below the 16 MB a line may have; it sends at most the
+first 1600 characters of an event's notes (the body keeps 1500).
 
 The window: from `days_back` days before the start of today (with the history `from-today`,
 never before the day the source was connected) to `days_ahead` days after the end of today.

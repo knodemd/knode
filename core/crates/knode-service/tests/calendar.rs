@@ -185,6 +185,13 @@ fn the_calendars_the_app_reports_can_be_excluded() {
     let plan = f.call("calendar.plan", json!({}));
     assert_eq!(plan["on"], false);
     assert_eq!(plan["exclude"], json!(["home"]));
+    // A sync names only the calendars it read: the list of the Mac's calendars stays whole.
+    f.call(
+        "calendar.sync",
+        json!({ "calendars": [{ "id": "work", "name": "Work" }], "events": [] }),
+    );
+    let listed = f.call("sources.containers", json!({ "source": "calendar" }));
+    assert_eq!(listed.as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -238,7 +245,19 @@ fn sync_writes_events_once_from_today_and_never_excluded_ones() {
     let first = events[3].clone();
     let result = sync(&f, json!([cancelled, first]));
     assert_eq!(result["written"]["updated"], 1);
-    assert_eq!(result["written"]["removed"], 1);
+    let second = format!("SERIES@{}", today + 9 * HOUR + 7 * DAY);
+    // Only handed back as missing: the app asks its calendar, then marks those gone.
+    assert_eq!(
+        result["missing"],
+        json!([{
+            "key": second, "external_id": "SERIES",
+            "occurrence": today + 9 * HOUR + 7 * DAY, "calendar_id": "work",
+        }])
+    );
+    assert!(f.events().iter().all(|e| e["status"] != "removed"));
+    let removed = f.call("calendar.remove", json!({ "keys": [second] }));
+    assert_eq!(removed["removed"], 1);
+    assert_eq!(removed["source"]["last_items"], 2);
     let statuses: Vec<(String, String)> = f
         .events()
         .iter()
@@ -250,10 +269,7 @@ fn sync_writes_events_once_from_today_and_never_excluded_ones() {
         })
         .collect();
     assert!(statuses.contains(&("W1".into(), "cancelled".into())));
-    assert!(statuses.contains(&(
-        format!("SERIES@{}", today + 9 * HOUR + 7 * DAY),
-        "removed".into()
-    )));
+    assert!(statuses.contains(&(second.clone(), "removed".into())));
     assert_eq!(f.events().len(), 3);
 }
 

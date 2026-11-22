@@ -33,15 +33,25 @@ struct CalendarEventSummary: Hashable, Sendable, Decodable, Identifiable {
     var project: Node.ID?
 }
 
+/// An event the space has that `calendar.sync` did not find among the events handed over: gone
+/// from its calendar, or moved outside the days read. The app asks EventKit which.
+struct CalendarMissing: Hashable, Sendable, Decodable {
+    var key: String
+    var externalId: String
+    /// For an occurrence of a recurring event, when it was planned to start (Unix milliseconds).
+    var occurrence: Int64?
+    var calendarId: String
+}
+
 /// What `calendar.sync` answers.
 struct CalendarSyncResult: Sendable, Decodable {
     struct Written: Sendable, Decodable {
         var created: Int
         var updated: Int
-        var removed: Int
     }
 
     var written: Written
+    var missing: [CalendarMissing]
     var source: SourceStatus
 }
 
@@ -60,7 +70,11 @@ protocol CalendarClient: CalendarLinking {
     func connectedSpaces() async throws -> [URL]
     func plan(in space: URL) async throws -> CalendarPlan
     func reportCalendars(_ calendars: [CalendarInfo]) async throws
+    /// Hands over the events read from `calendars` (never the excluded ones) for the days from
+    /// `start` to `end`.
     func sync(_ events: [CalendarRecord], calendars: [CalendarInfo], from start: Int64, to end: Int64, in space: URL) async throws -> CalendarSyncResult
+    /// Marks the events with these keys removed: those missing that are gone from their calendar.
+    func remove(_ keys: [String], in space: URL) async throws
     func fail(kind: String, message: String, in space: URL) async throws
     func options(in space: URL) async throws -> CalendarOptions
     func configure(_ options: CalendarOptions, in space: URL) async throws -> CalendarOptions
@@ -70,7 +84,17 @@ protocol CalendarClient: CalendarLinking {
 enum CalendarWire {
     static let source = "calendar"
 
+    /// The most characters of an event's notes handed over: the core writes at most 1500, and a
+    /// few more tell it they were cut.
+    static let maxNotes = 1600
+
     static func milliseconds(_ date: Date) -> Int64 { Int64((date.timeIntervalSince1970 * 1000).rounded()) }
+
+    /// The notes as handed over: trimmed, as the core reads them, and cut at `maxNotes`.
+    static func notes(_ notes: String?) -> String? {
+        guard let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty else { return nil }
+        return notes.count > maxNotes ? String(notes.prefix(maxNotes)) : notes
+    }
 
     static func calendars(_ calendars: [CalendarInfo]) -> JSONValue {
         .array(calendars.map { ["id": .string($0.id), "name": .string($0.name)] })
@@ -90,7 +114,7 @@ enum CalendarWire {
         if let occurrence = record.occurrence { event["occurrence"] = .int(milliseconds(occurrence)) }
         if let location = record.location, !location.isEmpty { event["location"] = .string(location) }
         if let url = record.url, !url.isEmpty { event["url"] = .string(url) }
-        if let notes = record.notes, !notes.isEmpty { event["notes"] = .string(notes) }
+        if let notes = notes(record.notes) { event["notes"] = .string(notes) }
         if !record.attendees.isEmpty {
             event["attendees"] = .array(record.attendees.map { attendee in
                 var json: [String: JSONValue] = ["name": .string(attendee.name)]
@@ -132,6 +156,11 @@ struct ServiceCalendarClient: CalendarClient {
             "space": self.space(space), "calendars": CalendarWire.calendars(calendars),
             "start": .int(start), "end": .int(end), "events": .array(events.map(CalendarWire.event)),
         ], as: CalendarSyncResult.self)
+    }
+
+    func remove(_ keys: [String], in space: URL) async throws {
+        struct Removed: Decodable { var removed: Int }
+        _ = try await call("calendar.remove", ["space": self.space(space), "keys": .array(keys.map { .string($0) })], as: Removed.self)
     }
 
     func fail(kind: String, message: String, in space: URL) async throws {

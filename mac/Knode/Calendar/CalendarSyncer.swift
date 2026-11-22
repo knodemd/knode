@@ -4,7 +4,10 @@ import Foundation
 /// its settings and state, but only the app can read EventKit (`PROTOCOL.md`, "Calendar").
 ///
 /// A run asks each space for its plan (`calendar.plan`: on, the days, the calendars excluded),
-/// reads those calendars and days, and hands the events to `calendar.sync`, which writes them.
+/// reads those calendars and days, and hands the events to `calendar.sync`, which writes them, in
+/// batches of at most `batchDays` days so a message stays small. The events the core finds
+/// missing are looked up in EventKit, and only those gone from their calendar (not those moved
+/// outside the days read) are marked, with `calendar.remove`.
 /// The calendars of a space are read again when the service asks (its `next_run` came, or the
 /// person chose Run now or changed the days), when a calendar of the Mac changed, or when the plan
 /// changed (a calendar excluded or included); what was read is handed over only when it differs
@@ -17,6 +20,9 @@ actor CalendarSyncer {
         var fingerprint: Int
         var at: Date
     }
+
+    /// The most days handed over in one `calendar.sync`.
+    static let batchDays: Int64 = 31
 
     private let store: any CalendarEventStore
     private let client: any CalendarClient
@@ -116,18 +122,41 @@ actor CalendarSyncer {
         guard asked || calendarsChanged || planChanged else { return }
         let excluded = Set(plan.exclude)
         let read = calendars.filter { !excluded.contains($0.id) }
-        let start = Date(timeIntervalSince1970: TimeInterval(plan.start) / 1000)
-        let end = Date(timeIntervalSince1970: TimeInterval(plan.end) / 1000)
-        let events = store.events(from: start, to: end, calendars: Set(read.map(\.id)))
-            .sorted { ($0.start, $0.externalID) < ($1.start, $1.externalID) }
+        let ids = Set(read.map(\.id))
         var hasher = Hasher()
         hasher.combine(read)
-        hasher.combine(events)
+        let batches = Self.batches(from: plan.start, to: plan.end).map { batch in
+            let events = store.events(from: Self.date(batch.start), to: Self.date(batch.end), calendars: ids)
+                .sorted { ($0.start, $0.externalID) < ($1.start, $1.externalID) }
+            hasher.combine(events)
+            return (batch, events)
+        }
         let fingerprint = hasher.finalize()
         if !asked, !planChanged, last?.fingerprint == fingerprint { return }
-        _ = try await client.sync(events, calendars: calendars, from: plan.start, to: plan.end, in: space)
+        for (batch, events) in batches {
+            let result = try await client.sync(events, calendars: read, from: batch.start, to: batch.end, in: space)
+            let gone = store.gone(result.missing, calendars: ids)
+            if !gone.isEmpty { try await client.remove(gone, in: space) }
+        }
         handed[space] = Handed(plan: plan, fingerprint: fingerprint, at: date)
     }
+
+    /// The days from `start` to `end` (Unix milliseconds) in runs of at most `batchDays`; one,
+    /// even empty, when `end` is not after `start`.
+    static func batches(from start: Int64, to end: Int64) -> [(start: Int64, end: Int64)] {
+        let step = batchDays * 86_400_000
+        guard end > start else { return [(start, end)] }
+        var out: [(start: Int64, end: Int64)] = []
+        var from = start
+        while from < end {
+            let to = min(end, from + step)
+            out.append((from, to))
+            from = to
+        }
+        return out
+    }
+
+    private static func date(_ milliseconds: Int64) -> Date { Date(timeIntervalSince1970: TimeInterval(milliseconds) / 1000) }
 }
 
 /// Connecting the calendar asks for calendar access, as the sign-in step of the Connect sheet:

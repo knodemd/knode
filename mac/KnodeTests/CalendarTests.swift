@@ -35,6 +35,13 @@ final class FakeCalendarStore: CalendarEventStore {
         }
     }
 
+    /// Gone: no event of that id is left in the calendar, on any day.
+    func gone(_ missing: [CalendarMissing], calendars ids: Set<String>) -> [String] {
+        state.withLock { s in
+            missing.filter { item in !s.events.contains { $0.externalID == item.externalId } }.map(\.key)
+        }
+    }
+
     func changes() -> AsyncStream<Void> { AsyncStream { $0.finish() } }
 }
 
@@ -51,6 +58,9 @@ actor FakeCalendarClient: CalendarClient {
     var spaces: [URL] = []
     var plans: [URL: CalendarPlan] = [:]
     var synced: [Synced] = []
+    var removed: [[String]] = []
+    /// What the next `sync` answers as missing.
+    var missing: [CalendarMissing] = []
     var reported: [[CalendarInfo]] = []
     var failures: [(URL, String)] = []
     var links: [(recording: Node.ID, event: Node.ID, project: Node.ID?)] = []
@@ -63,6 +73,7 @@ actor FakeCalendarClient: CalendarClient {
 
     func setPlan(_ plan: CalendarPlan, for space: URL) { plans[space] = plan }
     func setCurrent(_ event: CalendarEventSummary?) { current = event }
+    func setMissing(_ missing: [CalendarMissing]) { self.missing = missing }
 
     func connectedSpaces() async throws -> [URL] { spaces }
 
@@ -77,11 +88,15 @@ actor FakeCalendarClient: CalendarClient {
         synced.append(Synced(space: space, events: events, calendars: calendars, start: start, end: end))
         // As the service does: a good run is due again later.
         plans[space]?.nextRun = start + 10 * 86_400_000_000
+        defer { missing = [] }
         return CalendarSyncResult(
-            written: .init(created: events.count, updated: 0, removed: 0),
+            written: .init(created: events.count, updated: 0),
+            missing: missing,
             source: SourceStatus(id: "calendar", name: "Calendar", kind: "connector", reads: "", state: .idle)
         )
     }
+
+    func remove(_ keys: [String], in space: URL) async throws { removed.append(keys) }
 
     func fail(kind: String, message: String, in space: URL) async throws { failures.append((space, kind)) }
 
@@ -149,7 +164,8 @@ struct CalendarTests {
         var synced = await client.synced
         #expect(synced.count == 1)
         #expect(synced[0].events.map(\.externalID) == ["W1"])
-        #expect(synced[0].calendars.count == 2)
+        // Only the calendars read go with the events; the Mac's whole list is reported apart.
+        #expect(synced[0].calendars == [CalendarInfo(id: "work", name: "Work")])
         #expect(store.state.withLock { $0.reads.last?.calendars } == ["work"])
         #expect(await client.reported.last?.count == 2)
 
@@ -185,6 +201,77 @@ struct CalendarTests {
         #expect(synced.count == 4)
         #expect(Set(synced[3].events.map(\.externalID)) == ["W1", "H1"])
         #expect(await syncer.lastHanded(to: space)?.plan.exclude == [])
+    }
+
+    @Test func aDetachedOccurrenceKeepsItsOccurrence() {
+        let planned = now
+        let detached = EventRecurrence(isDetached: true, hasRecurrenceRules: false, occurrenceDate: planned)
+        #expect(detached.occurrence == planned)
+        #expect(EventRecurrence(isDetached: false, hasRecurrenceRules: true, occurrenceDate: planned).occurrence == planned)
+        #expect(EventRecurrence(isDetached: false, hasRecurrenceRules: false, occurrenceDate: planned).occurrence == nil)
+    }
+
+    @Test func aMissingEventIsGoneOnlyWhenItsCalendarNoLongerHasIt() {
+        let single = CalendarMissing(key: "E1", externalId: "E1", occurrence: nil, calendarId: "work")
+        let series = EventRecurrence(isDetached: false, hasRecurrenceRules: true, occurrenceDate: now.addingTimeInterval(-7 * 86_400))
+        #expect(EventRecurrence.isGone(single, found: []))
+        // Moved outside the days read: still there.
+        #expect(!EventRecurrence.isGone(single, found: [EventRecurrence(isDetached: false, hasRecurrenceRules: false, occurrenceDate: now)]))
+        let ms = CalendarWire.milliseconds(now)
+        let occurrence = CalendarMissing(key: "S@\(ms)", externalId: "S", occurrence: ms, calendarId: "work")
+        #expect(EventRecurrence.isGone(occurrence, found: []))
+        // The series is there, the occurrence was deleted.
+        #expect(EventRecurrence.isGone(occurrence, found: [series]))
+        // The occurrence was moved on its own, outside the days read: detached, still planned then.
+        let moved = EventRecurrence(isDetached: true, hasRecurrenceRules: false, occurrenceDate: now)
+        #expect(!EventRecurrence.isGone(occurrence, found: [series, moved]))
+    }
+
+    @Test func longNotesAreCutBeforeTheyGo() {
+        var record = CalendarRecord.sample("E1", start: now)
+        record.notes = "  " + String(repeating: "a", count: 5000)
+        guard case .object(let json) = CalendarWire.event(record), case .string(let notes) = json["notes"] else {
+            Issue.record("no notes"); return
+        }
+        #expect(notes.count == CalendarWire.maxNotes)
+        #expect(notes.first == "a")
+        record.notes = " \n "
+        guard case .object(let blank) = CalendarWire.event(record) else { Issue.record("not an object"); return }
+        #expect(blank["notes"] == nil)
+    }
+
+    @Test func aLongWindowGoesInBatchesAndOnlyGoneEventsAreRemoved() async throws {
+        let day: Int64 = 86_400_000
+        let batches = CalendarSyncer.batches(from: 0, to: 70 * day)
+        #expect(batches.map(\.start) == [0, 31 * day, 62 * day])
+        #expect(batches.map(\.end) == [31 * day, 62 * day, 70 * day])
+        #expect(CalendarSyncer.batches(from: 5, to: 5).count == 1)
+
+        let store = FakeCalendarStore()
+        let ms = CalendarWire.milliseconds(now)
+        store.state.withLock {
+            $0.calendars = [CalendarInfo(id: "work", name: "Work")]
+            $0.events = [
+                .sample("EARLY", start: now.addingTimeInterval(-50 * 86_400)),
+                .sample("LATE", start: now.addingTimeInterval(5 * 86_400)),
+                // Moved far ahead, outside the days read.
+                .sample("MOVED", start: now.addingTimeInterval(300 * 86_400)),
+            ]
+        }
+        let client = FakeCalendarClient()
+        await client.set(spaces: [space], plan: CalendarPlan(on: true, start: ms - 60 * day, end: ms + 15 * day, exclude: [], attendeeEmails: false, nextRun: nil))
+        await client.setMissing([
+            CalendarMissing(key: "MOVED", externalId: "MOVED", occurrence: nil, calendarId: "work"),
+            CalendarMissing(key: "GONE", externalId: "GONE", occurrence: nil, calendarId: "work"),
+        ])
+        let syncer = CalendarSyncer(store: store, client: client, now: { [now] in now })
+        await syncer.runOnce()
+        let synced = await client.synced
+        #expect(synced.count == 3)
+        #expect(synced.map(\.start) == [ms - 60 * day, ms - 29 * day, ms + 2 * day])
+        #expect(synced.last?.end == ms + 15 * day)
+        #expect(synced.map { $0.events.map(\.externalID) } == [["EARLY"], [], ["LATE"]])
+        #expect(await client.removed == [["GONE"]])
     }
 
     @Test func aPausedSpaceIsNotRead() async throws {

@@ -97,13 +97,16 @@ pub struct CalendarSync {
 }
 
 /// What writing events did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CalendarSyncReport {
     pub created: u32,
     pub updated: u32,
-    pub removed: u32,
     pub unchanged: u32,
     pub skipped: u32,
+    /// The keys of the events the space has, of a calendar read and in the days read, that were
+    /// not read: gone from their calendar or moved outside the days read. Mark those gone with
+    /// `remove_calendar_events`.
+    pub missing: Vec<String>,
 }
 
 /// An event of the space.
@@ -152,7 +155,7 @@ fn count(n: usize) -> u32 {
 #[uniffi::export]
 impl KnodeSpace {
     /// Writes the events read from the calendars, as `by` (the `calendar` source): one node per
-    /// event, found again by its key, updated when it changed, marked when cancelled or gone.
+    /// event, found again by its key, updated when it changed, marked when cancelled.
     pub fn sync_calendar(&self, sync: CalendarSync, by: Provenance) -> Result<CalendarSyncReport> {
         let calendars = containers(sync.calendars);
         let excluded = containers(sync.excluded);
@@ -192,14 +195,32 @@ impl KnodeSpace {
             events: &events,
             attendee_emails: sync.attendee_emails,
         };
-        let r = cal::sync(&mut self.lock(), &request, &by.into())?;
+        let synced = cal::sync(&mut self.lock(), &request, &by.into())?;
+        let r = synced.report;
         Ok(CalendarSyncReport {
             created: count(r.created),
             updated: count(r.updated),
-            removed: count(r.removed),
             unchanged: count(r.unchanged),
             skipped: count(r.skipped),
+            missing: synced.missing.into_iter().map(|m| m.key).collect(),
         })
+    }
+
+    /// Marks the events with these keys removed from their calendar: those of the `missing` of
+    /// `sync_calendar` found gone. Returns how many were marked.
+    pub fn remove_calendar_events(
+        &self,
+        keys: Vec<String>,
+        excluded: Vec<CalendarInfo>,
+        by: Provenance,
+    ) -> Result<u32> {
+        let excluded = containers(excluded);
+        Ok(count(cal::remove(
+            &mut self.lock(),
+            &keys,
+            &excluded,
+            &by.into(),
+        )?))
     }
 
     /// The event happening at `at` (Unix milliseconds) that a meeting recorded then belongs to.
@@ -300,7 +321,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            (excluded.created, excluded.skipped, excluded.removed),
+            (excluded.created, excluded.skipped, excluded.missing.len()),
             (0, 1, 0)
         );
 

@@ -53,6 +53,10 @@ fn wide() -> Window {
 }
 
 fn run(space: &mut Space, events: &[CalendarEvent], excluded: &[Container]) -> SyncReport {
+    run_all(space, events, excluded).report
+}
+
+fn run_all(space: &mut Space, events: &[CalendarEvent], excluded: &[Container]) -> Synced {
     let calendars = [work(), home()];
     let request = SyncRequest {
         calendars: &calendars,
@@ -295,19 +299,38 @@ fn an_event_gone_from_its_calendar_is_marked_removed_not_deleted() {
     assert_eq!(
         sync_in(&mut space, &request, &calendar(), &zone())
             .unwrap()
+            .report
             .created,
         4
     );
-    // Now `travel` is not read and `FAR` is outside the window: both stay as they are.
-    let report = run(&mut space, std::slice::from_ref(&keep), &[]);
-    assert_eq!(report.removed, 1);
+    // Now `travel` is not read and `FAR` is outside the window: both stay as they are. `GONE`
+    // is only handed back as missing; marked once the app found it gone.
+    let synced = run_all(&mut space, std::slice::from_ref(&keep), &[]);
+    assert_eq!(
+        synced.missing,
+        vec![MissingEvent {
+            key: "GONE".into(),
+            external_id: "GONE".into(),
+            occurrence: None,
+            calendar_id: "work".into(),
+        }]
+    );
+    assert_eq!(node_status(&space, "GONE"), "confirmed");
+    let gone_keys = vec!["GONE".to_string(), "GONE".to_string(), "NONE".to_string()];
+    assert_eq!(remove(&mut space, &gone_keys, &[], &calendar()).unwrap(), 1);
     let (node, props) = node(&space, "GONE");
     assert!(node.body.starts_with("**Removed from the calendar.**"));
     assert_eq!(props[keys::STATUS], "removed");
     assert_eq!(node_status(&space, "OTHER"), "confirmed");
     assert_eq!(node_status(&space, "FAR"), "confirmed");
-    // Marking again changes nothing; coming back restores it.
-    assert_eq!(run(&mut space, std::slice::from_ref(&keep), &[]).removed, 0);
+    // Marking again changes nothing, and a removed event is no longer missing; coming back
+    // restores it.
+    assert_eq!(remove(&mut space, &gone_keys, &[], &calendar()).unwrap(), 0);
+    assert!(
+        run_all(&mut space, std::slice::from_ref(&keep), &[])
+            .missing
+            .is_empty()
+    );
     run(&mut space, &[keep, gone], &[]);
     assert_eq!(node_status(&space, "GONE"), "confirmed");
     assert!(!node_body(&space, "GONE").contains("Removed"));
@@ -318,14 +341,71 @@ fn node_status(space: &Space, key: &str) -> String {
 }
 
 #[test]
+fn an_event_moved_outside_the_window_is_not_marked_removed() {
+    let (_dir, mut space) = space();
+    let series = event("SERIES", T0 + DAY_MS);
+    let mut occurrence = event("SERIES", T0 + 2 * DAY_MS);
+    occurrence.occurrence = Some(T0 + 2 * DAY_MS);
+    run(&mut space, &[series.clone(), occurrence.clone()], &[]);
+    // Both moved 60 days ahead, outside the window read: the app no longer reads them.
+    let synced = run_all(&mut space, &[], &[]);
+    assert_eq!(synced.report, SyncReport::default());
+    assert_eq!(node_status(&space, "SERIES"), "confirmed");
+    let key = format!("SERIES@{}", T0 + 2 * DAY_MS);
+    assert_eq!(node_status(&space, &key), "confirmed");
+    assert!(!node_body(&space, "SERIES").contains("Removed"));
+    let mut missing = synced.missing;
+    missing.sort_by(|a, b| a.key.cmp(&b.key));
+    assert_eq!(missing.len(), 2);
+    assert_eq!(
+        (missing[0].key.as_str(), missing[0].occurrence),
+        ("SERIES", None)
+    );
+    assert_eq!(missing[1].key, key);
+    assert_eq!(missing[1].external_id, "SERIES");
+    assert_eq!(missing[1].occurrence, Some(T0 + 2 * DAY_MS));
+}
+
+#[test]
+fn events_of_the_same_title_and_day_have_their_own_titles() {
+    let (_dir, mut space) = space();
+    let morning = event("MORNING", T0);
+    let evening = event("EVENING", T0 + 6 * HOUR);
+    run(&mut space, &[morning.clone(), evening.clone()], &[]);
+    let mut titles = vec![
+        node(&space, "MORNING").0.title,
+        node(&space, "EVENING").0.title,
+    ];
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec!["Weekly sync (2026-11-24)", "Weekly sync (2026-11-24) 2"]
+    );
+    // Written again: each keeps its own.
+    let report = run(&mut space, &[morning.clone(), evening.clone()], &[]);
+    assert_eq!((report.updated, report.unchanged), (0, 2));
+    // One renamed to the other's title takes a free one.
+    let mut renamed = event("OTHER", T0 + DAY_MS);
+    renamed.title = "Review".into();
+    run(&mut space, std::slice::from_ref(&renamed), &[]);
+    renamed.start = T0;
+    renamed.end = T0 + HOUR;
+    renamed.title = "Weekly sync".into();
+    run(&mut space, &[morning, evening, renamed], &[]);
+    assert_eq!(node(&space, "OTHER").0.title, "Weekly sync (2026-11-24) 3");
+}
+
+#[test]
 fn excluded_calendars_are_never_written_or_changed() {
     let (_dir, mut space) = space();
     let mut private = event("P1", T0);
     private.calendar_id = "home".into();
     run(&mut space, std::slice::from_ref(&private), &[]);
-    let report = run(&mut space, &[event("W1", T0)], &[home()]);
-    // The home event is not marked removed: its calendar is excluded.
-    assert_eq!(report.removed, 0);
+    let synced = run_all(&mut space, &[event("W1", T0)], &[home()]);
+    // The home event is not missing, nor marked removed: its calendar is excluded.
+    assert!(synced.missing.is_empty());
+    let p1 = vec!["P1".to_string()];
+    assert_eq!(remove(&mut space, &p1, &[home()], &calendar()).unwrap(), 0);
     assert_eq!(node_status(&space, "P1"), "confirmed");
     let mut changed = private.clone();
     changed.title = "Changed".into();
@@ -367,7 +447,9 @@ fn the_window_starts_from_today_or_goes_back() {
         events: &events,
         attendee_emails: false,
     };
-    let report = sync_in(&mut space, &request, &calendar(), &zone()).unwrap();
+    let report = sync_in(&mut space, &request, &calendar(), &zone())
+        .unwrap()
+        .report;
     assert_eq!((report.created, report.skipped), (1, 1));
     assert!(find(&space, "OLD").unwrap().is_none());
 }
