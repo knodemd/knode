@@ -8,8 +8,9 @@
 //! how far its transcript and summary are. A recording made for a project is `part-of` it.
 //!
 //! The transcript is a node of its own, of kind [`TRANSCRIPT_KIND`], `derived-from` the
-//! recording, written as Markdown turns: one paragraph per run of the same speaker, each with
-//! the time it started ([`set_transcript`]). The recording's body links to it.
+//! recording, written as Markdown turns: one paragraph per run of the same speaker, broken after
+//! a pause or when it grows long so one microphone for a whole room still reads in paragraphs,
+//! each with the time it started ([`set_transcript`]). The recording's body links to it.
 //!
 //! Transcribing and summarising happen on the device, in the app; this module only stores what
 //! they produce and keeps track of what is still to do ([`pending`]). Nothing is sent anywhere.
@@ -906,8 +907,14 @@ fn timestamp(ms: i64) -> String {
     )
 }
 
+/// A pause, in milliseconds, after which the same speaker starts a new paragraph.
+const TURN_PAUSE_MS: i64 = 4_000;
+/// About how long a paragraph of one speaker grows before a new one starts.
+const TURN_MAX_CHARS: usize = 1_200;
+
 /// A transcript as Markdown: who made it, then one paragraph per turn, `**Speaker**
-/// (HH:MM:SS): text`, where a turn is a run of segments by the same speaker.
+/// (HH:MM:SS): text`, where a turn is a run of segments by the same speaker, broken after a
+/// pause of [`TURN_PAUSE_MS`] or once it is about [`TURN_MAX_CHARS`] long.
 fn render_transcript(transcript: &Transcript) -> String {
     let engine = one_line(&transcript.engine);
     let engine = if engine.is_empty() {
@@ -925,7 +932,7 @@ fn render_transcript(transcript: &Transcript) -> String {
         head.push_str(&format!(" ({language})"));
     }
     head.push('.');
-    let mut turns: Vec<(String, i64, Vec<String>)> = Vec::new();
+    let mut turns: Vec<(String, i64, Vec<String>, i64, usize)> = Vec::new();
     for segment in &transcript.segments {
         let text = one_line(&segment.text);
         if text.is_empty() {
@@ -935,13 +942,27 @@ fn render_transcript(transcript: &Transcript) -> String {
             s if s.is_empty() => "Unknown".to_string(),
             s => s,
         };
+        // A turn goes on while the same speaker talks, until a pause or until it grows long:
+        // one microphone for a whole room is all one speaker, and its transcript still reads in
+        // paragraphs, each with the moment it starts.
         match turns.last_mut() {
-            Some((last, _, texts)) if *last == speaker => texts.push(text),
-            _ => turns.push((speaker, segment.start_ms, vec![text])),
+            Some((last, _, texts, end, len))
+                if *last == speaker
+                    && segment.start_ms - *end < TURN_PAUSE_MS
+                    && *len + text.len() <= TURN_MAX_CHARS =>
+            {
+                *len += text.len() + 1;
+                *end = segment.end_ms.max(*end);
+                texts.push(text);
+            }
+            _ => {
+                let len = text.len();
+                turns.push((speaker, segment.start_ms, vec![text], segment.end_ms, len));
+            }
         }
     }
     let mut body = head;
-    for (speaker, start, texts) in turns {
+    for (speaker, start, texts, _, _) in turns {
         body.push_str(&format!(
             "\n\n**{speaker}** ({}): {}",
             timestamp(start),

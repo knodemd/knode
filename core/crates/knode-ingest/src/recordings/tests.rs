@@ -232,6 +232,47 @@ fn pending_lists_oldest_first_and_follows_the_stages() {
 }
 
 #[test]
+fn one_speaker_for_a_whole_room_still_reads_in_paragraphs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let rec = create(&mut space, &meeting(dir.path(), None), &me()).unwrap();
+    let long = "word ".repeat(150);
+    let t = Transcript {
+        language: None,
+        engine: "Apple SpeechAnalyzer".into(),
+        segments: vec![
+            segment(0, "Speaker", "We start with the budget."),
+            segment(1_500, "Speaker", "It is tight."),
+            // A pause: a new paragraph.
+            segment(20_000, "Speaker", "Next, the demo."),
+            // Long talk without pauses: broken once it grows long.
+            segment(21_500, "Speaker", long.trim()),
+            segment(23_000, "Speaker", long.trim()),
+        ],
+    };
+    let rec = set_transcript(&mut space, &rec.id, &t, &engine()).unwrap();
+    let body = space
+        .get_node(&rec.transcript_id.unwrap())
+        .unwrap()
+        .unwrap()
+        .body;
+    let starts: Vec<&str> = body
+        .lines()
+        .filter(|l| l.starts_with("**Speaker**"))
+        .map(|l| &l[..22])
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            "**Speaker** (00:00:00)",
+            "**Speaker** (00:00:20)",
+            "**Speaker** (00:00:23)"
+        ]
+    );
+    assert!(body.contains("(00:00:00): We start with the budget. It is tight.\n"));
+}
+
+#[test]
 fn transcripts_merge_turns_and_are_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(dir.path());
