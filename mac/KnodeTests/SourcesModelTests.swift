@@ -104,6 +104,16 @@ final class FakeSourcesClient: SourcesClient {
         return try change(source) { $0.setting?.exclude.removeAll { $0.id == container } }
     }
 
+    func setMedia(_ maxMB: Int64?, _ source: String, in space: URL) async throws -> SourceStatus {
+        try record("media \(source) \(maxMB.map(String.init) ?? "default")", "media")
+        return try change(source) { status in
+            guard status.setting != nil else {
+                throw ServiceError.remote(code: -32004, kind: "invalid", message: "\(source) is not connected")
+            }
+            status.setting?.mediaMaxMB = maxMB
+        }
+    }
+
     func run(_ source: String, in space: URL) async throws -> SourceStatus {
         try record("run \(source)", "run")
         return try change(source) { $0.state = .running }
