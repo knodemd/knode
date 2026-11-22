@@ -232,6 +232,15 @@ fn private_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether the file at `path` can be opened for reading, without reading it: the
+/// [`SourceError`] reading it would fail with otherwise (`Permission` without Full Disk Access,
+/// `Unavailable` when it is not there).
+pub fn readable(path: &Path) -> Result<(), SourceError> {
+    fs::File::open(path)
+        .map(|_| ())
+        .map_err(|e| read_error(path, e))
+}
+
 fn read_error(path: &Path, error: io::Error) -> SourceError {
     match error.kind() {
         io::ErrorKind::NotFound => {

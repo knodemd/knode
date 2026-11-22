@@ -11,8 +11,8 @@ use std::time::Duration;
 use knode_format::{Node, Space, Timestamp, link_kinds};
 use knode_ingest::slack::{Clock, HttpResponse, Limits, SlackConfig, SlackConnector, SlackHttp};
 use knode_ingest::sources::{
-    Connector, Container, Cursor, FetchRequest, History, Secrets, SignInState, SignInStep,
-    SourceError, provenance,
+    Connector, Container, Cursor, FetchRequest, History, Readiness, Secrets, SignInState,
+    SignInStep, SourceError, provenance,
 };
 use knode_ingest::{ChatFormat, PERSON_KIND, chat_keys, import_chat_export, person_keys};
 use serde_json::{Value, json};
@@ -532,6 +532,9 @@ fn a_build_without_a_slack_app_says_so() {
     assert!(
         error.to_string().contains("KNODE_SLACK_CLIENT_ID"),
         "{error}"
+    );
+    assert!(
+        matches!(connector.readiness(), Readiness::Unsupported(why) if why.contains("no Slack app"))
     );
     assert!(matches!(
         connector.sign_in_state(&MemorySecrets::default()),

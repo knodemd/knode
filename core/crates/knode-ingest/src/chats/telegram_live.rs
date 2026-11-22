@@ -42,8 +42,8 @@ use super::telegram::{Entity as Part, clean_name, entity_markdown};
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportReport, keys};
 use crate::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets,
-    SignInState, SignInStep, SourceError, SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Readiness,
+    Secrets, SignInState, SignInStep, SourceError, SourceInfo, Trigger, Written,
 };
 
 /// The id of the connector.
@@ -322,6 +322,11 @@ pub trait TelegramApi: Send + Sync {
     /// Connects with a saved session, or with a new one when `None`, and starts receiving
     /// updates once signed in. Returns whether the session is signed in.
     fn connect(&self, session: Option<&str>) -> Result<bool, ApiError>;
+    /// Whether this build has a Telegram app id to connect with. Yes unless the API says
+    /// otherwise.
+    fn has_app(&self) -> bool {
+        true
+    }
     /// The session to keep, once signed in. Only the keychain holds it.
     fn session(&self) -> Result<String, ApiError>;
     /// Asks Telegram to send a login code to this phone number. Returns where it was sent.
@@ -903,6 +908,14 @@ impl<A: TelegramApi> Connector for TelegramConnector<A> {
         )
         .needing([Permission::SignIn, Permission::Network])
         .excluding("chat")
+    }
+
+    fn readiness(&self) -> Readiness {
+        if self.api.has_app() {
+            Readiness::Ready
+        } else {
+            Readiness::Unsupported(NO_APP.into())
+        }
     }
 
     fn trigger(&self) -> Trigger {

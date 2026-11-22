@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 use base64::Engine;
 use knode_format::Timestamp;
 use knode_ingest::sources::{
-    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Secrets, SignInState,
-    SignInStep, SourceError, SourceInfo, Trigger,
+    Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Readiness, Secrets,
+    SignInState, SignInStep, SourceError, SourceInfo, Trigger,
 };
 use knode_vault::mail::{MailSource, RawMail};
 use serde::{Deserialize, Serialize};
@@ -477,6 +477,14 @@ impl Connector for GmailConnector {
 
     fn check(&self) -> Result<(), SourceError> {
         self.client().map(|_| ())
+    }
+
+    fn readiness(&self) -> Readiness {
+        if self.client.is_some() {
+            Readiness::Ready
+        } else {
+            Readiness::Unsupported(NO_CLIENT.into())
+        }
     }
 
     fn containers(&self, request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {

@@ -62,8 +62,8 @@ use super::slack::{
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportError, ChatImportReport};
 use crate::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, Permission, Secrets, SignInState,
-    SignInStep, SourceError, SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, Permission, Readiness, Secrets,
+    SignInState, SignInStep, SourceError, SourceInfo, Trigger, Written,
 };
 use api::{ApiConversation, ApiError, ConversationsList, Messages, UserInfo, UsersList, decode};
 use oauth::Token;
@@ -326,6 +326,14 @@ impl Connector for SlackConnector {
         )
         .needing([Permission::SignIn, Permission::Network])
         .excluding("channel")
+    }
+
+    fn readiness(&self) -> Readiness {
+        match self.client_id() {
+            Ok(_) => Readiness::Ready,
+            Err(SourceError::Unavailable(why)) => Readiness::Unsupported(why),
+            Err(e) => Readiness::Blocked(e),
+        }
     }
 
     fn trigger(&self) -> Trigger {

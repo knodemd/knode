@@ -580,6 +580,14 @@ source's id (`whatsapp`, `apple-mail`...).
   missing). `last_error` is `{ "kind", "message", "at" }`. `notice`, when there is one, is
   what the connector said after its last run that went well, such as what it could not bring
   in yet.
+- `readiness`, when the connector can tell cheaply (a folder listed or a file opened, never a
+  database read, the network or a system prompt), says whether it could read on this machine
+  now, connected or not: `{ "state": "ready" }` (it may still need to be signed in),
+  `{ "state": "unsupported", "message" }` (this build of Knode cannot use it, such as one built
+  without the Google, Slack or Telegram app id) or `{ "state": "blocked", "kind", "message" }`,
+  with `kind` as in `last_error`: `permission` without Full Disk Access, `unavailable` when there
+  is nothing to read yet (Apple Mail with no account). It is read again at every list, so a
+  permission granted shows at the next one. Apps use it to guide the person before connecting.
 - Times are milliseconds since 1970. With `from-today`, nothing older than `since`, the start of
   the day it was connected, is brought in.
 
@@ -622,8 +630,8 @@ and find the same `chat` nodes by Telegram's chat id. Chats are excluded by that
 `sources.containers` lists them); secret chats never reach the API and are not read. Photos and
 files up to 20 MB are attached; larger ones are named in the text. When Telegram asks to wait
 (a flood wait), the connector waits up to 10 seconds within a run, and otherwise asks nothing
-until the wait is over. A build of Knode without a Telegram app id lists the connector, which
-reports `unavailable`.
+until the wait is over. A build of Knode without a Telegram app id lists the connector with `readiness`
+`unsupported`; signing in fails with `unavailable`.
 
 The `imap` connector reads any mail account over IMAP with TLS (port 993; never plain text or
 `STARTTLS`), signed in with the address and an app password, checked by signing in once. Every
@@ -638,8 +646,8 @@ run lists the messages (from the day it was connected with `from-today`), later 
 `users.history.list`; when Google no longer has the history it lists again what arrived from a
 day before the last good run, at most 2000 messages. Labels are excluded by their id (`INBOX`,
 `Label_12`); spam and trash are never read. A build of Knode without a Google client id
-(`KNODE_GOOGLE_CLIENT_ID` when it is built, or at run time) lists the connector, which reports
-`unavailable`.
+(`KNODE_GOOGLE_CLIENT_ID` when it is built, or at run time) lists the connector with
+`readiness` `unsupported`; signing in or running it fails with `unavailable`.
 
 Both write through the mail importer: one `email` node per thread, and a message already in the
 space from a Google Takeout `.mbox`, Apple Mail or the other connector is found by its
