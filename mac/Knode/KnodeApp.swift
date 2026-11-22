@@ -12,6 +12,7 @@ struct KnodeApp: App {
     @State private var agents: AgentsModel
     @State private var searchIndex: SearchIndexModel
     @State private var sources: SourcesModel
+    @State private var recording: RecordingController
 
     init() {
         KFont.register()
@@ -37,6 +38,15 @@ struct KnodeApp: App {
             client: ServiceSourcesClient(),
             openURL: { NSWorkspace.shared.open($0) },
             startService: { await service.startService() }
+        ))
+        // Until Knode Service has `recordings.*`, a finished recording is transcribed and summarised
+        // but saved nowhere.
+        _recording = State(initialValue: RecordingController(
+            recorder: MeetingRecorder(),
+            transcriber: SpeechAnalyzerTranscriber(),
+            summarizer: FoundationModelsSummarizer(),
+            sink: UnwiredRecordingSink(),
+            consent: DefaultsRecordingConsentStore()
         ))
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }
@@ -98,6 +108,14 @@ struct KnodeApp: App {
         }
         .windowResizability(.contentSize)
 
+        Window("Record Meeting", id: RecordingWindow.id) {
+            RecordingWindow()
+                .knodeTheme(background: true)
+                .environment(recording)
+                .environment(model)
+        }
+        .windowResizability(.contentSize)
+
         #if DEBUG
         Window("Design Gallery", id: DesignGallery.windowID) {
             DesignGallery()
@@ -107,10 +125,17 @@ struct KnodeApp: App {
         #endif
 
         MenuBarExtra {
-            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex)
+            ServiceMenu(monitor: service, model: model, searchIndex: searchIndex, recording: recording)
         } label: {
-            KnodeMenuBarIcon.image(paused: !service.isRunning)
-                .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")
+            if recording.isRecording {
+                // Always visible while recording: a dot and the time, beside the icon.
+                Image(systemName: recording.isPaused ? "pause.circle.fill" : "record.circle.fill")
+                    .accessibilityLabel(recording.isPaused ? "Recording paused" : "Recording")
+                Text(RecordingText.elapsed(recording.elapsedSeconds))
+            } else {
+                KnodeMenuBarIcon.image(paused: !service.isRunning)
+                    .accessibilityLabel(service.isRunning ? "Knode Service, running" : "Knode Service, stopped")
+            }
         }
         .menuBarExtraStyle(.window)
     }

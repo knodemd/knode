@@ -103,6 +103,33 @@ the core when it does not. Knode Service has no methods yet to rename a space or
 settings. For those, `RoutingSpaceStore` opens the space with the core in the app for the call, even
 while the service holds it (SQLite allows both), and the app reloads what it shows.
 
+## Meetings
+
+**Record Meeting…** in the menu bar menu records the sound of the Mac (everyone on the call, through
+a Core Audio process tap) and the microphone (you), as two AAC tracks; **Record In Person…** records
+only the microphone, for people in a room. The first time, the app explains that some places
+require every participant's consent; after that, each recording starts only by hand, for that
+meeting, after choosing its space and project, with a notice to copy into the meeting chat. While it
+records, the menu bar shows a red dot and the time.
+
+When it stops, the recording is transcribed on the Mac with `SpeechAnalyzer` (sentences with their
+times, `Me` and `Others` from the two tracks) and the minutes are written by Apple's on-device model
+(Foundation Models): an overview, the key points, every decision, action item and open question,
+by map-reduce over the transcript so a long meeting fits the model. The transcript is always kept.
+Nothing leaves the Mac.
+
+The pieces are in `Knode/Recordings`, behind protocols (`MeetingRecording`, `Transcriber`,
+`Summarizer`, `RecordingSink`). Knode Service has no `recordings.*` methods in the app yet, so a
+finished recording is saved nowhere: `UnwiredRecordingSink` stands in until it does.
+
+To check transcription against the real model, run the manual test with a Spanish file:
+
+```sh
+say -v Mónica -o /tmp/x.aiff "Hemos decidido lanzar la versión el viernes catorce."
+TEST_RUNNER_KNODE_MANUAL_AUDIO=/tmp/x.aiff xcodebuild -scheme Knode -destination 'platform=macOS' \
+  test -only-testing:KnodeTests/RecordingsManualTests
+```
+
 ## Menu bar and the knode command
 
 The menu bar item shows whether Knode Service is running, the spaces it has open and how many
@@ -221,6 +248,7 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
 | `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
+| `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller and its menu and window |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |
 | `scripts` | The build of the core, of the `knode` command and of the document icon |

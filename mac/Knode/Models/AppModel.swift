@@ -399,6 +399,16 @@ final class AppModel {
         return spaces.first { $0.url?.standardizedFileURL.path(percentEncoded: false) == url.standardizedFileURL.path(percentEncoded: false) && !exampleSpaceIDs.contains($0.id) }
     }
 
+    /// The projects of a space of the sidebar, opened in the store if needed without selecting it.
+    func projects(inSpaceAt url: URL) async -> [ProjectSummary] {
+        do {
+            let space: Space = if let open = space(at: url) { open } else { try await store.openSpace(at: url) }
+            return try await store(for: space.id).projects(in: space.id)
+        } catch {
+            return []
+        }
+    }
+
     /// Renames a space: its name in `manifest.json`. The package keeps its file name.
     func renameSpace(at url: URL, to name: String) async {
         do {

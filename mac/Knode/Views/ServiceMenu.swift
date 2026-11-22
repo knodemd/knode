@@ -9,9 +9,10 @@ struct ServiceMenu: View {
     let monitor: ServiceMonitor
     let model: AppModel
     let searchIndex: SearchIndexModel
+    let recording: RecordingController
 
     var body: some View {
-        ServiceMenuPanel(monitor: monitor, model: model, searchIndex: searchIndex)
+        ServiceMenuPanel(monitor: monitor, model: model, searchIndex: searchIndex, recording: recording)
             .knodeTheme(background: true)
     }
 
@@ -30,6 +31,7 @@ private struct ServiceMenuPanel: View {
     let monitor: ServiceMonitor
     let model: AppModel
     let searchIndex: SearchIndexModel
+    let recording: RecordingController
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(\.kTheme) private var theme
@@ -41,6 +43,7 @@ private struct ServiceMenuPanel: View {
             KHairline()
             VStack(alignment: .leading, spacing: KSpace.x4) {
                 if let error = monitor.errorMessage { KErrorText(error) }
+                RecordingMenuSection(controller: recording)
                 openSpaces
                 spaceForAgents
                 if case .running(let status) = monitor.state, let index = status.index {
