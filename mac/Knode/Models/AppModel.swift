@@ -8,6 +8,8 @@ enum SpaceSheet: Identifiable, Hashable {
     case onboardingReview(URL)
     /// Connect your agents, on its own.
     case connectAgents
+    /// Connect your things: the sources of a space, as big tiles.
+    case connectSources
     case rename(URL)
     case icon(URL)
     /// Which agents may do what in the space.
@@ -57,6 +59,24 @@ final class AppModel {
     /// Opens Connect your agents unless another sheet is open.
     func showConnectAgents() {
         if canShowConnectAgents { sheet = .connectAgents }
+    }
+
+    /// Whether Connect your things can open now: never over another sheet.
+    var canShowConnectSources: Bool { sheet == nil || sheet == .connectSources }
+
+    /// Opens Connect your things unless another sheet is open.
+    func showConnectSources() {
+        if canShowConnectSources { sheet = .connectSources }
+    }
+
+    /// Whether Connect your things opens by itself once, after a first-run sheet closes: Get
+    /// started, Connect your agents or a new space, once there is a space to connect things to.
+    static func shouldOfferConnectSources(after closed: SpaceSheet?, now: SpaceSheet?, offered: Bool, hasSpace: Bool) -> Bool {
+        guard !offered, hasSpace, now == nil, let closed else { return false }
+        switch closed {
+        case .onboarding, .onboardingReview, .connectAgents, .newSpace: return true
+        default: return false
+        }
     }
     /// The space the person asked to take off the sidebar, while they confirm.
     var spaceToRemove: SpaceItem?

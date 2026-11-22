@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use knode_format::{ActorKind, NewNode, Properties, Provenance, Space, Timestamp};
 use knode_service::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
-    SourceInfo, SourceKind, SourceState, SourceStatus, SourcesOptions, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Readiness,
+    SourceError, SourceInfo, SourceKind, SourceReadiness, SourceState, SourceStatus,
+    SourcesOptions, Trigger, Written,
 };
 use knode_service::{Client, Config, ServiceHandle, start};
 use tempfile::TempDir;
@@ -51,6 +52,10 @@ struct Store {
     slow_fetch: Duration,
     /// Whether it waits for something its watched files do not show.
     waiting: bool,
+    /// Whether it could read now: `None` when it cannot tell.
+    access: Option<bool>,
+    /// Why this build cannot use it.
+    unsupported: Option<String>,
 }
 
 #[derive(Clone)]
@@ -105,6 +110,21 @@ impl Connector for Fake {
 
     fn waiting(&self, _cursor: &Cursor) -> bool {
         self.store().waiting
+    }
+
+    fn readiness(&self) -> Readiness {
+        let store = self.store();
+        if let Some(why) = &store.unsupported {
+            return Readiness::Unsupported(why.clone());
+        }
+        match store.access {
+            None => Readiness::Unknown,
+            Some(true) => Readiness::Ready,
+            Some(false) => Readiness::Blocked(SourceError::Permission(
+                Permission::FullDiskAccess,
+                "give Knode Full Disk Access".into(),
+            )),
+        }
     }
 
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
@@ -335,6 +355,37 @@ fn importers_and_connectors_are_listed_and_nothing_runs_until_connected() {
     thread::sleep(Duration::from_millis(300));
     assert_eq!(f.fake.store().fetches, 0);
     assert!(f.client().sources_status(None).unwrap().is_empty());
+}
+
+#[test]
+fn the_list_says_whether_a_connector_could_read_now() {
+    let f = Fixture::new();
+    assert_eq!(f.status().readiness, None);
+    f.fake.store().access = Some(false);
+    match f.status().readiness {
+        Some(SourceReadiness::Blocked { kind, message }) => {
+            assert_eq!(kind, "permission");
+            assert!(message.contains("Full Disk Access"), "{message}");
+        }
+        other => panic!("not blocked: {other:?}"),
+    }
+    // Granting the permission shows at the next list, with no restart.
+    f.fake.store().access = Some(true);
+    assert_eq!(f.status().readiness, Some(SourceReadiness::Ready));
+    f.fake.store().unsupported = Some("this build has no client id".into());
+    assert_eq!(
+        f.status().readiness,
+        Some(SourceReadiness::Unsupported {
+            message: "this build has no client id".into()
+        })
+    );
+    // Importers say nothing.
+    let list = f.client().sources_list(f.space()).unwrap();
+    assert!(
+        list.iter()
+            .filter(|s| s.info.kind == SourceKind::Importer)
+            .all(|s| s.readiness.is_none())
+    );
 }
 
 #[test]

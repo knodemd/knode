@@ -47,8 +47,8 @@ use knode_ingest::sources::FileStamp;
 use knode_format::{Provenance, Space, Timestamp};
 use knode_ingest::sources::sqlite::{DatabaseCopy, check_schema, open_copy};
 use knode_ingest::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
-    SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Readiness,
+    SourceError, SourceInfo, Trigger, Written,
 };
 use knode_vault::mail::{MailError, MailOptions, import_apple_mail_files, is_junk_folder};
 use serde::{Deserialize, Serialize};
@@ -270,6 +270,15 @@ fn failed(error: rusqlite::Error) -> SourceError {
 }
 
 impl Connector for AppleMailConnector {
+    /// Whether the Mail folder can be listed (macOS refuses it without Full Disk Access) and
+    /// holds a store, which it has once Mail has an account.
+    fn readiness(&self) -> Readiness {
+        match self.store() {
+            Ok(_) => Readiness::Ready,
+            Err(e) => Readiness::Blocked(e),
+        }
+    }
+
     fn info(&self) -> SourceInfo {
         SourceInfo::connector(
             ID,
@@ -815,6 +824,24 @@ impl Batch for AppleMailBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_says_whether_mail_has_a_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = AppleMailConnector::new(dir.path().join("Mail"));
+        assert!(matches!(
+            missing.readiness(),
+            Readiness::Blocked(SourceError::Unavailable(why)) if why.contains("add an account")
+        ));
+        std::fs::create_dir_all(dir.path().join("Mail")).unwrap();
+        let empty = AppleMailConnector::new(dir.path().join("Mail"));
+        assert!(matches!(
+            empty.readiness(),
+            Readiness::Blocked(SourceError::Unavailable(_))
+        ));
+        std::fs::create_dir_all(dir.path().join("Mail/V10")).unwrap();
+        assert!(matches!(empty.readiness(), Readiness::Ready));
+    }
 
     #[test]
     fn reads_mailbox_urls() {

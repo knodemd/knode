@@ -54,6 +54,81 @@ enum SourceApps {
     }
 }
 
+/// Web apps and other apps named after a service, for sources with no native app here: a
+/// Safari web app (`com.apple.Safari.WebApp.*`) or a Chrome app shim (`com.google.Chrome.app.*`)
+/// called Gmail, or an app called Slack, gives its icon to the source.
+struct WebAppFinder: Sendable {
+    /// What an app bundle says about itself.
+    struct Bundle: Equatable, Sendable {
+        var name: String?
+        var bundleID: String?
+    }
+
+    /// The folders looked in, in order.
+    var folders: [URL]
+    /// The names of the items in a folder.
+    var contents: @Sendable (URL) -> [String]
+    /// What the app at a URL says about itself, from its `Info.plist`.
+    var bundle: @Sendable (URL) -> Bundle?
+
+    /// Source id to the names its apps go by.
+    static let names: [String: [String]] = [
+        "gmail": ["Gmail"],
+        "slack": ["Slack"],
+        "telegram": ["Telegram"],
+        "whatsapp": ["WhatsApp"],
+        "google-calendar": ["Google Calendar"],
+        "discord": ["Discord"],
+        "notion": ["Notion"],
+    ]
+
+    /// The names the apps of a source go by. Variants such as `whatsapp-mac` take those of the
+    /// longest known id they start with.
+    static func names(for sourceID: String) -> [String] {
+        let id = sourceID.lowercased()
+        if let exact = names[id] { return exact }
+        let prefix = names.keys.filter { id.hasPrefix($0 + "-") }.max { $0.count < $1.count }
+        return prefix.flatMap { names[$0] } ?? []
+    }
+
+    static func isWebApp(_ bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return bundleID.hasPrefix("com.apple.Safari.WebApp.") || bundleID.hasPrefix("com.google.Chrome.app.")
+    }
+
+    /// The first app named after the source, web apps first, in the order of `folders`.
+    func appURL(for sourceID: String) -> URL? {
+        let wanted = Set(Self.names(for: sourceID).map { $0.lowercased() })
+        guard !wanted.isEmpty else { return nil }
+        var matches: [(url: URL, isWebApp: Bool)] = []
+        for folder in folders {
+            for item in contents(folder) where item.lowercased().hasSuffix(".app") {
+                let url = folder.appending(path: item, directoryHint: .isDirectory)
+                let info = bundle(url)
+                let fileName = String(item.dropLast(4))
+                let named = [fileName, info?.name].compactMap { $0?.trimmingCharacters(in: .whitespaces).lowercased() }
+                if named.contains(where: wanted.contains) {
+                    matches.append((url, Self.isWebApp(info?.bundleID)))
+                }
+            }
+        }
+        return (matches.first { $0.isWebApp } ?? matches.first)?.url
+    }
+
+    /// `~/Applications`, its Chrome Apps folder, and `/Applications`.
+    static var live: WebAppFinder {
+        let home = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications", directoryHint: .isDirectory)
+        return WebAppFinder(
+            folders: [home, home.appending(path: "Chrome Apps.localized", directoryHint: .isDirectory), URL(filePath: "/Applications", directoryHint: .isDirectory)],
+            contents: { (try? FileManager.default.contentsOfDirectory(atPath: $0.path(percentEncoded: false))) ?? [] },
+            bundle: { url in
+                guard let info = NSDictionary(contentsOf: url.appending(path: "Contents/Info.plist")) else { return nil }
+                return Bundle(name: (info["CFBundleDisplayName"] ?? info["CFBundleName"]) as? String, bundleID: info["CFBundleIdentifier"] as? String)
+            }
+        )
+    }
+}
+
 /// The icon of an installed app, read once per source.
 @MainActor
 enum SourceIconCache {
@@ -62,6 +137,7 @@ enum SourceIconCache {
     static func icon(for sourceID: String) -> NSImage? {
         if let known = icons[sourceID] { return known }
         let url = SourceApps.appURL(for: sourceID) { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+            ?? WebAppFinder.live.appURL(for: sourceID)
         let icon = url.map { NSWorkspace.shared.icon(forFile: $0.path(percentEncoded: false)) }
         icons[sourceID] = icon
         return icon

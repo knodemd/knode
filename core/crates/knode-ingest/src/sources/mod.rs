@@ -622,6 +622,22 @@ fn no_account(info: &SourceInfo) -> SourceError {
     SourceError::Unavailable(format!("{} has no account to sign in to", info.name))
 }
 
+/// Whether a connector could read on this machine now, as far as it can tell cheaply: shown
+/// with the source before it is connected, so an app can guide the person (turn on Full Disk
+/// Access, add a Mail account) and say honestly when this build cannot use it.
+#[derive(Debug)]
+pub enum Readiness {
+    /// The connector cannot tell without trying.
+    Unknown,
+    /// It could read now (it may still need to be signed in).
+    Ready,
+    /// This build of Knode cannot use it, such as one built without the app's client id.
+    Unsupported(String),
+    /// It could not read now: the error it would fail with, such as
+    /// [`SourceError::Permission`] without Full Disk Access.
+    Blocked(SourceError),
+}
+
 /// A source that keeps running in Knode Service and brings in what is new.
 ///
 /// One value serves every space the connector is switched on in: what differs by space comes
@@ -643,6 +659,14 @@ pub trait Connector: Send + Sync {
     /// anything is read or written. Fine unless the connector says otherwise.
     fn check(&self) -> Result<(), SourceError> {
         Ok(())
+    }
+
+    /// Whether it could read on this machine now. It must be cheap and quiet (look at a file
+    /// or a folder, or at its own configuration; never open a database, ask the network or
+    /// make the system show a prompt): lists of sources ask for it every few seconds.
+    /// [`Readiness::Unknown`] unless the connector says otherwise.
+    fn readiness(&self) -> Readiness {
+        Readiness::Unknown
     }
 
     /// The chats, channels or folders the source has now, for the person to pick the ones to

@@ -691,6 +691,10 @@ fn describe_action(action: &tl::enums::MessageAction) -> String {
 }
 
 impl TelegramApi for MtprotoApi {
+    fn has_app(&self) -> bool {
+        self.app.is_some()
+    }
+
     fn connect(&self, session: Option<&str>) -> Result<bool, ApiError> {
         self.app()?;
         self.open(session)?;
@@ -954,6 +958,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), "unavailable");
         assert!(error.to_string().contains("no Telegram app id"));
+        assert!(matches!(
+            connector.readiness(),
+            knode_ingest::sources::Readiness::Unsupported(why) if why.contains("no Telegram app id")
+        ));
         assert!(
             connector.api().runtime.get().is_none(),
             "no client was started"

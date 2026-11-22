@@ -48,8 +48,8 @@ use super::render::{escape_name, escape_text};
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportError, ChatImportReport, keys};
 use crate::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
-    SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, Readiness,
+    SourceError, SourceInfo, Trigger, Written, sqlite,
 };
 use db::{ChatRow, MessageRow, Snapshot, failed};
 
@@ -172,6 +172,14 @@ impl Connector for IMessageConnector {
 
     fn check(&self) -> Result<(), SourceError> {
         Snapshot::take(&self.database()).map(|_| ())
+    }
+
+    /// Whether `chat.db` opens: macOS refuses it without Full Disk Access.
+    fn readiness(&self) -> Readiness {
+        match sqlite::readable(&self.database()) {
+            Ok(()) => Readiness::Ready,
+            Err(e) => Readiness::Blocked(e),
+        }
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
@@ -675,6 +683,18 @@ fn entry_in(path: &str, dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_says_whether_chat_db_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let connector = IMessageConnector::new(dir.path());
+        assert!(matches!(
+            connector.readiness(),
+            Readiness::Blocked(SourceError::Unavailable(_))
+        ));
+        std::fs::write(connector.database(), b"").unwrap();
+        assert!(matches!(connector.readiness(), Readiness::Ready));
+    }
 
     #[test]
     fn reads_apple_times() {

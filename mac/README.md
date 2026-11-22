@@ -15,7 +15,8 @@ the first time, it holds the default space, the recent spaces and the spaces in 
   the new space the default one.
 - Command-1 to Command-9 switch to the first nine spaces; a click on a space opens it and slides its
   notes in. Up and Down move through the list without opening; Return opens.
-- **Sources** and the gear at the bottom of the sidebar open Settings on Sources, or Settings.
+- **Sources** at the bottom of the sidebar opens Connect your things (see [Sources](#sources)); the
+  gear opens Settings.
 - The **Space** menu and the context menu of a space rename it (its name in `manifest.json`; the
   package keeps its file name), choose its icon (one emoji, the `space.icon` setting of the space),
   make it the default space for agents and capture, show it in the Finder, or remove it from the
@@ -78,8 +79,44 @@ clients see it.
 Settings (Command-Comma, or the gear at the bottom of the sidebar) has a sidebar of sections, as in
 System Settings: **Sources**, **Spaces**, **Agents and access**, **Search** and **General**. Up and
 Down move between them. Each source shows with the icon of its app, read from the copy installed on
-this Mac (no third-party logo ships with Knode), or a Knode icon when the app is not here, such as
-Gmail or IMAP.
+this Mac (no third-party logo ships with Knode), or a web app named after it, or a Knode icon when
+neither is here, such as IMAP. **Connect…** at the top of Sources opens Connect your things in the
+main window.
+
+## Sources
+
+**Connect your things** shows every connector of this Mac as a big tile: the icon of its app, its
+name, a line of what it brings and its state (**Connect**, **Connected**, **Needs access** or
+**Coming soon**). It opens by itself once, after the first run's Get started, Connect your agents
+or New Space sheet closes and there is a space; and from the welcome screen, the sidebar's
+**Sources** button, **Knode > Connect Your Things…** and **Connect…** in Settings > Sources. The
+space things come into is chosen once at the top (the default space first). A click opens that
+source's Connect sheet (access, sign-in, history, what it reads, Start); closing it comes back to
+the tiles. The tiles come from `sources.list`, so connectors on other branches or in later versions
+show up as they are added.
+
+The tiles use `readiness`, which Knode Service reports in `sources.list` when a connector can tell
+cheaply (see the [protocol](../core/crates/knode-service/PROTOCOL.md#sources)):
+
+- **Full Disk Access.** The access step opens System Settings on Privacy & Security > Full Disk
+  Access, shows a small picture of Knode's switch, and asks every second whether the service can
+  read the source; once it can, the sheet goes on by itself. macOS gives the access to a process
+  when it starts, so when the app can read a protected folder (`~/Library/Safari`, `Mail`,
+  `Messages`) but the service still cannot, the app restarts Knode Service once
+  (`knode service stop`, then `start`). Without `readiness` (an older service, or a connector
+  that cannot check, such as WhatsApp) it trusts the app's own check.
+- **Gmail.** When the build has a Google client, the tile signs in with Google in the browser.
+  When it has none (`readiness` `unsupported`), the tile offers, in this order, **Use Apple Mail**
+  (connect Apple Mail, or open Mail to add the Gmail account first when Mail has none) and **Use an
+  app password**: the IMAP sheet filled in with `imap.gmail.com`, three steps and a button to
+  Google's App passwords page.
+- **Other connectors this build cannot use** (Slack, Telegram without their app ids) show
+  **Coming soon** and cannot be clicked.
+
+When the app of a source is not installed, its icon comes from a web app or an app named after the
+service in `~/Applications`, its Chrome Apps folder or `/Applications` (a Safari web app
+`com.apple.Safari.WebApp.*`, a Chrome app shim `com.google.Chrome.app.*`, or an app called Gmail,
+Slack, Telegram, WhatsApp or Google Calendar), else a Knode icon.
 
 ## Agents and access
 

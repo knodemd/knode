@@ -46,8 +46,8 @@ use std::time::Duration;
 use knode_format::{Provenance, Space, Timestamp};
 pub use knode_ingest::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, FileStamp, History, NoSecrets,
-    Permission, Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind, Trigger,
-    Written, is_source_id, provenance, sqlite, start_of_today,
+    Permission, Readiness, Secrets, SignInState, SignInStep, SourceError, SourceInfo, SourceKind,
+    Trigger, Written, is_source_id, provenance, sqlite, start_of_today,
 };
 use serde::{Deserialize, Serialize};
 
@@ -380,6 +380,46 @@ pub struct SourceStatus {
     /// When it runs next, at the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_run: Option<Timestamp>,
+    /// Whether the connector could read on this machine now, when it can tell: so an app can
+    /// guide the person before connecting it, and notice a permission being granted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<SourceReadiness>,
+}
+
+/// Whether a connector could read on this machine now: `readiness` in `sources.list`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum SourceReadiness {
+    /// It could read now (it may still need to be signed in).
+    Ready,
+    /// This build of Knode cannot use it, such as one built without the app's client id.
+    Unsupported {
+        /// Why, for people.
+        message: String,
+    },
+    /// It could not read now: `kind` is the error it would fail with (`permission` without
+    /// Full Disk Access, `unavailable` when there is nothing to read yet).
+    Blocked {
+        /// A stable name, as in [`LastError::kind`].
+        kind: String,
+        /// What to do, for people.
+        message: String,
+    },
+}
+
+impl SourceReadiness {
+    /// What a connector says, or `None` when it cannot tell.
+    pub fn of(connector: &dyn Connector) -> Option<SourceReadiness> {
+        match connector.readiness() {
+            Readiness::Unknown => None,
+            Readiness::Ready => Some(SourceReadiness::Ready),
+            Readiness::Unsupported(message) => Some(SourceReadiness::Unsupported { message }),
+            Readiness::Blocked(error) => Some(SourceReadiness::Blocked {
+                kind: error.kind().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
 }
 
 /// The sources of one space, as `sources.status` returns them.
@@ -524,6 +564,7 @@ impl Registry {
             last_error: None,
             notice: None,
             next_run: None,
+            readiness: None,
         }));
         Ok(out)
     }
@@ -553,7 +594,9 @@ impl Registry {
     ) -> SourceStatus {
         let key = state_key(space_id, &info.id);
         let run = self.states().get(&key).cloned().unwrap_or_default();
-        let available = self.connector(&info.id).is_some();
+        let connector = self.connector(&info.id);
+        let available = connector.is_some();
+        let readiness = connector.and_then(|c| SourceReadiness::of(c.as_ref()));
         let state = match &setting {
             None => SourceState::Off,
             Some(_) if !available => SourceState::Unavailable,
@@ -580,6 +623,7 @@ impl Registry {
             last_error: run.last_error,
             notice: run.notice,
             next_run: run.next_run,
+            readiness,
         }
     }
 

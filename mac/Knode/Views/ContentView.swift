@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var level: SidebarLevel = .spaces
     @State private var overlays = KOverlays()
     @AppStorage("didOfferGuidedOnboarding") private var didOfferGuidedOnboarding = false
+    @AppStorage("didOfferConnectSources") private var didOfferConnectSources = false
 
     var body: some View {
         @Bindable var model = model
@@ -56,6 +57,7 @@ struct ContentView: View {
             case .onboarding: OnboardingSheet()
             case .onboardingReview(let url): OnboardingSheet(existing: url)
             case .connectAgents: ConnectAgentsSheet()
+            case .connectSources: ConnectSourcesSheet()
             default: EmptyView()
             }
         }
@@ -84,6 +86,14 @@ struct ContentView: View {
                 model.sheet = .onboarding
             }
         }
+        .onChange(of: model.sheet) { closed, now in
+            // Once, after the first run's sheets: Connect your things.
+            let hasSpace = model.sidebarSpaces.contains { !$0.isExample && !$0.isMissing }
+            if AppModel.shouldOfferConnectSources(after: closed, now: now, offered: didOfferConnectSources, hasSpace: hasSpace) {
+                didOfferConnectSources = true
+                model.sheet = .connectSources
+            }
+        }
     }
 
     private func toggleSidebar() {
@@ -108,7 +118,7 @@ extension AppModel {
 extension SpaceSheet {
     fileprivate var isPanel: Bool {
         switch self {
-        case .access, .folders, .onboarding, .onboardingReview, .connectAgents: true
+        case .access, .folders, .onboarding, .onboardingReview, .connectAgents, .connectSources: true
         case .newSpace, .rename, .icon: false
         }
     }
@@ -322,8 +332,8 @@ private struct SpacesSidebar: View {
                     if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
                 }
                 HStack(spacing: KSpace.x1) {
-                    KButton("Sources", icon: .import, kind: .ghost, size: .small) { openSettings(.sources) }
-                        .kTooltip("Mail, chats, calendars and other apps that bring things into a space")
+                    KButton("Sources", icon: .import, kind: .ghost, size: .small) { model.showConnectSources() }
+                        .kTooltip("Connect your mail, chats and other apps to a space")
                     Spacer(minLength: 0)
                     KIconButton(.settings, title: "Settings (Command-Comma)") { openSettings(nil) }
                 }
@@ -806,15 +816,8 @@ struct WelcomeView: View {
             Text("Open a space to see what you and your agents remember.")
                 .font(KFont.ui(15))
                 .foregroundStyle(theme.muted)
-            HStack(spacing: KSpace.x2) {
-                KButton("Open space", icon: .folder, kind: .primary, size: .large) {
-                    if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
-                }
-                KButton("Get started", icon: .add, size: .large) { model.sheet = .onboarding }
-                KButton("Try the example space", icon: .knode, kind: .ghost, size: .large) {
-                    Task { await model.openExampleSpace() }
-                }
-            }
+                .multilineTextAlignment(.center)
+            WelcomeActions()
             if !model.recentSpaceURLs.isEmpty {
                 RecentSpacesList().padding(.top, KSpace.x4)
             }
@@ -822,6 +825,36 @@ struct WelcomeView: View {
         .padding(KSpace.x10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)
+    }
+}
+
+/// The buttons of the welcome screen: in a row when the window is wide enough, else one under
+/// the other, so every label shows whole.
+struct WelcomeActions: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: KSpace.x2) { buttons }
+            VStack(spacing: KSpace.x2) { buttons }
+        }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        KButton("Open space", icon: .folder, kind: .primary, size: .large) {
+            if let url = SpacePanels.chooseSpace() { Task { await model.openSpace(at: url) } }
+        }
+        .fixedSize()
+        KButton("Get started", icon: .add, size: .large) { model.sheet = .onboarding }
+            .fixedSize()
+        if model.sidebarSpaces.contains(where: { !$0.isExample && !$0.isMissing }) {
+            KButton("Connect your things", icon: .connect, size: .large) { model.showConnectSources() }
+                .fixedSize()
+        }
+        KButton("Try the example space", icon: .knode, kind: .ghost, size: .large) {
+            Task { await model.openExampleSpace() }
+        }
+        .fixedSize()
     }
 }
 

@@ -213,6 +213,8 @@ final class KOverlays {
     var confirmation: KConfirmation?
     var connecting: ConnectableAgent?
     var connectingSource: SourceConnectFlow?
+    /// What to show once the Connect sheet of a source closes, such as Connect your things again.
+    var afterConnectingSource: (@MainActor () -> Void)?
     var addingProject: PendingProject?
 }
 
@@ -233,6 +235,12 @@ extension View {
             }
             .kSheet(item: $overlays.connectingSource, width: 560) { flow in
                 ConnectSourceSheet(flow: flow) { overlays.connectingSource = nil }
+            }
+            .onChange(of: overlays.connectingSource == nil) { _, closed in
+                // However it closed: Done, Cancel or Escape.
+                guard closed, let after = overlays.afterConnectingSource else { return }
+                overlays.afterConnectingSource = nil
+                after()
             }
             .kSheet(item: $overlays.addingProject, width: 540) { project in
                 AddProjectSheet(project: project) { overlays.addingProject = nil }

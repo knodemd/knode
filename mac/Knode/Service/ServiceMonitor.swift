@@ -84,6 +84,13 @@ final class ServiceMonitor {
 
     func stopService() async { await perform(["service", "stop"]) }
 
+    /// Stops Knode Service and starts it again, such as after Full Disk Access was turned on:
+    /// macOS gives it to a process when it starts.
+    func restartService() async {
+        await perform(["service", "stop"])
+        await perform(["service", "start"])
+    }
+
     func setRunsAtLogin(_ on: Bool) async {
         await perform(["service", on ? "install" : "uninstall"])
         refreshRunsAtLogin()

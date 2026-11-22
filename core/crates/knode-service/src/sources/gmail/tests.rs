@@ -350,6 +350,10 @@ fn without_a_client_id_it_says_sign_in_with_google_is_not_set_up() {
     let error = connector.check().unwrap_err();
     assert_eq!(error.kind(), "unavailable");
     assert!(error.to_string().contains("KNODE_GOOGLE_CLIENT_ID"));
+    // Listed as unsupported in this build, so apps offer another way to read Gmail.
+    assert!(matches!(connector.readiness(), Readiness::Unsupported(why) if why.contains("IMAP")));
+    let with_client = self::connector(&Fake::default());
+    assert!(matches!(with_client.readiness(), Readiness::Ready));
     let secrets = MemSecrets::default();
     assert_eq!(
         connector.sign_in(start(""), &secrets).unwrap_err().kind(),

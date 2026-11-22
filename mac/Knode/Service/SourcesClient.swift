@@ -57,6 +57,36 @@ public struct SourcePermission: RawRepresentable, Sendable, Hashable, Decodable 
     public static let photos = SourcePermission(rawValue: "photos")
 }
 
+/// Whether a connector could read on this Mac now, as `sources.list` says (`readiness`), when
+/// the connector can tell.
+public enum SourceReadiness: Sendable, Hashable, Decodable {
+    /// It could read now; it may still need to be signed in.
+    case ready
+    /// This build of Knode cannot use it, such as one built without the Google client id.
+    case unsupported(message: String)
+    /// It could not read now: `kind` is `permission` without Full Disk Access, `unavailable` when
+    /// there is nothing to read yet (Apple Mail with no account).
+    case blocked(kind: String, message: String)
+
+    enum CodingKeys: String, CodingKey { case state, kind, message }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
+        switch try c.decode(String.self, forKey: .state) {
+        case "ready": self = .ready
+        case "unsupported": self = .unsupported(message: message)
+        default: self = .blocked(kind: try c.decodeIfPresent(String.self, forKey: .kind) ?? "unknown", message: message)
+        }
+    }
+
+    /// Full Disk Access is missing.
+    public var lacksFullDiskAccess: Bool {
+        if case .blocked(kind: "permission", _) = self { return true }
+        return false
+    }
+}
+
 /// A chat, channel or folder of a source.
 public struct SourceContainer: Identifiable, Sendable, Hashable, Decodable {
     public var id: String
@@ -202,11 +232,13 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     public var items: Int64
     public var lastError: LastError?
     public var nextRun: Int64?
+    /// Whether it could read on this Mac now, when the connector can tell.
+    public var readiness: SourceReadiness?
 
     public init(
         id: String, name: String, kind: String, reads: String, permissions: [SourcePermission] = [], container: String? = nil,
         state: SourceState, setting: Setting? = nil, lastRun: Int64? = nil, lastSuccess: Int64? = nil, lastItems: Int = 0,
-        items: Int64 = 0, lastError: LastError? = nil, nextRun: Int64? = nil
+        items: Int64 = 0, lastError: LastError? = nil, nextRun: Int64? = nil, readiness: SourceReadiness? = nil
     ) {
         self.id = id
         self.name = name
@@ -222,10 +254,11 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         self.items = items
         self.lastError = lastError
         self.nextRun = nextRun
+        self.readiness = readiness
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, reads, permissions, container, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun
+        case id, name, kind, reads, permissions, container, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun, readiness
     }
 
     public init(from decoder: any Decoder) throws {
@@ -244,6 +277,8 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         items = try c.decodeIfPresent(Int64.self, forKey: .items) ?? 0
         lastError = try c.decodeIfPresent(LastError.self, forKey: .lastError)
         nextRun = try c.decodeIfPresent(Int64.self, forKey: .nextRun)
+        // A readiness this app does not understand is as good as none.
+        readiness = try? c.decodeIfPresent(SourceReadiness.self, forKey: .readiness)
     }
 
     public var isConnector: Bool { kind != "importer" }
@@ -252,6 +287,11 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     public var isOn: Bool { setting?.on ?? false }
     public var needsFullDiskAccess: Bool { permissions.contains(.fullDiskAccess) }
     public var needsSignIn: Bool { permissions.contains(.signIn) }
+    /// Why this build of Knode cannot use it, when it cannot.
+    public var unsupportedReason: String? {
+        if case .unsupported(let message) = readiness { return message }
+        return nil
+    }
 }
 
 /// The sources of a space, managed as the person who owns the Knode home: Settings > Sources.
