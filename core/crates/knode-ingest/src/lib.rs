@@ -52,6 +52,7 @@
 
 mod aider;
 mod amp;
+pub mod calendar;
 mod capture;
 mod chats;
 pub mod claude_code;

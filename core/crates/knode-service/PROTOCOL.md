@@ -555,7 +555,7 @@ source's id (`whatsapp`, `apple-mail`...).
 | `sources.exclude` | `space`, `source`, `id`, `name`?, `by` | The source. The chat, channel or folder `id` is never read again; what came from it stays |
 | `sources.include` | `space`, `source`, `id`, `by` | The source, reading `id` again from now on |
 | `sources.containers` | `space`, `source` | `[{ "id", "name", "excluded" }]`: the chats, channels or folders the connector has now, to choose what to exclude |
-| `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish |
+| `sources.run` | `space`, `source` | The source. Runs it now, without waiting for it to finish; for a connector the app runs (`calendar`), sets its `next_run` to now so the app runs it |
 | `sources.disconnect` | `space`, `source`, `by` | `true`. Removes its settings and forgets its state on this machine; what it brought in stays. A connector signed in to an account is signed out, and its session forgotten, once no space the service knows has it connected (a space it cannot read counts as having it) |
 | `sources.account` | `source` | Whether the connector is signed in to the account it reads, on this machine: `{ "state": "signed-out" }`, `{ "state": "code-sent", "via"? }`, `{ "state": "password-needed", "hint"? }`, `{ "state": "open-browser", "url" }` or `{ "state": "signed-in", "account" }`. `unavailable` for a connector with no account |
 | `sources.sign_in` | `source`, `step` | The state after one step of signing in. `step` is `{ "step": "start", "account" }` (a phone number), then `{ "step": "code", "code" }`, then, when the account has one, `{ "step": "password", "password" }`; for `imap` the account (and the server, `you@example.com imap.example.com`) then its app password; for `gmail`, `start` (with the address or `""`) answers `open-browser` and `{ "step": "browser" }` is sent once the person signed in on that page. A wrong step fails with `sign-in`; the session is kept only in the system keychain |
@@ -646,6 +646,86 @@ space from a Google Takeout `.mbox`, Apple Mail or the other connector is found 
 `Message-ID` and not added again. Their secrets (the app password, the refresh token) are kept
 only in the system keychain, and are forgotten when the connector signs out or is disconnected
 from the last space that had it.
+
+The `calendar` connector is run by the Knode app, not by the service (see Calendar, below).
+
+## Calendar
+
+The calendars of a Mac are reached only through EventKit, which only the app can use. So the
+`calendar` connector is *app-driven*: Knode Service lists it with the other connectors
+(`permissions` `["calendar"]`, `container` `calendar`), keeps its settings in each space
+(`source.calendar`: on, the history, the calendars excluded) and its state on this machine, and
+never runs it itself. Instead it asks the app to run it by setting its `next_run` (after a good
+run, 15 minutes later; at once after `sources.run` or `calendar.configure`). The app asks each
+space what it wants (`calendar.plan`), reads those calendars and days with EventKit, and hands the
+events to `calendar.sync`, which writes them with the provenance
+`{ "kind": "system", "actor": "calendar" }`. Without calendar access the app says so with
+`calendar.fail`, and the source shows `needs-attention`. `sources.containers` lists the calendars
+the app last reported with `calendar.calendars`. All `calendar.*` methods are for people only.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `calendar.plan` | `space` | `{ "on", "start", "end", "exclude", "attendee_emails", "next_run"? }`: whether to read anything for the space (off when paused or when `sources` or `capture` is off in `config.toml`), the days to read (Unix milliseconds), the ids of the calendars excluded (never read), whether attendees' addresses are written, and when the service asks for the next run. Fails with `invalid` when the source is not connected. |
+| `calendar.calendars` | `calendars` (`[{ "id", "name" }]`) | `true`. The calendars this Mac has, for `sources.containers`. Kept in memory. |
+| `calendar.sync` | `space`, `calendars`, `start`?, `end`?, `events` | `{ "written": { "created", "updated", "unchanged", "skipped" }, "missing", "source" }`, `source` as `sources.list` shows it. `calendars` are the calendars read for this request (`[{ "id", "name" }]`, never the excluded ones): only their events can be missing. Writes nothing when the source is paused or sources are off. The window is the plan's, narrowed to `start`/`end` when given. `missing` lists the events the space has, of a calendar read and in the window, that are not among `events` (`[{ "key", "external_id", "occurrence"?, "calendar_id" }]`); nothing is marked for them (see below). Records the run (`last_run`, `items`, the cursor `{ "start", "end" }`) and asks for the next one in 15 minutes. |
+| `calendar.remove` | `space`, `keys` | `{ "removed", "source" }`. Marks the events with these keys `removed`: those of `missing` the app found gone from their calendar. Events of excluded calendars, events already removed and unknown keys are left alone; nothing is marked when the source is paused or sources are off. Adds the events marked to the run's `items`. |
+| `calendar.fail` | `space`, `kind` (`permission`, `unavailable` or `failed`), `message` | The source, with the run failed: `permission` and `unavailable` show `needs-attention`. |
+| `calendar.current` | `space`, `at`? (now) | The event happening at `at`, or `null`: a timed event (not all-day, cancelled or removed) that starts at most 10 minutes after `at` and has not ended; one with a call link first, then the one that started closest. `{ "id", "title", "start", "end", "all_day", "calendar"?, "call_link"?, "status", "project"? }`. |
+| `calendar.link` | `space`, `id` (a recording or any node), `event`, `project`?, `by` | The event. Links `id` to it `related` and, when `project` is given and the event is part of no project, the event `part-of` it. Fails with `invalid` for a node that is not an event. |
+| `calendar.options` | `space` | `{ "days_back", "days_ahead", "attendee_emails" }`: 30, 14 and `false` unless changed. Kept in the space setting `calendar.options` (JSON; absent for the defaults). |
+| `calendar.configure` | `space`, `days_back`?, `days_ahead`?, `attendee_emails`?, `by` | The options, after the change. `days_back` is at most 3650, `days_ahead` at most 365. |
+
+An event in `calendar.sync`:
+
+```json
+{ "external_id": "040000008200E00074C5B7101A82E008…", "occurrence": 1795510800000,
+  "calendar_id": "8F2C…", "calendar": "Work", "title": "Weekly sync",
+  "start": 1795510800000, "end": 1795514400000, "all_day": false,
+  "location": "Room 3", "url": "https://zoom.us/j/123", "notes": "Agenda…",
+  "attendees": [{ "name": "Grace Hopper", "email": "grace@example.com" }], "status": "confirmed" }
+```
+
+`external_id` is EventKit's `calendarItemExternalIdentifier`, the same on every device;
+`occurrence`, only for an occurrence of a recurring event, is when it was planned to start (it
+does not move when that occurrence is moved). `status` is `confirmed`, `tentative` or
+`cancelled`.
+
+Each event is one node of kind `event`, found again by its key, `event.key`: `external_id`, then
+`@<occurrence>` for an occurrence. Its title is the event's title and the local day it starts,
+`Weekly sync (2026-11-24)`; its body says when, where, the call link, who and the calendar, then
+the notes, cut at 1500 characters. Its properties: `event.key`, `event.external_id`,
+`event.title`, `event.calendar_id`, `event.calendar`, `event.start`, `event.end`, `event.day`
+(`YYYY-MM-DD`), `event.all_day`, `event.recurring`, `event.status` (`confirmed`, `tentative`,
+`cancelled` or `removed`), `event.location`, `event.call_link` (a Zoom, Google Meet, Teams,
+Webex, Whereby, Jitsi, FaceTime or similar link found in the event's link, place or notes),
+`event.attendees` and, only when the space asks, `event.attendee_emails` (JSON lists). Attendees
+are named; one known only by address is left out unless the space asks for addresses, and one
+named like a `person` node of the space is written as a `[[link]]` to it.
+
+Writing the same events again changes nothing; an event that changed is brought in step. Events
+outside the window, of excluded calendars, or cancelled before they were ever written are left
+out. A cancelled event is marked (`**Cancelled.**` and its status), never deleted. When two events
+would have the same title (same title, same day), the later gets `Weekly sync (2026-11-24) 2`,
+then ` 3`, so a `[[link]]` finds one node. Events of a calendar excluded or not read are never
+changed.
+
+An event the space has, of a calendar read and inside the window, that is no longer among the
+events read is either gone from its calendar or was moved outside the window (the window is
+checked against where the space last saw it). So `calendar.sync` does not mark it: it lists it in
+`missing`, and the app asks EventKit (`calendarItems(withExternalIdentifier:)`, among the
+calendars read) whether the event is still there: an event that does not repeat is gone when
+there is no such item; an occurrence is gone when its series is gone, or when the series is
+there but no occurrence planned at `occurrence` is (neither at its planned time nor detached and
+moved elsewhere). The app sends the keys found gone to `calendar.remove`, which marks them
+`removed` (`**Removed from the calendar.**`); one that comes back is restored. An event that only
+moved is left as it was, and brought in step when the window reaches it again.
+
+The app hands a window over in batches of at most 31 days, each a `calendar.sync` with its own
+`start` and `end`, so a request stays well below the 16 MB a line may have; it sends at most the
+first 1600 characters of an event's notes (the body keeps 1500).
+
+The window: from `days_back` days before the start of today (with the history `from-today`,
+never before the day the source was connected) to `days_ahead` days after the end of today.
 
 ## Search
 

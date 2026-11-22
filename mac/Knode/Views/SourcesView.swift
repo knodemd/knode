@@ -107,6 +107,10 @@ struct SourceCard: View {
                                detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
                                isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
                     .disabled(sources.isBusy || source.state == .unavailable)
+                if source.id == CalendarWire.source, let space = sources.space {
+                    KHairline()
+                    CalendarOptionsRows(space: space)
+                }
                 KHairline()
                 HStack(spacing: KSpace.x2) {
                     KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
@@ -422,7 +426,9 @@ private struct SignInStepView: View {
                         }
                     }
                 }
-                KExplanation("What you enter goes to Knode Service on this Mac, which keeps the sign-in in your Keychain.", size: 11)
+                if !step.fields.isEmpty {
+                    KExplanation("What you enter goes to Knode Service on this Mac, which keeps the sign-in in your Keychain.", size: 11)
+                }
             }
         }
     }

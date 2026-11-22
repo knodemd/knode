@@ -1053,7 +1053,7 @@ where
 
 /// `base`, or `base 2`, `base 3`... the first that no node but `own` has as its title, so a
 /// `[[link]]` to it finds that node and no other.
-fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> {
+pub(crate) fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> {
     for n in 1.. {
         let title = if n == 1 {
             base.to_string()

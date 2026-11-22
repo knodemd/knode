@@ -210,6 +210,29 @@ pub mod methods {
     /// Puts the transcript or the summary of a recording back to pending. People only.
     pub const RECORDINGS_RETRY: &str = "recordings.retry";
 
+    // Calendar: events the Knode app reads through EventKit, people only.
+
+    /// What every `calendar.*` method starts with.
+    pub const CALENDAR_PREFIX: &str = "calendar.";
+    /// The days and calendars a space wants from the calendar source now.
+    pub const CALENDAR_PLAN: &str = "calendar.plan";
+    /// The calendars this machine has, reported by the app.
+    pub const CALENDAR_CALENDARS: &str = "calendar.calendars";
+    /// Writes the events the app read into a space.
+    pub const CALENDAR_SYNC: &str = "calendar.sync";
+    /// Marks the events the app found gone from their calendar removed.
+    pub const CALENDAR_REMOVE: &str = "calendar.remove";
+    /// Says why the app could not read the calendars, such as a missing permission.
+    pub const CALENDAR_FAIL: &str = "calendar.fail";
+    /// The event happening at a time, that a meeting recorded then belongs to.
+    pub const CALENDAR_CURRENT: &str = "calendar.current";
+    /// Links a recording to the event it was made at.
+    pub const CALENDAR_LINK: &str = "calendar.link";
+    /// The calendar options of a space: days back and ahead, attendees' addresses.
+    pub const CALENDAR_OPTIONS: &str = "calendar.options";
+    /// Changes the calendar options of a space.
+    pub const CALENDAR_CONFIGURE: &str = "calendar.configure";
+
     // Sources: importers and connectors, people only.
 
     /// What every `sources.*` method starts with.

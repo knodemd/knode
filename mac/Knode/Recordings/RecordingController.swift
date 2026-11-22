@@ -23,6 +23,8 @@ struct StoreRecordingSink: RecordingSink {
     /// The most bytes one audio file may have: what the space keeps in one attachment.
     var limit: Int64 = AttachmentInfo.maxSize
     var locale: Locale = .current
+    /// Links a recording to the calendar event it was made at, when the person chose one.
+    var calendar: (any CalendarLinking)? = nil
 
     func save(_ recording: FinishedRecording) async throws -> SavedRecording {
         try RecordingAudio.check(recording.tracks, limit: limit)
@@ -31,7 +33,7 @@ struct StoreRecordingSink: RecordingSink {
         let app: String? = if case .online(.apps(let ids)) = recording.mode { ids.first } else { nil }
         let draft = NewRecordingDraft(
             kind: .meeting,
-            title: RecordingTitle.of(recording.mode, startedAt: recording.startedAt, locale: locale),
+            title: recording.target.eventTitle ?? RecordingTitle.of(recording.mode, startedAt: recording.startedAt, locale: locale),
             startedAt: recording.startedAt,
             endedAt: recording.endedAt,
             project: recording.target.projectID,
@@ -50,7 +52,16 @@ struct StoreRecordingSink: RecordingSink {
             )
         }
         RecordingAudio.remove(recording.tracks)
-        return SavedRecording(space: space.id, spaceURL: space.url ?? recording.target.spaceURL, recording: stored)
+        let spaceURL = space.url ?? recording.target.spaceURL
+        if let event = recording.target.eventID, let calendar {
+            // The recording is kept either way; a link that fails can be made by hand.
+            do {
+                try await calendar.link(stored.id, to: event, project: recording.target.projectID, in: spaceURL)
+            } catch {
+                print("Knode: the recording could not be linked to its event: \(error.localizedDescription)")
+            }
+        }
+        return SavedRecording(space: space.id, spaceURL: spaceURL, recording: stored)
     }
 }
 

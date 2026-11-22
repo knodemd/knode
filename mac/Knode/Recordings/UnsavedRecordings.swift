@@ -121,6 +121,9 @@ struct UnsavedRecordingStore: Sendable {
         var spaceName: String
         var project: String?
         var projectTitle: String?
+        /// The calendar event it is linked to, and its title.
+        var event: String?
+        var eventTitle: String?
         /// `online` or `in-person`.
         var mode: String
         /// The apps an online meeting recorded, when not every app.
@@ -133,8 +136,9 @@ struct UnsavedRecordingStore: Sendable {
         var error: String?
 
         enum CodingKeys: String, CodingKey {
-            case version, space, project, mode, apps, tracks, key, error
+            case version, space, project, event, mode, apps, tracks, key, error
             case spaceName = "space_name"
+            case eventTitle = "event_title"
             case projectTitle = "project_title"
             case startedAt = "started_at"
             case endedAt = "ended_at"
@@ -146,6 +150,8 @@ struct UnsavedRecordingStore: Sendable {
             spaceName = recording.target.spaceName
             project = recording.target.projectID
             projectTitle = recording.target.projectTitle
+            event = recording.target.eventID
+            eventTitle = recording.target.eventTitle
             switch recording.mode {
             case .inPerson:
                 mode = "in-person"
@@ -175,7 +181,7 @@ struct UnsavedRecordingStore: Sendable {
                 mode: mode,
                 target: RecordingTarget(
                     spaceURL: URL(filePath: space, directoryHint: .isDirectory), spaceName: spaceName,
-                    projectID: project, projectTitle: projectTitle
+                    projectID: project, projectTitle: projectTitle, eventID: event, eventTitle: eventTitle
                 ),
                 startedAt: startedAt, endedAt: endedAt, duration: .seconds(durationSeconds),
                 tracks: tracks.map { RecordedTrack(role: $0.role, url: folder.appending(path: $0.file)) },

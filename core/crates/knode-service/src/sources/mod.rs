@@ -27,6 +27,7 @@
 //! person changes the settings of a source.
 
 pub mod apple_mail;
+pub mod calendar;
 pub mod gmail;
 pub mod imap;
 mod mail_live;
@@ -88,6 +89,9 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
             "Me",
         )));
     }
+    // Read by the Knode app through EventKit, and handed to the service with `calendar.sync`.
+    #[cfg(target_os = "macos")]
+    connectors.push(Arc::new(calendar::CalendarConnector));
     connectors.push(Arc::new(telegram::connector()));
     connectors.push(Arc::new(gmail::GmailConnector::new()));
     connectors.push(Arc::new(imap::ImapConnector::new()));
@@ -442,6 +446,9 @@ pub(crate) struct Registry {
     /// Whether the runtime runs connectors: false when it is not started, or `sources` or
     /// `capture` is off.
     active: std::sync::atomic::AtomicBool,
+    /// The containers the app last reported for each connector it runs ([`Trigger::App`]), by
+    /// source id. Kept in memory: the app reports them again whenever it runs the source.
+    reported: Mutex<BTreeMap<String, Vec<Container>>>,
 }
 
 impl Registry {
@@ -452,7 +459,23 @@ impl Registry {
             states: Mutex::new(StateFile::load(home)),
             running: Mutex::new(Vec::new()),
             active: std::sync::atomic::AtomicBool::new(false),
+            reported: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Whether the connector `id` is run by the app ([`Trigger::App`]), not by the service.
+    pub(crate) fn is_app_driven(&self, id: &str) -> bool {
+        self.connector(id)
+            .is_some_and(|c| matches!(c.trigger(), Trigger::App))
+    }
+
+    /// Keeps the containers the app has now for a connector it runs: `sources.containers`
+    /// lists them.
+    pub(crate) fn report_containers(&self, id: &str, containers: Vec<Container>) {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), containers);
     }
 
     pub(crate) fn connector(&self, id: &str) -> Option<&Arc<dyn Connector>> {
@@ -631,8 +654,17 @@ impl Registry {
             secrets: &secrets,
         };
         connector.check()?;
-        let mut out: Vec<ContainerInfo> = connector
-            .containers(&request)?
+        let listed = if matches!(connector.trigger(), Trigger::App) {
+            self.reported
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(id)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            connector.containers(&request)?
+        };
+        let mut out: Vec<ContainerInfo> = listed
             .into_iter()
             .map(|container| ContainerInfo {
                 excluded: setting.exclude.iter().any(|e| e.id == container.id),

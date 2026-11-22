@@ -14,6 +14,8 @@ struct KnodeApp: App {
     @State private var sources: SourcesModel
     @State private var recording: RecordingController
     @State private var recordings: RecordingsProcessor
+    /// Runs the calendar source for the spaces it is connected to, for the life of the app.
+    @MainActor private static var calendarSyncer: CalendarSyncer?
 
     init() {
         KFont.register()
@@ -41,7 +43,7 @@ struct KnodeApp: App {
         _recordings = State(initialValue: recordings)
         let recording = RecordingController(
             recorder: MeetingRecorder(),
-            sink: StoreRecordingSink(store: store),
+            sink: StoreRecordingSink(store: store, calendar: ServiceCalendarClient()),
             processor: recordings,
             consent: DefaultsRecordingConsentStore(),
             unsaved: UnsavedRecordingStore(home: .current)
@@ -70,8 +72,24 @@ struct KnodeApp: App {
         }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
+        // The calendar is read here, through EventKit, and handed to Knode Service, which lists it
+        // as a source and writes its events. Access is asked for only when it is connected.
+        let calendarStore = EventKitCalendarStore()
+        let calendarClient = ServiceCalendarClient()
+        let sourcesClient = ServiceSourcesClient()
+        if !testing {
+            let syncer = CalendarSyncer(store: calendarStore, client: calendarClient)
+            Self.calendarSyncer = syncer
+            Task { await syncer.start() }
+        }
         _sources = State(initialValue: SourcesModel(
-            client: ServiceSourcesClient(),
+            client: sourcesClient,
+            signIns: SourceSignIns(
+                [CalendarWire.source: CalendarAccessSignIn(store: calendarStore, client: calendarClient, openURL: { url in
+                    Task { @MainActor in NSWorkspace.shared.open(url) }
+                })],
+                fallback: ServiceSourceSignIn(client: sourcesClient)
+            ),
             openURL: { NSWorkspace.shared.open($0) },
             startService: { await service.startService() }
         ))

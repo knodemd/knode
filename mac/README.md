@@ -177,6 +177,38 @@ TEST_RUNNER_KNODE_MANUAL_AUDIO=/tmp/x.aiff xcodebuild -scheme Knode -destination
   test -only-testing:KnodeTests/RecordingsManualTests
 ```
 
+## Calendar
+
+The Calendar source brings the events of the calendars on this Mac into a space. EventKit is
+only available to the app, so the app runs it while Knode Service lists it in Settings > Sources,
+keeps its settings in the space and decides what is written (`PROTOCOL.md`, "Calendar").
+
+- **Connect** asks for full calendar access (`NSCalendarsFullAccessUsageDescription`, and the
+  hardened runtime's `com.apple.security.personal-information.calendars`), never before. Once
+  allowed, the calendars of the Mac are reported to the service, so the sheet lists them to leave
+  some out; an excluded calendar is never read. If access is denied, the step says to allow it in
+  System Settings > Privacy & Security > Calendars, and the source shows **Needs your attention**.
+- The calendar's card adds **Days back** and **Days ahead** (30 and 14 unless changed; with the
+  history From today, never before the day it was connected) and **Attendees' addresses** (off:
+  attendees are named only).
+- `CalendarSyncer` looks every 30 seconds at the spaces the source is connected to
+  (`sources.status`). It reads a space's calendars again when Knode Service asks (`next_run`,
+  every 15 minutes, at once after **Run now** or a change of days), when a calendar of the Mac
+  changed (`EKEventStoreChanged`) or when the calendars excluded changed, and hands the events to
+  `calendar.sync` only when they differ from what it handed over last, or when the service asked.
+- Recurring events are read one occurrence at a time, each found again by its external id and
+  when it was planned to start.
+
+**Record Meeting…** asks the chosen space for the event happening now (`calendar.current`): an
+event with a call link comes first. The sheet offers **Link to <event>**, on by default: the
+meeting takes the event's title and, once stored, is linked to it (`calendar.link`), and the event
+becomes part of the chosen project when it has none. The event is kept with an unsaved recording.
+
+The pieces are in `Knode/Calendar`: the event store behind a protocol (`CalendarEventStore`,
+`EventKitCalendarStore`), the service calls (`CalendarClient`), the syncer and the access step of
+the Connect sheet (`CalendarAccessSignIn`), and the views. Tests use a fake store and never ask
+for access.
+
 ## Menu bar and the knode command
 
 The menu bar item shows whether Knode Service is running, the spaces it has open and how many
@@ -295,6 +327,7 @@ source file of `knode-cli` or of a crate it uses is missing from that list.
 | `Knode/CommandLineTool` | Where the `knode` command is, and installing and uninstalling its link |
 | `Knode/Models` | `AppModel` (spaces, list, search), `NoteEditorModel` (one open note) `NoteHistoryModel` (its history, and undoing the last change), `AgentsModel` (agents and their access), `GraphLayout` (the force-directed layout and its Barnes-Hut quadtree), `GraphModel`, `CanvasModel` and `NoteLinksModel` (the map) |
 | `Knode/Markdown` | The block parser behind the preview and `[[links]]` |
+| `Knode/Calendar` | The calendar source: EventKit behind a protocol, the syncer that hands events to Knode Service, calendar access, and the recorder's event suggestion |
 | `Knode/Recordings` | Meeting recording (microphone and process tap), on-device transcription and minutes, the recording controller and its menu and window |
 | `Knode/Views` | The window, the note editor, the graph, the canvas, the links panel, the history, the agents settings, the space sheets, the menu bar menu and the open panels |
 | `KnodeTests` | Tests for the stores (against a fake Knode Service), the view models, the command installer and the Markdown preview |

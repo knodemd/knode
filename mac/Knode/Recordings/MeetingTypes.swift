@@ -52,6 +52,10 @@ struct RecordingTarget: Hashable, Sendable {
     var spaceName: String
     var projectID: Node.ID?
     var projectTitle: String?
+    /// The calendar event happening when it started, which the recording is linked to.
+    var eventID: Node.ID? = nil
+    /// That event's title: the meeting's title.
+    var eventTitle: String? = nil
 }
 
 /// A recording that has stopped, with its audio files in a private temporary folder.
