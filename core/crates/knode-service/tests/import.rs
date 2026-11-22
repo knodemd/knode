@@ -206,7 +206,7 @@ fn every_source_is_told_from_its_path_and_content() {
     );
 
     // Nothing Knode reads, or nothing there.
-    let unknown = dir.join("photo.heic");
+    let unknown = dir.join("archive.xyz");
     std::fs::write(&unknown, [0u8; 4]).unwrap();
     let error = prepare(Some(&unknown), None, None).unwrap_err();
     assert!(matches!(error, ImportError::Unknown(_)));
@@ -310,7 +310,7 @@ fn every_source_imports_once_through_the_service() {
     assert_eq!(csv.highlights, 1);
 
     // Not something Knode reads: invalid, with what it takes.
-    let unknown = files.join("photo.heic");
+    let unknown = files.join("archive.xyz");
     std::fs::write(&unknown, [0u8; 4]).unwrap();
     let refused = rpc(f.person.import_path(&space, Some(&unknown), None, &me()));
     assert_eq!(refused.code, codes::INVALID);
