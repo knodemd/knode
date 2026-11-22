@@ -99,9 +99,6 @@ struct NewRecordingDraft: Hashable, Sendable {
     /// The file the audio was taken from when it is not attached: a video larger than a space
     /// attaches, kept only where it was.
     var original: String? = nil
-    /// That file on this Mac: the space attaches it too when it keeps large originals
-    /// (`storage.configure`), else only its name is kept.
-    var originalURL: URL? = nil
 }
 
 /// A recording as the space keeps it.

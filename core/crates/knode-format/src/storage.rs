@@ -73,18 +73,36 @@ impl Space {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The bytes of every blob the space has a row for, summed from the rows: no file is read.
+    pub fn blob_bytes(&self) -> Result<u64> {
+        let sum: i64 =
+            self.conn
+                .query_row("SELECT COALESCE(SUM(size), 0) FROM blobs", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(sum.max(0) as u64)
+    }
+
+    /// The bytes of the database with its journal files.
+    pub fn database_bytes(&self) -> u64 {
+        let root = self.path();
+        ["", "-wal", "-shm"]
+            .iter()
+            .map(|suffix| {
+                fs::metadata(root.join(format!("{DATABASE_FILE}{suffix}")))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
     /// The bytes of the database (with its journal files), of `sync/` and of the whole package
-    /// on disk.
+    /// on disk. Walks the package: for a view a person opens, not for every add (see
+    /// [`blob_bytes`](Self::blob_bytes) and [`database_bytes`](Self::database_bytes)).
     pub fn disk_usage(&self) -> Result<DiskUsage> {
         let root = self.path();
-        let mut database = 0;
-        for suffix in ["", "-wal", "-shm"] {
-            database += fs::metadata(root.join(format!("{DATABASE_FILE}{suffix}")))
-                .map(|m| m.len())
-                .unwrap_or(0);
-        }
         Ok(DiskUsage {
-            database,
+            database: self.database_bytes(),
             sync: dir_size(&root.join(SYNC_DIR)),
             blobs: dir_size(&root.join(BLOBS_DIR)),
             total: dir_size(root),
@@ -141,7 +159,7 @@ fn dir_size(path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{MAX_ATTACHMENT_SIZE, MAX_LARGE_ATTACHMENT_SIZE, NewNode, Provenance, Space};
+    use crate::{NewNode, Provenance, Space};
 
     #[test]
     fn lists_files_of_live_and_deleted_nodes() {
@@ -166,21 +184,7 @@ mod tests {
         assert!(usage.database > 0);
         assert!(usage.blobs >= 302);
         assert!(usage.total >= usage.database + usage.blobs);
-    }
-
-    #[test]
-    fn large_files_need_the_large_attach() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
-        let by = Provenance::person("Ada");
-        let node = space.create_node(NewNode::note("V", ""), &by).unwrap();
-        let path = dir.path().join("big.mov");
-        let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_ATTACHMENT_SIZE + 1).unwrap();
-        drop(file);
-        assert!(space.attach_file(&node.id, &path, &by).is_err());
-        let attached = space.attach_large_file(&node.id, &path, &by).unwrap();
-        assert_eq!(attached.size, MAX_ATTACHMENT_SIZE + 1);
-        const { assert!(MAX_LARGE_ATTACHMENT_SIZE > MAX_ATTACHMENT_SIZE) };
+        assert_eq!(space.blob_bytes().unwrap(), 302);
+        assert_eq!(space.database_bytes(), usage.database);
     }
 }

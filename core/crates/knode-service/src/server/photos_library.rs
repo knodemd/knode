@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use knode_format::{Provenance, Space, Timestamp};
 use knode_ingest::media::AddedFile;
-use knode_ingest::photos_library::{self, LibraryAsset, Marked, SOURCE_ID};
+use knode_ingest::photos_library::{self, Ledger, LibraryAsset, Marked, SOURCE_ID};
 use knode_ingest::storage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{State, last_change, lock_ignoring_poison, params, to_value};
 use crate::protocol::{RpcError, SpaceParams, codes, methods};
+use crate::sources::photos_library::{library_id, load_ledger, save_ledger};
 use crate::sources::{
     self, Container, Cursor, History, LastError, SourceSetting, SourceStatus, state_key,
 };
@@ -28,8 +29,14 @@ pub(crate) const SYNC_EVERY: Duration = Duration::from_secs(15 * 60);
 struct Plan {
     /// Whether the source is on in the space: when off, the app reads nothing for it.
     on: bool,
-    /// The albums picked: only these are read. None until the person picks one.
+    /// The id of this Mac's library: every node it adds keeps it.
+    library: String,
+    /// The albums picked on this Mac, by their own identifiers: only these are read. None until
+    /// the person picks one.
     albums: Vec<Container>,
+    /// Whether albums are picked only on other Macs (picks are kept per library): this Mac
+    /// reads nothing until the person picks albums here.
+    elsewhere: bool,
     /// With the history `from-today`, the start of the day it was connected (Unix milliseconds):
     /// older assets are left out.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,9 +85,12 @@ struct SyncParams {
     #[serde(default)]
     albums: Vec<Container>,
     /// Every asset identifier in the albums picked now. Left out when the app could not list
-    /// them all: then nothing is marked.
+    /// them all (an album picked could not be found): then nothing is marked.
     #[serde(default)]
     present: Option<Vec<String>>,
+    /// Assets that can never be added (too large, not supported): not exported again.
+    #[serde(default)]
+    failed: Vec<FailedAsset>,
     /// The change token of the library after this run, kept as the cursor.
     #[serde(default)]
     token: Option<String>,
@@ -93,6 +103,13 @@ struct SyncParams {
     /// How many were held back because the space is past its soft limit.
     #[serde(default)]
     held: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct FailedAsset {
+    id: String,
+    #[serde(default)]
+    reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,6 +130,8 @@ struct FailParams {
 struct Options {
     /// Whether assets kept only in iCloud are downloaded.
     icloud: bool,
+    /// Whether albums are picked only on other Macs: this one reads nothing yet.
+    elsewhere: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,7 +152,7 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         }
         methods::PHOTOS_LIBRARY_ALBUMS => {
             let p: AlbumsParams = params(method, raw)?;
-            state.registry().report_containers(SOURCE_ID, p.albums);
+            report(state, p.albums)?;
             to_value(true)
         }
         methods::PHOTOS_LIBRARY_KNOWN => {
@@ -141,7 +160,13 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
             setting(&space)?;
-            to_value(photos_library::known(&space, &p.ids)?)
+            let library = library(state)?;
+            let mut ledger = load_ledger(state.registry().home(), &space.manifest().id, &library);
+            // Nodes deleted since the last run are tombstones before anything is exported.
+            if ledger.reconcile(&space)? > 0 {
+                save(state, &space, &ledger)?;
+            }
+            to_value(photos_library::known(&space, &library, &p.ids, &ledger)?)
         }
         methods::PHOTOS_LIBRARY_ADD => add(state, params(method, raw)?),
         methods::PHOTOS_LIBRARY_SYNC => sync(state, params(method, raw)?),
@@ -150,9 +175,7 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let p: SpaceParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let space = lock_ignoring_poison(&space);
-            to_value(Options {
-                icloud: photos_library::icloud_enabled(&space)?,
-            })
+            to_value(options(state, &space)?)
         }
         methods::PHOTOS_LIBRARY_CONFIGURE => {
             let p: ConfigureParams = params(method, raw)?;
@@ -166,9 +189,7 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
                 });
                 ask_to_run(state, &space)?;
             }
-            to_value(Options {
-                icloud: photos_library::icloud_enabled(&space)?,
-            })
+            to_value(options(state, &space)?)
         }
         _ => Err(RpcError::new(
             codes::METHOD_NOT_FOUND,
@@ -194,6 +215,71 @@ fn sources_on(state: &State) -> bool {
         .unwrap_or(false)
 }
 
+/// The id of this Mac's library.
+fn library(state: &State) -> Result<String, RpcError> {
+    library_id(state.registry().home()).map_err(|e| {
+        RpcError::new(
+            codes::STORAGE,
+            format!("the id of the Photos library could not be kept: {e}"),
+        )
+    })
+}
+
+/// The prefix of the identifiers of this library's albums in the settings of a space.
+fn album_prefix(library: &str) -> String {
+    format!("{library}/")
+}
+
+/// Keeps the albums the app has now, named with this library's id, for `sources.containers`:
+/// picks are then made per library.
+fn report(state: &State, albums: Vec<Container>) -> Result<(), RpcError> {
+    let prefix = album_prefix(&library(state)?);
+    let albums = albums
+        .into_iter()
+        .map(|a| Container::new(format!("{prefix}{}", a.id), a.name))
+        .collect();
+    state
+        .registry()
+        .report_containers(SOURCE_ID, Some(prefix), albums);
+    Ok(())
+}
+
+/// The albums picked on this Mac, by their own identifiers, and whether others are picked on
+/// other Macs only.
+fn picked_here(setting: &SourceSetting, library: &str) -> (Vec<Container>, bool) {
+    let prefix = album_prefix(library);
+    let here: Vec<Container> = setting
+        .include
+        .iter()
+        .filter_map(|c| {
+            c.id.strip_prefix(&prefix)
+                .map(|id| Container::new(id, c.name.clone()))
+        })
+        .collect();
+    let elsewhere = here.is_empty() && !setting.include.is_empty();
+    (here, elsewhere)
+}
+
+fn options(state: &State, space: &Space) -> Result<Options, RpcError> {
+    let elsewhere = match sources::source_setting(space, SOURCE_ID)? {
+        Some(setting) => picked_here(&setting, &library(state)?).1,
+        None => false,
+    };
+    Ok(Options {
+        icloud: photos_library::icloud_enabled(space)?,
+        elsewhere,
+    })
+}
+
+fn save(state: &State, space: &Space, ledger: &Ledger) -> Result<(), RpcError> {
+    save_ledger(state.registry().home(), &space.manifest().id, ledger).map_err(|e| {
+        RpcError::new(
+            codes::STORAGE,
+            format!("what {SOURCE_ID} did could not be saved: {e}"),
+        )
+    })
+}
+
 fn since(setting: &SourceSetting) -> Option<i64> {
     (setting.history == History::FromToday).then_some(setting.since.0)
 }
@@ -206,10 +292,14 @@ fn plan(state: &State, space: &Space) -> Result<Plan, RpcError> {
     let setting = setting(space)?;
     let key = state_key(&space.manifest().id, SOURCE_ID);
     let run = state.registry().states().get(&key).cloned();
+    let library = library(state)?;
+    let (albums, elsewhere) = picked_here(&setting, &library);
     Ok(Plan {
         on: setting.on && sources_on(state),
         since: since(&setting),
-        albums: setting.include.clone(),
+        library,
+        albums,
+        elsewhere,
         icloud: photos_library::icloud_enabled(space)?,
         room: room(space)?,
         token: run
@@ -222,13 +312,11 @@ fn plan(state: &State, space: &Space) -> Result<Plan, RpcError> {
 }
 
 fn add(state: &State, p: AddParams) -> Result<Value, RpcError> {
-    for path in std::iter::once(&p.asset.path).chain(p.asset.original_path.as_ref()) {
-        if !path.is_absolute() {
-            return Err(RpcError::invalid_params(format!(
-                "path must be an absolute path: {}",
-                path.display()
-            )));
-        }
+    if !p.asset.path.is_absolute() {
+        return Err(RpcError::invalid_params(format!(
+            "path must be an absolute path: {}",
+            p.asset.path.display()
+        )));
     }
     let space = state.space(&p.space)?;
     let mut space = lock_ignoring_poison(&space);
@@ -247,10 +335,22 @@ fn add(state: &State, p: AddParams) -> Result<Value, RpcError> {
                 .into(),
         )));
     }
+    let library = library(state)?;
+    let home = state.registry().home();
+    let mut ledger = load_ledger(home, &space.manifest().id, &library);
+    let deleted = ledger.deleted.contains(p.asset.id.trim());
     let by = sources::provenance(SOURCE_ID);
     let mark = last_change(&space)?;
-    let result = photos_library::add(&mut space, &p.asset, &by);
+    let result = photos_library::add(&mut space, &library, &p.asset, &mut ledger, &by);
     state.notify_since(&space, mark)?;
+    // A file that is there but cannot be added (too large, not supported) never will be.
+    if let Err(knode_format::Error::Invalid(why)) = &result
+        && !deleted
+        && p.asset.path.is_file()
+    {
+        ledger.fail(&p.asset.id, why);
+    }
+    save(state, &space, &ledger)?;
     let added = result?;
     to_value(AddResult {
         added,
@@ -261,17 +361,24 @@ fn add(state: &State, p: AddParams) -> Result<Value, RpcError> {
 fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
     let registry = state.registry();
     if !p.albums.is_empty() {
-        registry.report_containers(SOURCE_ID, p.albums.clone());
+        report(state, p.albums.clone())?;
     }
     let space = state.space(&p.space)?;
     let mut space = lock_ignoring_poison(&space);
     let setting = setting(&space)?;
     let mut marked = Marked::default();
     if setting.on && sources_on(state) {
+        let library = library(state)?;
+        let mut ledger = load_ledger(registry.home(), &space.manifest().id, &library);
+        ledger.reconcile(&space)?;
+        for failed in &p.failed {
+            ledger.fail(&failed.id, &failed.reason);
+        }
+        save(state, &space, &ledger)?;
         if let Some(present) = &p.present {
             let by = sources::provenance(SOURCE_ID);
             let mark = last_change(&space)?;
-            let result = photos_library::mark(&mut space, present, &by);
+            let result = photos_library::mark(&mut space, &library, present, &by);
             state.notify_since(&space, mark)?;
             marked = match result {
                 Ok(marked) => marked,
@@ -292,6 +399,12 @@ fn sync(state: &State, p: SyncParams) -> Result<Value, RpcError> {
             notes.push(format!(
                 "{} wait because the space is past its size limit (Storage)",
                 p.held
+            ));
+        }
+        if !ledger.failed.is_empty() {
+            notes.push(format!(
+                "{} cannot be added (too large or not supported) and are skipped",
+                ledger.failed.len()
             ));
         }
         let notice = (!notes.is_empty()).then(|| notes.join("; "));

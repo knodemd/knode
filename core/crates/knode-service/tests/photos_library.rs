@@ -109,6 +109,10 @@ fn the_app_picks_albums_adds_assets_once_and_marks_the_ones_that_left() {
     let plan = f.call("photos_library.plan", json!({}));
     assert_eq!(plan["on"], true);
     assert_eq!(plan["albums"], json!([]));
+    assert_eq!(plan["elsewhere"], false);
+    let lib = plan["library"].as_str().unwrap().to_string();
+    assert!(!lib.is_empty());
+    assert_eq!(f.call("photos_library.plan", json!({}))["library"], lib);
     assert_eq!(plan["icloud"], false);
     assert_eq!(plan["room"], true);
     assert!(plan.get("since").is_none());
@@ -117,16 +121,23 @@ fn the_app_picks_albums_adds_assets_once_and_marks_the_ones_that_left() {
         "photos_library.albums",
         json!({ "albums": [{ "id": "trip", "name": "Trip" }, { "id": "work", "name": "Work" }] }),
     );
+    // Albums are named with this Mac's library id: picks belong to one Mac.
+    let trip = format!("{lib}/trip");
     f.call(
         "sources.include",
-        json!({ "source": "photos-library", "id": "trip", "by": me() }),
+        json!({ "source": "photos-library", "id": trip, "by": me() }),
+    );
+    // A pick of another Mac is not this Mac's to show or read.
+    f.call(
+        "sources.include",
+        json!({ "source": "photos-library", "id": "OTHERMAC/far", "name": "Far", "by": me() }),
     );
     let containers = f.call("sources.containers", json!({ "source": "photos-library" }));
     assert_eq!(
         containers,
         json!([
-            { "id": "trip", "name": "Trip", "excluded": false },
-            { "id": "work", "name": "Work", "excluded": true },
+            { "id": trip, "name": "Trip", "excluded": false },
+            { "id": format!("{lib}/work"), "name": "Work", "excluded": true },
         ])
     );
     let plan = f.call("photos_library.plan", json!({}));
@@ -175,17 +186,25 @@ fn the_app_picks_albums_adds_assets_once_and_marks_the_ones_that_left() {
     assert_eq!(nodes[0].kind, "photo");
     let node = space.get_node(&nodes[0].id).unwrap().unwrap();
     assert_eq!(node.created_by.actor, "photos-library");
+    assert_eq!(
+        space
+            .property(&node.id, "photos_library.library")
+            .unwrap()
+            .as_deref(),
+        Some(lib.as_str())
+    );
+    assert!(!node.body.contains("No longer"), "{}", node.body);
     drop(space);
 
-    // Dropping the album leaves it out; what came from it stays.
+    // Dropping the album leaves it out; what came from it stays. Only another Mac's pick is
+    // left: this Mac reads nothing and says so.
     f.call(
         "sources.exclude",
-        json!({ "source": "photos-library", "id": "trip", "by": me() }),
+        json!({ "source": "photos-library", "id": trip, "by": me() }),
     );
-    assert_eq!(
-        f.call("photos_library.plan", json!({}))["albums"],
-        json!([])
-    );
+    let plan = f.call("photos_library.plan", json!({}));
+    assert_eq!(plan["albums"], json!([]));
+    assert_eq!(plan["elsewhere"], true);
 
     let failed = f.call(
         "photos_library.fail",
@@ -201,7 +220,7 @@ fn the_app_picks_albums_adds_assets_once_and_marks_the_ones_that_left() {
         "photos_library.configure",
         json!({ "icloud": true, "by": me() }),
     );
-    assert_eq!(options, json!({ "icloud": true }));
+    assert_eq!(options, json!({ "icloud": true, "elsewhere": true }));
     assert_eq!(f.call("photos_library.plan", json!({}))["icloud"], true);
 }
 
@@ -241,6 +260,47 @@ fn from_today_leaves_older_assets_out_and_a_paused_source_adds_nothing() {
 }
 
 #[test]
+fn deleted_nodes_and_failures_for_good_are_never_brought_back() {
+    let f = Fixture::new();
+    f.call(
+        "sources.connect",
+        json!({ "source": "photos-library", "history": "everything", "by": me() }),
+    );
+    let a = f.photo("A", "a.jpg", b"a");
+    let added = f.call("photos_library.add", json!({ "asset": a }));
+    let id: knode_format::NodeId = added["node"]["id"].as_str().unwrap().parse().unwrap();
+    let mut space = Space::open(f.space()).unwrap();
+    space.delete_node(&id, &me()).unwrap();
+    drop(space);
+
+    // The end of the run sees the node gone: the asset is never exported or added again.
+    let synced = f.call(
+        "photos_library.sync",
+        json!({ "present": ["A", "V"], "failed": [{ "id": "V", "reason": "audio too long" }] }),
+    );
+    assert!(
+        synced["source"]["notice"]
+            .as_str()
+            .unwrap()
+            .contains("1 cannot be added"),
+        "{synced}"
+    );
+    let known = f.call("photos_library.known", json!({ "ids": ["A", "V", "W"] }));
+    assert_eq!(known, json!(["A", "V"]));
+    let err = f
+        .try_call("photos_library.add", json!({ "asset": a }))
+        .unwrap_err();
+    assert!(err.contains("deleted"), "{err}");
+    let space = Space::open(f.space()).unwrap();
+    assert!(
+        space
+            .find_by_property("photos_library.id", "A")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn run_now_asks_the_app() {
     let f = Fixture::new();
     f.call(
@@ -274,16 +334,12 @@ fn storage_summary_check_and_limits() {
     assert_eq!(summary["largest"][0]["kind"], "photo");
     assert_eq!(summary["sources"][0]["actor"], "Example");
     assert_eq!(summary["limits"]["max_file"], 100 * 1024 * 1024);
-    assert_eq!(summary["limits"]["keep_large_originals"], false);
     assert_eq!(summary["over"], false);
 
     assert_eq!(f.call("storage.check", json!({ "size": 1 }))["warn"], false);
-    let limits = f.call(
-        "storage.configure",
-        json!({ "warn_at": 1, "keep_large_originals": true, "by": me() }),
-    );
+    let limits = f.call("storage.configure", json!({ "warn_at": 1, "by": me() }));
     assert_eq!(limits["warn_at"], 1);
-    assert_eq!(limits["keep_large_originals"], true);
+    assert!(limits.get("keep_large_originals").is_none());
     assert_eq!(f.call("storage.check", json!({ "size": 1 }))["warn"], true);
     assert_eq!(f.call("storage.summary", json!({}))["over"], true);
     assert!(

@@ -59,10 +59,6 @@ pub struct StorageFile {
 pub struct StorageLimits {
     /// The largest file a space attaches.
     pub max_file: u64,
-    /// The largest original kept when the space keeps large originals.
-    pub max_original: u64,
-    /// Whether videos larger than `max_file` keep their original.
-    pub keep_large_originals: bool,
     /// The soft limit, in bytes; 0 never warns.
     pub warn_at: u64,
 }
@@ -109,8 +105,6 @@ impl From<st::Limits> for StorageLimits {
     fn from(l: st::Limits) -> Self {
         StorageLimits {
             max_file: l.max_file,
-            max_original: l.max_original,
-            keep_large_originals: l.keep_large_originals,
             warn_at: l.warn_at,
         }
     }
@@ -184,10 +178,9 @@ impl KnodeSpace {
     pub fn set_storage_limits(
         &self,
         warn_at: Option<u64>,
-        keep_large_originals: Option<bool>,
         by: Provenance,
     ) -> Result<StorageLimits> {
-        Ok(st::set_limits(&mut self.lock(), warn_at, keep_large_originals, &by.into())?.into())
+        Ok(st::set_limits(&mut self.lock(), warn_at, &by.into())?.into())
     }
 }
 
@@ -222,8 +215,8 @@ mod tests {
         assert_eq!(summary.largest[0].title, "Board");
         assert_eq!(summary.limits.max_file, knode_format::MAX_ATTACHMENT_SIZE);
         assert!(!space.storage_check(10).unwrap().warn);
-        let limits = space.set_storage_limits(Some(1), Some(true), me).unwrap();
-        assert!(limits.keep_large_originals);
+        let limits = space.set_storage_limits(Some(1), me).unwrap();
+        assert_eq!(limits.warn_at, 1);
         assert!(space.storage_check(10).unwrap().warn);
         assert!(space.storage_summary(0).unwrap().largest.is_empty());
     }

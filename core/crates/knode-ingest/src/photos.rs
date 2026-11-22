@@ -183,6 +183,20 @@ pub fn create(space: &mut Space, new: &NewPhoto, by: &Provenance) -> Result<Phot
         }
         return get(space, &id);
     }
+    create_separate(space, new, &key, by)
+}
+
+/// Stores a new photo like [`create`], even when the space holds the same file as a photo
+/// already: for a source that must not take over a node someone else made, such as the Photos
+/// library. The file is stored once either way (blobs are kept by hash). `key` is the file's
+/// [`media::file_key`].
+pub(crate) fn create_separate(
+    space: &mut Space,
+    new: &NewPhoto,
+    key: &str,
+    by: &Provenance,
+) -> Result<Photo> {
+    media::check_file(&new.path)?;
     if let Some(project) = &new.project
         && space.get_node(project)?.is_none()
     {
@@ -220,7 +234,7 @@ pub fn create(space: &mut Space, new: &NewPhoto, by: &Provenance) -> Result<Phot
         if let Some(project) = &new.project {
             space.link(&id, project, link_kinds::PART_OF, by)?;
         }
-        space.set_property(&id, keys::KEY, &key, by)?;
+        space.set_property(&id, keys::KEY, key, by)?;
         Ok(())
     })();
     if let Err(e) = filled {

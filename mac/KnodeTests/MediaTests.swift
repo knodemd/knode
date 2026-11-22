@@ -350,8 +350,6 @@ struct MediaImporterTests {
         let draft = try #require(await store.recordingDrafts.first)
         #expect(draft.audio.map(\.url.lastPathComponent) == ["Talk.m4a"])
         #expect(draft.original == "Talk.mov")
-        // The core attaches the original too only when the space keeps large originals.
-        #expect(draft.originalURL == video)
         #expect(draft.key == (try MediaKey.of(video)))
         #expect(await store.attachedSizes == [40])
         // The original is never changed, and the extracted audio is cleaned up.

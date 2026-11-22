@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use knode_format::{
@@ -272,12 +272,6 @@ pub struct NewRecording {
     /// video larger than a space attaches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original: Option<String>,
-    /// That file on this machine. Attached too, up to
-    /// [`MAX_LARGE_ATTACHMENT_SIZE`](knode_format::MAX_LARGE_ATTACHMENT_SIZE), when the space keeps
-    /// large originals ([`media::keep_large_originals`](crate::media::keep_large_originals));
-    /// else only its name is kept.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_path: Option<PathBuf>,
 }
 
 fn yes() -> bool {
@@ -448,38 +442,13 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
         .map(one_line)
         .filter(|o| !o.is_empty());
     let mut header = header(new.started_at, new.ended_at, &Local);
-    let kept = match &new.original_path {
-        Some(path) if original.is_some() && crate::media::keep_large_originals(space)? => {
-            let size = fs::metadata(path)
-                .map_err(|e| Error::Invalid(format!("cannot read {}: {e}", path.display())))?
-                .len();
-            if size > knode_format::MAX_LARGE_ATTACHMENT_SIZE {
-                return Err(Error::Invalid(format!(
-                    "{} is larger than {} MB, the most a space keeps of an original",
-                    path.display(),
-                    knode_format::MAX_LARGE_ATTACHMENT_SIZE / (1024 * 1024)
-                )));
-            }
-            Some(path.clone())
-        }
-        _ => None,
-    };
     if let Some(original) = &original {
         props.insert(keys::ORIGINAL.into(), original.clone());
-        match &kept {
-            Some(path) => header.push_str(&original_kept_line(
-                original,
-                &path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )),
-            None => header.push_str(&format!(
-                "\n\nThe audio was taken from {original}, which is larger than {} MB and is kept \
-                 only where it was, not in the space.",
-                MAX_ATTACHMENT_SIZE / (1024 * 1024)
-            )),
-        }
+        header.push_str(&format!(
+            "\n\nThe audio was taken from {original}, which is larger than {} MB and is kept only \
+             where it was, not in the space.",
+            MAX_ATTACHMENT_SIZE / (1024 * 1024)
+        ));
     }
     let node = space.create_node_with_properties(
         NewNode::note(new.title.clone(), header_body(&header, &planned))
@@ -488,7 +457,7 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
         by,
     )?;
     let id = node.id;
-    let filled = fill(space, &id, new, &header, &planned, kept.as_deref(), by);
+    let filled = fill(space, &id, new, key, &header, &planned, by);
     if let Err(e) = filled {
         // Best effort: the error says what went wrong either way.
         let _ = space.delete_node(&id, by);
@@ -497,48 +466,14 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
     get(space, &id)
 }
 
-/// The line of a recording's body that says its large original is attached too.
-fn original_kept_line(original: &str, name: &str) -> String {
-    format!(
-        "\n\nThe audio was taken from {original}, which is larger than {} MB; the space keeps the \
-         original too: [[{name}]]",
-        MAX_ATTACHMENT_SIZE / (1024 * 1024)
-    )
-}
-
-/// Attaches the large original of a recording, after its audio: the space keeps large originals.
-/// A name the node already uses is said again in the body under the name it got.
-fn keep_original(space: &mut Space, id: &NodeId, path: &Path, by: &Provenance) -> Result<()> {
-    let planned = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let attachment = space.attach_large_file(id, path, by)?;
-    if attachment.name != planned {
-        let body = space.get_node(id)?.ok_or(Error::NotFound(*id))?.body;
-        space.update_node(
-            id,
-            NodeUpdate {
-                body: Some(body.replace(
-                    &format!("[[{planned}]]"),
-                    &format!("[[{}]]", attachment.name),
-                )),
-                ..Default::default()
-            },
-            by,
-        )?;
-    }
-    Ok(())
-}
-
 /// The steps of [`create`] after its node is made: the files, the link, and the key last.
 fn fill(
     space: &mut Space,
     id: &NodeId,
     new: &NewRecording,
+    key: Option<&str>,
     header: &str,
     planned: &[AudioTrack],
-    kept: Option<&Path>,
     by: &Provenance,
 ) -> Result<()> {
     // A name the node already uses for other content is attached under another one: the body
@@ -562,13 +497,10 @@ fn fill(
         )?;
         space.set_property(id, keys::TRACKS, &tracks_json(&attached), by)?;
     }
-    if let Some(path) = kept {
-        keep_original(space, id, path, by)?;
-    }
     if let Some(project) = &new.project {
         space.link(id, project, link_kinds::PART_OF, by)?;
     }
-    if let Some(key) = new.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+    if let Some(key) = key {
         space.set_property(id, keys::KEY, key, by)?;
     }
     Ok(())

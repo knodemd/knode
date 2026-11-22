@@ -16,7 +16,6 @@ extension ServiceSpaceStore: RecordingStore {
         if let key = recording.key { params["key"] = .string(key) }
         if let app = recording.app { params["app"] = .string(app) }
         if let original = recording.original { params["original"] = .string(original) }
-        if let url = recording.originalURL { params["original_path"] = .string(url.standardizedFileURL.path(percentEncoded: false)) }
         return try await call("recordings.create", params, as: WireRecording.self).recording()
     }
 

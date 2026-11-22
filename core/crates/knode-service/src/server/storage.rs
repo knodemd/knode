@@ -37,8 +37,6 @@ struct ConfigureParams {
     /// The soft limit in bytes; `0` never warns.
     #[serde(default)]
     warn_at: Option<u64>,
-    #[serde(default)]
-    keep_large_originals: Option<bool>,
     by: Provenance,
 }
 
@@ -62,15 +60,10 @@ pub(super) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
             let before = storage::limits(&space)?;
-            let after = storage::set_limits(&mut space, p.warn_at, p.keep_large_originals, &p.by)?;
+            let after = storage::set_limits(&mut space, p.warn_at, &p.by)?;
             if after.warn_at != before.warn_at {
                 state.notify_space(&space, SpaceEventKind::Settings, |e| {
                     e.key = Some(storage::WARN_AT_SETTING.to_string());
-                });
-            }
-            if after.keep_large_originals != before.keep_large_originals {
-                state.notify_space(&space, SpaceEventKind::Settings, |e| {
-                    e.key = Some(knode_ingest::media::KEEP_LARGE_ORIGINALS_SETTING.to_string());
                 });
             }
             to_value(after)

@@ -100,17 +100,6 @@ fn create(state: &State, raw: Value) -> Result<Value, RpcError> {
             audio.path.display()
         )));
     }
-    if let Some(original) = p
-        .recording
-        .original_path
-        .as_ref()
-        .filter(|o| !o.is_absolute())
-    {
-        return Err(RpcError::invalid_params(format!(
-            "original_path must be an absolute path: {}",
-            original.display()
-        )));
-    }
     let space = state.space(&p.space)?;
     let mut space = lock_ignoring_poison(&space);
     let mark = last_change(&space)?;

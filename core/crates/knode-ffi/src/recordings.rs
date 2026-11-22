@@ -160,8 +160,6 @@ pub struct NewRecording {
     /// The name of the file its audio was taken from, when that file is not attached, such as a
     /// video larger than a space attaches.
     pub original: Option<String>,
-    /// That file on this machine: attached too when the space keeps large originals.
-    pub original_path: Option<String>,
 }
 
 /// A stored recording.
@@ -347,7 +345,6 @@ impl KnodeSpace {
             app: recording.app,
             summaries: recording.summaries,
             original: recording.original,
-            original_path: recording.original_path.map(Into::into),
         };
         Ok(rec::create(&mut self.lock(), &new, &by.into())?.into())
     }
@@ -502,7 +499,6 @@ mod tests {
             app: None,
             summaries: true,
             original: None,
-            original_path: None,
         };
         let created = space.create_recording(new.clone(), me.clone()).unwrap();
         assert_eq!(created.project.as_deref(), Some(project.id.as_str()));

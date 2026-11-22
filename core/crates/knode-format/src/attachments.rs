@@ -22,11 +22,6 @@ use crate::{BLOBS_DIR, Error, NodeId, NodeSummary, Provenance, Result, Space, Ti
 /// quick to copy, back up and sync.
 pub const MAX_ATTACHMENT_SIZE: u64 = 100 * 1024 * 1024;
 
-/// The largest original a space keeps when it chooses to keep large originals (the space setting
-/// [`setting_keys::MEDIA_KEEP_LARGE_ORIGINALS`](crate::setting_keys::MEDIA_KEEP_LARGE_ORIGINALS)):
-/// 4 GB. Only [`Space::attach_large_file`] attaches files over [`MAX_ATTACHMENT_SIZE`].
-pub const MAX_LARGE_ATTACHMENT_SIZE: u64 = 4 * 1024 * 1024 * 1024;
-
 /// Temporary files in `blobs/` start with this; a purge removes those older than a day, left by
 /// a crash.
 const TEMP_PREFIX: &str = ".tmp-";
@@ -195,13 +190,13 @@ struct Stored {
 }
 
 /// Writes bytes to `blobs/`: to a temporary file, hashed while written and flushed to disk, then
-/// renamed to its place, or deleted if the place is taken. Refuses more than `limit` bytes.
+/// renamed to its place, or deleted if the place is taken. Refuses more than
+/// [`MAX_ATTACHMENT_SIZE`] bytes.
 fn store(
     package: &Path,
     ids: &mut ulid::Generator,
     mut reader: impl Read,
     name: &str,
-    limit: u64,
 ) -> Result<Stored> {
     let dir = package.join(BLOBS_DIR);
     fs::create_dir_all(&dir)?;
@@ -220,10 +215,10 @@ fn store(
                 Err(e) => return Err(e.into()),
             };
             size += n as u64;
-            if size > limit {
+            if size > MAX_ATTACHMENT_SIZE {
                 return Err(Error::Invalid(format!(
                     "{name} is larger than {} MB, the most a space attaches",
-                    limit / (1024 * 1024)
+                    MAX_ATTACHMENT_SIZE / (1024 * 1024)
                 )));
             }
             if head.len() < 64 {
@@ -433,7 +428,7 @@ impl Space {
     /// Prefer [`attach`](Self::attach): a blob no node uses is removed by the next purge.
     pub fn add_blob(&mut self, reader: impl Read, name: &str, by: &Provenance) -> Result<Blob> {
         let package = self.path().to_path_buf();
-        let stored = store(&package, &mut self.ids, reader, name, MAX_ATTACHMENT_SIZE)?;
+        let stored = store(&package, &mut self.ids, reader, name)?;
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         let prov = provenance_id(&tx, by)?;
@@ -460,45 +455,12 @@ impl Space {
         reader: impl Read,
         by: &Provenance,
     ) -> Result<Attachment> {
-        self.attach_up_to(node, name, reader, MAX_ATTACHMENT_SIZE, by)
-    }
-
-    /// Attaches a large original, such as a video, up to [`MAX_LARGE_ATTACHMENT_SIZE`]: for a
-    /// space that keeps large originals. Otherwise the same as [`attach_file`](Self::attach_file).
-    pub fn attach_large_file(
-        &mut self,
-        node: &NodeId,
-        path: impl AsRef<Path>,
-        by: &Provenance,
-    ) -> Result<Attachment> {
-        let path = path.as_ref();
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| Error::Invalid(format!("{} is not a file", path.display())))?;
-        self.attach_up_to(
-            node,
-            &name,
-            File::open(path)?,
-            MAX_LARGE_ATTACHMENT_SIZE,
-            by,
-        )
-    }
-
-    fn attach_up_to(
-        &mut self,
-        node: &NodeId,
-        name: &str,
-        reader: impl Read,
-        limit: u64,
-        by: &Provenance,
-    ) -> Result<Attachment> {
         let name = clean_name(name)?;
         if read_node(&self.conn, node)?.is_none() {
             return Err(Error::NotFound(*node));
         }
         let package = self.path().to_path_buf();
-        let stored = store(&package, &mut self.ids, reader, &name, limit)?;
+        let stored = store(&package, &mut self.ids, reader, &name)?;
         let now = Timestamp::now();
         let tx = self.conn.transaction()?;
         let prov = provenance_id(&tx, by)?;

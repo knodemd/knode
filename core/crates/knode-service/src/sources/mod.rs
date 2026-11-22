@@ -447,6 +447,10 @@ pub(crate) struct SourceParams {
     pub step: Option<SignInStep>,
 }
 
+/// The containers the app reported for a connector it runs, with the prefix of this machine's
+/// container ids, if any.
+type Reported = (Option<String>, Vec<Container>);
+
 /// The connectors a service knows, with what they did on this machine.
 pub(crate) struct Registry {
     connectors: Vec<Arc<dyn Connector>>,
@@ -458,8 +462,10 @@ pub(crate) struct Registry {
     /// `capture` is off.
     active: std::sync::atomic::AtomicBool,
     /// The containers the app last reported for each connector it runs ([`Trigger::App`]), by
-    /// source id. Kept in memory: the app reports them again whenever it runs the source.
-    reported: Mutex<BTreeMap<String, Vec<Container>>>,
+    /// source id, with the prefix every id of this machine's containers starts with, if any
+    /// (the Photos library's id: picks of other Macs are not this machine's). Kept in memory:
+    /// the app reports them again whenever it runs the source.
+    reported: Mutex<BTreeMap<String, Reported>>,
 }
 
 impl Registry {
@@ -482,11 +488,18 @@ impl Registry {
 
     /// Keeps the containers the app has now for a connector it runs: `sources.containers`
     /// lists them.
-    pub(crate) fn report_containers(&self, id: &str, containers: Vec<Container>) {
+    /// `scope` is the prefix of every id of this machine's containers, when ids are qualified by
+    /// something only this machine has: picked containers of another scope are then not listed.
+    pub(crate) fn report_containers(
+        &self,
+        id: &str,
+        scope: Option<String>,
+        containers: Vec<Container>,
+    ) {
         self.reported
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.to_string(), containers);
+            .insert(id.to_string(), (scope, containers));
     }
 
     /// The name the app last reported for a container of a connector it runs.
@@ -495,6 +508,7 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(id)?
+            .1
             .iter()
             .find(|c| c.id == container)
             .map(|c| c.name.clone())
@@ -676,7 +690,7 @@ impl Registry {
             secrets: &secrets,
         };
         connector.check()?;
-        let listed = if matches!(connector.trigger(), Trigger::App) {
+        let (scope, listed) = if matches!(connector.trigger(), Trigger::App) {
             self.reported
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -684,7 +698,7 @@ impl Registry {
                 .cloned()
                 .unwrap_or_default()
         } else {
-            connector.containers(&request)?
+            (None, connector.containers(&request)?)
         };
         let mut out: Vec<ContainerInfo> = listed
             .into_iter()
@@ -703,11 +717,13 @@ impl Registry {
         }
         if connector.info().picks {
             // Only the picked ones are read: every other one shows as left out, and a picked one
-            // the source no longer lists is kept, so it can be dropped.
+            // the source no longer lists is kept, so it can be dropped. Picks of another
+            // machine (another scope) are that machine's to show.
             for info in &mut out {
                 info.excluded = !setting.include.iter().any(|i| i.id == info.container.id);
             }
-            for picked in &setting.include {
+            let ours = |c: &Container| scope.as_deref().is_none_or(|s| c.id.starts_with(s));
+            for picked in setting.include.iter().filter(|c| ours(c)) {
                 if !out.iter().any(|c| c.container.id == picked.id) {
                     out.push(ContainerInfo {
                         container: picked.clone(),

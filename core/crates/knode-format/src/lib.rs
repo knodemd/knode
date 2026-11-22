@@ -67,9 +67,7 @@ mod types;
 mod vector;
 mod views;
 
-pub use attachments::{
-    Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, MAX_LARGE_ATTACHMENT_SIZE, blob_url_hash,
-};
+pub use attachments::{Attachment, Blob, LinkTarget, MAX_ATTACHMENT_SIZE, blob_url_hash};
 pub use chunking::{
     CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS, CHUNKING, TextChunk, chunk_blocks, chunk_markdown,
     chunk_node_text, embedding_text,
@@ -280,11 +278,6 @@ pub mod setting_keys {
     /// `on` (the default, also when absent) or `off`: whether photos keep where they were taken
     /// (coordinates and place). Only `off` turns it off.
     pub const PHOTOS_LOCATION: &str = "photos.location";
-    /// `on` or `off` (the default, also when absent): whether a video larger than
-    /// [`MAX_ATTACHMENT_SIZE`](crate::MAX_ATTACHMENT_SIZE) keeps its original attached, up to
-    /// [`MAX_LARGE_ATTACHMENT_SIZE`](crate::MAX_LARGE_ATTACHMENT_SIZE), next to the audio taken
-    /// from it. Only `on` turns it on.
-    pub const MEDIA_KEEP_LARGE_ORIGINALS: &str = "media.keep_large_originals";
     /// The size, in bytes and in decimal, past which the space warns before it takes more:
     /// imports ask first and connectors that add media hold back. Absent for the default
     /// (10 GB); `0` never warns.

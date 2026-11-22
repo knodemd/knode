@@ -6,20 +6,16 @@
 //! added how much (by the provenance of each attachment); and lists the largest files. Files of
 //! deleted nodes, and blobs no node uses, are counted apart: a purge frees them.
 //!
-//! The limits: one file is at most [`MAX_ATTACHMENT_SIZE`]; a video larger than that keeps only
-//! the audio taken from it unless the space keeps large originals
-//! ([`media::keep_large_originals`]), up to [`MAX_LARGE_ATTACHMENT_SIZE`]; and past a soft limit
-//! ([`WARN_AT_SETTING`], 10 GB unless changed) imports ask first ([`check`]) and connectors that
-//! add media hold back. Sizes are computed on the device.
+//! The limits: one file is at most [`MAX_ATTACHMENT_SIZE`], and a video larger than that keeps
+//! only the audio taken from it; past a soft limit ([`WARN_AT_SETTING`], 10 GB unless changed)
+//! imports ask first ([`check`]) and connectors that add media hold back. [`check`] is cheap, as
+//! it runs before every add: it sums the rows of the blobs and the size of the database files,
+//! never walking the package. Sizes are computed on the device.
 
 use std::collections::{BTreeMap, HashSet};
 
-use knode_format::{
-    MAX_ATTACHMENT_SIZE, MAX_LARGE_ATTACHMENT_SIZE, NodeId, Provenance, Result, Space, setting_keys,
-};
+use knode_format::{MAX_ATTACHMENT_SIZE, NodeId, Provenance, Result, Space, setting_keys};
 use serde::{Deserialize, Serialize};
-
-use crate::media;
 
 /// The space setting with the soft limit, in bytes; `0` never warns.
 pub const WARN_AT_SETTING: &str = setting_keys::STORAGE_WARN_AT;
@@ -84,10 +80,6 @@ pub struct LargeFile {
 pub struct Limits {
     /// The largest file a space attaches.
     pub max_file: u64,
-    /// The largest original a space keeps when it keeps large originals.
-    pub max_original: u64,
-    /// Whether videos larger than `max_file` keep their original.
-    pub keep_large_originals: bool,
     /// The soft limit, in bytes; `0` never warns.
     pub warn_at: u64,
 }
@@ -131,8 +123,6 @@ pub struct Check {
 pub fn limits(space: &Space) -> Result<Limits> {
     Ok(Limits {
         max_file: MAX_ATTACHMENT_SIZE,
-        max_original: MAX_LARGE_ATTACHMENT_SIZE,
-        keep_large_originals: media::keep_large_originals(space)?,
         warn_at: warn_at(space)?,
     })
 }
@@ -145,27 +135,21 @@ pub fn warn_at(space: &Space) -> Result<u64> {
         .unwrap_or(DEFAULT_WARN_AT))
 }
 
-/// Changes the limits a space chooses: the soft limit and whether it keeps large originals.
-/// `None` leaves one as it is. Returns the limits after the change.
-pub fn set_limits(
-    space: &mut Space,
-    warn_at: Option<u64>,
-    keep_large_originals: Option<bool>,
-    by: &Provenance,
-) -> Result<Limits> {
+/// Changes the soft limit a space chooses; `None` leaves it as it is. Returns the limits after
+/// the change.
+pub fn set_limits(space: &mut Space, warn_at: Option<u64>, by: &Provenance) -> Result<Limits> {
     if let Some(bytes) = warn_at {
         let value = (bytes != DEFAULT_WARN_AT).then(|| bytes.to_string());
         space.set_setting(WARN_AT_SETTING, value.as_deref(), by)?;
     }
-    if let Some(on) = keep_large_originals {
-        media::set_keep_large_originals(space, on, by)?;
-    }
     limits(space)
 }
 
-/// What the space would take after adding `size` bytes, and whether to ask first.
+/// What the space would take after adding `size` bytes, and whether to ask first. The bytes it
+/// takes now are its blobs (by their rows) and its database files: what grows with media. The
+/// rest of the package (`sync/`) is left out, so nothing is walked.
 pub fn check(space: &Space, size: u64) -> Result<Check> {
-    let total = space.disk_usage()?.total;
+    let total = space.blob_bytes()?.saturating_add(space.database_bytes());
     let warn_at = warn_at(space)?;
     let after = total.saturating_add(size);
     Ok(Check {
@@ -297,9 +281,24 @@ mod tests {
         assert_eq!(s.sources[0].files, 1);
         assert!(s.total >= s.kinds.notes + s.kinds.photos);
         assert_eq!(s.limits.max_file, MAX_ATTACHMENT_SIZE);
-        assert!(!s.limits.keep_large_originals);
         assert_eq!(s.limits.warn_at, DEFAULT_WARN_AT);
         assert!(!s.over);
+    }
+
+    #[test]
+    fn check_sums_rows_without_walking_the_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut space = Space::create(dir.path().join("S.knode"), "S").unwrap();
+        let ada = Provenance::person("Ada");
+        let note = space.create_node(NewNode::note("A", ""), &ada).unwrap();
+        space
+            .attach(&note.id, "a.bin", &[1u8; 500][..], &ada)
+            .unwrap();
+        // A file of the package no row knows of: only a walk would count it.
+        std::fs::write(space.path().join("stray.bin"), vec![0u8; 4_000_000]).unwrap();
+        let c = check(&space, 0).unwrap();
+        assert!(c.total >= 500 + space.database_bytes());
+        assert!(c.total < 4_000_000, "check walked the package: {}", c.total);
     }
 
     #[test]
@@ -311,20 +310,19 @@ mod tests {
         assert!(!c.warn);
         assert_eq!(c.after, c.total + 1024);
 
-        let l = set_limits(&mut space, Some(1), Some(true), &ada).unwrap();
-        assert!(l.keep_large_originals);
+        let l = set_limits(&mut space, Some(1), &ada).unwrap();
+        assert_eq!(l.warn_at, 1);
         // Settings grow the database: the limit is set from what the space takes after them.
         let now = check(&space, 0).unwrap().total;
-        set_limits(&mut space, Some(now + 100_000), None, &ada).unwrap();
-        assert!(media::keep_large_originals(&space).unwrap());
+        set_limits(&mut space, Some(now + 100_000), &ada).unwrap();
         assert!(check(&space, 200_000).unwrap().warn);
         assert!(!check(&space, 1).unwrap().warn);
 
-        let l = set_limits(&mut space, Some(0), Some(false), &ada).unwrap();
+        let l = set_limits(&mut space, Some(0), &ada).unwrap();
         assert_eq!(l.warn_at, 0);
         assert!(!check(&space, u64::MAX).unwrap().warn);
-        set_limits(&mut space, Some(DEFAULT_WARN_AT), None, &ada).unwrap();
+        set_limits(&mut space, Some(DEFAULT_WARN_AT), &ada).unwrap();
         assert_eq!(space.setting(WARN_AT_SETTING).unwrap(), None);
-        assert!(!summary(&space, 5).unwrap().limits.keep_large_originals);
+        assert_eq!(summary(&space, 5).unwrap().limits.warn_at, DEFAULT_WARN_AT);
     }
 }
