@@ -12,6 +12,8 @@ final class FakeRecorder: MeetingRecording {
         var calls: [String] = []
         var paused = false
         var folder: URL?
+        var elapsed: Duration = .seconds(65)
+        var inputChanges = 0
     }
 
     let state = Mutex(State())
@@ -53,9 +55,13 @@ final class FakeRecorder: MeetingRecording {
     }
 
     func cancel() { state.withLock { $0.calls.append("cancel") } }
-    var elapsed: Duration { .seconds(65) }
+    var elapsed: Duration { state.withLock { $0.elapsed } }
     var level: Float { 0.5 }
     var isPaused: Bool { state.withLock { $0.paused } }
+    var inputChanges: Int { state.withLock { $0.inputChanges } }
+
+    func setElapsed(_ elapsed: Duration) { state.withLock { $0.elapsed = elapsed } }
+    func changeInput() { state.withLock { $0.inputChanges += 1 } }
 }
 
 /// A model that answers from the chunk itself: every line becomes a key point, lines with
@@ -69,19 +75,26 @@ final class FakeMinutesModel: MinutesModel {
     let state = Mutex(State())
     let inputBudget: Int
     let maxChunk: Int
+    /// Overviews of more characters than this fail as too large for the context.
+    let maxOverview: Int
+    let maxChunkError: MinutesModelError
     var name: String { "fake-model" }
     let available: SummarizerAvailability
 
-    init(inputBudget: Int, maxChunk: Int = .max, available: SummarizerAvailability = .available) {
+    init(inputBudget: Int, maxChunk: Int = .max, maxOverview: Int = .max, maxChunkError: MinutesModelError = .contextTooLarge, available: SummarizerAvailability = .available) {
         self.inputBudget = inputBudget
         self.maxChunk = maxChunk
+        self.maxOverview = maxOverview
+        self.maxChunkError = maxChunkError
         self.available = available
     }
 
     func availability(language: String) async -> SummarizerAvailability { available }
 
+    func inputBudget(for text: String) async -> Int { inputBudget }
+
     func extract(_ chunk: String, language: String) async throws -> ChunkMinutes {
-        if chunk.count > maxChunk { throw MinutesModelError.contextTooLarge }
+        if chunk.count > maxChunk { throw maxChunkError }
         state.withLock { $0.chunks.append(chunk) }
         var minutes = ChunkMinutes()
         for line in chunk.components(separatedBy: "\n") {
@@ -95,6 +108,7 @@ final class FakeMinutesModel: MinutesModel {
     }
 
     func overview(of keyPoints: [String], language: String) async throws -> String {
+        if keyPoints.joined(separator: "\n").count > maxOverview { throw MinutesModelError.contextTooLarge }
         state.withLock { $0.overviews.append(keyPoints) }
         return "overview of \(keyPoints.count)"
     }
@@ -157,7 +171,9 @@ struct TranscriptChunkerTests {
     @Test func halvesAChunkAtALine() {
         #expect(TranscriptChunker.halves(of: "a\nb\nc\nd") == ["a\nb", "c\nd"])
         #expect(TranscriptChunker.halves(of: "one two three four") == ["one two", "three four"])
-        #expect(TranscriptChunker.halves(of: "single") == ["single"])
+        // One word, as text without spaces is, between characters.
+        #expect(TranscriptChunker.halves(of: "single") == ["sin", "gle"])
+        #expect(TranscriptChunker.halves(of: "x") == ["x"])
     }
 }
 
@@ -325,11 +341,12 @@ struct RecordingControllerTests {
         transcriber: RecordingTranscriber = RecordingTranscriber(),
         summarizer: RecordingSummarizer = RecordingSummarizer(),
         store: FakeRecordingsBackend,
-        consent: MemoryRecordingConsentStore = MemoryRecordingConsentStore()
+        consent: MemoryRecordingConsentStore = MemoryRecordingConsentStore(),
+        limits: RecordingLimits = RecordingLimits()
     ) -> RecordingController {
         let url = store.spaceURL
         let processor = RecordingsProcessor(store: store, transcriber: transcriber, summarizer: summarizer, spaceURLs: { [url] })
-        return RecordingController(recorder: recorder, sink: StoreRecordingSink(store: store), processor: processor, consent: consent)
+        return RecordingController(recorder: recorder, sink: StoreRecordingSink(store: store), processor: processor, consent: consent, unsaved: store.unsaved, limits: limits)
     }
 
     private func target(_ store: FakeRecordingsBackend) -> RecordingTarget {

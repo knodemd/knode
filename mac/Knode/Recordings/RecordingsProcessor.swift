@@ -103,6 +103,11 @@ final class RecordingsProcessor {
         for url in spaceURLs() { schedule(url) }
     }
 
+    /// Looks for work in one space, such as the one a recording was just saved to.
+    func scan(spaceAt url: URL) {
+        schedule(url)
+    }
+
     /// Stops listening and stops the current work without marking it failed, as when the app
     /// quits: it stays pending in its space.
     func stop() async {
@@ -196,6 +201,7 @@ final class RecordingsProcessor {
             let url = queued.removeFirst()
             guard let space = try? await store.openSpace(at: url) else { continue }
             known[space.id] = url
+            await refreshFailures(in: space.id, at: url)
             guard let pending = try? await store.pendingRecordings(in: space.id) else { continue }
             for recording in pending where !stopped {
                 // A recording handed over meanwhile goes first.
@@ -206,6 +212,15 @@ final class RecordingsProcessor {
                 await run(recording.id, in: space.id)
             }
         }
+    }
+
+    /// The failures of a space as the space keeps them (`recordings.failed`), so a failure from
+    /// before the app restarted can be retried too. When they cannot be read, the ones known
+    /// already stay.
+    private func refreshFailures(in space: Space.ID, at url: URL) async {
+        guard let failed = try? await store.failedRecordings(in: space) else { return }
+        let known = failed.compactMap { recording in Failure(recording, in: space, at: url) }
+        failures = failures.filter { $0.space != space } + known
     }
 
     private func run(_ recording: Node.ID, in space: Space.ID) async {
@@ -370,6 +385,25 @@ final class RecordingsProcessor {
             default: return .done(note: nil)
             }
         }
+    }
+}
+
+extension RecordingsProcessor.Failure {
+    /// A failure to retry from a recording the space says failed: its transcript, else its
+    /// minutes. Minutes unavailable on this Mac are not a failure to retry by hand.
+    init?(_ recording: StoredRecording, in space: Space.ID, at url: URL) {
+        let stage: StoredRecording.Stage
+        if recording.transcript == .failed {
+            stage = .transcript
+        } else if recording.summary == .failed {
+            stage = .summary
+        } else {
+            return nil
+        }
+        self.init(
+            space: space, spaceURL: url, recording: recording.id, title: recording.title, stage: stage,
+            message: recording.error ?? (stage == .transcript ? "The transcript failed." : "The minutes failed.")
+        )
     }
 }
 

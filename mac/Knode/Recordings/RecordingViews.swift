@@ -53,6 +53,10 @@ struct RecordingMenuSection: View {
                 .padding(.horizontal, KSpace.x1)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Recording, \(RecordingText.elapsed(controller.elapsedSeconds))")
+                if let notice = RecordingStatusText.live(controller) {
+                    Text(notice).font(KFont.ui(11)).foregroundStyle(theme.muted).lineLimit(2)
+                        .padding(.horizontal, KSpace.x1)
+                }
             case .saving, .transcribing, .summarising:
                 KRow(action: show) {
                     KSpinner()
@@ -83,6 +87,9 @@ struct RecordingMenuSection: View {
             }
             ForEach(processor.failures) { failure in
                 RecordingFailureRow(failure: failure, processor: processor)
+            }
+            ForEach(controller.unsaved) { item in
+                UnsavedRecordingRow(item: item, controller: controller)
             }
         }
     }
@@ -141,6 +148,65 @@ private struct RecordingFailureRow: View {
     }
 }
 
+/// A finished recording its space does not hold yet, with Save Again, Show in Finder and Delete,
+/// which asks first, in the row.
+private struct UnsavedRecordingRow: View {
+    let item: UnsavedRecording
+    let controller: RecordingController
+    @State private var confirmingDelete = false
+    @State private var error: String?
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x1) {
+            HStack(spacing: KSpace.x2) {
+                KIcon(.warning, size: .xs, color: theme.danger)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Unsaved recording").font(KFont.ui(12, .semibold)).lineLimit(1)
+                    Text(RecordingStatusText.unsaved(item)).font(KFont.ui(11)).foregroundStyle(theme.muted).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            if confirmingDelete {
+                HStack(spacing: KSpace.x2) {
+                    Text("Delete its audio for good?").font(KFont.ui(11)).foregroundStyle(theme.danger)
+                    Spacer(minLength: KSpace.x2)
+                    KButton("Cancel", size: .small) { confirmingDelete = false }
+                    KButton("Delete", kind: .destructive, size: .small) { delete() }
+                }
+            } else {
+                HStack(spacing: KSpace.x2) {
+                    Spacer(minLength: 0)
+                    KButton("Save Again", size: .small) { saveAgain() }
+                        .disabled(controller.resaving.contains(item.id))
+                    KButton("Show in Finder", size: .small) {
+                        NSWorkspace.shared.activateFileViewerSelecting([item.folder])
+                    }
+                    KButton("Delete", kind: .destructive, size: .small) { confirmingDelete = true }
+                        .disabled(controller.resaving.contains(item.id))
+                }
+            }
+            if let error { KErrorText(error) }
+        }
+        .padding(.horizontal, KSpace.x1)
+        .kTooltip(item.error)
+    }
+
+    private func saveAgain() {
+        error = nil
+        Task { error = await controller.saveAgain(item) }
+    }
+
+    private func delete() {
+        do {
+            try controller.deleteUnsaved(item)
+        } catch {
+            self.error = error.localizedDescription
+        }
+        confirmingDelete = false
+    }
+}
+
 /// The red dot shown for as long as a recording runs.
 struct RecordingDot: View {
     var paused = false
@@ -162,6 +228,28 @@ enum RecordingStatusText {
         case .summarising(let progress): "Writing the minutes on this Mac, \(Int(progress * 100))%"
         default: ""
         }
+    }
+
+    /// A line about the recording running now: the microphone changed, or how soon it stops by
+    /// itself at the longest a space keeps.
+    @MainActor static func live(_ controller: RecordingController) -> String? {
+        if let notice = controller.notice { return notice }
+        if controller.isNearLimit {
+            return "This recording stops by itself in about \(controller.minutesToLimit) min, at the longest a space keeps in one file. It is saved, and you can start a new one."
+        }
+        return nil
+    }
+
+    static func unsaved(_ item: UnsavedRecording) -> String {
+        let recording = item.recording
+        let seconds = Int(recording.duration.components.seconds)
+        let parts = [
+            [recording.target.spaceName, recording.target.projectTitle].compactMap { $0 }.joined(separator: " / "),
+            recording.startedAt.formatted(date: .abbreviated, time: .shortened),
+            RecordingText.elapsed(seconds),
+        ]
+        let summary = parts.joined(separator: ", ")
+        return item.error.map { "\(summary). \($0)" } ?? summary
     }
 
     static func job(_ job: RecordingsProcessor.Job) -> String {
@@ -200,9 +288,18 @@ struct RecordingWindow: View {
             case .saving, .transcribing, .summarising:
                 RecordingProcessingView()
             case .done(let note):
-                KSheetTitle(kicker: "Meetings", title: "Recording saved", message: "The full transcript is kept, and the minutes sit next to it.", close: close)
-                if let note { KBanner(.warning, title: "No minutes", message: note) }
-                HStack { Spacer(); KButton("Done", kind: .primary) { close() } }
+                if controller.continuation != nil {
+                    KSheetTitle(kicker: "Meetings", title: "Recording saved", message: note, close: close)
+                    HStack {
+                        Spacer()
+                        KButton("Done") { close() }
+                        KButton("Record Again", icon: .add, kind: .primary) { Task { await controller.recordAgain() } }
+                    }
+                } else {
+                    KSheetTitle(kicker: "Meetings", title: "Recording saved", message: "The full transcript is kept, and the minutes sit next to it.", close: close)
+                    if let note { KBanner(.warning, title: "No minutes", message: note) }
+                    HStack { Spacer(); KButton("Done", kind: .primary) { close() } }
+                }
             case .failed(let message):
                 KSheetTitle(kicker: "Meetings", title: "The recording failed", close: close)
                 KErrorText(message)
@@ -248,6 +345,9 @@ private struct RecordingTargetView: View {
     @State private var project: Node.ID?
     @State private var projects: [ProjectSummary] = []
     @State private var starting = false
+    @State private var minutes = true
+    @State private var minutesLoaded = false
+    @State private var minutesError: String?
 
     private var spaces: [SpaceItem] {
         model.sidebarSpaces.filter { !$0.isExample && !$0.isMissing }
@@ -267,6 +367,12 @@ private struct RecordingTargetView: View {
                     KDropdown(selection: $project, options: [KOption(nil, "None")] + projects.map { KOption(Optional($0.id), $0.title) })
                         .frame(width: 220)
                 }
+                VStack(alignment: .leading, spacing: KSpace.x1) {
+                    KToggle("Write minutes", isOn: Binding(get: { minutes }, set: { setMinutes($0) }))
+                        .disabled(!minutesLoaded)
+                    KExplanation("For every recording in this space. The full transcript is always kept.", size: 12)
+                    if let minutesError { KErrorText(minutesError) }
+                }
             }
             RecordingNoticeView()
         }
@@ -284,8 +390,28 @@ private struct RecordingTargetView: View {
         .task(id: space) {
             project = nil
             projects = []
+            minutesLoaded = false
+            minutesError = nil
             guard let space else { return }
+            minutes = await model.recordingSummaries(inSpaceAt: space)
+            minutesLoaded = true
             projects = await model.projects(inSpaceAt: space)
+        }
+    }
+
+    /// Writes `recordings.summaries` of the chosen space at once, as the capture switch does.
+    private func setMinutes(_ on: Bool) {
+        guard let space else { return }
+        let before = minutes
+        minutes = on
+        minutesError = nil
+        Task {
+            do {
+                try await model.setRecordingSummaries(on, inSpaceAt: space)
+            } catch {
+                minutes = before
+                minutesError = error.localizedDescription
+            }
         }
     }
 
@@ -348,6 +474,11 @@ private struct RecordingLiveView: View {
             KProgress(value: Double(controller.level))
         }
         .accessibilityLabel("Input level")
+        if let notice = controller.notice {
+            KBanner(.info, title: notice)
+        } else if controller.isNearLimit, let line = RecordingStatusText.live(controller) {
+            KBanner(.warning, title: "Close to the limit", message: line)
+        }
         RecordingNoticeView()
         HStack {
             KButton("Discard", kind: .destructive) { controller.discard() }
@@ -372,6 +503,8 @@ private struct RecordingProcessingView: View {
         HStack {
             Spacer()
             KButton("Cancel") { controller.cancelProcessing() }
+                .disabled(!controller.canCancelProcessing)
+                .kTooltip(controller.isSaving ? "Saving cannot be interrupted" : nil)
         }
     }
 

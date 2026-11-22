@@ -60,17 +60,22 @@ struct ChunkMinutes: Hashable, Sendable {
 protocol MinutesModel: Sendable {
     /// The name recorded as the minutes' author.
     var name: String { get }
-    /// How many characters of transcript one call may read.
-    var inputBudget: Int { get }
+    /// How many characters of this transcript one call may read: fewer for scripts, such as
+    /// Chinese or Japanese, that take a token or more a character.
+    func inputBudget(for text: String) async -> Int
     func availability(language: String) async -> SummarizerAvailability
-    /// Throws `MinutesModelError.contextTooLarge` when `chunk` does not fit after all.
+    /// Throws `MinutesModelError.contextTooLarge` when `chunk` does not fit after all, and
+    /// `answerTooLong` when the answer was cut off before it was complete.
     func extract(_ chunk: String, language: String) async throws -> ChunkMinutes
     /// An overview paragraph or two from these key points.
     func overview(of keyPoints: [String], language: String) async throws -> String
 }
 
 enum MinutesModelError: Error, Equatable {
+    /// The prompt does not fit the model's context.
     case contextTooLarge
+    /// The answer reached the most tokens it may have and was cut off.
+    case answerTooLong
 }
 
 /// Minutes by map-reduce, so a long meeting fits a small context: the transcript is cut into
@@ -89,7 +94,8 @@ struct MapReduceSummarizer<Model: MinutesModel>: Summarizer {
         if case .unavailable(let reason) = await availability(for: transcript) {
             throw SummarizerError.unavailable(reason)
         }
-        let chunks = TranscriptChunker.chunks(transcript.segments, budget: model.inputBudget)
+        let budget = await model.inputBudget(for: TranscriptChunker.turns(transcript.segments).joined(separator: "\n"))
+        let chunks = TranscriptChunker.chunks(transcript.segments, budget: budget)
         guard !chunks.isEmpty else { throw SummarizerError.emptyTranscript }
         let language = transcript.locale
 
@@ -101,7 +107,7 @@ struct MapReduceSummarizer<Model: MinutesModel>: Summarizer {
         }
         let merged = MinutesMerger.merge(extracted)
         try Task.checkCancellation()
-        let overview = try await overview(of: merged.keyPoints, language: language)
+        let overview = try await overview(of: merged.keyPoints, language: language, budget: budget)
         progress(1)
         return MeetingSummary(
             model: model.name,
@@ -113,29 +119,55 @@ struct MapReduceSummarizer<Model: MinutesModel>: Summarizer {
         )
     }
 
-    /// Extracts a chunk, halving it while the model says it does not fit.
+    /// Extracts a chunk, halving it while the model says it does not fit or its answer was cut
+    /// off: half the transcript has half as much to say.
     private func extract(_ chunk: String, language: String) async throws -> [ChunkMinutes] {
         do {
             return [try await model.extract(chunk, language: language)]
-        } catch MinutesModelError.contextTooLarge {
+        } catch let error as MinutesModelError {
             let halves = TranscriptChunker.halves(of: chunk)
-            guard halves.count == 2 else { throw MinutesModelError.contextTooLarge }
+            guard halves.count == 2 else { throw error }
+            try Task.checkCancellation()
             return try await extract(halves[0], language: language) + extract(halves[1], language: language)
         }
     }
 
     /// The overview from every key point; when they do not fit in one call, partial overviews of
     /// groups of points first, then the overview of those.
-    private func overview(of points: [String], language: String) async throws -> String {
+    private func overview(of points: [String], language: String, budget: Int) async throws -> String {
         guard !points.isEmpty else { return "" }
-        let groups = TranscriptChunker.group(points, budget: model.inputBudget)
-        if groups.count == 1 { return try await model.overview(of: points, language: language) }
+        let groups = TranscriptChunker.group(points, budget: budget)
+        if groups.count == 1 { return try await fittedOverview(of: points, language: language) }
         var partial: [String] = []
         for group in groups {
             try Task.checkCancellation()
-            partial.append(try await model.overview(of: group, language: language))
+            partial.append(try await fittedOverview(of: group, language: language))
         }
-        return try await overview(of: partial, language: language)
+        return try await overview(of: partial, language: language, budget: budget)
+    }
+
+    /// An overview of points that should fit one call; when the model says they do not, or its
+    /// answer is cut off, of each half first, then of the two.
+    private func fittedOverview(of points: [String], language: String) async throws -> String {
+        do {
+            return try await model.overview(of: points, language: language)
+        } catch let error as MinutesModelError {
+            let parts: [[String]]
+            if points.count > 1 {
+                let middle = points.count / 2
+                parts = [Array(points[..<middle]), Array(points[middle...])]
+            } else if let only = points.first, case let halves = TranscriptChunker.halves(of: only), halves.count == 2 {
+                parts = halves.map { [$0] }
+            } else {
+                throw error
+            }
+            var partial: [String] = []
+            for part in parts {
+                try Task.checkCancellation()
+                partial.append(try await fittedOverview(of: part, language: language))
+            }
+            return try await model.overview(of: partial, language: language)
+        }
     }
 }
 
@@ -199,13 +231,19 @@ enum TranscriptChunker {
             if sentence.count <= budget {
                 pieces.append(sentence)
             } else {
-                pieces += group(sentence.split(separator: " ").map(String.init), budget: budget).map { $0.joined(separator: " ") }
+                // Between words; a word still longer (text without spaces, such as Chinese or
+                // Japanese) between characters.
+                let words = sentence.split(separator: " ").flatMap { word in
+                    word.count <= budget ? [String(word)] : Self.pieces(of: String(word), length: budget)
+                }
+                pieces += group(words, budget: budget).map { $0.joined(separator: " ") }
             }
         }
         return group(pieces, budget: budget).map { $0.joined(separator: " ") }
     }
 
-    /// A chunk in two halves cut at the line nearest its middle, or between words for one line.
+    /// A chunk in two halves cut at the line nearest its middle, between words for one line, or
+    /// between characters for one word (text without spaces, such as Chinese or Japanese).
     static func halves(of chunk: String) -> [String] {
         let lines = chunk.components(separatedBy: "\n")
         if lines.count > 1 {
@@ -213,9 +251,50 @@ enum TranscriptChunker {
             return [lines[..<middle].joined(separator: "\n"), lines[middle...].joined(separator: "\n")]
         }
         let words = chunk.split(separator: " ")
-        guard words.count > 1 else { return [chunk] }
-        let middle = words.count / 2
-        return [words[..<middle].joined(separator: " "), words[middle...].joined(separator: " ")]
+        if words.count > 1 {
+            let middle = words.count / 2
+            return [words[..<middle].joined(separator: " "), words[middle...].joined(separator: " ")]
+        }
+        guard chunk.count > 1 else { return [chunk] }
+        let middle = chunk.index(chunk.startIndex, offsetBy: chunk.count / 2)
+        return [String(chunk[..<middle]), String(chunk[middle...])]
+    }
+
+    /// A text cut every `length` characters.
+    static func pieces(of text: String, length: Int) -> [String] {
+        guard length > 0 else { return [text] }
+        var pieces: [String] = []
+        var rest = Substring(text)
+        while !rest.isEmpty {
+            let end = rest.index(rest.startIndex, offsetBy: length, limitedBy: rest.endIndex) ?? rest.endIndex
+            pieces.append(String(rest[..<end]))
+            rest = rest[end...]
+        }
+        return pieces
+    }
+}
+
+/// How many characters a token takes, estimated conservatively from the text's scripts, for when
+/// the model cannot count them: 2.5 for ASCII, 1.67 for other alphabets (accented Latin,
+/// Cyrillic, Greek), and 1 for Chinese, Japanese, Korean, Thai and the like.
+enum TokenEstimate {
+    static func charactersPerToken(_ text: String) -> Double {
+        var characters = 0
+        var tokens = 0.0
+        for scalar in text.unicodeScalars.prefix(50_000) where !scalar.properties.isWhitespace {
+            characters += 1
+            tokens += cost(of: scalar)
+        }
+        guard tokens > 0 else { return 2.5 }
+        return Double(characters) / tokens
+    }
+
+    static func cost(of scalar: Unicode.Scalar) -> Double {
+        if scalar.isASCII { return 0.4 }
+        switch scalar.value {
+        case 0x0000...0x058F: return 0.6 // Latin, Greek, Cyrillic, Armenian
+        default: return 1
+        }
     }
 }
 

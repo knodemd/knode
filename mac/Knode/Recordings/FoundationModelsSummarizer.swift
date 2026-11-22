@@ -34,10 +34,20 @@ struct FoundationModelsMinutesModel: MinutesModel {
     let name = "Apple Foundation Models (on-device)"
 
     /// Characters of transcript per call: what is left of the context after the instructions, the
-    /// schema and the answer, at a conservative 2.5 characters a token.
-    var inputBudget: Int {
+    /// schema and the answer, at the characters a token the model counts in a sample of this
+    /// transcript, less a fifth for safety; where it cannot count them, at a conservative
+    /// estimate from the text's scripts (`TokenEstimate`: one character a token for Chinese or
+    /// Japanese).
+    func inputBudget(for text: String) async -> Int {
         let tokens = max(SystemLanguageModel.default.contextSize - Self.reservedTokens, 800)
-        return Int(Double(tokens) * 2.5)
+        var perToken = TokenEstimate.charactersPerToken(text)
+        if #available(macOS 26.4, *) {
+            let sample = String(text.prefix(4_000))
+            if !sample.isEmpty, let counted = try? await SystemLanguageModel.default.tokenCount(for: sample), counted > 0 {
+                perToken = min(Double(sample.count) / Double(counted) * 0.8, 4)
+            }
+        }
+        return max(Int(Double(tokens) * perToken), 200)
     }
 
     private static let reservedTokens = 1_700
@@ -104,12 +114,24 @@ struct FoundationModelsMinutesModel: MinutesModel {
         return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Runs a request, reporting a context overflow as `MinutesModelError.contextTooLarge`.
+    /// Runs a request, reporting a context overflow as `MinutesModelError.contextTooLarge` and a
+    /// structured answer cut off at the most tokens it may have (which no longer decodes) as
+    /// `answerTooLong`, so the caller splits the chunk instead of failing.
     private func respond<T>(_ request: () async throws -> T) async throws -> T {
         do {
             return try await request()
         } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
             throw MinutesModelError.contextTooLarge
+        } catch LanguageModelSession.GenerationError.decodingFailure {
+            throw MinutesModelError.answerTooLong
+        } catch {
+            if #available(macOS 27.0, *) {
+                if let error = error as? LanguageModelError, case .contextSizeExceeded = error {
+                    throw MinutesModelError.contextTooLarge
+                }
+                if error is GeneratedContent.ParsingError { throw MinutesModelError.answerTooLong }
+            }
+            throw error
         }
     }
 }

@@ -36,6 +36,16 @@ actor FakeRecordingsBackend: RecordingsBackend {
     }
 
     nonisolated var spaceURL: URL { space.url! }
+    /// Unsaved recordings kept beside the space, never in the real Knode home.
+    nonisolated var unsaved: UnsavedRecordingStore { UnsavedRecordingStore(root: audio.appending(path: "Unsaved Recordings", directoryHint: .isDirectory)) }
+    /// Tracks a create leaves out, as a space that failed to copy them would.
+    var dropTracks: Set<RecordedTrack.Role> = []
+    /// Set to make `failedRecordings` fail, as a core without `recordings.failed` does.
+    var failedUnsupported = false
+    var summariesSet: [Bool] = []
+
+    func setDropTracks(_ roles: Set<RecordedTrack.Role>) { dropTracks = roles }
+    func setFailedUnsupported(_ on: Bool) { failedUnsupported = on }
 
     func setSummaries(_ on: Bool) { summariesOn = on }
     func transcript(of id: Node.ID) -> (transcript: Transcript, engine: RecordingEngine)? { transcripts[id] }
@@ -80,7 +90,9 @@ actor FakeRecordingsBackend: RecordingsBackend {
         let stored = StoredRecording(
             id: id, kind: recording.kind, title: recording.title, startedAt: recording.startedAt, endedAt: recording.endedAt,
             language: nil, transcript: .pending, summary: recording.summaries ? .pending : .off, error: nil,
-            project: recording.project, tracks: recording.audio.map { .init(name: $0.url.lastPathComponent, role: $0.role) }, transcriptID: nil
+            project: recording.project,
+            tracks: recording.audio.filter { !dropTracks.contains($0.role) }.map { .init(name: $0.url.lastPathComponent, role: $0.role) },
+            transcriptID: nil
         )
         recordings[id] = stored
         return stored
@@ -88,6 +100,22 @@ actor FakeRecordingsBackend: RecordingsBackend {
 
     func pendingRecordings(in space: Space.ID) async throws -> [StoredRecording] {
         recordings.values.filter(\.isPending).sorted { $0.startedAt < $1.startedAt }
+    }
+
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        if failedUnsupported { throw SpaceStoreError.unsupported("no recordings.failed") }
+        return recordings.values.filter { $0.transcript == .failed || $0.summary == .failed }.sorted { $0.startedAt < $1.startedAt }
+    }
+
+    /// A recording that failed before the app started.
+    func markFailed(_ id: Node.ID, stage: StoredRecording.Stage, error: String) {
+        switch stage {
+        case .transcript: recordings[id]?.transcript = .failed
+        case .summary:
+            recordings[id]?.transcript = .done
+            recordings[id]?.summary = .failed
+        }
+        recordings[id]?.error = error
     }
 
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
@@ -136,6 +164,11 @@ actor FakeRecordingsBackend: RecordingsBackend {
     }
 
     func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool { summariesOn }
+
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        summariesSet.append(enabled)
+        summariesOn = enabled
+    }
 }
 
 /// A transcriber that remembers the tracks it was given and can fail until told otherwise.
@@ -341,7 +374,7 @@ struct RecordingHandOffTests {
         let url = store.spaceURL
         let processor = RecordingsProcessor(store: store, transcriber: transcriber, summarizer: RecordingSummarizer(), spaceURLs: { [url] })
         let sink = StoreRecordingSink(store: store, locale: Locale(identifier: "en_GB"))
-        let controller = RecordingController(recorder: recorder, sink: sink, processor: processor, consent: consent)
+        let controller = RecordingController(recorder: recorder, sink: sink, processor: processor, consent: consent, unsaved: store.unsaved)
         var phases: [RecordingController.Phase] = []
         let watcher = Task { @MainActor in
             while !Task.isCancelled {
@@ -380,7 +413,7 @@ struct RecordingHandOffTests {
         let url = store.spaceURL
         let summarizer = RecordingSummarizer()
         let processor = RecordingsProcessor(store: store, transcriber: RecordingTranscriber(), summarizer: summarizer, spaceURLs: { [url] })
-        let controller = RecordingController(recorder: FakeRecorder(), sink: StoreRecordingSink(store: store), processor: processor, consent: consent)
+        let controller = RecordingController(recorder: FakeRecorder(), sink: StoreRecordingSink(store: store), processor: processor, consent: consent, unsaved: store.unsaved)
         controller.request(.inPerson)
         await controller.start(target: RecordingTarget(spaceURL: url, spaceName: "Work"))
         controller.stop()
@@ -399,7 +432,7 @@ struct RecordingHandOffTests {
         let url = store.spaceURL
         let processor = RecordingsProcessor(store: store, transcriber: RecordingTranscriber(), summarizer: RecordingSummarizer(), spaceURLs: { [url] })
         let recorder = FakeRecorder()
-        let controller = RecordingController(recorder: recorder, sink: StoreRecordingSink(store: store, limit: 2), processor: processor, consent: consent)
+        let controller = RecordingController(recorder: recorder, sink: StoreRecordingSink(store: store, limit: 2), processor: processor, consent: consent, unsaved: store.unsaved)
         controller.request(.inPerson)
         await controller.start(target: RecordingTarget(spaceURL: url, spaceName: "Work"))
         controller.stop()
@@ -411,8 +444,11 @@ struct RecordingHandOffTests {
             return
         }
         #expect(message.contains("too long to keep"))
-        // The audio is kept, so nothing is lost.
-        #expect(FileManager.default.fileExists(atPath: try #require(recorder.folder).path(percentEncoded: false)))
+        // The audio is kept among the unsaved recordings, so nothing is lost.
+        let unsaved = try #require(controller.unsaved.first)
+        #expect(controller.unsaved.count == 1)
+        #expect(unsaved.error?.contains("too long to keep") == true)
+        #expect(unsaved.recording.tracks.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path(percentEncoded: false)) })
     }
 }
 
@@ -474,6 +510,7 @@ struct RecordingFormatTests {
             service.answer(method, with: Self.recording)
         }
         service.answer("recordings.pending", with: [Self.recording])
+        service.answer("recordings.failed", with: [Self.recording])
     }
 
     deinit {
@@ -583,6 +620,9 @@ struct RecordingFormatTests {
         let pending = try await store.pendingRecordings(in: space)
         expectParams("recordings.pending", #"{ "space": "\#(path)" }"#)
         #expect(pending.map(\.id) == ["01JREC"])
+        let failed = try await store.failedRecordings(in: space)
+        expectParams("recordings.failed", #"{ "space": "\#(path)" }"#)
+        #expect(failed.map(\.id) == ["01JREC"])
         _ = try await store.recording("01JREC", in: space)
         expectParams("recordings.get", #"{ "space": "\#(path)", "id": "01JREC" }"#)
     }
@@ -595,6 +635,8 @@ struct RecordingFormatTests {
             as: [String: String].self
         )
         #expect(try await store.recordingSummariesEnabled(in: space) == false)
+        try await store.setRecordingSummariesEnabled(true, in: space)
+        #expect(try await store.recordingSummariesEnabled(in: space))
     }
 }
 

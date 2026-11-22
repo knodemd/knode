@@ -381,6 +381,10 @@ extension RoutingSpaceStore: RecordingsBackend {
         try await recordings(space) { store in try await store.pendingRecordings(in: space) }
     }
 
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        try await recordings(space) { store in try await store.failedRecordings(in: space) }
+    }
+
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         try await recordings(space) { store in try await store.recording(id, in: space) }
     }
@@ -403,6 +407,10 @@ extension RoutingSpaceStore: RecordingsBackend {
 
     func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool {
         try await recordings(space) { store in try await store.recordingSummariesEnabled(in: space) }
+    }
+
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        try await recordings(space) { store in try await store.setRecordingSummariesEnabled(enabled, in: space) }
     }
 
     private func recordings<T: Sendable>(_ space: Space.ID, retry: Bool = true, _ work: (any RecordingStore) async throws -> T) async throws -> T {

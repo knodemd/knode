@@ -23,6 +23,11 @@ extension ServiceSpaceStore: RecordingStore {
         return try await call("recordings.pending", ["space": .string(path)], as: [WireRecording].self).map { try $0.recording() }
     }
 
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        let path = try path(space)
+        return try await call("recordings.failed", ["space": .string(path)], as: [WireRecording].self).map { try $0.recording() }
+    }
+
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         let path = try path(space)
         return try await call("recordings.get", ["space": .string(path), "id": .string(id)], as: WireRecording.self, node: id).recording()
@@ -63,5 +68,9 @@ extension ServiceSpaceStore: RecordingStore {
 
     func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool {
         RecordingSummariesSetting.isOn(try await settings(of: space)[RecordingSummariesSetting.key])
+    }
+
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        try await setSetting(RecordingSummariesSetting.key, to: RecordingSummariesSetting.value(enabled), of: space)
     }
 }

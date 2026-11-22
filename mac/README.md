@@ -109,16 +109,36 @@ while the service holds it (SQLite allows both), and the app reloads what it sho
 a Core Audio process tap) and the microphone (you), as two AAC tracks; **Record In Person…** records
 only the microphone, for people in a room. The first time, the app explains that some places
 require every participant's consent; after that, each recording starts only by hand, for that
-meeting, after choosing its space and project, with a notice to copy into the meeting chat. While it
-records, the menu bar shows a red dot and the time.
+meeting, after choosing its space and project, with a notice to copy into the meeting chat. The
+same sheet has **Write minutes**, the space setting `recordings.summaries` (on unless it says
+`off`), written at once; the transcript is always kept. While it records, the menu bar shows a red
+dot and the time.
 
-When it stops, the two tracks (AAC, mono, a constant 64 kbps: about 29 MB an hour) are stored in
-the chosen space with `recordings.create`, as a node of kind `meeting` titled like
-`Meeting, 22 November 2026 10:30` (or `In-person meeting, …`), linked to its project, and the
-temporary files are removed. A file larger than the 100 MB a space keeps in one attachment (a
-meeting of more than about three hours) is refused before anything is stored, and the audio stays
-in its temporary folder, which the error names. Whether minutes are written is the space setting
-`recordings.summaries` (on unless it says `off`).
+Both tracks are resampled to 48 kHz mono before they are encoded (AAC, a constant 64 kbps: about
+29 MB an hour), so a Bluetooth headset at 8 or 16 kHz or an interface at 96 or 192 kHz records like
+the built-in microphone. When the microphone changes mid-meeting (AirPods connect, a USB microphone
+is unplugged), the engine starts again with the new input and the same `Me` track goes on; the
+window and the menu say so briefly. The system audio comes from a process tap read through a private
+aggregate device that holds the tap alone, so a headset's microphone never ends up on the `Others`
+track; only when such a device cannot be made is the default output added as its clock, and then
+only the tap's own buffers (the last ones of the list) are read.
+
+When it stops, the files are closed and moved, with a `manifest.json` (space, project, mode, start,
+duration, tracks and the key that keeps a second save from storing it twice), to
+`~/Library/Application Support/Knode/Unsaved Recordings/<id>` (under `$KNODE_HOME` when it is set).
+Then they are stored in the chosen space with `recordings.create`, as a node of kind `meeting`
+titled like `Meeting, 22 November 2026 10:30` (or `In-person meeting, …`), linked to its project,
+and removed only once the stored recording lists every track. Saving cannot be cancelled. A
+recording that could not be saved (a file larger than the 100 MB a space keeps in one attachment,
+a space that cannot be written, a track the space did not keep) stays there: the menu bar lists it
+as **Unsaved recording**, with **Save Again**, **Show in Finder** and **Delete** (which asks first,
+in the row), and the app tries to save it again at launch and whenever Knode Service starts.
+
+A track grows by 8 kB a second, so a recording warns from three hours on and stops by itself at
+95 % of what a space keeps in one file (about 3 h 27 min); it is saved, and **Record Again** goes
+on with the meeting, to the same space and project, while the first part is transcribed. Quitting
+the app while a meeting records stops it, closes its files and waits up to 20 seconds for it to be
+saved; what is not saved by then is saved at the next launch.
 
 Transcribing and summarising are one pipeline, `RecordingsProcessor`, for every recording a space
 says is still to do (`recordings.pending`): the meetings recorded here and recordings the app did
@@ -132,13 +152,18 @@ on-device model (Foundation Models): an overview, the key points, every decision
 open question, by map-reduce over the transcript so a long meeting fits the model, and stored with
 `recordings.summary`. A transcription error marks the transcript `failed`; minutes the Mac cannot
 write mark the summary `unavailable`, with why. The transcript is always kept. Nothing leaves the
-Mac. Because what is left to do is kept in the space, work interrupted by quitting the app goes on
+Mac. Audio the speech analyzer cannot open as it is, such as a QuickTime `.qta` voice memo, is
+decoded through `AVAssetReader` into a temporary file first. The minutes cut the transcript to
+what the model counts as fitting (from macOS 26.4; before, at one character a token for Chinese,
+Japanese or Korean and 2.5 for plain ASCII), and a chunk or a set of key points that still does
+not fit, or whose answer is cut off, is halved and tried again. Because what is left to do is kept in the space, work interrupted by quitting the app goes on
 at the next launch.
 
 The recording is the person's; transcripts, minutes and failures are written by Knode itself:
 `{ "kind": "system", "actor": "recordings", "source": "apple-speech" }` (or
 `apple-foundation-models`). The menu bar shows the recording being worked on and, for a stage
-that failed, **Retry** (`recordings.retry`).
+that failed, **Retry** (`recordings.retry`). The failures come from the spaces
+(`recordings.failed`), read with the pending ones, so they can be retried after a restart too.
 
 The pieces are in `Knode/Recordings`, behind protocols (`MeetingRecording`, `Transcriber`,
 `Summarizer`, `RecordingSink`), and the store calls in `RecordingStore`: through Knode Service when

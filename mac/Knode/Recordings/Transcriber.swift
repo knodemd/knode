@@ -1,4 +1,4 @@
-import AVFAudio
+import AVFoundation
 import CoreMedia
 import Foundation
 import Speech
@@ -113,6 +113,8 @@ enum TranscriptionLocale {
 /// device and installs the language's model through `AssetInventory` the first time.
 struct SpeechAnalyzerTranscriber: Transcriber, TrackTranscriber {
     var preferredLanguages: @Sendable () -> [String] = { Locale.preferredLanguages }
+    /// Where audio the speech analyzer cannot read as it is gets decoded first.
+    var scratch: URL = FileManager.default.temporaryDirectory.appending(path: "Knode Decoding", directoryHint: .isDirectory)
 
     func resolveLocale(_ preferred: Locale?) async throws -> Locale {
         guard SpeechTranscriber.isAvailable else { throw TranscriptionError.unavailable }
@@ -134,12 +136,9 @@ struct SpeechAnalyzerTranscriber: Transcriber, TrackTranscriber {
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
         try await Self.installAssets(for: transcriber)
 
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(forReading: url)
-        } catch {
-            throw TranscriptionError.unreadableAudio(error.localizedDescription)
-        }
+        let opened = try await AudioReading.open(url, scratch: scratch)
+        defer { opened.removeTemporary() }
+        let file = opened.file
         let total = Double(file.length) / file.processingFormat.sampleRate
         guard total > 0 else { return [] }
 
@@ -216,6 +215,93 @@ struct SpeechAnalyzerTranscriber: Transcriber, TrackTranscriber {
             }
         } catch {
             throw TranscriptionError.assetsUnavailable(error.localizedDescription)
+        }
+    }
+}
+
+/// Opening a recording's audio for the speech analyzer, which reads an `AVAudioFile`.
+enum AudioReading {
+    struct Opened {
+        var file: AVAudioFile
+        /// The decoded copy it reads, when the original could not be read as it is.
+        var temporary: URL?
+
+        func removeTemporary() {
+            if let temporary { try? FileManager.default.removeItem(at: temporary) }
+        }
+    }
+
+    /// The file as it is; or, when `AVAudioFile` cannot open it (a QuickTime `.qta` voice memo,
+    /// say), a copy decoded through `AVAssetReader` into `scratch`, which the caller removes
+    /// with `removeTemporary()`.
+    static func open(_ url: URL, scratch: URL) async throws -> Opened {
+        if let file = try? AVAudioFile(forReading: url) { return Opened(file: file) }
+        let decoded = try await decode(url, into: scratch)
+        do {
+            return Opened(file: try AVAudioFile(forReading: decoded), temporary: decoded)
+        } catch {
+            try? FileManager.default.removeItem(at: decoded)
+            throw TranscriptionError.unreadableAudio(error.localizedDescription)
+        }
+    }
+
+    /// Decodes the first audio track of any file AVFoundation can read into a 48 kHz mono CAF in
+    /// `folder`. The asset reader goes by the file's extension, so a file it does not recognise
+    /// is tried again as a QuickTime movie.
+    static func decode(_ url: URL, into folder: URL) async throws -> URL {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let output = folder.appending(path: "\(UUID().uuidString).caf")
+        do {
+            try await read(url, to: output)
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            let link = folder.appending(path: "\(UUID().uuidString).mov")
+            defer { try? FileManager.default.removeItem(at: link) }
+            do {
+                try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url.resolvingSymlinksInPath())
+                try await read(link, to: output)
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+                throw TranscriptionError.unreadableAudio(error.localizedDescription)
+            }
+        }
+        return output
+    }
+
+    private static func read(_ url: URL, to output: URL) async throws {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw TranscriptionError.unreadableAudio("the file has no audio")
+        }
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+        let reader = try AVAssetReader(asset: asset)
+        let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: format.sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.canAdd(trackOutput) else { throw TranscriptionError.unreadableAudio("the audio cannot be decoded") }
+        reader.add(trackOutput)
+        guard reader.startReading() else {
+            throw TranscriptionError.unreadableAudio(reader.error?.localizedDescription ?? "the audio cannot be decoded")
+        }
+        let file = try AVAudioFile(forWriting: output, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        defer { file.close() }
+        while let sample = trackOutput.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            let frames = CMSampleBufferGetNumSamples(sample)
+            guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else { continue }
+            buffer.frameLength = AVAudioFrameCount(frames)
+            let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(sample, at: 0, frameCount: Int32(frames), into: buffer.mutableAudioBufferList)
+            guard status == noErr else { throw TranscriptionError.unreadableAudio("Core Media error \(status)") }
+            try file.write(from: buffer)
+        }
+        if reader.status == .failed {
+            throw TranscriptionError.unreadableAudio(reader.error?.localizedDescription ?? "the audio cannot be decoded")
         }
     }
 }

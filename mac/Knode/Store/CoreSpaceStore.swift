@@ -653,6 +653,15 @@ extension CoreSpaceStore: RecordingStore {
         return try await run { try core.pendingRecordings() }.map(StoredRecording.init)
     }
 
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
+        _ = try self.core(space)
+        // TODO(recordings.failed): call `core.failedRecordings()` once the core on
+        // feat/recordings-core adds `KnodeSpace.failedRecordings()` to knode-ffi and the binding
+        // is regenerated. Until then a space held by the app reports no stored failures, and the
+        // processor keeps the ones it knows from this run.
+        throw SpaceStoreError.unsupported("this version of the core does not list failed recordings")
+    }
+
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording {
         let core = try self.core(space)
         return StoredRecording(try await run { try core.recording(id: id) })
@@ -699,6 +708,12 @@ extension CoreSpaceStore: RecordingStore {
     func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool {
         let core = try self.core(space)
         return RecordingSummariesSetting.isOn(try await run { try core.setting(key: RecordingSummariesSetting.key) })
+    }
+
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws {
+        let core = try self.core(space)
+        let author = author
+        _ = try await run { try core.changeSetting(key: RecordingSummariesSetting.key, value: RecordingSummariesSetting.value(enabled), by: author) }
     }
 
     static func provenance(_ engine: RecordingEngine) -> Provenance {

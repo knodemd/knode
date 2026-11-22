@@ -39,28 +39,41 @@ struct KnodeApp: App {
             spaceURLs: { [model] in model.recordingSpaceURLs }
         )
         _recordings = State(initialValue: recordings)
+        let recording = RecordingController(
+            recorder: MeetingRecorder(),
+            sink: StoreRecordingSink(store: store),
+            processor: recordings,
+            consent: DefaultsRecordingConsentStore(),
+            unsaved: UnsavedRecordingStore(home: .current)
+        )
+        _recording = State(initialValue: recording)
         service.onRunningChange = { running in
             if running {
                 Task {
                     await store.serviceDidStart()
                     recordings.serviceDidStart()
+                    if !testing { await recording.saveUnsaved() }
                 }
             }
         }
         service.start()
-        if !testing { recordings.start() }
+        if !testing {
+            recordings.start()
+            // Recordings that could not be saved before, such as when the app quit while saving.
+            Task { await recording.saveUnsaved() }
+        }
+        // Quitting while a meeting records stops it, closes its files and saves it first.
+        AppDelegate.beforeTerminating = { [recording] in
+            guard recording.shouldDelayTermination else { return false }
+            await recording.prepareForTermination(timeout: .seconds(20))
+            return true
+        }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
         _sources = State(initialValue: SourcesModel(
             client: ServiceSourcesClient(),
             openURL: { NSWorkspace.shared.open($0) },
             startService: { await service.startService() }
-        ))
-        _recording = State(initialValue: RecordingController(
-            recorder: MeetingRecorder(),
-            sink: StoreRecordingSink(store: store),
-            processor: recordings,
-            consent: DefaultsRecordingConsentStore()
         ))
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }
@@ -176,6 +189,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Work to finish before the app quits; returns false when there is none. Set by `KnodeApp`.
+    static var beforeTerminating: (@MainActor () async -> Bool)?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let work = Self.beforeTerminating else { return .terminateNow }
+        Task { @MainActor in
+            _ = await work()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 

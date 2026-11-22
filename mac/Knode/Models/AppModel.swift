@@ -420,6 +420,27 @@ final class AppModel {
         }
     }
 
+    /// Whether a space of the sidebar writes minutes for its recordings (`recordings.summaries`):
+    /// on unless it says `off`, and on when it cannot be read.
+    func recordingSummaries(inSpaceAt url: URL) async -> Bool {
+        do {
+            let space: Space = if let open = space(at: url) { open } else { try await store.openSpace(at: url) }
+            guard let recordings = store(for: space.id) as? any RecordingStore else { return true }
+            return try await recordings.recordingSummariesEnabled(in: space.id)
+        } catch {
+            return true
+        }
+    }
+
+    /// Turns minutes on or off for a space's recordings, through the space settings.
+    func setRecordingSummaries(_ enabled: Bool, inSpaceAt url: URL) async throws {
+        let space: Space = if let open = space(at: url) { open } else { try await store.openSpace(at: url) }
+        guard let recordings = store(for: space.id) as? any RecordingStore else {
+            throw SpaceStoreError.unsupported("this space keeps no recordings")
+        }
+        try await recordings.setRecordingSummariesEnabled(enabled, in: space.id)
+    }
+
     /// Renames a space: its name in `manifest.json`. The package keeps its file name.
     func renameSpace(at url: URL, to name: String) async {
         do {

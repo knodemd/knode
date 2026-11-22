@@ -17,6 +17,9 @@ protocol RecordingStore: Sendable {
     /// oldest first.
     func pendingRecordings(in space: Space.ID) async throws -> [StoredRecording]
 
+    /// The recordings whose transcript or minutes failed, which the person can retry.
+    func failedRecordings(in space: Space.ID) async throws -> [StoredRecording]
+
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording
 
     /// Writes the transcript, replacing the one written before.
@@ -33,6 +36,9 @@ protocol RecordingStore: Sendable {
 
     /// Whether the space wants minutes (`recordings.summaries`): on unless it says `off`.
     func recordingSummariesEnabled(in space: Space.ID) async throws -> Bool
+
+    /// Turns minutes on (`on`) or off (`off`) for the recordings stored from now on, as the person.
+    func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws
 }
 
 /// What the recordings pipeline needs from the app's store: the recordings, the space and its
@@ -50,6 +56,8 @@ enum RecordingSummariesSetting {
 
     /// Absent or `on` means on; only `off` is off.
     static func isOn(_ value: String?) -> Bool { value != "off" }
+
+    static func value(_ on: Bool) -> String { on ? "on" : "off" }
 }
 
 /// Who wrote a transcript, minutes or a failure: Knode itself, as the on-device engine. Its
