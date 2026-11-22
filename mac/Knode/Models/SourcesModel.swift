@@ -32,6 +32,8 @@ final class SourcesModel {
     @ObservationIgnored let openURL: @MainActor (URL) -> Void
     @ObservationIgnored private let startService: @MainActor () async -> Void
     @ObservationIgnored private let pollInterval: Duration
+    /// How the Connect sheet notices Full Disk Access being turned on.
+    @ObservationIgnored let accessCheck: SourceAccessCheck?
 
     /// - Parameters:
     ///   - client: where sources are read and changed: Knode Service.
@@ -39,18 +41,21 @@ final class SourcesModel {
     ///   - openURL: opens System Settings or a sign-in page.
     ///   - startService: starts Knode Service, as the menu bar does.
     ///   - pollInterval: how often `watch()` asks for the sources.
+    ///   - accessCheck: how the Connect sheet notices Full Disk Access being turned on.
     init(
         client: any SourcesClient,
         signIns: SourceSignIns? = nil,
         openURL: @escaping @MainActor (URL) -> Void = { _ in },
         startService: @escaping @MainActor () async -> Void = {},
-        pollInterval: Duration = .seconds(2)
+        pollInterval: Duration = .seconds(2),
+        accessCheck: SourceAccessCheck? = nil
     ) {
         self.client = client
         self.signIns = signIns ?? SourceSignIns(fallback: ServiceSourceSignIn(client: client))
         self.openURL = openURL
         self.startService = startService
         self.pollInterval = pollInterval
+        self.accessCheck = accessCheck
     }
 
     /// The connectors, then the importers, as the service lists them.
@@ -167,12 +172,13 @@ final class SourcesModel {
 
     /// The Connect sheet for a source: the whole flow when it is not connected, or only the
     /// chats, channels or folders it reads when it is.
-    func connectFlow(for source: SourceStatus, signInAgain: Bool = false) -> SourceConnectFlow? {
+    func connectFlow(for source: SourceStatus, signInAgain: Bool = false, preset: SourceConnectPreset? = nil) -> SourceConnectFlow? {
         guard let space else { return nil }
         return SourceConnectFlow(
             source: source, space: space, client: client, signIn: signIns.flow(for: source), signInAgain: signInAgain, openURL: openURL,
             onChange: { [weak self] status in self?.apply(status) },
-            onSignIn: { [weak self] in Task { await self?.loadAccounts() } }
+            onSignIn: { [weak self] in Task { await self?.loadAccounts() } },
+            accessCheck: accessCheck, preset: preset
         )
     }
 
@@ -224,7 +230,19 @@ final class SourceConnectFlow: Identifiable {
     }
 
     /// Privacy & Security > Full Disk Access in System Settings.
-    static let fullDiskAccessURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")!
+    static let fullDiskAccessURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
+
+    /// Where watching for Full Disk Access is, while the access step shows.
+    enum AccessWatch: Equatable {
+        /// Not watching: no way to check, or not on the access step.
+        case idle
+        /// Waiting for the person to turn Knode on in System Settings.
+        case waiting
+        /// This app has access, and Knode Service is being restarted to see it too.
+        case restartingService
+        /// Granted: the sheet went on by itself.
+        case granted
+    }
 
     let id = UUID()
     let space: URL
@@ -241,6 +259,9 @@ final class SourceConnectFlow: Identifiable {
     var errorMessage: String?
     /// Waiting for the person to sign in on the page opened in the browser.
     private(set) var isWaitingForBrowser = false
+    private(set) var accessWatch = AccessWatch.idle
+    /// A guided way to connect, such as Gmail through IMAP with an app password.
+    let preset: SourceConnectPreset?
 
     /// Connected by this flow and paused until Done.
     @ObservationIgnored private var pausedForSetup = false
@@ -256,11 +277,12 @@ final class SourceConnectFlow: Identifiable {
     @ObservationIgnored private var browserWait: Task<Void, Never>?
     /// Which wait is the current one: a cancelled one that ends later changes nothing.
     @ObservationIgnored private var waitID = 0
+    @ObservationIgnored private let accessCheck: SourceAccessCheck?
 
     init(
         source: SourceStatus, space: URL, client: any SourcesClient, signIn: (any SourceSignIn)?, signInAgain: Bool = false,
         openURL: @escaping @MainActor (URL) -> Void, onChange: @escaping @MainActor (SourceStatus?) -> Void,
-        onSignIn: @escaping @MainActor () -> Void = {}
+        onSignIn: @escaping @MainActor () -> Void = {}, accessCheck: SourceAccessCheck? = nil, preset: SourceConnectPreset? = nil
     ) {
         self.signInAgain = signInAgain && signIn != nil && source.isConnected
         afterSignIn = source.isConnected ? .containers : .history
@@ -271,6 +293,8 @@ final class SourceConnectFlow: Identifiable {
         self.openURL = openURL
         self.onChange = onChange
         self.onSignIn = onSignIn
+        self.accessCheck = accessCheck
+        self.preset = preset
         if self.signInAgain {
             step = .checkingSignIn
         } else if source.isConnected {
@@ -329,6 +353,47 @@ final class SourceConnectFlow: Identifiable {
         openURL(Self.fullDiskAccessURL)
     }
 
+    /// Opens the page of the guide, such as Google's App passwords.
+    func openPresetLink() {
+        if let preset { openURL(preset.link) }
+    }
+
+    /// Whether the access step can notice Full Disk Access being turned on by itself.
+    var canWatchAccess: Bool { accessCheck != nil }
+
+    /// While the access step shows, asks about once a second whether Knode Service can read the
+    /// source, and goes on by itself once it can. When this app has access but the service does
+    /// not see it yet (macOS gives it to a process when it starts), the service is restarted once.
+    func watchFullDiskAccess() async {
+        guard let check = accessCheck, step == .fullDiskAccess else { return }
+        accessWatch = .waiting
+        var restarted = false
+        var openedSettings = false
+        while !Task.isCancelled, step == .fullDiskAccess {
+            let readiness = await check.service(source.id, space)
+            guard !Task.isCancelled, step == .fullDiskAccess else { return }
+            let appHasAccess = check.app()
+            switch SourceAccessCheck.decide(service: readiness, appHasAccess: appHasAccess, restarted: restarted) {
+            case .granted:
+                accessWatch = .granted
+                await continueFromFullDiskAccess()
+                return
+            case .restartService:
+                restarted = true
+                accessWatch = .restartingService
+                await check.restartService()
+                accessWatch = .waiting
+            case .wait:
+                if !openedSettings {
+                    // The first check found no access: show the pane at once.
+                    openedSettings = true
+                    openFullDiskAccess()
+                }
+            }
+            try? await Task.sleep(for: check.interval)
+        }
+    }
+
     /// After Full Disk Access: the sign-in, or the history.
     func continueFromFullDiskAccess() async {
         guard step == .fullDiskAccess else { return }
@@ -361,6 +426,9 @@ final class SourceConnectFlow: Identifiable {
             return
         }
         step = .signIn(next)
+        if let preset, next.id == preset.stepID {
+            values = preset.values
+        }
         if let url = next.browserURL {
             openURL(url)
             startWaiting(for: next)
@@ -537,6 +605,14 @@ enum SourceText {
         case .needsAttention: "Needs attention"
         case .unknown: "Unknown"
         }
+    }
+
+    /// A message of the service as a sentence: a capital first, a full stop last.
+    static func sentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return trimmed }
+        let capital = first.uppercased() + trimmed.dropFirst()
+        return capital.hasSuffix(".") ? capital : capital + "."
     }
 
     /// How many items, in words.

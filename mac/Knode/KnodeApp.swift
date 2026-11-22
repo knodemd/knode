@@ -12,6 +12,9 @@ struct KnodeApp: App {
     @State private var agents: AgentsModel
     @State private var searchIndex: SearchIndexModel
     @State private var sources: SourcesModel
+    /// The sources Connect your things shows, in the main window: apart from Settings', which
+    /// may show another space at the same time.
+    @State private var connectSources: SourcesModel
     @State private var recording: RecordingController
     @State private var recordings: RecordingsProcessor
     @State private var dockIndicator: RecordingDockIndicator
@@ -73,11 +76,18 @@ struct KnodeApp: App {
         }
         _service = State(initialValue: service)
         _agents = State(initialValue: AgentsModel(directory: ServiceAgentDirectory(), command: command, startService: { await service.startService() }))
-        _sources = State(initialValue: SourcesModel(
-            client: ServiceSourcesClient(),
-            openURL: { NSWorkspace.shared.open($0) },
-            startService: { await service.startService() }
-        ))
+        let sourcesClient = ServiceSourcesClient()
+        let accessCheck = SourceAccessCheck.live(client: sourcesClient, restartService: { await service.restartService() })
+        let makeSources = {
+            SourcesModel(
+                client: sourcesClient,
+                openURL: { NSWorkspace.shared.open($0) },
+                startService: { await service.startService() },
+                accessCheck: accessCheck
+            )
+        }
+        _sources = State(initialValue: makeSources())
+        _connectSources = State(initialValue: makeSources())
         _searchIndex = State(initialValue: SearchIndexModel(service: ServiceSearchIndex(), settings: CoreKnodeSettings(), startService: { await service.startService() }))
     }
 
@@ -88,6 +98,7 @@ struct KnodeApp: App {
                 .environment(model)
                 .environment(agents)
                 .environment(recording)
+                .environment(connectSources)
                 .task {
                     // Once the knode command is installed on the first run: Connect your agents,
                     // unless Get started is open, which shows the same step.
@@ -126,6 +137,8 @@ struct KnodeApp: App {
                 Button("Uninstall Command Line Tool…") { appDelegate.installer.uninstall() }
                 Button("Connect Your Agents…") { model.showConnectAgents() }
                     .disabled(!model.canShowConnectAgents)
+                Button("Connect Your Things…") { model.showConnectSources() }
+                    .disabled(!model.canShowConnectSources)
             }
         }
 

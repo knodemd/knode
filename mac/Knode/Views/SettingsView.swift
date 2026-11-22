@@ -81,9 +81,15 @@ private struct SettingsWindow: View {
                 .frame(width: 210)
             KDivider(.vertical)
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tab.title).kBlockStyle(17).foregroundStyle(theme.fg)
-                    Text(tab.subtitle).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
+                HStack(alignment: .bottom, spacing: KSpace.x3) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tab.title).kBlockStyle(17).foregroundStyle(theme.fg)
+                        Text(tab.subtitle).font(KFont.ui(12)).foregroundStyle(theme.muted).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if tab == .sources {
+                        ConnectSourcesButton()
+                    }
                 }
                 .padding(.horizontal, KSpace.x8)
                 .frame(maxWidth: .infinity, minHeight: WindowChrome.barHeight + KSpace.x4, alignment: .bottomLeading)

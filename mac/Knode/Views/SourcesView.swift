@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Settings > Sources: what brings things into a space. Connectors keep running in Knode Service
@@ -318,6 +319,8 @@ struct ConnectSourceSheet: View {
         }
         .task { await flow.begin() }
         .onChange(of: flow.isFinished) { _, finished in if finished { close() } }
+        // Back from System Settings once the access is given, to see the sheet go on.
+        .onChange(of: flow.accessWatch) { _, watch in if watch == .granted { NSApp.activate() } }
         .onDisappear { flow.cancel() }
     }
 
@@ -401,7 +404,9 @@ private struct SourceStepsBar: View {
     }
 }
 
-/// Full Disk Access: why it is needed, and the pane of System Settings where it is turned on.
+/// Full Disk Access: why it is needed, the pane of System Settings where it is turned on, a
+/// picture of what to turn on, and, while it shows, a check every second that goes on by itself
+/// once Knode can read the source.
 private struct FullDiskAccessStep: View {
     let flow: SourceConnectFlow
     @Environment(\.kTheme) private var theme
@@ -414,12 +419,81 @@ private struct FullDiskAccessStep: View {
                     Text("Give Knode Full Disk Access").font(KFont.ui(13, .semibold))
                 }
                 KExplanation("\(flow.source.name) keeps its data where macOS lets an app read only with Full Disk Access. Knode reads a copy of it, never changes it, and keeps what it reads on this Mac.")
-                VStack(alignment: .leading, spacing: KSpace.x1) {
-                    KExplanation("1. Open Full Disk Access in System Settings.")
-                    KExplanation("2. Turn on Knode. If it is not in the list, add it with the + button, from Applications.")
-                    KExplanation("3. Come back here and continue.")
+                HStack(alignment: .center, spacing: KSpace.x4) {
+                    VStack(alignment: .leading, spacing: KSpace.x1) {
+                        KExplanation("1. In System Settings, in Full Disk Access, turn on Knode.")
+                        KExplanation("2. Not in the list? Add it with the + button, from Applications.")
+                        KExplanation(flow.canWatchAccess ? "3. That's it: this sheet goes on by itself." : "3. Come back here and continue.")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    FullDiskAccessPicture()
                 }
-                KButton("Open Full Disk Access", icon: .settings, size: .small) { flow.openFullDiskAccess() }
+                HStack(spacing: KSpace.x2) {
+                    KButton("Open System Settings", icon: .settings, size: .small) { flow.openFullDiskAccess() }
+                    switch flow.accessWatch {
+                    case .waiting:
+                        KSpinner(size: 12)
+                        KExplanation("Waiting for access", size: 11)
+                    case .restartingService:
+                        KSpinner(size: 12)
+                        KExplanation("Restarting Knode Service so it sees the access", size: 11)
+                    case .granted:
+                        KIcon(.done, size: .xs)
+                        KExplanation("Access given", size: 11)
+                    case .idle:
+                        EmptyView()
+                    }
+                }
+            }
+        }
+        .task { await flow.watchFullDiskAccess() }
+    }
+}
+
+/// A small picture of the Full Disk Access list of System Settings, with Knode's switch turning
+/// on: what to look for there. Still when Reduce Motion is on.
+private struct FullDiskAccessPicture: View {
+    @Environment(\.kTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var on = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Full Disk Access").font(KFont.ui(10, .semibold)).foregroundStyle(theme.muted)
+            HStack(spacing: 6) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 18, height: 18)
+                Text("Knode").font(KFont.ui(11, .medium)).foregroundStyle(theme.fg)
+                Spacer(minLength: KSpace.x2)
+                Capsule()
+                    .fill(on ? Color.accentColor : theme.line)
+                    .frame(width: 26, height: 15)
+                    .overlay(alignment: on ? .trailing : .leading) {
+                        Circle().fill(.white).padding(2).shadow(radius: 0.5)
+                    }
+            }
+            .padding(6)
+            .background(RoundedRectangle(cornerRadius: 6).fill(theme.highlight))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(theme.indigo.opacity(0.7), lineWidth: 1))
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 4).fill(theme.line).frame(width: 18, height: 18)
+                RoundedRectangle(cornerRadius: 2).fill(theme.line).frame(width: 48, height: 6)
+                Spacer(minLength: KSpace.x2)
+                Capsule().fill(theme.line).frame(width: 26, height: 15)
+            }
+            .padding(.horizontal, 6)
+            .opacity(0.6)
+        }
+        .padding(KSpace.x2)
+        .frame(width: 170)
+        .background(RoundedRectangle(cornerRadius: KRadius.small, style: .continuous).fill(theme.bg))
+        .overlay(RoundedRectangle(cornerRadius: KRadius.small, style: .continuous).strokeBorder(theme.line))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("In the list, turn on the switch beside Knode")
+        .task {
+            guard !reduceMotion else { on = true; return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.2))
+                withAnimation(.easeInOut(duration: 0.25)) { on.toggle() }
             }
         }
     }
@@ -433,6 +507,10 @@ private struct SignInStepView: View {
     var body: some View {
         KCard(padding: KSpace.x4) {
             VStack(alignment: .leading, spacing: KSpace.x3) {
+                if let preset = flow.preset, preset.stepID == step.id {
+                    SourcePresetGuide(preset: preset) { flow.openPresetLink() }
+                    KHairline()
+                }
                 Text(step.title).font(KFont.ui(13, .semibold))
                 if let message = step.message { KExplanation(message) }
                 if step.browserURL != nil {
@@ -454,6 +532,30 @@ private struct SignInStepView: View {
                 }
                 KExplanation("What you enter goes to Knode Service on this Mac, which keeps the sign-in in your Keychain.", size: 11)
             }
+        }
+    }
+}
+
+/// The steps of a guided way to connect, such as making a Gmail app password, with a button to
+/// the page where it is done.
+private struct SourcePresetGuide: View {
+    let preset: SourceConnectPreset
+    let open: () -> Void
+    @Environment(\.kTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: KSpace.x2) {
+            Text(preset.title).font(KFont.ui(13, .semibold))
+            ForEach(Array(preset.steps.enumerated()), id: \.offset) { index, text in
+                HStack(alignment: .firstTextBaseline, spacing: KSpace.x2) {
+                    Text("\(index + 1)").kLineStyle(10)
+                        .foregroundStyle(theme.onAccent)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(theme.accent))
+                    KExplanation(text)
+                }
+            }
+            KButton(preset.linkTitle, icon: .web, kind: .primary, size: .small, action: open)
         }
     }
 }
