@@ -155,6 +155,19 @@ final class SourcesModel {
         await perform { try await self.client.run(source.id, in: space) }
     }
 
+    /// Sets the largest photo or file a connected source downloads, from what the person typed:
+    /// megabytes, `0` for none, or nothing for the connector's default.
+    func setMediaLimit(_ text: String, for source: SourceStatus) async {
+        guard source.isConnected, source.media, let space else { return }
+        guard let limit = MediaLimit(text) else {
+            errorMessage = MediaLimit.invalidMessage
+            errorFromLoad = false
+            return
+        }
+        guard limit.megabytes != source.setting?.mediaMaxMB else { return }
+        await perform { try await self.client.setMedia(limit.megabytes, source.id, in: space) }
+    }
+
     /// Disconnects a source: its settings and secrets go, what it brought in stays.
     func disconnect(_ source: SourceStatus) async {
         guard let space else { return }
@@ -231,6 +244,9 @@ final class SourceConnectFlow: Identifiable {
     private(set) var source: SourceStatus
     private(set) var step: Step
     var history = SourceHistory.fromToday
+    /// The largest file to download, in megabytes as the person typed it, for a source whose
+    /// `media` is true: `0` for none, empty for the connector's default.
+    var mediaLimit: String
     /// What the person typed in the fields of the sign-in step.
     var values: [String: String] = [:]
     private(set) var containers: [SourceContainer] = []
@@ -262,6 +278,7 @@ final class SourceConnectFlow: Identifiable {
         openURL: @escaping @MainActor (URL) -> Void, onChange: @escaping @MainActor (SourceStatus?) -> Void,
         onSignIn: @escaping @MainActor () -> Void = {}
     ) {
+        mediaLimit = MediaLimit.text(source.setting?.mediaMaxMB)
         self.signInAgain = signInAgain && signIn != nil && source.isConnected
         afterSignIn = source.isConnected ? .containers : .history
         self.source = source
@@ -420,14 +437,30 @@ final class SourceConnectFlow: Identifiable {
         if step == .containers, !containersLoaded { await loadContainers() }
     }
 
+    /// Whether the history step asks for the largest file to download.
+    var offersMediaLimit: Bool { source.media }
+
+    /// Whether what was typed for the largest file is a size, `0` or empty.
+    var isMediaLimitValid: Bool { !offersMediaLimit || MediaLimit(mediaLimit) != nil }
+
     /// Connects with the history chosen, paused until the person has chosen what it leaves out,
-    /// and lists the chats, channels or folders.
+    /// sets the largest file it downloads when it downloads any, and lists the chats, channels or
+    /// folders. Nothing is read before the limit is set.
     func connect() async {
         guard step == .history else { return }
+        guard isMediaLimitValid else {
+            errorMessage = MediaLimit.invalidMessage
+            return
+        }
+        let limit = offersMediaLimit ? MediaLimit(mediaLimit) : nil
         await busy {
-            let status = try await self.client.connect(self.source.id, history: self.history, on: false, in: self.space)
+            var status = try await self.client.connect(self.source.id, history: self.history, on: false, in: self.space)
             self.pausedForSetup = true
             self.source = status
+            if let limit {
+                status = try await self.client.setMedia(limit.megabytes, self.source.id, in: self.space)
+                self.source = status
+            }
             self.step = .containers
             self.onChange(status)
         }
@@ -484,6 +517,40 @@ final class SourceConnectFlow: Identifiable {
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// The largest photo or file a connector downloads, as the person types it: megabytes, `0` for
+/// none, or nothing for the connector's own default.
+struct MediaLimit: Equatable {
+    /// `nil` for the connector's default.
+    var megabytes: Int64?
+
+    static let invalidMessage = "Enter the largest file to download in MB: a whole number, 0 for none, or leave it empty for the default."
+
+    /// `nil` when the text is not a whole number of megabytes.
+    init?(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            megabytes = nil
+        } else if let value = Int64(trimmed), value >= 0 {
+            megabytes = value
+        } else {
+            return nil
+        }
+    }
+
+    static func text(_ megabytes: Int64?) -> String {
+        megabytes.map(String.init) ?? ""
+    }
+
+    /// The limit in words, for the facts of a source.
+    static func words(_ megabytes: Int64?) -> String {
+        switch megabytes {
+        case nil: "Default"
+        case 0: "None"
+        case let mb?: "\(mb) MB"
         }
     }
 }

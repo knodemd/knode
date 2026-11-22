@@ -150,16 +150,25 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         /// With `fromToday`, nothing older is brought in.
         public var since: Int64
         public var exclude: [SourceContainer]
+        /// The largest photo or file it downloads in this space, in megabytes (`0` for none);
+        /// `nil` for the connector's own default. Only for a source whose `media` is true.
+        public var mediaMaxMB: Int64?
 
-        public init(on: Bool, history: SourceHistory, connectedAt: Int64, since: Int64, exclude: [SourceContainer] = []) {
+        public init(
+            on: Bool, history: SourceHistory, connectedAt: Int64, since: Int64, exclude: [SourceContainer] = [], mediaMaxMB: Int64? = nil
+        ) {
             self.on = on
             self.history = history
             self.connectedAt = connectedAt
             self.since = since
             self.exclude = exclude
+            self.mediaMaxMB = mediaMaxMB
         }
 
-        enum CodingKeys: String, CodingKey { case on, history, connectedAt, since, exclude }
+        enum CodingKeys: String, CodingKey {
+            case on, history, connectedAt, since, exclude
+            case mediaMaxMB = "mediaMaxMb"
+        }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -168,6 +177,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
             connectedAt = try container.decode(Int64.self, forKey: .connectedAt)
             since = try container.decode(Int64.self, forKey: .since)
             exclude = try container.decodeIfPresent([SourceContainer].self, forKey: .exclude) ?? []
+            mediaMaxMB = try container.decodeIfPresent(Int64.self, forKey: .mediaMaxMB)
         }
     }
 
@@ -194,6 +204,8 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     public var permissions: [SourcePermission]
     /// What it calls the things it reads: `chat`, `channel`, `folder`.
     public var container: String?
+    /// Whether it downloads photos and files, up to a size the person sets (`sources.media`).
+    public var media: Bool
     public var state: SourceState
     public var setting: Setting?
     public var lastRun: Int64?
@@ -205,7 +217,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
 
     public init(
         id: String, name: String, kind: String, reads: String, permissions: [SourcePermission] = [], container: String? = nil,
-        state: SourceState, setting: Setting? = nil, lastRun: Int64? = nil, lastSuccess: Int64? = nil, lastItems: Int = 0,
+        media: Bool = false, state: SourceState, setting: Setting? = nil, lastRun: Int64? = nil, lastSuccess: Int64? = nil, lastItems: Int = 0,
         items: Int64 = 0, lastError: LastError? = nil, nextRun: Int64? = nil
     ) {
         self.id = id
@@ -214,6 +226,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         self.reads = reads
         self.permissions = permissions
         self.container = container
+        self.media = media
         self.state = state
         self.setting = setting
         self.lastRun = lastRun
@@ -225,7 +238,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, reads, permissions, container, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun
+        case id, name, kind, reads, permissions, container, media, state, setting, lastRun, lastSuccess, lastItems, items, lastError, nextRun
     }
 
     public init(from decoder: any Decoder) throws {
@@ -236,6 +249,7 @@ public struct SourceStatus: Identifiable, Sendable, Hashable, Decodable {
         reads = try c.decodeIfPresent(String.self, forKey: .reads) ?? ""
         permissions = try c.decodeIfPresent([SourcePermission].self, forKey: .permissions) ?? []
         container = try c.decodeIfPresent(String.self, forKey: .container)
+        media = try c.decodeIfPresent(Bool.self, forKey: .media) ?? false
         state = try c.decodeIfPresent(SourceState.self, forKey: .state) ?? .unknown
         setting = try c.decodeIfPresent(Setting.self, forKey: .setting)
         lastRun = try c.decodeIfPresent(Int64.self, forKey: .lastRun)
@@ -269,6 +283,9 @@ public protocol SourcesClient: Sendable {
     func exclude(_ container: SourceContainer, from source: String, in space: URL) async throws -> SourceStatus
     /// `sources.include`: reads the container again from now on.
     func include(_ container: String, in source: String, in space: URL) async throws -> SourceStatus
+    /// `sources.media`: the largest photo or file it downloads in the space, in megabytes (`0`
+    /// for none), or `nil` for the connector's default; from its next run.
+    func setMedia(_ maxMB: Int64?, _ source: String, in space: URL) async throws -> SourceStatus
     /// `sources.run`: runs it now, without waiting for it to finish.
     func run(_ source: String, in space: URL) async throws -> SourceStatus
     /// `sources.disconnect`: removes its settings and secrets; what it brought in stays.
@@ -323,6 +340,11 @@ public struct ServiceSourcesClient: SourcesClient {
 
     public func include(_ container: String, in source: String, in space: URL) async throws -> SourceStatus {
         try await call("sources.include", params(space, source, ["id": .string(container)], by: true), as: SourceStatus.self)
+    }
+
+    public func setMedia(_ maxMB: Int64?, _ source: String, in space: URL) async throws -> SourceStatus {
+        let extra: [String: JSONValue] = maxMB.map { ["max_mb": .int($0)] } ?? [:]
+        return try await call("sources.media", params(space, source, extra, by: true), as: SourceStatus.self)
     }
 
     public func run(_ source: String, in space: URL) async throws -> SourceStatus {

@@ -118,6 +118,7 @@
 		CDDFAEF30BC14651B5BA3610 /* NoteHistoryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4484A4403049FB3FC2AD7F2 /* NoteHistoryModelTests.swift */; };
 		CEFADFD00FD50BC5A7D28D33 /* KnodeBrand in Frameworks */ = {isa = PBXBuildFile; productRef = 5700DFCB5FC2DCDB188EBDF9 /* KnodeBrand */; };
 		D3C05D6D4DD91324A42637C9 /* CoreSpaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7D0990B99956DAF0D19157 /* CoreSpaceStore.swift */; };
+		D4EEF9C00C7B97F1626494EE /* SourcesMediaLimitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91203184EB6918FB1E9C293 /* SourcesMediaLimitTests.swift */; };
 		D75859B6F6410DECCD7903DE /* ServiceMapStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2287044266729109CE33CDDB /* ServiceMapStore.swift */; };
 		DB16242C01E6D130B62D3344 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D250CA89BC07524A87D4A6 /* Models.swift */; };
 		DFCC81DD5422634CEAAB163B /* SpaceFoldersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 919363F46CB0E8F9D60DA874 /* SpaceFoldersView.swift */; };
@@ -268,6 +269,7 @@
 		D1F1C8DEC816C516EA7B8D52 /* AgentDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentDirectory.swift; sourceTree = "<group>"; };
 		D4484A4403049FB3FC2AD7F2 /* NoteHistoryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteHistoryModelTests.swift; sourceTree = "<group>"; };
 		D664C5421D5BF047BCEA9564 /* WindowChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowChrome.swift; sourceTree = "<group>"; };
+		D91203184EB6918FB1E9C293 /* SourcesMediaLimitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesMediaLimitTests.swift; sourceTree = "<group>"; };
 		DE873FB24EC9528AEEBD3E03 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		E4969CFDDBCCED837FDDA753 /* CommandLineToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandLineToolTests.swift; sourceTree = "<group>"; };
 		E67C963230A136E45F1B79A9 /* SpaceFoldersModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceFoldersModel.swift; sourceTree = "<group>"; };
@@ -454,6 +456,7 @@
 				C1071A2C8BECEF56392CA0C6 /* PreviewSpaceStoreTests.swift */,
 				1B6C2CE64623C331289D2412 /* SearchTests.swift */,
 				F1EEDA453379A6A80CDE9280 /* ServiceSpaceStoreTests.swift */,
+				D91203184EB6918FB1E9C293 /* SourcesMediaLimitTests.swift */,
 				B541E7CAF1CA82872AE0A443 /* SourcesModelTests.swift */,
 				8C0A2BF7F64F9B0A8F3F85F5 /* SpacesTests.swift */,
 			);
@@ -807,6 +810,7 @@
 				C4BC269FC6CF1396AF377141 /* PreviewSpaceStoreTests.swift in Sources */,
 				3976C9587165218CE64048D4 /* SearchTests.swift in Sources */,
 				9B0C0A19C2A9A1B9D246E890 /* ServiceSpaceStoreTests.swift in Sources */,
+				D4EEF9C00C7B97F1626494EE /* SourcesMediaLimitTests.swift in Sources */,
 				EC77F51A384921BBB29D917E /* SourcesModelTests.swift in Sources */,
 				52C83BEE63748375376D6AD6 /* SpacesTests.swift in Sources */,
 			);

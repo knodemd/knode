@@ -107,6 +107,10 @@ struct SourceCard: View {
                                detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
                                isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
                     .disabled(sources.isBusy || source.state == .unavailable)
+                if source.media {
+                    KHairline()
+                    SourceMediaLimitRow(source: source)
+                }
                 KHairline()
                 HStack(spacing: KSpace.x2) {
                     KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
@@ -147,6 +151,31 @@ struct SourceCard: View {
     }
 }
 
+/// The largest photo or file a connected source downloads, changed later from Settings.
+private struct SourceMediaLimitRow: View {
+    @Environment(SourcesModel.self) private var sources
+    let source: SourceStatus
+    @State private var text = ""
+
+    var body: some View {
+        KSettingRow("Largest file to download",
+                    detail: "In MB, from its next run. 0 downloads none; empty uses \(source.name)'s default. Larger files are named in the text.") {
+            HStack(spacing: KSpace.x2) {
+                KTextField("Default", text: $text, size: .small) { apply() }
+                    .frame(width: 90)
+                KButton("Apply", size: .small) { apply() }
+                    .disabled(sources.isBusy || MediaLimit(text).map { $0.megabytes == source.setting?.mediaMaxMB } ?? false)
+            }
+        }
+        .onAppear { text = MediaLimit.text(source.setting?.mediaMaxMB) }
+        .onChange(of: source.setting?.mediaMaxMB) { _, new in text = MediaLimit.text(new) }
+    }
+
+    private func apply() {
+        Task { await sources.setMediaLimit(text, for: source) }
+    }
+}
+
 /// What a connector needs and what it did, in small labelled columns.
 private struct SourceFacts: View {
     let source: SourceStatus
@@ -159,6 +188,7 @@ private struct SourceFacts: View {
                 fact("History", setting.history == .fromToday
                     ? "From \(Date(unixMilliseconds: setting.since).formatted(.dateTime.day().month(.abbreviated)))"
                     : SourceText.history(.everything))
+                if source.media { fact("Largest file", MediaLimit.words(setting.mediaMaxMB)) }
                 fact("Last run", source.lastRun.map { Date(unixMilliseconds: $0).formatted(.relative(presentation: .named)) } ?? "Not yet")
                 fact("Items", SourceText.items(source.items), detail: source.lastRun == nil ? nil : "\(source.lastItems) last time")
             }
@@ -327,7 +357,7 @@ struct ConnectSourceSheet: View {
                 }
             case .history:
                 KButton("Cancel", icon: .close, action: cancel)
-                primary("Connect", icon: .connect, disabled: flow.isBusy) { Task { await flow.connect() } }
+                primary("Connect", icon: .connect, disabled: flow.isBusy || !flow.isMediaLimitValid) { Task { await flow.connect() } }
             case .containers:
                 primary(flow.isManaging ? "Done" : "Start", icon: flow.isManaging ? .done : .play, disabled: flow.isBusy) {
                     Task { await flow.finish() }
@@ -471,6 +501,17 @@ private struct HistoryStep: View {
                 }
             }
             KExplanation("The history is chosen once. To change it, disconnect and connect again; what came in stays.")
+            if flow.offersMediaLimit {
+                VStack(alignment: .leading, spacing: KSpace.x2) {
+                    Text("Largest file to download").font(KFont.ui(13, .semibold))
+                    HStack(spacing: KSpace.x2) {
+                        KTextField("Default", text: $flow.mediaLimit) { Task { await flow.connect() } }
+                            .frame(width: 110)
+                        Text("MB").font(KFont.ui(13))
+                    }
+                    KExplanation("Photos and files up to this size are attached; larger ones are named in the text. 0 downloads none; leave it empty for \(flow.source.name)'s default. You can change it later in Settings.")
+                }
+            }
         }
     }
 
@@ -596,6 +637,7 @@ private struct PreviewSourcesClient: SourcesClient {
     func exclude(_ container: SourceContainer, from source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
     func include(_ container: String, in source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
     func run(_ source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
+    func setMedia(_ maxMB: Int64?, _ source: String, in space: URL) async throws -> SourceStatus { SourcesPreviews.slack }
     func disconnect(_ source: String, in space: URL) async throws {}
     func account(of source: String) async throws -> SourceAccountState { account }
     func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState {
