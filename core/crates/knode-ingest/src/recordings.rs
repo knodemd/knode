@@ -22,7 +22,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use knode_format::{
@@ -64,6 +63,9 @@ pub mod keys {
     pub const APP: &str = "recording.app";
     /// Which attached audio file is which track: JSON, `[{"name": ..., "track": ...}]`.
     pub const TRACKS: &str = "recording.tracks";
+    /// The file its audio was taken from, when that file is not attached: a video larger than a
+    /// space attaches, kept only where it was.
+    pub const ORIGINAL: &str = "recording.original";
 }
 
 /// The space setting that says whether recordings are summarised: `on` (the default) or `off`.
@@ -94,13 +96,13 @@ macro_rules! string_enum {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
 
-        impl FromStr for $name {
+        impl std::str::FromStr for $name {
             type Err = Error;
 
             fn from_str(s: &str) -> Result<Self> {
@@ -115,6 +117,7 @@ macro_rules! string_enum {
         }
     };
 }
+pub(crate) use string_enum;
 
 string_enum! {
     /// What a recording is.
@@ -265,6 +268,10 @@ pub struct NewRecording {
     /// Whether to summarise it once it is transcribed. True when omitted.
     #[serde(default = "yes")]
     pub summaries: bool,
+    /// The name of the file its audio was taken from, when that file is not attached, such as a
+    /// video larger than a space attaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
 }
 
 fn yes() -> bool {
@@ -306,6 +313,9 @@ pub struct Recording {
     pub tracks: Vec<AudioTrack>,
     /// The node of its transcript, once written.
     pub transcript_id: Option<NodeId>,
+    /// The file its audio was taken from, when that file is not attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
 }
 
 /// What was said in a recording, as the app's speech recognition heard it.
@@ -426,7 +436,20 @@ pub fn create(space: &mut Space, new: &NewRecording, by: &Provenance) -> Result<
     if let Some(app) = new.app.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
         props.insert(keys::APP.into(), app.to_string());
     }
-    let header = header(new.started_at, new.ended_at, &Local);
+    let original = new
+        .original
+        .as_deref()
+        .map(one_line)
+        .filter(|o| !o.is_empty());
+    let mut header = header(new.started_at, new.ended_at, &Local);
+    if let Some(original) = &original {
+        props.insert(keys::ORIGINAL.into(), original.clone());
+        header.push_str(&format!(
+            "\n\nThe audio was taken from {original}, which is larger than {} MB and is kept only \
+             where it was, not in the space.",
+            MAX_ATTACHMENT_SIZE / (1024 * 1024)
+        ));
+    }
     let node = space.create_node_with_properties(
         NewNode::note(new.title.clone(), header_body(&header, &planned))
             .with_kind(new.kind.node_kind()),
@@ -639,6 +662,7 @@ pub fn get(space: &Space, id: &NodeId) -> Result<Recording> {
         project,
         tracks,
         transcript_id: transcript_of(space, id)?,
+        original: text(keys::ORIGINAL),
     })
 }
 
@@ -924,6 +948,17 @@ where
             .map(|t| t.fixed_offset())
     };
     let length = duration_words(ended_at - started_at);
+    if ended_at <= started_at {
+        // A file whose length is not known.
+        return match local(started_at) {
+            Some(start) => format!(
+                "Recorded on {} at {}.",
+                start.format("%A %-d %B %Y"),
+                start.format("%H:%M")
+            ),
+            None => "Recorded.".into(),
+        };
+    }
     match (local(started_at), local(ended_at)) {
         (Some(start), Some(end)) => format!(
             "Recorded on {}, {} to {} ({length}).",
@@ -988,17 +1023,23 @@ pub const MINUTES_END: &str = "<!-- /knode:minutes -->";
 /// its [`MINUTES_END`] line (without the line break): only when the body has one start line, and
 /// an end line after it.
 fn minutes_range(body: &str) -> Option<(usize, usize)> {
+    marked_range(body, MINUTES_START, MINUTES_END)
+}
+
+/// Where a block is in a body, from the start of its `open` line to the end of its `close` line
+/// (without the line break): only when the body has one `open` line, and a `close` line after it.
+pub(crate) fn marked_range(body: &str, open: &str, close: &str) -> Option<(usize, usize)> {
     let mut offset = 0;
     let mut start = None;
     let mut end = None;
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim();
-        if trimmed == MINUTES_START {
+        if trimmed == open {
             if start.is_some() {
                 return None;
             }
             start = Some(offset);
-        } else if trimmed == MINUTES_END && start.is_some() && end.is_none() {
+        } else if trimmed == close && start.is_some() && end.is_none() {
             end = Some(offset + line.trim_end_matches(['\n', '\r']).len());
         }
         offset += line.len();
@@ -1013,7 +1054,7 @@ fn embeds(tracks: &[AudioTrack]) -> Vec<String> {
 
 /// `body` with `block` added as a paragraph of its own after the last line that holds one of
 /// `anchors`, or after the first line when none does. The rest of the body stays as it is.
-fn insert_after(body: &str, anchors: &[String], block: &str) -> String {
+pub(crate) fn insert_after(body: &str, anchors: &[String], block: &str) -> String {
     let line_end = |at: usize| body[at..].find('\n').map_or(body.len(), |i| at + i);
     let at = anchors
         .iter()
@@ -1053,7 +1094,7 @@ where
 
 /// `base`, or `base 2`, `base 3`... the first that no node but `own` has as its title, so a
 /// `[[link]]` to it finds that node and no other.
-fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> {
+pub(crate) fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> {
     for n in 1.. {
         let title = if n == 1 {
             base.to_string()
@@ -1071,7 +1112,7 @@ fn free_title(space: &Space, base: &str, own: Option<NodeId>) -> Result<String> 
     unreachable!("some title is free")
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import Speech
+import UniformTypeIdentifiers
 
 /// Why a recording could not be transcribed.
 enum TranscriptionError: Error, LocalizedError, Equatable {
@@ -235,7 +236,8 @@ enum AudioReading {
     /// say), a copy decoded through `AVAssetReader` into `scratch`, which the caller removes
     /// with `removeTemporary()`.
     static func open(_ url: URL, scratch: URL) async throws -> Opened {
-        if let file = try? AVAudioFile(forReading: url) { return Opened(file: file) }
+        // A video is always decoded: its audio track is read through `AVAssetReader`.
+        if !isVideo(url), let file = try? AVAudioFile(forReading: url) { return Opened(file: file) }
         let decoded = try await decode(url, into: scratch)
         do {
             return Opened(file: try AVAudioFile(forReading: decoded), temporary: decoded)
@@ -243,6 +245,11 @@ enum AudioReading {
             try? FileManager.default.removeItem(at: decoded)
             throw TranscriptionError.unreadableAudio(error.localizedDescription)
         }
+    }
+
+    /// Whether the file is a video by its name, such as a `.mov` or `.mp4` added to a space.
+    static func isVideo(_ url: URL) -> Bool {
+        UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) ?? false
     }
 
     /// Decodes the first audio track of any file AVFoundation can read into a 48 kHz mono CAF in

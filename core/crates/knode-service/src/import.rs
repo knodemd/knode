@@ -24,7 +24,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use knode_format::{NewNode, NodeId, NodeUpdate, Provenance, Space, kinds};
-use knode_ingest::{Agent, ChatFormat, SessionReader, to_markdown};
+use knode_ingest::{Agent, ChatFormat, SessionReader, media, to_markdown};
 use knode_vault::apps::{self, NoteApp};
 use knode_vault::claude_memory::{self, MemoryOutcome};
 use knode_vault::mail::{self, MailOptions, MailSource};
@@ -77,11 +77,15 @@ pub enum ImportSource {
     /// The memory Claude Code keeps for each folder it works in: its `.claude` folder or the
     /// `projects` folder inside, by default the one of this machine.
     ClaudeCodeMemory,
+    /// Photos (HEIC, JPEG, PNG), audio files and videos (MOV, MP4): one file, or every one in a
+    /// folder. Each becomes a node with the original attached; the Mac app reads photos and
+    /// transcribes audio and video on the device.
+    Media,
 }
 
 impl ImportSource {
     /// Every source, in the order they are listed.
-    pub const ALL: [ImportSource; 18] = [
+    pub const ALL: [ImportSource; 19] = [
         ImportSource::Export,
         ImportSource::Markdown,
         ImportSource::Session,
@@ -100,11 +104,12 @@ impl ImportSource {
         ImportSource::Telegram,
         ImportSource::Slack,
         ImportSource::ClaudeCodeMemory,
+        ImportSource::Media,
     ];
 
     /// The name `from` takes: `export`, `markdown`, `session`, `pdf`, `web`, `kindle`,
     /// `readwise`, `readwise-api`, `apple-notes`, `bear`, `notion`, `evernote`, `mbox`,
-    /// `apple-mail`, `whatsapp`, `telegram`, `slack`, `claude-code-memory`.
+    /// `apple-mail`, `whatsapp`, `telegram`, `slack`, `claude-code-memory`, `media`.
     pub fn id(self) -> &'static str {
         match self {
             ImportSource::Export => "export",
@@ -125,6 +130,7 @@ impl ImportSource {
             ImportSource::Telegram => "telegram",
             ImportSource::Slack => "slack",
             ImportSource::ClaudeCodeMemory => "claude-code-memory",
+            ImportSource::Media => "media",
         }
     }
 
@@ -386,7 +392,7 @@ pub const SOURCES: &str = "a Claude, ChatGPT or Gemini data export, a folder of 
      Readwise through its API, an Apple Notes or Bear database, a Bear backup, a Notion export, an Evernote .enex file, \
      an .mbox file (Gmail through Google Takeout), Apple Mail's store, \
      a WhatsApp chat export, a Telegram Desktop export (JSON), a Slack workspace export \
-     or Claude Code's memory";
+     Claude Code's memory, or photos, audio files and videos";
 
 /// What [`prepare`] found: what to read and how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,6 +422,7 @@ enum Input {
     Mail(MailSource, PathBuf, MailOptions),
     Chat(ChatFormat, PathBuf),
     ClaudeCodeMemory(PathBuf),
+    Media(PathBuf),
 }
 
 impl Prepared {
@@ -434,6 +441,7 @@ impl Prepared {
             Input::Mail(source, ..) => ImportSource::of_mail(*source),
             Input::Chat(format, _) => ImportSource::of_chat(*format),
             Input::ClaudeCodeMemory(_) => ImportSource::ClaudeCodeMemory,
+            Input::Media(_) => ImportSource::Media,
         }
     }
 
@@ -466,6 +474,12 @@ impl Prepared {
             },
             Input::Chat(format, _) => format.to_string(),
             Input::ClaudeCodeMemory(_) => "Claude Code memory".into(),
+            Input::Media(path) if path.is_dir() => "folder of media".into(),
+            Input::Media(path) => match media::kind_of(path) {
+                Some(media::MediaKind::Photo) => "photo".into(),
+                Some(media::MediaKind::Video) => "video".into(),
+                _ => "audio file".into(),
+            },
         }
     }
 
@@ -532,7 +546,8 @@ impl Prepared {
             | Input::App(_, p)
             | Input::Mail(_, p, _)
             | Input::Chat(_, p)
-            | Input::ClaudeCodeMemory(p) => p.display().to_string(),
+            | Input::ClaudeCodeMemory(p)
+            | Input::Media(p) => p.display().to_string(),
         }
     }
 }
@@ -710,6 +725,10 @@ fn named(source: ImportSource, path: &Path) -> Result<Input, ImportError> {
         ImportSource::ClaudeCodeMemory => {
             return not("Claude Code's .claude folder or the projects folder inside it");
         }
+        ImportSource::Media if path.is_dir() || media::kind_of(path).is_some() => Input::Media(p),
+        ImportSource::Media => {
+            return not("a photo (HEIC, JPEG, PNG), an audio file or a video (MOV, MP4)");
+        }
     })
 }
 
@@ -738,6 +757,7 @@ fn detect(path: &Path) -> Result<Input, ImportError> {
             }
             Some("csv") if is_readwise_csv(path) => return Ok(Input::ReadwiseCsv(p)),
             Some("txt") if is_kindle_clippings(path) => return Ok(Input::KindleClippings(p)),
+            _ if media::kind_of(path).is_some() => return Ok(Input::Media(p)),
             Some("md" | "markdown") => {
                 return Ok(if is_readwise_markdown(&read_start(path, 256 * 1024)) {
                     Input::ReadwiseMarkdown(p)
@@ -1028,6 +1048,7 @@ pub fn run(
             &mut result,
         )?,
         Input::Chat(format, path) => chats(space, *format, path, by, &mut result)?,
+        Input::Media(path) => media_files(space, path, by, &mut result)?,
         Input::ClaudeCodeMemory(path) => {
             let report =
                 claude_memory::import_claude_code_memory(space, path, by).map_err(vault_error)?;
@@ -1093,6 +1114,84 @@ pub fn run(
         }
     }
     Ok(result)
+}
+
+/// The most media files one import reads from a folder.
+const MEDIA_LIMIT: usize = 10_000;
+
+/// Adds one media file, or every one in a folder (and the folders inside, three deep), each as
+/// its own node. A file that cannot be added is skipped, with why.
+fn media_files(
+    space: &mut Space,
+    path: &Path,
+    by: &Provenance,
+    result: &mut ImportResult,
+) -> Result<(), ImportError> {
+    let mut files = Vec::new();
+    if path.is_dir() {
+        collect_media(path, 0, &mut files);
+        files.sort();
+        if files.is_empty() {
+            return Err(ImportError::Unknown(format!(
+                "{} has no photos, audio files or videos",
+                path.display()
+            )));
+        }
+    } else {
+        files.push(path.to_path_buf());
+    }
+    let (mut photos, mut recordings) = (0, 0);
+    for file in &files {
+        match media::add_file(space, file, None, by) {
+            Ok(added) => {
+                match added.node {
+                    media::Added::Photo(_) => photos += 1,
+                    media::Added::Recording(_) => recordings += 1,
+                }
+                let outcome = if added.created {
+                    result.attached += 1;
+                    ImportOutcome::Created
+                } else {
+                    ImportOutcome::Unchanged
+                };
+                result.node(Some(added.node.id()), added.node.title(), outcome);
+            }
+            Err(e) if files.len() == 1 => return Err(ImportError::Unknown(e.to_string())),
+            Err(e) => result.skip(file.display().to_string(), e.to_string()),
+        }
+    }
+    if photos > 0 {
+        result.notes.push(
+            "The Knode app for Mac reads the text in photos and what they show, on the device."
+                .into(),
+        );
+    }
+    if recordings > 0 {
+        result
+            .notes
+            .push("The Knode app for Mac transcribes audio and video on the device.".into());
+    }
+    Ok(())
+}
+
+fn collect_media(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 3 || out.len() >= MEDIA_LIMIT {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            collect_media(&path, depth + 1, out);
+        } else if media::kind_of(&path).is_some() && out.len() < MEDIA_LIMIT {
+            out.push(path);
+        }
+    }
 }
 
 fn mail_result(

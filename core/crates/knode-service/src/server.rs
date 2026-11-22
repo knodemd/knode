@@ -36,6 +36,7 @@ use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
 mod import;
 mod maps;
+mod photos;
 mod recordings;
 mod sources;
 
@@ -904,7 +905,10 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
             let p: SettingsSetParams = params(method, raw)?;
             let space = state.space(&p.space)?;
             let mut space = lock_ignoring_poison(&space);
+            let mark = last_change(&space)?;
             let changed = spaces::set_setting(&mut space, &p.key, p.value.as_deref(), &p.by)?;
+            // Turning photo locations off rewrites the photos that had one.
+            state.notify_since(&space, mark)?;
             if changed {
                 state.notify_space(&space, SpaceEventKind::Settings, |e| {
                     e.key = Some(p.key.clone());
@@ -1226,6 +1230,7 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         methods::IMPORT_RUN => import::run(state, raw),
         m if m.starts_with(methods::SOURCES_PREFIX) => sources::call(state, m, raw),
         m if m.starts_with(methods::RECORDINGS_PREFIX) => recordings::call(state, m, raw),
+        m if m.starts_with(methods::PHOTOS_PREFIX) => photos::call(state, m, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(
                 codes::METHOD_NOT_FOUND,

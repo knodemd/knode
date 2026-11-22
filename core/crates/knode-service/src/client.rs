@@ -32,6 +32,7 @@ use crate::{Error, Result, paths};
 
 mod import;
 mod maps;
+mod photos;
 mod recordings;
 mod sources;
 
@@ -256,9 +257,9 @@ impl Client {
         self.request(methods::SETTINGS_GET, params)
     }
 
-    /// Changes a setting of a space (`space.icon`, `capture.enabled` or `recordings.summaries`),
-    /// or puts it back to its default with `None`. Returns every setting as it is now. Only a
-    /// person can change settings.
+    /// Changes a setting of a space (`space.icon`, `capture.enabled`, `recordings.summaries` or
+    /// `photos.location`), or puts it back to its default with `None`. Returns every setting as
+    /// it is now. Only a person can change settings.
     pub fn set_setting(
         &self,
         space: impl AsRef<Path>,

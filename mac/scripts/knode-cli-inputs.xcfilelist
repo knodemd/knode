@@ -93,8 +93,11 @@ $(SRCROOT)/../core/crates/knode-ingest/src/exports/source.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/filter.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/gemini.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/lib.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/media.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/model.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/opencode.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/photos.rs
+$(SRCROOT)/../core/crates/knode-ingest/src/photos/tests.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/reader.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/recordings.rs
 $(SRCROOT)/../core/crates/knode-ingest/src/recordings/tests.rs
@@ -126,6 +129,7 @@ $(SRCROOT)/../core/crates/knode-service/src/capture.rs
 $(SRCROOT)/../core/crates/knode-service/src/client.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/maps.rs
+$(SRCROOT)/../core/crates/knode-service/src/client/photos.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/recordings.rs
 $(SRCROOT)/../core/crates/knode-service/src/client/sources.rs
 $(SRCROOT)/../core/crates/knode-service/src/coedit.rs
@@ -139,6 +143,7 @@ $(SRCROOT)/../core/crates/knode-service/src/lock.rs
 $(SRCROOT)/../core/crates/knode-service/src/maps.rs
 $(SRCROOT)/../core/crates/knode-service/src/markdown.rs
 $(SRCROOT)/../core/crates/knode-service/src/paths.rs
+$(SRCROOT)/../core/crates/knode-service/src/photos.rs
 $(SRCROOT)/../core/crates/knode-service/src/protocol.rs
 $(SRCROOT)/../core/crates/knode-service/src/readwise.rs
 $(SRCROOT)/../core/crates/knode-service/src/recordings.rs
@@ -146,6 +151,7 @@ $(SRCROOT)/../core/crates/knode-service/src/search.rs
 $(SRCROOT)/../core/crates/knode-service/src/server.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/import.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/maps.rs
+$(SRCROOT)/../core/crates/knode-service/src/server/photos.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/recordings.rs
 $(SRCROOT)/../core/crates/knode-service/src/server/sources.rs
 $(SRCROOT)/../core/crates/knode-service/src/sources/apple_mail.rs

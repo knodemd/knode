@@ -88,7 +88,9 @@ enum Command {
     /// WhatsApp chat export (the `.zip`, its folder or the chat's `.txt`), a Telegram Desktop
     /// export in JSON (the folder with `result.json`), a Slack workspace export, or the memory
     /// Claude Code keeps for each folder (`--from claude-code-memory`), each note linked to the
-    /// project of the space its folder belongs to. Knode tells which from the path; --from says it.
+    /// project of the space its folder belongs to, or photos, audio files and videos (one file,
+    /// or a folder with `--from media`), each kept as a node with the original attached. Knode
+    /// tells which from the path; --from says it.
     Import {
         /// A file or folder, or an http(s) URL to fetch. Leave out with `--from apple-notes`,
         /// `--from bear` or `--from apple-mail` to read the app's own store on this Mac, with

@@ -223,6 +223,9 @@ pub fn capture_waits_for_setup(space: &Space) -> knode_format::Result<bool> {
 ///
 /// Turning capture on for a space whose capture was off or waiting for setup also records the
 /// time ([`CAPTURE_SINCE`]): capture starts from now, and earlier conversations stay out.
+///
+/// Turning `photos.location` off also removes where they were taken from every photo of the
+/// space ([`knode_ingest::photos::forget_locations`]); the attached originals are unchanged.
 pub fn set_setting(
     space: &mut Space,
     key: &str,
@@ -254,6 +257,15 @@ pub fn set_setting(
                 )));
             }
         },
+        setting_keys::PHOTOS_LOCATION => match value {
+            None => None,
+            Some(value @ ("on" | "off")) => Some(value),
+            Some(other) => {
+                return Err(invalid(format!(
+                    "photos.location is \"on\" or \"off\", not {other:?}"
+                )));
+            }
+        },
         setting_keys::SPACE_ID => return Err(invalid("the id of a space never changes")),
         setting_keys::MARKDOWN_FOLDER => {
             return Err(invalid(
@@ -263,8 +275,8 @@ pub fn set_setting(
         }
         other => {
             return Err(invalid(format!(
-                "{other:?} is not a setting Knode knows: use space.icon, capture.enabled or \
-                 recordings.summaries"
+                "{other:?} is not a setting Knode knows: use space.icon, capture.enabled, \
+                 recordings.summaries or photos.location"
             )));
         }
     };
@@ -276,6 +288,9 @@ pub fn set_setting(
     if started && capture_enabled(space)? {
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         space.set_setting(CAPTURE_SINCE, Some(&now), by)?;
+    }
+    if key == setting_keys::PHOTOS_LOCATION && value == Some("off") {
+        knode_ingest::photos::forget_locations(space, by)?;
     }
     Ok(changed)
 }

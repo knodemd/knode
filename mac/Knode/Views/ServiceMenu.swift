@@ -46,6 +46,7 @@ private struct ServiceMenuPanel: View {
             VStack(alignment: .leading, spacing: KSpace.x4) {
                 if let error = monitor.errorMessage { KErrorText(error) }
                 RecordingMenuSection(controller: recording, processor: recordings)
+                PhotosMenuSection()
                 openSpaces
                 spaceForAgents
                 if case .running(let status) = monitor.state, let index = status.index {

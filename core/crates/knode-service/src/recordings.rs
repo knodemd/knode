@@ -24,6 +24,15 @@ pub(crate) const READS: &[&str] = &[
     methods::RECORDINGS_FAILED,
 ];
 
+/// `recordings.find`: the hash of a file, in a space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingFindParams {
+    /// The space.
+    pub space: PathBuf,
+    /// `sha256:<hex>` of the file.
+    pub key: String,
+}
+
 /// `recordings.create`: a recording and the space to store it in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingCreateParams {

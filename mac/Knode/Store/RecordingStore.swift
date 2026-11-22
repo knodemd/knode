@@ -22,6 +22,10 @@ protocol RecordingStore: Sendable {
 
     func recording(_ id: Node.ID, in space: Space.ID) async throws -> StoredRecording
 
+    /// The recording whose file has this `key` (`sha256:<hex>`), if any: asked before taking the
+    /// audio out of a file too large to attach, so a file added again is not extracted again.
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID?
+
     /// Writes the transcript, replacing the one written before.
     func setTranscript(_ transcript: Transcript, by engine: RecordingEngine, of id: Node.ID, in space: Space.ID) async throws -> StoredRecording
 
@@ -39,6 +43,12 @@ protocol RecordingStore: Sendable {
 
     /// Turns minutes on (`on`) or off (`off`) for the recordings stored from now on, as the person.
     func setRecordingSummariesEnabled(_ enabled: Bool, in space: Space.ID) async throws
+}
+
+extension RecordingStore {
+    /// None found: stores that cannot look a key up make the recording, and `createRecording`
+    /// returns the one the space has.
+    func recordingID(withKey key: String, in space: Space.ID) async throws -> Node.ID? { nil }
 }
 
 /// What the recordings pipeline needs from the app's store: the recordings, the space and its
@@ -86,6 +96,9 @@ struct NewRecordingDraft: Hashable, Sendable {
     /// The meeting app, such as `us.zoom.xos`.
     var app: String?
     var summaries: Bool
+    /// The file the audio was taken from when it is not attached: a video larger than a space
+    /// attaches, kept only where it was.
+    var original: String? = nil
 }
 
 /// A recording as the space keeps it.

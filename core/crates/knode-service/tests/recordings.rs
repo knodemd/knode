@@ -94,6 +94,7 @@ impl Fixture {
             key: None,
             app: Some("zoom.us".into()),
             summaries: true,
+            original: None,
         }
     }
 }
@@ -241,6 +242,15 @@ fn the_protocol_takes_and_gives_plain_json() {
     // The same key again: the recording stored before.
     let again = f.person.call("recordings.create", params).unwrap();
     assert_eq!(serde_json::from_value::<Recording>(again).unwrap(), first);
+
+    // Found by its key before anything is made again; an unknown key finds nothing.
+    let found = f.person.find_recording(&space, "vm-1").unwrap();
+    assert_eq!(found, Some(first.clone()));
+    let none = f
+        .person
+        .call("recordings.find", json!({ "space": space, "key": "vm-2" }))
+        .unwrap();
+    assert_eq!(none, json!(null));
 
     let failed = f
         .person

@@ -54,6 +54,7 @@ mod lock;
 pub mod maps;
 pub mod markdown;
 mod paths;
+pub mod photos;
 pub mod protocol;
 pub mod readwise;
 pub mod recordings;

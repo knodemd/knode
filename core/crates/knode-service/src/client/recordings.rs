@@ -57,6 +57,15 @@ impl Client {
         self.request(methods::RECORDINGS_GET, params)
     }
 
+    /// The recording whose file has this hash (`sha256:<hex>`), if any. People only.
+    pub fn find_recording(&self, space: impl AsRef<Path>, key: &str) -> Result<Option<Recording>> {
+        let params = RecordingFindParams {
+            space: space_path(space.as_ref())?,
+            key: key.to_string(),
+        };
+        self.request(methods::RECORDINGS_FIND, params)
+    }
+
     /// Writes the transcript of a recording, replacing the one written before. People only.
     pub fn set_recording_transcript(
         &self,

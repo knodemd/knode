@@ -157,6 +157,9 @@ pub struct NewRecording {
     pub app: Option<String>,
     /// Whether to summarise it once it is transcribed (the space's `recordings.summaries`).
     pub summaries: bool,
+    /// The name of the file its audio was taken from, when that file is not attached, such as a
+    /// video larger than a space attaches.
+    pub original: Option<String>,
 }
 
 /// A stored recording.
@@ -194,6 +197,8 @@ pub struct Recording {
     pub tracks: Vec<AudioTrack>,
     /// The node of its transcript, once written.
     pub transcript_id: Option<String>,
+    /// The file its audio was taken from, when that file is not attached.
+    pub original: Option<String>,
 }
 
 /// What was said in a recording.
@@ -272,6 +277,7 @@ impl From<rec::Recording> for Recording {
                 })
                 .collect(),
             transcript_id: r.transcript_id.map(|t| t.to_string()),
+            original: r.original,
         }
     }
 }
@@ -338,6 +344,7 @@ impl KnodeSpace {
             key: recording.key,
             app: recording.app,
             summaries: recording.summaries,
+            original: recording.original,
         };
         Ok(rec::create(&mut self.lock(), &new, &by.into())?.into())
     }
@@ -364,6 +371,15 @@ impl KnodeSpace {
     pub fn recording(&self, id: String) -> Result<Recording> {
         let id = parse_id(&id)?;
         Ok(rec::get(&self.lock(), &id)?.into())
+    }
+
+    /// The recording whose file has this hash (`sha256:<hex>`), if any.
+    pub fn recording_by_key(&self, key: String) -> Result<Option<Recording>> {
+        let space = self.lock();
+        Ok(match rec::find_by_key(&space, key.trim())? {
+            Some(id) => Some(rec::get(&space, &id)?.into()),
+            None => None,
+        })
     }
 
     /// Writes the transcript of a recording, replacing the one written before.
@@ -482,6 +498,7 @@ mod tests {
             key: Some("k1".into()),
             app: None,
             summaries: true,
+            original: None,
         };
         let created = space.create_recording(new.clone(), me.clone()).unwrap();
         assert_eq!(created.project.as_deref(), Some(project.id.as_str()));

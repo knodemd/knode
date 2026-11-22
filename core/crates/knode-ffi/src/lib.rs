@@ -15,11 +15,13 @@ use knode_format::NodeId;
 
 mod attachments;
 mod maps;
+mod photos;
 mod recordings;
 mod spaces;
 
 pub use attachments::*;
 pub use maps::*;
+pub use photos::*;
 pub use recordings::*;
 pub use spaces::*;
 
