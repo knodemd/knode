@@ -78,6 +78,10 @@ pub fn builtin_connectors() -> Vec<Arc<dyn Connector>> {
     if let Some(imessage) = knode_ingest::imessage::IMessageConnector::local() {
         connectors.push(Arc::new(imessage));
     }
+    #[cfg(target_os = "macos")]
+    if let Some(voice_memos) = knode_ingest::voice_memos::VoiceMemosConnector::local() {
+        connectors.push(Arc::new(voice_memos));
+    }
     // WhatsApp for Mac, in the person's home folder. Listing it reads nothing: it runs only
     // in the spaces it is switched on in.
     #[cfg(target_os = "macos")]

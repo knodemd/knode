@@ -53,6 +53,15 @@ belongs to, newest first.
   after it was brought in keeps the text it had then. If Messages numbers its messages again (a
   rebuilt database, or one moved to a new Mac), the connector notices and brings in only what
   each conversation is missing. People show as their phone number or email address.
+- **Voice Memos connector**, on macOS: `knode sources connect voice-memos` brings every memo of
+  Voice Memos on the Mac, and those of your iPhone synced through iCloud, into one `voice-memo`
+  recording each, with its title (or its date when it has none), when it was recorded and for
+  how long, and its audio attached, ready for the app to transcribe and summarise on the device.
+  It reads a copy of the Voice Memos database and needs Full Disk Access, which it asks for by
+  name when it is missing. Memos in Recently Deleted are left out and come in if restored, a memo
+  whose audio is still in iCloud comes in once the Mac downloads it, a memo still being recorded
+  or written comes in once its file stops changing, folders of Voice Memos can be excluded, and a
+  memo read twice is stored once.
 - **Telegram connector**: brings your Telegram chats in as they arrive, through Telegram's
   official API, as Knode's own client. `knode sources connect telegram` signs in once with your
   phone number, the code Telegram sends and your password if you set one; the session stays in
