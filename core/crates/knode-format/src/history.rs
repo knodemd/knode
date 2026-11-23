@@ -50,11 +50,14 @@ impl Space {
     }
 
     /// The changes made to one subject, such as a node id, newest first, at most `limit`.
-    /// Links made or removed by hand are changes of their source node.
+    /// Links made or removed by hand are changes of their source node. For a node, also the
+    /// changes that wrote a version of it with another subject, such as a rename that rewrote
+    /// its `[[links]]`, or a move that brought it from another space.
     pub fn changes_of(&self, subject: &str, limit: usize) -> Result<Vec<Change>> {
         query_changes(
             &self.conn,
-            "c.subject = ?1 ORDER BY c.id DESC LIMIT ?2",
+            "(c.subject = ?1 OR c.id IN (SELECT change_id FROM history WHERE node_id = ?1))
+             ORDER BY c.id DESC LIMIT ?2",
             params![subject, limit_param(limit)],
         )
     }
