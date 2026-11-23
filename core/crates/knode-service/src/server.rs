@@ -36,6 +36,7 @@ use crate::spaces::{self, SpaceEvent, SpaceEventKind};
 
 mod import;
 mod maps;
+mod moving;
 mod sources;
 
 /// How many changes a subscribed connection may fall behind before it gets `lagged`.
@@ -1223,6 +1224,8 @@ pub(crate) fn call(state: &State, method: &str, raw: Value) -> Result<Value, Rpc
         | methods::DOC_MERGE
         | methods::DOC_UPDATES => crate::coedit::call(state, method, raw),
         methods::IMPORT_RUN => import::run(state, raw),
+        methods::PROJECT_MOVE => moving::move_project(state, raw),
+        methods::PROJECT_MOVE_UNDO => moving::undo_move(state, raw),
         m if m.starts_with(methods::SOURCES_PREFIX) => sources::call(state, m, raw),
         _ => maps::call(state, method, raw).unwrap_or_else(|| {
             Err(RpcError::new(

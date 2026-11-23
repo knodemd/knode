@@ -82,6 +82,11 @@ pub mod methods {
     pub const RESTORE: &str = "restore";
     /// Erases a node and every version of it, for good. People only.
     pub const PURGE: &str = "purge";
+    /// Moves a project, the projects inside it and their nodes, with their history, to another
+    /// space, or previews the move. People only.
+    pub const PROJECT_MOVE: &str = "project.move";
+    /// Undoes a move between two spaces, in both. People only.
+    pub const PROJECT_MOVE_UNDO: &str = "project.move.undo";
     /// Writes a space to a folder of Markdown files.
     pub const VAULT_EXPORT: &str = "vault.export";
     /// Reads a folder of Markdown files, or an Obsidian vault, into a space.
@@ -717,6 +722,30 @@ pub(crate) struct UndoParams {
     pub change: ChangeId,
     #[serde(default)]
     pub force: bool,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectMoveParams {
+    /// The space the project is in.
+    pub space: PathBuf,
+    /// The space it moves to.
+    pub to: PathBuf,
+    pub project: NodeId,
+    /// Only work out what the move would do.
+    #[serde(default)]
+    pub dry_run: bool,
+    pub by: Provenance,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ProjectMoveUndoParams {
+    /// A space of the move: the one the project left or the one it went to.
+    pub space: PathBuf,
+    /// The `project.move` change in `space`.
+    pub change: ChangeId,
+    /// The other space of the move.
+    pub other: PathBuf,
     pub by: Provenance,
 }
 
