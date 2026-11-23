@@ -312,7 +312,10 @@ fn only_projects_move_and_not_twice() {
         .unwrap();
     // Already there.
     let preview = s.team.preview_move(&s.acme, &s.team).unwrap();
-    assert!(!preview.conflicts.is_empty());
+    assert_eq!(
+        preview.conflicts,
+        vec!["it is already in that space".to_string()]
+    );
 }
 
 #[test]

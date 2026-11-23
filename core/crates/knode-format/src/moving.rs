@@ -359,7 +359,8 @@ impl Space {
 
         // Nodes the target has, or had.
         let mut returning = Vec::new();
-        for id in &nodes {
+        let same_space = !conflicts.is_empty();
+        for id in nodes.iter().filter(|_| !same_space) {
             if read_node(&target.conn, id)?.is_some() {
                 conflicts.push(format!(
                     "{} already has {} ({id})",
