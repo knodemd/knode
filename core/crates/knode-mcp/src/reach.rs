@@ -88,17 +88,19 @@ impl<'a> Reach<'a> {
         given: bool,
         folder: Option<&Path>,
     ) -> Self {
-        if reachable.is_empty() {
+        let own_key = own.space_path().map(|p| same_key(&p));
+        let own_at = reachable
+            .iter()
+            .position(|r| own_key.as_ref() == Some(&same_key(&r.path)));
+        // No other space, or a space given with --space that the agent may not see: that space
+        // alone, so every tool says it cannot be opened rather than answering from others.
+        if reachable.is_empty() || (given && own_at.is_none()) {
             let mut reach = Reach::single(own);
             if given {
                 reach.why = Home::Given;
             }
             return reach;
         }
-        let own_key = own.space_path().map(|p| same_key(&p));
-        let own_at = reachable
-            .iter()
-            .position(|r| own_key.as_ref() == Some(&same_key(&r.path)));
         let mut spaces = Vec::with_capacity(reachable.len() + 1);
         spaces.push(match own_at {
             Some(i) => Reached {

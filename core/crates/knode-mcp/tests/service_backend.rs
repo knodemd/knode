@@ -590,7 +590,7 @@ fn an_agent_reads_wide_and_writes_to_the_space_of_its_folder() {
         person
             .create_node(
                 &path,
-                NewNode::note(&format!("Roadmap of {name}"), "shared roadmap words"),
+                NewNode::note(format!("Roadmap of {name}"), "shared roadmap words"),
                 &me,
             )
             .unwrap();

@@ -1027,7 +1027,7 @@ fn recent(reach: &Reach<'_>, args: RecentArgs) -> Outcome {
         }
     }
     // Newest first across spaces; ties keep the space the agent saves to first.
-    nodes.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+    nodes.sort_by_key(|n| std::cmp::Reverse(n.1.updated_at));
     nodes.truncate(limit);
     let mut text = String::new();
     for note in &notes {
