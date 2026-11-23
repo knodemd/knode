@@ -267,8 +267,8 @@ impl<'a> Reach<'a> {
         };
         Some(format!(
             "You read {} spaces: {}. search, projects and recent cover all of them and say which \
-             space each result comes from. write_node and link_nodes save to \"{home}\" only \
-             ({why}).",
+             space each result comes from. write_node, link_nodes and unlink_nodes change \
+             \"{home}\" only ({why}).",
             names.len(),
             names.join(", ")
         ))

@@ -1,8 +1,8 @@
 //! The MCP server agents use to search, read and write a Knode space.
 //!
 //! [`KnodeServer`] answers the [Model Context Protocol](https://modelcontextprotocol.io) with
-//! eleven tools, `search`, `read_node`, `write_node`, `link_nodes`, `recent`, `history`,
-//! `undo`, `link_kinds`, `read_canvas`, `attach_file` and `read_attachment` (see [`tools`]),
+//! the tools [`tools::TOOL_NAMES`] lists, such as `search`, `read_node`, `write_node`,
+//! `link_nodes`, `unlink_nodes`, `recent`, `history` and `undo` (see [`tools`]),
 //! on top of a [`Backend`]: [`ServiceBackend`] through Knode Service, or [`DirectBackend`],
 //! which opens the space itself when the service cannot run. Through the service, the agent
 //! connects with its own key: Knode Service checks its grants on every call and records its
@@ -63,7 +63,8 @@ questions about earlier work, decisions, preferences or project context; when th
 a project, projects lists its notes directly. Save what is worth \
 remembering beyond this conversation (decisions and their reasons, findings, plans, summaries) \
 with write_node, one topic per node, and link related nodes with [[Title]] in the text or with \
-link_nodes, with a kind from link_kinds that says how they relate. Search first and update an \
+link_nodes, with a kind from link_kinds that says how they relate (unlink_nodes removes a link \
+made by hand). Search first and update an \
 existing node instead of creating a duplicate. history shows who changed what; undo takes back a \
 change of your own. Use read_excerpt for bounded body ranges of long notes; its snapshot is for continuation, not a full-note rewrite. Read surrounding ranges when qualifications may be missing and read_node before rewriting a note.";
 

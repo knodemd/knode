@@ -85,11 +85,12 @@ impl From<BackendError> for ToolOutput {
 }
 
 /// The names of every tool, in the order they are listed.
-pub const TOOL_NAMES: [&str; 14] = [
+pub const TOOL_NAMES: [&str; 15] = [
     "search",
     "read_node",
     "write_node",
     "link_nodes",
+    "unlink_nodes",
     "projects",
     "recent",
     "history",
@@ -376,6 +377,43 @@ pub fn definitions() -> Vec<ToolDefinition> {
             destructive: false,
         },
         ToolDefinition {
+            name: "unlink_nodes",
+            title: "Remove a link",
+            description: "Remove a link between two nodes of the user's Knode memory that was \
+                made by hand (with link_nodes or in the app), such as a part-of link that puts a \
+                note or a project in the wrong project: unlink it, then link it to the right one \
+                with link_nodes. Links written as [[Title]] in a body are removed by editing the \
+                body with write_node. Both nodes must be in the space you save to; the result \
+                names it. Removing a link that is not there changes nothing.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": node_ref },
+                    "to": { "type": "string", "description": node_ref },
+                    "kind": {
+                        "type": "string",
+                        "default": link_kinds::RELATED,
+                        "description": "The kind of the link: related (the default), part-of, derived-from, answers, contradicts, or one this space defines. Not mentions."
+                    }
+                },
+                "required": ["from", "to"]
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "removed": { "type": "boolean", "description": "False when there was no such link." },
+                    "from": { "type": "string", "description": "The id of the node the link started from." },
+                    "to": { "type": "string", "description": "The id of the node it pointed at." },
+                    "kind": { "type": "string" },
+                    "space": { "type": "string", "description": "The space the link was removed from, by name." }
+                },
+                "required": ["removed", "from", "to", "kind"]
+            }),
+            read_only: false,
+            idempotent: true,
+            destructive: true,
+        },
+        ToolDefinition {
             name: "projects",
             title: "Projects",
             description: "List the projects of the user's Knode memory, as a tree, with how many \
@@ -551,6 +589,7 @@ pub fn call_in(
         }
         "write_node" => parse(arguments).and_then(|args| write_node(reach, args, &by)),
         "link_nodes" => parse(arguments).and_then(|args| link_nodes(reach, args, &by)),
+        "unlink_nodes" => parse(arguments).and_then(|args| unlink_nodes(reach, args, &by)),
         "recent" => parse(arguments).and_then(|args| recent(reach, args)),
         "projects" => parse(arguments).and_then(|args| projects(reach, args)),
         "history" => {
@@ -972,6 +1011,52 @@ fn link_nodes(reach: &Reach<'_>, args: LinkArgs, by: &Provenance) -> Outcome {
         in_space(home)
     );
     let mut structured = json!({ "link": link_json(&link) });
+    if let Some(name) = home.name {
+        structured["space"] = json!(name);
+    }
+    Ok(ToolOutput::ok(text, structured))
+}
+
+fn unlink_nodes(reach: &Reach<'_>, args: LinkArgs, by: &Provenance) -> Outcome {
+    let home = reach.home();
+    let backend = home.backend;
+    let resolve = |reference: &str| {
+        resolve_ref(backend, reference)
+            .map_err(|missing| elsewhere(reach, reference).unwrap_or(missing))
+    };
+    let from = resolve(&args.from)?;
+    let to = resolve(&args.to)?;
+    let kind = non_empty(args.kind).unwrap_or_else(|| link_kinds::RELATED.to_string());
+    if kind == link_kinds::MENTIONS {
+        return Err(ToolOutput::error(
+            "mentions links come only from [[links]] in a body. Remove the [[link]] from the body with write_node.",
+        ));
+    }
+    let title = |id: &NodeId| -> Result<String, ToolOutput> {
+        Ok(backend
+            .get_node(id)?
+            .map_or_else(|| id.to_string(), |node| node.title))
+    };
+    let (from_title, to_title) = (title(&from)?, title(&to)?);
+    let removed = backend.unlink(&from, &to, &kind, by)?;
+    let text = if removed {
+        format!(
+            "Removed the {kind} link from [[{from_title}]] to [[{to_title}]]{}.\n",
+            in_space(home)
+        )
+    } else {
+        format!(
+            "There is no {kind} link between [[{from_title}]] and [[{to_title}]]{}; nothing \
+             changed. read_node lists the links of a node.\n",
+            in_space(home)
+        )
+    };
+    let mut structured = json!({
+        "removed": removed,
+        "from": from.to_string(),
+        "to": to.to_string(),
+        "kind": kind,
+    });
     if let Some(name) = home.name {
         structured["space"] = json!(name);
     }
@@ -1928,6 +2013,34 @@ mod tests {
                 &backend,
                 "link_nodes",
                 json!({ "from": "Roadmap", "to": "Nowhere" })
+            )
+            .is_error
+        );
+
+        // Re-parenting: remove the part-of link, which removing again leaves as it is.
+        let out = run(
+            &backend,
+            "unlink_nodes",
+            json!({ "from": "Roadmap", "to": "Plan", "kind": "part-of" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        check_schema("unlink_nodes", &out);
+        assert_eq!(
+            out.text,
+            "Removed the part-of link from [[Roadmap]] to [[Plan]].\n"
+        );
+        let out = run(
+            &backend,
+            "unlink_nodes",
+            json!({ "from": "Roadmap", "to": "Plan", "kind": "part-of" }),
+        );
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.structured.unwrap()["removed"], false);
+        assert!(
+            run(
+                &backend,
+                "unlink_nodes",
+                json!({ "from": "Plan", "to": "Roadmap", "kind": "mentions" })
             )
             .is_error
         );

@@ -181,6 +181,16 @@ impl Backend for ServiceBackend {
         self.with(|c, s| c.link(s, from, to, kind, by))
     }
 
+    fn unlink(
+        &self,
+        from: &NodeId,
+        to: &NodeId,
+        kind: &str,
+        by: &Provenance,
+    ) -> BackendResult<bool> {
+        self.with(|c, s| c.unlink(s, from, to, kind, by))
+    }
+
     fn links_from(&self, id: &NodeId) -> BackendResult<Vec<Link>> {
         self.with(|c, s| c.links_from(s, id))
     }
