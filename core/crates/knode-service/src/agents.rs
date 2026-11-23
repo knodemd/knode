@@ -45,6 +45,17 @@ pub struct SpaceGrant {
     pub level: Option<GrantLevel>,
 }
 
+/// A space the agent of a connection may read: one item of the result of `grants.mine`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MySpace {
+    /// The space, as the service opened it.
+    pub space: PathBuf,
+    /// Its name.
+    pub name: String,
+    /// The agent's level there: `read` or `write`, never `none`.
+    pub level: GrantLevel,
+}
+
 /// An agent of this machine: the result of `agents.list`, `agents.add` and `agents.revoke`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {

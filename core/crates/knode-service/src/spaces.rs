@@ -620,22 +620,53 @@ pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
 /// no project folder holds it. Whether capture is on is not considered.
 pub fn project_destinations(spaces: &[SpaceFolders], folder: &Path) -> Vec<MappedFolder> {
     let recorded = record_path(folder);
-    let matching: Vec<MappedFolder> = spaces
-        .iter()
-        .flat_map(|space| {
-            space
-                .folders
-                .iter()
-                .filter(|f| f.kind == folder_kinds::PROJECT && inside(&f.path, &recorded))
-                .map(move |f| MappedFolder::of(space, f))
-        })
+    let projects = spaces.iter().flat_map(|space| {
+        space
+            .folders
+            .iter()
+            .filter(|f| f.kind == folder_kinds::PROJECT)
+            .map(move |f| MappedFolder::of(space, f))
+    });
+    nearest(projects, |f| &f.path, &recorded)
+}
+
+/// The space an agent working in `folder` saves to (decision 0017 of the handbook): the space of
+/// the project folder nearest to it, by the rule capture routes conversations with
+/// ([`project_destinations`]). When that folder is a project folder of several of `spaces`, the
+/// first of them in the order given wins, so callers put the default space first. `None` when no
+/// project folder of `spaces` holds `folder`, as given or with its links resolved. Whether
+/// capture is on is not considered: it decides what is kept of conversations, not where an
+/// agent saves.
+pub fn working_space<'a>(spaces: &'a [SpaceFolders], folder: &Path) -> Option<&'a SpaceFolders> {
+    let mut found = project_destinations(spaces, folder);
+    if found.is_empty()
+        && let Ok(real) = std::fs::canonicalize(folder)
+    {
+        found = project_destinations(spaces, &real);
+    }
+    let first = found.first()?;
+    spaces.iter().find(|space| space.space == first.space)
+}
+
+/// Of `items`, those whose folder (`path_of`, as the space records it) holds the recorded path
+/// `recorded` and is the nearest to it: the longest. Several when the same folder is given more
+/// than once, such as by two spaces; none when no folder holds it. The rule of section 15.5,
+/// shared by capture and by agents choosing where to save.
+pub(crate) fn nearest<T>(
+    items: impl IntoIterator<Item = T>,
+    path_of: impl Fn(&T) -> &str,
+    recorded: &str,
+) -> Vec<T> {
+    let matching: Vec<T> = items
+        .into_iter()
+        .filter(|item| inside(path_of(item), recorded))
         .collect();
-    let Some(longest) = matching.iter().map(|f| f.path.len()).max() else {
+    let Some(longest) = matching.iter().map(|item| path_of(item).len()).max() else {
         return Vec::new();
     };
     matching
         .into_iter()
-        .filter(|f| f.path.len() == longest)
+        .filter(|item| path_of(item).len() == longest)
         .collect()
 }
 

@@ -61,7 +61,7 @@ mod server;
 pub mod sources;
 pub mod spaces;
 
-pub use agents::{AgentInfo, Identity, KeyInfo, SpaceGrant};
+pub use agents::{AgentInfo, Identity, KeyInfo, MySpace, SpaceGrant};
 pub use auth::{ACCESS_LOG_FILE, AGENTS_FILE};
 pub use capture::{CAPTURE_DIR, CAPTURE_STATE_FILE, CaptureOptions};
 pub use client::{
