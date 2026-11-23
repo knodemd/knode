@@ -184,6 +184,7 @@ fn a_client_uses_every_tool() {
             "read_node",
             "write_node",
             "link_nodes",
+            "unlink_nodes",
             "projects",
             "recent",
             "history",

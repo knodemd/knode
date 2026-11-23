@@ -13,8 +13,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use knode_format::{
-    ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, NewNode, Node, NodeId, NodeSummary,
-    NodeUpdate, Project, Provenance, SearchHit, SearchMode,
+    ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link, MovePreview, MovedProject, NewNode,
+    Node, NodeId, NodeSummary, NodeUpdate, Project, Provenance, SearchHit, SearchMode, UndoneMove,
 };
 use knode_vault::{ExportReport, ImportReport};
 use serde::Serialize;
@@ -708,6 +708,61 @@ impl Client {
             by: by.clone(),
         };
         self.request(methods::UNDO, params)
+    }
+
+    /// What moving `project` from `space` to `to` would do, writing nothing.
+    pub fn preview_move(
+        &self,
+        space: impl AsRef<Path>,
+        project: &NodeId,
+        to: impl AsRef<Path>,
+        by: &Provenance,
+    ) -> Result<MovePreview> {
+        let params = ProjectMoveParams {
+            space: space_path(space.as_ref())?,
+            to: space_path(to.as_ref())?,
+            project: *project,
+            dry_run: true,
+            by: by.clone(),
+        };
+        self.request(methods::PROJECT_MOVE, params)
+    }
+
+    /// Moves a project, the projects inside it and their nodes, with their history, from
+    /// `space` to `to`. Only a person can.
+    pub fn move_project(
+        &self,
+        space: impl AsRef<Path>,
+        project: &NodeId,
+        to: impl AsRef<Path>,
+        by: &Provenance,
+    ) -> Result<MovedProject> {
+        let params = ProjectMoveParams {
+            space: space_path(space.as_ref())?,
+            to: space_path(to.as_ref())?,
+            project: *project,
+            dry_run: false,
+            by: by.clone(),
+        };
+        self.request(methods::PROJECT_MOVE, params)
+    }
+
+    /// Undoes a move in both its spaces, given its `project.move` change in `space` and the
+    /// other space of the move. Only a person can.
+    pub fn undo_move(
+        &self,
+        space: impl AsRef<Path>,
+        change: ChangeId,
+        other: impl AsRef<Path>,
+        by: &Provenance,
+    ) -> Result<UndoneMove> {
+        let params = ProjectMoveUndoParams {
+            space: space_path(space.as_ref())?,
+            change,
+            other: space_path(other.as_ref())?,
+            by: by.clone(),
+        };
+        self.request(methods::PROJECT_MOVE_UNDO, params)
     }
 
     /// Puts a node back to one of its versions (the `seq` of a row of its history), or

@@ -50,11 +50,14 @@ impl Space {
     }
 
     /// The changes made to one subject, such as a node id, newest first, at most `limit`.
-    /// Links made or removed by hand are changes of their source node.
+    /// Links made or removed by hand are changes of their source node. For a node, also the
+    /// changes that wrote a version of it with another subject, such as a rename that rewrote
+    /// its `[[links]]`, or a move that brought it from another space.
     pub fn changes_of(&self, subject: &str, limit: usize) -> Result<Vec<Change>> {
         query_changes(
             &self.conn,
-            "c.subject = ?1 ORDER BY c.id DESC LIMIT ?2",
+            "(c.subject = ?1 OR c.id IN (SELECT change_id FROM history WHERE node_id = ?1))
+             ORDER BY c.id DESC LIMIT ?2",
             params![subject, limit_param(limit)],
         )
     }
@@ -163,6 +166,14 @@ impl Space {
         .ok_or_else(|| Error::Invalid(format!("node {id} has no version {seq}")))?;
         let content = Content::of(&version);
         let current = self.get_node(id)?;
+        if current.is_none()
+            && let Some(space) = crate::moving::moved_away(&self.conn, id)?
+        {
+            return Err(Error::Invalid(format!(
+                "node {id} was moved to {space}, where it lives on; undo the move or move it back \
+                 instead of restoring it here"
+            )));
+        }
         if let Some(current) = &current {
             if Fields::to(current, &content).is_empty() {
                 return Ok(current.clone());
@@ -398,6 +409,23 @@ struct UndoPlan {
 
 fn plan_undo(conn: &Connection, id: ChangeId, force: bool) -> Result<UndoPlan> {
     let change = read_change(conn, id)?.ok_or(Error::ChangeNotFound(id))?;
+    if change.action == actions::PROJECT_MOVE {
+        return Err(Error::CannotUndo {
+            change: id,
+            reason: "a move is undone in both spaces at once, with the space it left and the one \
+                     it went to (Space::undo_move, `knode undo`)"
+                .into(),
+        });
+    }
+    if change.action == actions::UNDO
+        && let Some(undone) = change.undoes
+        && read_change(conn, undone)?.is_some_and(|c| c.action == actions::PROJECT_MOVE)
+    {
+        return Err(Error::CannotUndo {
+            change: id,
+            reason: "it undid a move; move the project again instead".into(),
+        });
+    }
     if !UNDOABLE.contains(&change.action.as_str()) {
         return Err(Error::CannotUndo {
             change: id,
@@ -517,7 +545,7 @@ fn plan_undo(conn: &Connection, id: ChangeId, force: bool) -> Result<UndoPlan> {
 
 /// Writes a version of a node as part of `write`: an update if the node exists, or creates it
 /// again with the same id. `rename` rewrites the bodies that link to a restored title.
-fn put_version(
+pub(crate) fn put_version(
     tx: &Transaction<'_>,
     id: &NodeId,
     content: &Content,
@@ -581,7 +609,7 @@ fn both_exist(conn: &Connection, link: &LinkHistoryEntry) -> Result<bool> {
 }
 
 /// The undo of `id` that is in effect: an undo of it that has not itself been undone.
-fn active_undo(conn: &Connection, id: ChangeId) -> Result<Option<ChangeId>> {
+pub(crate) fn active_undo(conn: &Connection, id: ChangeId) -> Result<Option<ChangeId>> {
     for undo in undos_of(conn, id)? {
         if active_undo(conn, undo)?.is_none() {
             return Ok(Some(undo));
@@ -654,6 +682,14 @@ fn change_row(row: &Row<'_>) -> rusqlite::Result<Change> {
         detail: serde_json::from_str(&detail)
             .unwrap_or_else(|_| serde_json::Value::Object(Default::default())),
     })
+}
+
+/// The links a change made or removed by hand, in order.
+pub(crate) fn link_history_of(
+    conn: &Connection,
+    change: ChangeId,
+) -> Result<Vec<LinkHistoryEntry>> {
+    query_link_history(conn, "change_id = ?1", [change])
 }
 
 fn query_link_history<P: rusqlite::Params>(

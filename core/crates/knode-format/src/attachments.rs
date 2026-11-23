@@ -86,7 +86,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Where the file of a blob is: `blobs/ab/cdef...`.
-fn blob_file(package: &Path, hash: &str) -> PathBuf {
+pub(crate) fn blob_file(package: &Path, hash: &str) -> PathBuf {
     package.join(BLOBS_DIR).join(&hash[..2]).join(&hash[2..])
 }
 

@@ -175,6 +175,14 @@ pub trait Backend: Send + Sync + 'static {
     fn update_node(&self, id: &NodeId, update: NodeUpdate, by: &Provenance) -> BackendResult<Node>;
     /// `link.create`.
     fn link(&self, from: &NodeId, to: &NodeId, kind: &str, by: &Provenance) -> BackendResult<Link>;
+    /// Removes a link made by hand, recorded as a change by `by`. Returns whether there was one.
+    fn unlink(
+        &self,
+        from: &NodeId,
+        to: &NodeId,
+        kind: &str,
+        by: &Provenance,
+    ) -> BackendResult<bool>;
     /// `links.from`.
     fn links_from(&self, id: &NodeId) -> BackendResult<Vec<Link>>;
     /// `links.back`.
@@ -476,6 +484,16 @@ impl Backend for DirectBackend {
         self.with(|s| s.link(from, to, kind, by))
     }
 
+    fn unlink(
+        &self,
+        from: &NodeId,
+        to: &NodeId,
+        kind: &str,
+        by: &Provenance,
+    ) -> BackendResult<bool> {
+        self.with(|s| s.unlink_by(from, to, kind, by))
+    }
+
     fn links_from(&self, id: &NodeId) -> BackendResult<Vec<Link>> {
         self.with(|s| s.links_from(id))
     }
@@ -715,6 +733,16 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn link(&self, from: &NodeId, to: &NodeId, kind: &str, by: &Provenance) -> BackendResult<Link> {
         (**self).link(from, to, kind, by)
+    }
+
+    fn unlink(
+        &self,
+        from: &NodeId,
+        to: &NodeId,
+        kind: &str,
+        by: &Provenance,
+    ) -> BackendResult<bool> {
+        (**self).unlink(from, to, kind, by)
     }
 
     fn links_from(&self, id: &NodeId) -> BackendResult<Vec<Link>> {

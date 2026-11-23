@@ -906,7 +906,7 @@ pub(crate) fn summary(row: &Row<'_>) -> rusqlite::Result<NodeSummary> {
     })
 }
 
-fn tags_of(conn: &Connection, id: &NodeId) -> Result<Vec<String>> {
+pub(crate) fn tags_of(conn: &Connection, id: &NodeId) -> Result<Vec<String>> {
     let mut stmt = conn.prepare_cached("SELECT tag FROM tags WHERE node_id = ?1 ORDER BY tag")?;
     let rows = stmt.query_map([id.to_string()], |row| row.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1131,7 +1131,7 @@ fn relative_target(tx: &Connection, from: Option<&NodeId>, target: &str) -> Resu
 /// Turns the unresolved links waiting for the file `path` into `mentions` links to `id`:
 /// those written as the path or as any of its endings that still has a `/`, with or without
 /// `.md`. `Work/Projects/Plan.md` takes `[[Work/Projects/Plan]]` and `[[Projects/Plan.md]]`.
-fn resolve_waiting_paths(
+pub(crate) fn resolve_waiting_paths(
     tx: &Transaction<'_>,
     id: &NodeId,
     path: &str,
@@ -1302,7 +1302,7 @@ fn resolve_again_near(
 }
 
 /// Turns the unresolved links waiting for `title` into `mentions` links to `id`.
-fn resolve_waiting_links(
+pub(crate) fn resolve_waiting_links(
     tx: &Transaction<'_>,
     id: &NodeId,
     title: &str,

@@ -714,6 +714,14 @@ fn an_agent_reads_wide_and_writes_to_the_space_of_its_folder() {
     );
     assert!(out.is_error);
     assert!(out.text.contains("\"Shared\""), "{}", out.text);
+    // Nor is a link removed there.
+    let out = call(
+        &server,
+        "unlink_nodes",
+        json!({"from": shared_note.to_string(), "to": "Decision", "kind": "part-of"}),
+    );
+    assert!(out.is_error);
+    assert!(out.text.contains("\"Shared\""), "{}", out.text);
 
     // No project folder of a space it may write to holds the folder: the default space.
     let outside = tempfile::tempdir().unwrap();
