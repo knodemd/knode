@@ -303,6 +303,22 @@ import Testing
         #expect(ConnectAgentsModel.arguments(connecting: "codex", to: nil, defaultSpace: work) == ["connect", "codex"])
         #expect(ConnectAgentsModel.arguments(connecting: "codex", to: home, defaultSpace: work) == ["connect", "codex", "--space", "/tmp/Home.knode/"])
         #expect(ConnectAgentsModel.arguments(connecting: "codex", to: home, defaultSpace: nil) == ["connect", "codex", "--space", "/tmp/Home.knode/"])
+        // The default space written another way is still the default space.
+        #expect(ConnectAgentsModel.arguments(connecting: "codex", to: URL(filePath: "/tmp/Work.knode"), defaultSpace: work) == ["connect", "codex"])
+        #expect(ConnectAgentsModel.arguments(connecting: "codex", to: URL(filePath: "/tmp/x/../Work.knode/"), defaultSpace: work) == ["connect", "codex"])
+    }
+
+    @Test func aLinkToTheDefaultSpaceIsTheDefaultSpace() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "kn-link-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let real = folder.appending(path: "Work.knode", directoryHint: .isDirectory)
+        let link = folder.appending(path: "Link.knode", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(link.isSameSpace(as: real))
+        #expect(!link.isSameSpace(as: folder))
+        #expect(!link.isSameSpace(as: nil))
+        #expect(ConnectAgentsModel.arguments(connecting: "codex", to: link, defaultSpace: real) == ["connect", "codex"])
     }
 }
 
@@ -321,7 +337,7 @@ import Testing
       "access": null,
       "ok": false,
       "problems": [
-        { "code": "wrong_space", "message": "codex uses \"Home\" (it follows the default space), not \"Work\". `knode connect codex --space /tmp/Work.knode` points it there; it gets access only if it has none anywhere, else `knode agents grant codex <space> write`." }
+        { "code": "wrong_space", "message": "codex is fixed to \"Home\" by its settings (/tmp/.codex/config.toml), so it saves there wherever it works, not to \"Work\", which the conversations of /tmp/kn-site go to. `knode connect codex` without --space lets it follow the default space and the project folder it works in; `knode connect codex --space /tmp/Work.knode` fixes it to \"Work\" instead." }
       ],
       "notes": ["Knode Service did not answer, so the agent's access is not known."]
     }
@@ -339,7 +355,7 @@ import Testing
         #expect(check.intended?.shown == "Work")
         #expect(check.problems.map(\.code) == ["wrong_space"])
         let problem = try #require(check.problems.first)
-        #expect(problem.commands == ["knode connect codex --space /tmp/Work.knode", "knode agents grant codex <space> write"])
+        #expect(problem.commands == ["knode connect codex", "knode connect codex --space /tmp/Work.knode"])
         #expect(!problem.text.contains("`"))
         #expect(check.notes.count == 1)
 
