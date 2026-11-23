@@ -280,10 +280,12 @@ final class ConnectAgentsModel {
     }
 
     /// The arguments that connect `agent` to `space`. The default space is not named, so the
-    /// agent follows it when the person changes it.
+    /// agent follows it when the person changes it and saves to the space of the project folder
+    /// it works in; only another space, chosen on purpose, is fixed. The core leaves out the
+    /// default space too, so a path written differently cannot fix it.
     static func arguments(connecting agent: String, to space: URL?, defaultSpace: URL?) -> [String] {
         var arguments = ["connect", agent]
-        if let space, space.standardizedFileURL != defaultSpace?.standardizedFileURL {
+        if let space, !space.isSameSpace(as: defaultSpace) {
             arguments += ["--space", space.path(percentEncoded: false)]
         }
         return arguments
@@ -407,7 +409,7 @@ struct AgentCheck: Decodable, Equatable, Sendable {
         var arguments = ["connect", agent, "--check", "--json"]
         if let project {
             arguments += ["--project", project.path(percentEncoded: false)]
-        } else if let space, space.standardizedFileURL != defaultSpace?.standardizedFileURL {
+        } else if let space, !space.isSameSpace(as: defaultSpace) {
             arguments += ["--space", space.path(percentEncoded: false)]
         }
         return arguments
@@ -453,4 +455,17 @@ final class AgentChecks {
     /// What to do when `knode` is older than `knode connect --check`.
     static let updateKnode = "This knode is too old to check agents. Update it with "
         + "brew upgrade knodemd/tap/knode (or install the latest Knode), then check again."
+}
+
+extension URL {
+    /// Whether this and `other` are the same space: links resolved, and a trailing slash or a
+    /// `..` in either makes no difference.
+    func isSameSpace(as other: URL?) -> Bool {
+        guard let other else { return false }
+        func path(_ url: URL) -> String {
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path(percentEncoded: false)
+            return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        }
+        return path(self) == path(other)
+    }
 }
