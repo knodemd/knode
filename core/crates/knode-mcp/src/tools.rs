@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::backend::{Backend, BackendError};
+use crate::reach::{Reach, Reached};
 
 mod excerpt;
 mod maps;
@@ -502,30 +503,61 @@ pub fn definitions() -> Vec<ToolDefinition> {
     tools
 }
 
-/// Runs a tool for the agent `agent` (the client name from MCP), or returns `None` if there is
-/// no tool with this name.
-pub fn call<B: Backend + ?Sized>(
+/// Runs a tool for the agent `agent` (the client name from MCP) on one space, or returns `None`
+/// if there is no tool with this name.
+pub fn call<B: Backend>(
     backend: &B,
     agent: &str,
     name: &str,
     arguments: Map<String, Value>,
 ) -> Option<ToolOutput> {
+    call_in(&Reach::single(backend), agent, name, arguments)
+}
+
+/// Runs a tool for the agent `agent` on the spaces it reaches: `search`, `projects` and
+/// `recent` cover every space it reads, tools given a node read it in the space that has it, and
+/// tools that change something change the space it saves to. Returns `None` if there is no tool
+/// with this name.
+pub fn call_in(
+    reach: &Reach<'_>,
+    agent: &str,
+    name: &str,
+    arguments: Map<String, Value>,
+) -> Option<ToolOutput> {
     let by = Provenance::agent(agent);
+    let home = reach.home().backend;
+    // The space of the node a tool is given, as `key` in the arguments.
+    let of = |key: &str| {
+        let reference = arguments.get(key).and_then(Value::as_str).unwrap_or("");
+        reach.space_of(reference).backend
+    };
     let output = match name {
-        "search" => parse(arguments).and_then(|args| search(backend, args)),
-        "read_node" => parse(arguments).and_then(|args| read_node(backend, args)),
-        "read_excerpt" => parse(arguments).and_then(|args| excerpt::read(backend, args)),
-        "write_node" => parse(arguments).and_then(|args| write_node(backend, args, &by)),
-        "link_nodes" => parse(arguments).and_then(|args| link_nodes(backend, args, &by)),
-        "recent" => parse(arguments).and_then(|args| recent(backend, args)),
-        "projects" => parse(arguments).and_then(|args| projects(backend, args)),
-        "history" => parse(arguments).and_then(|args| history(backend, args)),
-        "undo" => parse(arguments).and_then(|args| undo(backend, args, &by)),
-        "link_kinds" => maps::link_kinds(backend),
-        "read_canvas" => parse(arguments).and_then(|args| maps::read_canvas(backend, args)),
-        "attach_file" => parse(arguments).and_then(|args| maps::attach_file(backend, args, &by)),
-        "read_attachment" => parse(arguments).and_then(|args| maps::read_attachment(backend, args)),
-        "setup_guide" => parse(arguments).map(|args| setup_guide(backend, args)),
+        "search" => parse(arguments).and_then(|args| search(reach, args)),
+        "read_node" => parse(arguments).and_then(|args| read_node(reach, args)),
+        "read_excerpt" => {
+            let backend = of("id");
+            parse(arguments).and_then(|args| excerpt::read(backend, args))
+        }
+        "write_node" => parse(arguments).and_then(|args| write_node(reach, args, &by)),
+        "link_nodes" => parse(arguments).and_then(|args| link_nodes(reach, args, &by)),
+        "recent" => parse(arguments).and_then(|args| recent(reach, args)),
+        "projects" => parse(arguments).and_then(|args| projects(reach, args)),
+        "history" => {
+            let backend = of("node");
+            parse(arguments).and_then(|args| history(backend, args))
+        }
+        "undo" => parse(arguments).and_then(|args| undo(home, args, &by)),
+        "link_kinds" => maps::link_kinds(home),
+        "read_canvas" => {
+            let backend = of("canvas");
+            parse(arguments).and_then(|args| maps::read_canvas(backend, args))
+        }
+        "attach_file" => parse(arguments).and_then(|args| maps::attach_file(home, args, &by)),
+        "read_attachment" => {
+            let backend = of("node");
+            parse(arguments).and_then(|args| maps::read_attachment(backend, args))
+        }
+        "setup_guide" => parse(arguments).map(|args| setup_guide(home, args)),
         _ => return None,
     };
     Some(output.unwrap_or_else(|e| e))
@@ -550,42 +582,89 @@ struct SearchArgs {
     limit: Option<usize>,
 }
 
-fn search<B: Backend + ?Sized>(backend: &B, args: SearchArgs) -> Outcome {
+fn search(reach: &Reach<'_>, args: SearchArgs) -> Outcome {
     let query = args.query.trim();
     if query.is_empty() {
         return Err(ToolOutput::error(
             "The query is empty. Pass a few words to look for.",
         ));
     }
-    let found = backend.search(
-        query,
-        args.mode.unwrap_or_default(),
-        clamp_limit(args.limit),
-    )?;
-    let hits = &found.hits;
-    let how = match found.mode {
+    let limit = clamp_limit(args.limit);
+    let several = reach.is_several();
+    let mut hits: Vec<(&Reached<'_>, HybridHit)> = Vec::new();
+    let mut modes: Vec<SearchMode> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut failed = None;
+    for space in reach.readable() {
+        match space
+            .backend
+            .search(query, args.mode.unwrap_or_default(), limit)
+        {
+            Ok(found) => {
+                modes.push(found.mode);
+                if let Some(note) = found.note {
+                    notes.push(match space.name.filter(|_| several) {
+                        Some(name) => format!("In \"{name}\": {note}"),
+                        None => note,
+                    });
+                }
+                hits.extend(found.hits.into_iter().map(|hit| (space, hit)));
+            }
+            Err(error) if several => {
+                notes.push(format!(
+                    "\"{}\" could not be searched: {error}",
+                    space.name.unwrap_or("A space")
+                ));
+                failed.get_or_insert(error);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if modes.is_empty() {
+        return Err(failed
+            .map(ToolOutput::from)
+            .unwrap_or_else(|| ToolOutput::error("No space can be searched.")));
+    }
+    // Each space ranks its own results; their scores are comparable, so they merge by score
+    // (section 19.6 of the .knode specification). Ties keep the space the agent saves to first.
+    hits.sort_by(|a, b| b.1.score.total_cmp(&a.1.score));
+    hits.truncate(limit);
+    // When one space could only search by words, say so for all.
+    let mode = if modes.contains(&SearchMode::Words) {
+        SearchMode::Words
+    } else {
+        modes[0]
+    };
+    let note = (!notes.is_empty()).then(|| notes.join(" "));
+    let how = match mode {
         SearchMode::Words => "by words",
         SearchMode::Meaning => "by meaning",
         SearchMode::Hybrid => "by words and meaning",
     };
     let mut text = String::new();
-    if let Some(note) = &found.note {
+    if let Some(note) = &note {
         let _ = writeln!(text, "Note: {note}\n");
     }
+    let across = if several {
+        format!(" in {} spaces", reach.readable().count())
+    } else {
+        String::new()
+    };
     if hits.is_empty() {
         let _ = write!(
             text,
-            "No nodes match \"{query}\" ({how}). Try fewer or other words, or `recent` to see what changed lately."
+            "No nodes match \"{query}\" ({how}){across}. Try fewer or other words, or `recent` to see what changed lately."
         );
     } else {
         let _ = writeln!(
             text,
-            "{} for \"{query}\" ({how}):",
+            "{} for \"{query}\" ({how}){across}:",
             count(hits.len(), "node")
         );
-        for (i, hit) in hits.iter().enumerate() {
+        for (i, (space, hit)) in hits.iter().enumerate() {
             let _ = write!(text, "\n{}. ", i + 1);
             summary_line(&mut text, &hit.node);
+            space_line(&mut text, space, several);
             let snippet = one_line(&hit.snippet);
             if !snippet.is_empty() {
                 let _ = write!(text, "\n   {snippet}");
@@ -595,10 +674,10 @@ fn search<B: Backend + ?Sized>(backend: &B, args: SearchArgs) -> Outcome {
     }
     let mut structured = json!({
         "query": query,
-        "mode": found.mode,
-        "hits": hits.iter().map(hit_json).collect::<Vec<_>>(),
+        "mode": mode,
+        "hits": hits.iter().map(|(space, hit)| hit_json(hit, space)).collect::<Vec<_>>(),
     });
-    if let Some(note) = &found.note {
+    if let Some(note) = &note {
         structured["note"] = json!(note);
     }
     Ok(ToolOutput::ok(text, structured))
@@ -610,32 +689,32 @@ struct ReadArgs {
     title: Option<String>,
 }
 
-fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
-    let (node, same_title) = match (non_empty(args.id), non_empty(args.title)) {
+fn read_node(reach: &Reach<'_>, args: ReadArgs) -> Outcome {
+    let (space, node, same_title) = match (non_empty(args.id), non_empty(args.title)) {
         (Some(id), _) => {
             let id = parse_id(&id)?;
-            let node = backend.get_node(&id)?.ok_or_else(|| {
+            let (space, node) = reach.find(&id)?.ok_or_else(|| {
                 ToolOutput::error(format!("No node has the id {id}. Use search to find it."))
             })?;
-            (node, Vec::new())
+            (space, node, Vec::new())
         }
         (None, Some(title)) => {
-            let mut found = backend.find_by_title(&title)?;
-            if found.is_empty() {
+            let Some((space, mut found)) = reach.find_title(&title)? else {
                 return Err(ToolOutput::error(format!(
                     "No node is titled \"{title}\". Use search to find it."
                 )));
-            }
+            };
             let first = found.remove(0);
-            let node = backend.get_node(&first.id)?.ok_or_else(|| {
+            let node = space.backend.get_node(&first.id)?.ok_or_else(|| {
                 ToolOutput::error(format!("The node \"{title}\" was just deleted."))
             })?;
-            (node, found)
+            (space, node, found)
         }
         (None, None) => {
             return Err(ToolOutput::error("Pass the id of the node, or its title."));
         }
     };
+    let backend = space.backend;
     let mut node = node;
     // The body and its version together, so a rewrite of it merges from exactly this text.
     let version = match backend.open_body(&node.id)? {
@@ -661,6 +740,9 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
     let _ = writeln!(text, "\n---\n");
     let _ = writeln!(text, "- id: `{}`", node.id);
     let _ = writeln!(text, "- kind: {}", node.kind);
+    if let Some(name) = space.name.filter(|_| reach.is_several()) {
+        let _ = writeln!(text, "- space: {name}");
+    }
     if !node.tags.is_empty() {
         let _ = writeln!(text, "- tags: {}", node.tags.join(", "));
     }
@@ -706,7 +788,7 @@ fn read_node<B: Backend + ?Sized>(backend: &B, args: ReadArgs) -> Outcome {
     }
 
     let structured = json!({
-        "node": node_json(&node),
+        "node": with_space(node_json(&node), space),
         "links": links.iter().map(link_json).collect::<Vec<_>>(),
         "backlinks": backlinks.iter().map(link_json).collect::<Vec<_>>(),
         "labeled_links": labeled.iter().map(|l| json!({
@@ -735,16 +817,20 @@ struct WriteArgs {
     version: Option<String>,
 }
 
-fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance) -> Outcome {
+fn write_node(reach: &Reach<'_>, args: WriteArgs, by: &Provenance) -> Outcome {
+    let home = reach.home();
+    let backend = home.backend;
     let title = non_empty(args.title.clone());
     let kind = non_empty(args.kind.clone());
     let existing = match non_empty(args.id.clone()) {
         Some(id) => {
             let id = parse_id(&id)?;
             let node = backend.get_node(&id)?.ok_or_else(|| {
-                ToolOutput::error(format!(
-                    "No node has the id {id}. Leave the id out to create a node."
-                ))
+                elsewhere(reach, &id.to_string()).unwrap_or_else(|| {
+                    ToolOutput::error(format!(
+                        "No node has the id {id}. Leave the id out to create a node."
+                    ))
+                })
             })?;
             Some((node, title.clone()))
         }
@@ -806,8 +892,11 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
         _ => "No change to",
     };
     let mut text = format!(
-        "{verb} {} [[{}]] (id `{}`).\n",
-        node.kind, node.title, node.id
+        "{verb} {} [[{}]] (id `{}`){}.\n",
+        node.kind,
+        node.title,
+        node.id,
+        in_space(home)
     );
     if merged {
         text.push_str(
@@ -816,11 +905,14 @@ fn write_node<B: Backend + ?Sized>(backend: &B, args: WriteArgs, by: &Provenance
              the result before changing it further.\n",
         );
     }
-    let structured = json!({
+    let mut structured = json!({
         "result": result,
-        "node": summary_json(&summary_of(&node)),
+        "node": with_space(summary_json(&summary_of(&node)), home),
         "merged": merged,
     });
+    if let Some(name) = home.name {
+        structured["space"] = json!(name);
+    }
     Ok(ToolOutput::ok(text, structured))
 }
 
@@ -831,9 +923,15 @@ struct LinkArgs {
     kind: Option<String>,
 }
 
-fn link_nodes<B: Backend + ?Sized>(backend: &B, args: LinkArgs, by: &Provenance) -> Outcome {
-    let from = resolve_ref(backend, &args.from)?;
-    let to = resolve_ref(backend, &args.to)?;
+fn link_nodes(reach: &Reach<'_>, args: LinkArgs, by: &Provenance) -> Outcome {
+    let home = reach.home();
+    let backend = home.backend;
+    let resolve = |reference: &str| {
+        resolve_ref(backend, reference)
+            .map_err(|missing| elsewhere(reach, reference).unwrap_or(missing))
+    };
+    let from = resolve(&args.from)?;
+    let to = resolve(&args.to)?;
     let kind = non_empty(args.kind).unwrap_or_else(|| link_kinds::RELATED.to_string());
     if kind == link_kinds::MENTIONS {
         return Err(ToolOutput::error(
@@ -855,10 +953,18 @@ fn link_nodes<B: Backend + ?Sized>(backend: &B, args: LinkArgs, by: &Provenance)
     };
     let link = backend.link(&from, &to, &kind, by)?;
     let text = format!(
-        "Linked [[{}]] {} [[{}]] ({}).\n",
-        link.from_title, known.label, link.to_title, link.kind
+        "Linked [[{}]] {} [[{}]] ({}){}.\n",
+        link.from_title,
+        known.label,
+        link.to_title,
+        link.kind,
+        in_space(home)
     );
-    Ok(ToolOutput::ok(text, json!({ "link": link_json(&link) })))
+    let mut structured = json!({ "link": link_json(&link) });
+    if let Some(name) = home.name {
+        structured["space"] = json!(name);
+    }
+    Ok(ToolOutput::ok(text, structured))
 }
 
 #[derive(Deserialize)]
@@ -894,24 +1000,53 @@ struct RecentArgs {
     limit: Option<usize>,
 }
 
-fn recent<B: Backend + ?Sized>(backend: &B, args: RecentArgs) -> Outcome {
-    let nodes = backend.recent(clamp_limit(args.limit))?;
+fn recent(reach: &Reach<'_>, args: RecentArgs) -> Outcome {
+    let limit = clamp_limit(args.limit);
+    let several = reach.is_several();
+    let mut nodes: Vec<(&Reached<'_>, NodeSummary)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for space in reach.readable() {
+        match space.backend.recent(limit) {
+            Ok(found) => nodes.extend(found.into_iter().map(|node| (space, node))),
+            Err(error) if several => notes.push(format!(
+                "\"{}\" could not be read: {error}",
+                space.name.unwrap_or("A space")
+            )),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // Newest first across spaces; ties keep the space the agent saves to first.
+    nodes.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+    nodes.truncate(limit);
     let mut text = String::new();
+    for note in &notes {
+        let _ = writeln!(text, "Note: {note}\n");
+    }
     if nodes.is_empty() {
-        text.push_str("The space is empty. Save something with write_node.\n");
+        text.push_str(if several {
+            "Your spaces are empty. Save something with write_node.\n"
+        } else {
+            "The space is empty. Save something with write_node.\n"
+        });
     } else {
         let _ = writeln!(
             text,
             "{} changed most recently:",
             count(nodes.len(), "node")
         );
-        for (i, node) in nodes.iter().enumerate() {
+        for (i, (space, node)) in nodes.iter().enumerate() {
             let _ = write!(text, "\n{}. ", i + 1);
             summary_line(&mut text, node);
+            space_line(&mut text, space, several);
         }
         text.push('\n');
     }
-    let structured = json!({ "nodes": nodes.iter().map(summary_json).collect::<Vec<_>>() });
+    let structured = json!({
+        "nodes": nodes
+            .iter()
+            .map(|(space, node)| with_space(summary_json(node), space))
+            .collect::<Vec<_>>()
+    });
     Ok(ToolOutput::ok(text, structured))
 }
 
@@ -921,17 +1056,34 @@ struct ProjectsArgs {
     limit: Option<usize>,
 }
 
-fn projects<B: Backend + ?Sized>(backend: &B, args: ProjectsArgs) -> Outcome {
-    let all = backend.projects()?;
-    let known: std::collections::BTreeSet<NodeId> = all.iter().map(|p| p.node.id).collect();
-    let children = |of: Option<NodeId>| -> Vec<&Project> {
+fn projects(reach: &Reach<'_>, args: ProjectsArgs) -> Outcome {
+    let several = reach.is_several();
+    let mut per_space: Vec<(&Reached<'_>, Vec<Project>)> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for space in reach.readable() {
+        match space.backend.projects() {
+            Ok(projects) => per_space.push((space, projects)),
+            Err(error) if several => notes.push(format!(
+                "\"{}\" could not be read: {error}",
+                space.name.unwrap_or("A space")
+            )),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    // The projects inside `of` (the top ones for `None`) in one space.
+    fn children(all: &[Project], of: Option<NodeId>) -> Vec<&Project> {
+        let known: std::collections::BTreeSet<NodeId> = all.iter().map(|p| p.node.id).collect();
         all.iter()
             .filter(|p| p.parent.filter(|id| known.contains(id)) == of)
             .collect()
-    };
+    }
+    let mut text = String::new();
+    for note in &notes {
+        let _ = writeln!(text, "Note: {note}\n");
+    }
     let Some(wanted) = non_empty(args.project) else {
-        let mut text = String::new();
-        if all.is_empty() {
+        let total: usize = per_space.iter().map(|(_, all)| all.len()).sum();
+        if total == 0 {
             text.push_str(
                 "No projects yet. A project is a node of kind project that notes link to with \
                  part-of; create one with write_node and link notes to it with link_nodes.\n",
@@ -940,15 +1092,10 @@ fn projects<B: Backend + ?Sized>(backend: &B, args: ProjectsArgs) -> Outcome {
             let _ = writeln!(
                 text,
                 "{}. Pass one as project to list its notes.\n",
-                count(all.len(), "project")
+                count(total, "project")
             );
-            fn tree<'a>(
-                text: &mut String,
-                depth: usize,
-                of: Option<NodeId>,
-                children: &dyn Fn(Option<NodeId>) -> Vec<&'a Project>,
-            ) {
-                for p in children(of) {
+            fn tree(text: &mut String, depth: usize, of: Option<NodeId>, all: &[Project]) {
+                for p in children(all, of) {
                     let _ = writeln!(
                         text,
                         "{}- **{}** (id `{}`): {}{}",
@@ -966,29 +1113,51 @@ fn projects<B: Backend + ?Sized>(backend: &B, args: ProjectsArgs) -> Outcome {
                         }
                     );
                     if depth < 8 {
-                        tree(text, depth + 1, Some(p.node.id), children);
+                        tree(text, depth + 1, Some(p.node.id), all);
                     }
                 }
             }
-            tree(&mut text, 0, None, &children);
+            for (space, all) in per_space.iter().filter(|(_, all)| !all.is_empty()) {
+                if let Some(name) = space.name.filter(|_| several) {
+                    let _ = writeln!(text, "In \"{name}\":");
+                }
+                tree(&mut text, 0, None, all);
+            }
         }
-        let structured = json!({ "projects": all.iter().map(project_json).collect::<Vec<_>>() });
+        let structured = json!({
+            "projects": per_space
+                .iter()
+                .flat_map(|(space, all)| all.iter().map(move |p| project_json(p, space)))
+                .collect::<Vec<_>>()
+        });
         return Ok(ToolOutput::ok(text, structured));
     };
     let key = wanted.to_lowercase();
-    let Some(project) = all
+    let found = per_space
         .iter()
-        .find(|p| p.node.id.to_string() == wanted)
-        .or_else(|| all.iter().find(|p| p.node.title.to_lowercase() == key))
-    else {
+        .find_map(|(space, all)| {
+            all.iter()
+                .find(|p| p.node.id.to_string() == wanted)
+                .map(|p| (*space, all, p))
+        })
+        .or_else(|| {
+            per_space.iter().find_map(|(space, all)| {
+                all.iter()
+                    .find(|p| p.node.title.to_lowercase() == key)
+                    .map(|p| (*space, all, p))
+            })
+        });
+    let Some((space, all, project)) = found else {
         return Err(ToolOutput::error(format!(
             "No project is called \"{wanted}\". Call projects without project to list them."
         )));
     };
-    let notes = backend.project_notes(&project.node.id, clamp_limit(args.limit))?;
-    let inside = children(Some(project.node.id));
-    let mut text = String::new();
+    let notes = space
+        .backend
+        .project_notes(&project.node.id, clamp_limit(args.limit))?;
+    let inside = children(all, Some(project.node.id));
     summary_line(&mut text, &project.node);
+    space_line(&mut text, space, several);
     text.push('\n');
     if let Some(parent) = project
         .parent
@@ -1023,16 +1192,16 @@ fn projects<B: Backend + ?Sized>(backend: &B, args: ProjectsArgs) -> Outcome {
         text.push('\n');
     }
     let structured = json!({
-        "project": project_json(project),
-        "projects": inside.iter().map(|p| project_json(p)).collect::<Vec<_>>(),
-        "notes": notes.iter().map(summary_json).collect::<Vec<_>>(),
+        "project": project_json(project, space),
+        "projects": inside.iter().map(|p| project_json(p, space)).collect::<Vec<_>>(),
+        "notes": notes.iter().map(|n| with_space(summary_json(n), space)).collect::<Vec<_>>(),
     });
     Ok(ToolOutput::ok(text, structured))
 }
 
-fn project_json(project: &Project) -> Value {
+fn project_json(project: &Project, space: &Reached<'_>) -> Value {
     let mut json = json!({
-        "node": summary_json(&project.node),
+        "node": with_space(summary_json(&project.node), space),
         "notes": project.notes,
         "projects": project.projects,
     });
@@ -1293,14 +1462,58 @@ fn summary_json(node: &NodeSummary) -> Value {
     json
 }
 
-fn hit_json(hit: &HybridHit) -> Value {
+fn hit_json(hit: &HybridHit, space: &Reached<'_>) -> Value {
     json!({
-        "node": summary_json(&hit.node),
+        "node": with_space(summary_json(&hit.node), space),
         "snippet": hit.snippet,
         "score": hit.score,
         "word_rank": hit.word_rank,
         "meaning_rank": hit.meaning_rank,
     })
+}
+
+/// `value` with the name of the space it comes from, when known.
+fn with_space(mut value: Value, space: &Reached<'_>) -> Value {
+    if let Some(name) = space.name {
+        value["space"] = json!(name);
+    }
+    value
+}
+
+/// Which space a result line comes from, when the agent reads several.
+fn space_line(text: &mut String, space: &Reached<'_>, several: bool) {
+    if let Some(name) = space.name.filter(|_| several) {
+        let _ = write!(text, ", in \"{name}\"");
+    }
+}
+
+/// ` in "Work"`: the space a change was made in, when known.
+fn in_space(space: &Reached<'_>) -> String {
+    space
+        .name
+        .map(|name| format!(" in \"{name}\""))
+        .unwrap_or_default()
+}
+
+/// The error for a node the agent asked to change in the space it saves to, when it is in
+/// another space it reads: changes go to one space only (decision 0017).
+fn elsewhere(reach: &Reach<'_>, reference: &str) -> Option<ToolOutput> {
+    let space = reach.space_of(reference);
+    if std::ptr::eq(space, reach.home()) {
+        return None;
+    }
+    Some(ToolOutput::error(format!(
+        "\"{}\" is in the space \"{}\", which you read but do not save to here: you save to \
+         \"{}\" only, and links join nodes of one space. Save what you need to the space you \
+         save to with write_node, or ask the user to make the change in \"{}\".",
+        reference.trim(),
+        space.name.unwrap_or("another space"),
+        reach
+            .home()
+            .name
+            .unwrap_or("the space you were started with"),
+        space.name.unwrap_or("that space"),
+    )))
 }
 
 fn node_json(node: &Node) -> Value {

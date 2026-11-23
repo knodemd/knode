@@ -24,11 +24,13 @@
 #![warn(missing_docs)]
 
 pub mod backend;
+pub mod reach;
 #[cfg(unix)]
 mod service;
 pub mod tools;
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use rmcp::model::{
@@ -41,9 +43,10 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::Value;
 
 pub use backend::{
-    Backend, BackendError, BackendResult, BodyDoc, DirectBackend, LocalFolder, SearchResults,
-    Written,
+    Backend, BackendError, BackendResult, BodyDoc, DirectBackend, LocalFolder, Reachable,
+    SearchResults, Written,
 };
+pub use reach::{Home, Reach, Reached};
 #[cfg(unix)]
 pub use service::ServiceBackend;
 
@@ -99,6 +102,12 @@ pub struct KnodeServer<B> {
     backend: Arc<B>,
     /// Whether the space is set up, asked once, the first time the instructions are needed.
     set_up: Arc<OnceLock<bool>>,
+    /// The spaces the agent may read, asked once, the first time they are needed.
+    reachable: Arc<OnceLock<Vec<Reachable>>>,
+    /// Whether the backend's space was given with `--space` or `KNODE_SPACE`.
+    given: bool,
+    /// The folder the agent works in.
+    folder: Option<PathBuf>,
 }
 
 impl<B> Clone for KnodeServer<B> {
@@ -106,22 +115,68 @@ impl<B> Clone for KnodeServer<B> {
         KnodeServer {
             backend: Arc::clone(&self.backend),
             set_up: Arc::clone(&self.set_up),
+            reachable: Arc::clone(&self.reachable),
+            given: self.given,
+            folder: self.folder.clone(),
         }
     }
 }
 
 impl<B: Backend> KnodeServer<B> {
-    /// A server over `backend`.
+    /// A server over `backend`, whose space is the default one, for an agent that works in no
+    /// known folder.
     pub fn new(backend: B) -> Self {
         KnodeServer {
             backend: Arc::new(backend),
             set_up: Arc::default(),
+            reachable: Arc::default(),
+            given: false,
+            folder: None,
         }
+    }
+
+    /// Whether the backend's space was given with `--space` or `KNODE_SPACE`: the agent then
+    /// saves to it wherever it works.
+    pub fn given(mut self, given: bool) -> Self {
+        self.given = given;
+        self
+    }
+
+    /// The folder the agent works in: the working folder of this process, where Claude Code
+    /// and Codex start the server. The agent saves to the space of the nearest project folder
+    /// that holds it, among the spaces it may write to.
+    pub fn working_in(mut self, folder: Option<PathBuf>) -> Self {
+        self.folder = folder;
+        self
     }
 
     /// The backend.
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// The spaces the agent reaches: every space it may read, and the one it saves to. When the
+    /// backend cannot list them, its own space alone.
+    pub fn reach(&self) -> Reach<'_> {
+        let reachable = self
+            .reachable
+            .get_or_init(|| self.backend.reachable().unwrap_or_default());
+        Reach::new(
+            self.backend.as_ref(),
+            reachable,
+            self.given,
+            self.folder.as_deref(),
+        )
+    }
+
+    /// Runs a tool for the agent `agent` on the spaces it reaches ([`tools::call_in`]).
+    pub fn call(
+        &self,
+        agent: &str,
+        name: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Option<tools::ToolOutput> {
+        tools::call_in(&self.reach(), agent, name, arguments)
     }
 
     /// What the server tells the agent `client` (the name it gave in `initialize`) when it
@@ -130,15 +185,20 @@ impl<B: Backend> KnodeServer<B> {
     /// [`SETUP_IN_APP_INSTRUCTIONS`] for any other. Whether it is set up is asked of the backend
     /// once and kept; a space that cannot be asked counts as set up.
     pub fn instructions(&self, client: Option<&str>) -> String {
+        let reach = self.reach();
         let set_up = *self
             .set_up
-            .get_or_init(|| self.backend.is_set_up().unwrap_or(true));
+            .get_or_init(|| reach.home().backend.is_set_up().unwrap_or(true));
+        let mut text = INSTRUCTIONS.to_string();
+        if let Some(spaces) = reach.describe() {
+            text = format!("{text}\n\n{spaces}");
+        }
         if set_up {
-            INSTRUCTIONS.to_string()
+            text
         } else if client.is_some_and(runs_commands) {
-            format!("{INSTRUCTIONS}\n\n{SETUP_INSTRUCTIONS}")
+            format!("{text}\n\n{SETUP_INSTRUCTIONS}")
         } else {
-            format!("{INSTRUCTIONS}\n\n{SETUP_IN_APP_INSTRUCTIONS}")
+            format!("{text}\n\n{SETUP_IN_APP_INSTRUCTIONS}")
         }
     }
 }
@@ -206,8 +266,7 @@ impl<B: Backend> ServerHandler for KnodeServer<B> {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| UNKNOWN_AGENT.to_string());
         let arguments = request.arguments.unwrap_or_default();
-        let Some(output) = tools::call(self.backend.as_ref(), &agent, &request.name, arguments)
-        else {
+        let Some(output) = self.call(&agent, &request.name, arguments) else {
             return Err(ErrorData::invalid_params(
                 format!(
                     "unknown tool {:?}; the tools are {}",
@@ -231,11 +290,17 @@ impl<B: Backend> ServerHandler for KnodeServer<B> {
 /// Serves `backend` over standard input and output until the client closes the connection.
 /// Blocks; starts its own single-threaded runtime.
 pub fn run_stdio<B: Backend>(backend: B) -> io::Result<()> {
+    serve_stdio(KnodeServer::new(backend))
+}
+
+/// Serves `server` over standard input and output until the client closes the connection.
+/// Blocks; starts its own single-threaded runtime.
+pub fn serve_stdio<B: Backend>(server: KnodeServer<B>) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let service = KnodeServer::new(backend)
+        let service = server
             .serve(rmcp::transport::stdio())
             .await
             .map_err(io::Error::other)?;
