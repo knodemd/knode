@@ -147,6 +147,11 @@ fn known(paths: &Paths, config: &Config) -> Result<Vec<PathBuf>> {
     Ok(list)
 }
 
+/// Every space Knode knows on this machine.
+pub fn known_spaces(paths: &Paths) -> Result<Vec<PathBuf>> {
+    known(paths, &Config::load(paths)?)
+}
+
 /// The space named by `arg`: a path to a `.knode` package, or the name of a known space.
 pub fn find(paths: &Paths, arg: &str) -> Result<PathBuf> {
     let as_path = Path::new(arg);

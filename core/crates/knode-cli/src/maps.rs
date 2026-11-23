@@ -117,6 +117,36 @@ pub fn link(
     Ok(())
 }
 
+/// Removes a link made by hand, such as a `part-of` link to change a note's or a project's
+/// project.
+pub fn unlink(
+    backend: &dyn Backend,
+    from: &str,
+    to: &str,
+    kind: Option<&str>,
+    by: &Provenance,
+) -> Result<()> {
+    let from = resolve(backend, from)?;
+    let to = resolve(backend, to)?;
+    let kind = kind
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .unwrap_or(link_kinds::RELATED);
+    if kind == link_kinds::MENTIONS {
+        bail!("mentions links come only from [[links]] in a note's text; edit the text instead");
+    }
+    let (from_title, to_title) = (title(backend, &from)?, title(backend, &to)?);
+    if backend.unlink(&from, &to, kind, by)? {
+        println!("Removed the {kind} link from \"{from_title}\" to \"{to_title}\".");
+    } else {
+        println!(
+            "There is no {kind} link between \"{from_title}\" and \"{to_title}\"; `knode links \
+             \"{from_title}\"` lists its links."
+        );
+    }
+    Ok(())
+}
+
 pub fn kinds(backend: &dyn Backend, action: Option<KindsAction>, by: &Provenance) -> Result<()> {
     match action.unwrap_or(KindsAction::List { json: false }) {
         KindsAction::List { json } => {

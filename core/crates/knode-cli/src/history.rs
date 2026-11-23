@@ -73,10 +73,26 @@ pub fn history(backend: &dyn Backend, node: Option<&str>, limit: usize, json: bo
     };
     println!("{title}  {id}");
     for change in &changes {
-        let version = versions
+        let mine: Vec<&HistoryEntry> = versions
             .iter()
-            .rfind(|v| v.change_id == Some(change.id) && v.node_id == id);
-        print_change(change, "", version);
+            .filter(|v| v.change_id == Some(change.id) && v.node_id == id)
+            .collect();
+        if change.action == knode_format::actions::PROJECT_MOVE && mine.len() > 1 {
+            // A move brings every version, each with who made it and when.
+            print_change(change, "", None);
+            for version in mine.iter().rev() {
+                let date = version.changed_at.to_string();
+                println!(
+                    "      version {:<6} {}  {:<6} by {}",
+                    version.seq,
+                    date[..16].replace('T', " "),
+                    format!("{:?}", version.op).to_lowercase(),
+                    who(&version.changed_by)
+                );
+            }
+        } else {
+            print_change(change, "", mine.last().copied());
+        }
     }
     if changes.len() == limit {
         println!("(the latest {limit}; -n shows more)");

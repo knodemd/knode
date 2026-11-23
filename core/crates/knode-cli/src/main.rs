@@ -9,6 +9,7 @@ mod instructions;
 mod maps;
 mod markdown;
 mod onboard;
+mod projects;
 mod readwise;
 mod service;
 mod sign_in;
@@ -148,6 +149,23 @@ enum Command {
         /// The kind of link, such as part-of or answers; `knode kinds` lists them.
         #[arg(long)]
         kind: Option<String>,
+    },
+    /// Remove a link made by hand, related by default. With `knode link`, it moves a note or a
+    /// project to another project: unlink its part-of link, then link it to the new one.
+    Unlink {
+        /// The node the link starts from: an id or exact title.
+        from: String,
+        /// The node it points at: an id or exact title.
+        to: String,
+        /// The kind of link, such as part-of; `knode links <node>` shows them.
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// List the projects of the space, or move one, with its notes, links and history, to
+    /// another space.
+    Projects {
+        #[command(subcommand)]
+        action: Option<projects::Action>,
     },
     /// List the kinds of link, or define or remove one of the space's own.
     Kinds {
@@ -388,6 +406,15 @@ fn run(cli: Cli) -> Result<()> {
             let backend = service::backend(&space)?;
             maps::link(backend.as_ref(), &from, &to, kind.as_deref(), &person())
         }
+        Command::Unlink { from, to, kind } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            let backend = service::backend(&space)?;
+            maps::unlink(backend.as_ref(), &from, &to, kind.as_deref(), &person())
+        }
+        Command::Projects { action } => {
+            let space = existing_space(&paths, cli.space.as_deref())?;
+            projects::run(&paths, &space, action, &person())
+        }
         Command::Kinds { action } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
             maps::kinds(service::backend(&space)?.as_ref(), action, &person())
@@ -412,6 +439,12 @@ fn run(cli: Cli) -> Result<()> {
         Command::Undo { change, force } => {
             let space = existing_space(&paths, cli.space.as_deref())?;
             let backend = service::backend(&space)?;
+            // A move between spaces is undone in both at once.
+            if let Some(detail) = backend.change(change)?
+                && detail.change.action == knode_format::actions::PROJECT_MOVE
+            {
+                return projects::undo_move(&paths, &space, &detail.change, &person());
+            }
             history::undo(backend.as_ref(), change, force, &person())
         }
         Command::Restore { node, version } => {
