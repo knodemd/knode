@@ -2,9 +2,10 @@
 //! that is the space a project's conversations go to. Reads the agent's settings, the folders of
 //! the spaces and the agent's grants; changes nothing, and never gives the agent access.
 //!
-//! A project folder routes capture: it says which space a project's conversations go to. It does
-//! not switch the space an agent's MCP server uses, which is the `--space` in its settings, or
-//! `KNODE_SPACE` in their environment, or else the default space at the time the agent starts.
+//! A project folder routes capture: it says which space a project's conversations go to. An
+//! agent whose settings name a space (`--space`, or `KNODE_SPACE` in their environment) saves
+//! there wherever it works. One that names none follows the default space, and in a project
+//! folder saves to that folder's space when it may write there (decision 0017).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    fn flag(&self, name: &str) -> Option<&str> {
+    pub(super) fn flag(&self, name: &str) -> Option<&str> {
         self.command
             .windows(2)
             .find(|w| w[0] == name)
@@ -282,15 +283,32 @@ pub fn assess(inputs: Inputs<'_>) -> Report {
                         space.space.display()
                     ),
                 )),
-                Some(space) => {
+                Some(default_or_fixed) => {
+                    let info = agents
+                        .as_ref()
+                        .and_then(|all| all.iter().find(|a| a.name == agent.name()));
+                    let level_in = |space: &Named| {
+                        info.and_then(|i| {
+                            i.spaces
+                                .iter()
+                                .find(|g| Named::of(&g.space).space == space.space)
+                        })
+                        .and_then(|g| g.level)
+                        .unwrap_or(GrantLevel::None)
+                    };
+                    // Without a space in its settings, the agent saves to the space of the
+                    // project folder it works in when it may write there (decision 0017).
+                    let follows_folder = reach.follows_default
+                        && intended.as_ref().is_some_and(|i| i.from == Meant::Project);
+                    let space = match &intended {
+                        Some(i) if follows_folder && level_in(&i.space) == GrantLevel::Write => {
+                            &i.space
+                        }
+                        _ => default_or_fixed,
+                    };
                     if let Some(intended) = &intended
                         && intended.space.space != space.space
                     {
-                        let how = if reach.follows_default {
-                            "it follows the default space".to_string()
-                        } else {
-                            format!("its settings name it in {}", reach.entry.file.display())
-                        };
                         let why = match intended.from {
                             Meant::Flag => "you asked to check".to_string(),
                             Meant::Project => format!(
@@ -301,20 +319,58 @@ pub fn assess(inputs: Inputs<'_>) -> Report {
                             ),
                             Meant::Default => "is the default space".to_string(),
                         };
-                        problems.push(problem(
-                            "wrong_space",
+                        let message = if follows_folder {
                             format!(
-                                "{} uses {} ({how}), not {}, which {why}. A project folder \
-                                 does not switch the space an agent uses. `knode connect {} \
-                                 --space {}` points it there; it gets access only if it has \
-                                 none anywhere, else `knode agents grant {} <space> write`.",
+                                "{} follows the folder it works in, but may not write to {}, \
+                                 which {why}, so it saves to {} there, the default space. \
+                                 Only you can change that: `knode agents grant {} {} write`.",
+                                agent.name(),
+                                intended.space.shown(),
+                                space.shown(),
+                                agent.name(),
+                                intended.space.space.display()
+                            )
+                        } else if reach.follows_default {
+                            format!(
+                                "{} follows the default space, {}, not {}, which {why}: it \
+                                 saves to another space only in that space's project folders. \
+                                 `knode connect {} --space {}` fixes it to that space; it gets \
+                                 access only if it has none anywhere, else `knode agents grant \
+                                 {} <space> write`.",
                                 agent.name(),
                                 space.shown(),
                                 intended.space.shown(),
                                 agent.arg(),
                                 intended.space.space.display(),
                                 agent.name()
-                            ),
+                            )
+                        } else {
+                            format!(
+                                "{} is fixed to {} by its settings ({}), so it saves there \
+                                 wherever it works, not to {}, which {why}. `knode connect {}` \
+                                 without --space lets it follow the default space and the \
+                                 project folder it works in; `knode connect {} --space {}` \
+                                 fixes it to {} instead.",
+                                agent.name(),
+                                space.shown(),
+                                reach.entry.file.display(),
+                                intended.space.shown(),
+                                agent.arg(),
+                                agent.arg(),
+                                intended.space.space.display(),
+                                intended.space.shown()
+                            )
+                        };
+                        problems.push(problem("wrong_space", message));
+                    } else if follows_folder {
+                        notes.push(format!(
+                            "{} has no space in its settings, so in {} it saves to {}, the \
+                             space of that project folder.",
+                            agent.name(),
+                            project
+                                .as_deref()
+                                .map_or_else(String::new, |p| p.display().to_string()),
+                            space.shown()
                         ));
                     }
                     match agents
@@ -795,7 +851,23 @@ mod tests {
         // Pinned to another space: wrong space, and access is about the space it uses.
         let report = check(vec![pinned(&personal)], &[(&work, GrantLevel::Write)]);
         assert_eq!(codes(&report), ["wrong_space", "no_access"]);
-        assert!(report.problems[0].message.contains("--space"));
+        assert!(report.problems[0].message.contains("without --space"));
+
+        // No space in its settings: it saves to the project's space when it may write there.
+        let free = entry(&["mcp", "--agent", "gemini-cli"]);
+        let report = check(vec![free.clone()], &[(&work, GrantLevel::Write)]);
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.access, Some(GrantLevel::Write));
+        assert!(
+            report.notes[0].contains("no space in its settings"),
+            "{report:?}"
+        );
+        let report = check(
+            vec![free],
+            &[(&work, GrantLevel::Read), (&personal, GrantLevel::Write)],
+        );
+        assert_eq!(codes(&report), ["wrong_space"]);
+        assert!(report.problems[0].message.contains("may not write to"));
 
         // The right space, but no grant there: never granted by the check.
         let report = check(vec![pinned(&work)], &[(&personal, GrantLevel::Write)]);

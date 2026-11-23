@@ -544,3 +544,86 @@ fn check_says_whether_an_agent_reaches_the_space_of_a_project() {
     let out = sb.ok(&["connect", "gemini", "--check", "--project", project]);
     assert!(out.contains("OK: gemini-cli reaches"), "{out}");
 }
+
+#[test]
+fn the_default_space_is_never_fixed_and_connecting_again_unfixes_an_agent() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let settings = sb.home().join(".gemini/settings.json");
+    let space_arg = || -> Option<String> {
+        let args = read_json(&settings)["mcpServers"]["knode"]["args"].clone();
+        let args: Vec<String> = serde_json::from_value(args).unwrap();
+        args.windows(2)
+            .find(|w| w[0] == "--space")
+            .map(|w| w[1].clone())
+    };
+
+    // Naming the default space does not fix the agent to it.
+    let out = sb.ok(&["--space", "work", "connect", "gemini"]);
+    assert!(out.contains("is the default space"), "{out}");
+    assert_eq!(space_arg(), None);
+
+    // Another space is fixed on purpose.
+    sb.ok(&["--space", "personal", "connect", "gemini"]);
+    let fixed = space_arg().expect("fixed to personal");
+    assert!(fixed.ends_with("personal.knode"), "{fixed}");
+    let report: Value =
+        serde_json::from_str(&sb.ok(&["connect", "gemini", "--check", "--json"])).unwrap();
+    let problem = report["problems"][0]["message"].as_str().unwrap();
+    assert!(problem.contains("without --space"), "{report}");
+
+    // Connecting again without --space says so, and removes it.
+    let preview = sb.ok(&["connect", "gemini", "--print"]);
+    assert!(
+        preview.contains("would follow the default space"),
+        "{preview}"
+    );
+    assert_eq!(space_arg().as_deref(), Some(fixed.as_str()));
+    let out = sb.ok(&["connect", "gemini"]);
+    assert!(out.contains("is fixed to"), "{out}");
+    assert_eq!(space_arg(), None);
+    assert!(sb.ok(&["connect", "gemini"]).contains("already in"));
+}
+
+#[test]
+fn an_agent_without_a_space_saves_to_the_project_folder_it_may_write_to() {
+    let sb = Sandbox::new();
+    sb.ok(&["init", "work"]);
+    sb.ok(&["init", "personal"]);
+    let project = sb.home().join("code/site");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_str().unwrap();
+    sb.ok(&["--space", "personal", "folders", "add", project]);
+    sb.ok(&["connect", "gemini"]);
+    let check = || -> Value {
+        serde_json::from_str(&sb.ok(&[
+            "connect",
+            "gemini",
+            "--check",
+            "--json",
+            "--project",
+            project,
+        ]))
+        .unwrap()
+    };
+
+    // It may not write to the project's space: it saves to the default one there.
+    let report = check();
+    assert_eq!(report["problems"][0]["code"], "wrong_space", "{report}");
+    let message = report["problems"][0]["message"].as_str().unwrap();
+    assert!(message.contains("agents grant gemini-cli"), "{message}");
+
+    // Once it may, it saves there without being fixed to it.
+    sb.ok(&["agents", "grant", "gemini", "personal", "write"]);
+    let report = check();
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["access"], "write");
+    assert!(
+        report["notes"][0]
+            .as_str()
+            .unwrap()
+            .contains("no space in its settings"),
+        "{report}"
+    );
+}

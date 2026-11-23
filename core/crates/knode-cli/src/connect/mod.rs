@@ -165,8 +165,30 @@ struct Change {
     updated: Option<String>,
 }
 
+/// Whether `space` is the default space, links resolved.
+fn is_default_space(paths: &Paths, space: &Path) -> bool {
+    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    knode_config::Config::load(paths)
+        .ok()
+        .and_then(|c| c.default_space)
+        .filter(|d| !d.as_os_str().is_empty())
+        .is_some_and(|d| real(&d) == real(space))
+}
+
+/// The space the agent's settings fix it to now (`--space` in the `knode` entry `connect`
+/// writes), if any.
+fn current_pin(agent: Agent) -> Option<String> {
+    check::entries(agent, None)
+        .iter()
+        .find_map(|e| e.flag("--space").map(str::to_string))
+}
+
 /// `knode connect <agent>`. `space` is the space given with `--space`, if any; the agent gets
 /// access to it, or to the default space, the first time.
+///
+/// Only a space other than the default is written into the agent's settings: an agent without
+/// one follows the default space and saves to the space of the project folder it works in
+/// (decision 0017), and running this again without `--space` removes a space it was fixed to.
 pub fn run(paths: &Paths, agent: Agent, print: bool, space: Option<&Path>) -> Result<()> {
     if agent == Agent::Aider {
         print_aider();
@@ -174,7 +196,32 @@ pub fn run(paths: &Paths, agent: Agent, print: bool, space: Option<&Path>) -> Re
     }
     let knode = knode_path()?;
     let flag = space.map(crate::absolute).transpose()?;
-    let args = mcp_args(agent, flag.as_deref());
+    let pin = flag.as_deref().filter(|f| !is_default_space(paths, f));
+    let args = mcp_args(agent, pin);
+    let previous = current_pin(agent);
+    let would = if print { "would" } else { "will" };
+    if let Some(flag) = &flag
+        && pin.is_none()
+    {
+        println!(
+            "{} is the default space, so the settings {would} not name it.",
+            flag.display()
+        );
+    }
+    match (&previous, pin) {
+        (Some(old), None) => println!(
+            "{} is fixed to {old}; it {would} follow the default space instead, and save to \
+             the space of the project folder it works in when it may write there.\n",
+            agent.name()
+        ),
+        (Some(old), Some(new)) if Path::new(old) != new => println!(
+            "{} is fixed to {old}; it {would} be fixed to {} instead.\n",
+            agent.name(),
+            new.display()
+        ),
+        (None, None) if flag.is_some() => println!(),
+        _ => {}
+    }
     // Every settings file is read and checked before the agent gets a key, so a file that
     // cannot be changed leaves nothing half done.
     let changes = places::places(agent)?
@@ -641,11 +688,11 @@ fn claude_code(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
         .with_context(|| "cannot run `claude mcp get knode`".to_string())?;
     if existing.status.success() {
         let shown = String::from_utf8_lossy(&existing.stdout);
-        if shown.contains(&mcp.join(" ")) {
+        if claude_runs(&shown, mcp) {
             println!("Knode is already in Claude Code.");
             return Ok(());
         }
-        // Set up before agent keys, or for another space: replace it.
+        // Set up before agent keys, or for another space, or fixed to one: replace it.
         let remove = [
             OsStr::new("mcp"),
             OsStr::new("remove"),
@@ -662,6 +709,22 @@ fn claude_code(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
     run_program(&claude, &args, &line)?;
     println!("Added Knode to Claude Code. Start a new Claude Code session to use it.");
     Ok(())
+}
+
+/// Whether `claude mcp get knode` shows Knode running with exactly `mcp`: an entry with more
+/// arguments, such as one that also names a space, is not the same.
+fn claude_runs(shown: &str, mcp: &[String]) -> bool {
+    let wanted = mcp.join(" ");
+    match shown
+        .lines()
+        .find_map(|l| l.trim_start().strip_prefix("Args:"))
+    {
+        Some(args) => args.trim() == wanted,
+        None => {
+            shown.contains(&wanted)
+                && (mcp.iter().any(|a| a == "--space") || !shown.contains("--space"))
+        }
+    }
 }
 
 fn codex(knode: &Path, mcp: &[String], print: bool) -> Result<()> {
@@ -816,6 +879,28 @@ mod tests {
 
     fn mcp() -> Vec<String> {
         mcp_args(Agent::Gemini, None)
+    }
+
+    #[test]
+    fn an_entry_fixed_to_a_space_is_not_the_same_as_one_that_is_not() {
+        let free = mcp_args(Agent::ClaudeCode, None);
+        let fixed = mcp_args(Agent::ClaudeCode, Some(Path::new("/k/Work.knode")));
+        let get = |args: &str| {
+            format!(
+                "knode:\n  Scope: User config\n  Type: stdio\n  Command: /bin/knode\n  Args: {args}\n"
+            )
+        };
+        let pinned = get("mcp --agent claude-code --space /k/Work.knode");
+        assert!(!claude_runs(&pinned, &free));
+        assert!(claude_runs(&pinned, &fixed));
+        assert!(claude_runs(&get("mcp --agent claude-code"), &free));
+        assert!(!claude_runs(&get("mcp --agent claude-code"), &fixed));
+        // Without an Args line, the arguments are looked for anywhere.
+        assert!(!claude_runs(
+            "mcp --agent claude-code --space /k/Work.knode",
+            &free
+        ));
+        assert!(claude_runs("mcp --agent claude-code", &free));
     }
 
     #[test]
