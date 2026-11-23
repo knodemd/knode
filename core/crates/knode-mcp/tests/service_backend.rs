@@ -557,3 +557,174 @@ fn excerpts_follow_agent_read_grants_and_reject_revoked_access() {
     assert!(!result.text.contains("Local memory"));
     service.stop().unwrap();
 }
+
+/// Decision 0017: an agent reads every space it may read and saves to one, chosen by the folder
+/// it works in. A space where it has `none` never shows.
+#[test]
+fn an_agent_reads_wide_and_writes_to_the_space_of_its_folder() {
+    use knode_format::{GrantLevel, NewNode, Provenance};
+    use knode_mcp::{Home, KnodeServer};
+    use knode_service::FolderInput;
+    use knode_service::keys::{fingerprint, generate_key};
+
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(Config::new(dir.path().join("home"))).unwrap();
+    let socket = service.socket_path().to_path_buf();
+    let person = Client::connect(&socket).unwrap();
+    let me = Provenance::person("Ada");
+    let repo = dir.path().join("code/team-repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let space = |name: &str, folder: Option<&std::path::Path>| {
+        let path = dir.path().join(format!("{name}.knode"));
+        person.create_space(&path, name).unwrap();
+        if let Some(folder) = folder {
+            let input = FolderInput {
+                id: None,
+                kind: "project".into(),
+                path: folder.to_string_lossy().into_owned(),
+                capture: true,
+                rules: json!({}),
+            };
+            person.set_folder(&path, &input, &me).unwrap();
+        }
+        person
+            .create_node(
+                &path,
+                NewNode::note(&format!("Roadmap of {name}"), "shared roadmap words"),
+                &me,
+            )
+            .unwrap();
+        path
+    };
+    let key = generate_key().unwrap();
+    person
+        .add_agent("claude-code", "claude-code", &fingerprint(&key), &me)
+        .unwrap();
+    let personal = space("Personal", Some(dir.path()));
+    let team = space("Team", Some(&repo));
+    // A space it may only read never takes its writes, even with a nearer project folder.
+    let shared = space("Shared", Some(&repo.join("src")));
+    let secret = space("Secret", None);
+    for (path, level) in [
+        (&personal, GrantLevel::Write),
+        (&team, GrantLevel::Write),
+        (&shared, GrantLevel::Read),
+        (&secret, GrantLevel::None),
+    ] {
+        person.set_grant("claude-code", path, level, &me).unwrap();
+    }
+    let secret_note = person
+        .create_node(
+            &secret,
+            NewNode::note("Hidden plan", "shared roadmap words"),
+            &me,
+        )
+        .unwrap();
+    let shared_note = person.find_by_title(&shared, "Roadmap of Shared").unwrap()[0].id;
+
+    let agent = |given: bool, folder: Option<&std::path::Path>| {
+        let socket = socket.clone();
+        let key = key.clone();
+        let backend = ServiceBackend::new(personal.clone(), move || {
+            Client::connect_as_agent(&socket, &key)
+        })
+        .unwrap();
+        KnodeServer::new(backend)
+            .given(given)
+            .working_in(folder.map(std::path::Path::to_path_buf))
+    };
+    let call = |server: &KnodeServer<ServiceBackend>, name: &str, value: Value| {
+        server.call("claude-code", name, args(value)).unwrap()
+    };
+
+    // In a nested project folder of the team space: it saves there.
+    let server = agent(false, Some(&repo.join("src")));
+    assert_eq!(server.reach().why(), Home::Folder);
+    assert_eq!(server.reach().home().name, Some("Team"));
+    let out = call(
+        &server,
+        "write_node",
+        json!({"title": "Decision", "body": "x"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert!(out.text.contains("in \"Team\""), "{}", out.text);
+    assert_eq!(out.structured.as_ref().unwrap()["space"], "Team");
+    assert_eq!(person.find_by_title(&team, "Decision").unwrap().len(), 1);
+    assert!(
+        person
+            .find_by_title(&personal, "Decision")
+            .unwrap()
+            .is_empty()
+    );
+    let instructions = server.instructions(Some("claude-code"));
+    assert!(instructions.contains("You read 3 spaces"), "{instructions}");
+    assert!(!instructions.contains("Secret"), "{instructions}");
+
+    // Reads cover every space it may read, each result naming its space, and never Secret.
+    for (tool, value) in [
+        ("search", json!({"query": "roadmap", "mode": "words"})),
+        ("recent", json!({"limit": 50})),
+        ("projects", json!({})),
+    ] {
+        let out = call(&server, tool, value);
+        assert!(!out.is_error, "{tool}: {}", out.text);
+        let data = out.structured.unwrap().to_string();
+        assert!(
+            !out.text.contains("Secret") && !out.text.contains("Hidden"),
+            "{tool}: {}",
+            out.text
+        );
+        assert!(
+            !data.contains("Secret") && !data.contains("Hidden"),
+            "{tool}: {data}"
+        );
+        if tool != "projects" {
+            for name in ["Personal", "Team", "Shared"] {
+                assert!(
+                    out.text.contains(&format!("in \"{name}\"")),
+                    "{tool}: {}",
+                    out.text
+                );
+                assert!(
+                    data.contains(&format!("\"space\":\"{name}\"")),
+                    "{tool}: {data}"
+                );
+            }
+        }
+    }
+    let out = call(&server, "projects", json!({}));
+    assert!(out.text.contains("In \"Team\":"), "{}", out.text);
+
+    // read_node takes an id from any space it reads, but not from a space it may not.
+    let out = call(&server, "read_node", json!({"id": shared_note.to_string()}));
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(out.structured.unwrap()["node"]["space"], "Shared");
+    let out = call(
+        &server,
+        "read_node",
+        json!({"id": secret_note.id.to_string()}),
+    );
+    assert!(out.is_error);
+    assert!(!out.text.contains("Hidden"), "{}", out.text);
+    // It writes to one space only: a note of another space it reads is not changed from here.
+    let out = call(
+        &server,
+        "write_node",
+        json!({"id": shared_note.to_string(), "body": "changed"}),
+    );
+    assert!(out.is_error);
+    assert!(out.text.contains("\"Shared\""), "{}", out.text);
+
+    // No project folder of a space it may write to holds the folder: the default space.
+    let outside = tempfile::tempdir().unwrap();
+    let server = agent(false, Some(outside.path()));
+    assert_eq!(server.reach().why(), Home::Default);
+    assert_eq!(server.reach().home().name, Some("Personal"));
+    // No folder at all, as from a client that gives none.
+    assert_eq!(agent(false, None).reach().home().name, Some("Personal"));
+    // The space given with --space wins over the folder.
+    let server = agent(true, Some(&repo));
+    assert_eq!(server.reach().why(), Home::Given);
+    assert_eq!(server.reach().home().name, Some("Personal"));
+    service.stop().unwrap();
+}

@@ -739,6 +739,65 @@ fn match_part(pattern: &str, text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn project(path: &str) -> Folder {
+        Folder {
+            id: path.to_string(),
+            kind: folder_kinds::PROJECT.to_string(),
+            path: path.to_string(),
+            capture: true,
+            rules: serde_json::json!({}),
+            created_at: knode_format::Timestamp(0),
+            created_by: Provenance::person("Ada"),
+            updated_at: knode_format::Timestamp(0),
+            updated_by: Provenance::person("Ada"),
+        }
+    }
+
+    fn space(name: &str, folders: &[&str]) -> SpaceFolders {
+        SpaceFolders {
+            space: PathBuf::from(format!("/spaces/{name}.knode")),
+            name: name.to_string(),
+            folders: folders.iter().map(|f| project(f)).collect(),
+            capture: true,
+        }
+    }
+
+    fn working(spaces: &[SpaceFolders], folder: &str) -> Option<String> {
+        working_space(spaces, Path::new(folder)).map(|s| s.name.clone())
+    }
+
+    #[test]
+    fn an_agent_saves_to_the_space_of_the_nearest_project_folder() {
+        let spaces = [
+            space("Personal", &["/work"]),
+            space("Team", &["/work/team-repo"]),
+        ];
+        // Nested folders: the nearest wins, as for capture.
+        assert_eq!(
+            working(&spaces, "/work/team-repo/src").as_deref(),
+            Some("Team")
+        );
+        assert_eq!(working(&spaces, "/work/team-repo").as_deref(), Some("Team"));
+        assert_eq!(working(&spaces, "/work/other").as_deref(), Some("Personal"));
+        // A folder that only starts with the same letters is not inside it.
+        assert_eq!(
+            working(&spaces, "/work/team-repository").as_deref(),
+            Some("Personal")
+        );
+        // No project folder holds it.
+        assert_eq!(working(&spaces, "/elsewhere"), None);
+    }
+
+    #[test]
+    fn a_folder_of_two_spaces_goes_to_the_first_given() {
+        let spaces = [space("Personal", &["/repo"]), space("Team", &["/repo"])];
+        assert_eq!(working(&spaces, "/repo/a").as_deref(), Some("Personal"));
+        let spaces = [space("Team", &["/repo"]), space("Personal", &["/repo"])];
+        assert_eq!(working(&spaces, "/repo/a").as_deref(), Some("Team"));
+        // Capture writes to both: the same rule, every space of the nearest folder.
+        assert_eq!(project_destinations(&spaces, Path::new("/repo")).len(), 2);
+    }
+
     #[test]
     fn patterns_follow_the_specification() {
         assert!(glob("node_modules/**", "node_modules"));

@@ -125,7 +125,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "path": {
                 "type": "string",
                 "description": "The Markdown file the node was imported from, such as app/README.md: it tells apart nodes of the same title."
-            }
+            },
+            "space": { "type": "string", "description": "The space it is in, by name." },
         },
         "required": ["id", "title", "kind", "created_at", "updated_at", "updated_by"]
     });
@@ -163,7 +164,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
             "created_at": { "type": "string" },
             "created_by": provenance,
             "updated_at": { "type": "string" },
-            "updated_by": provenance
+            "updated_by": provenance,
+            "space": { "type": "string", "description": "The space it is in, by name." },
         },
         "required": ["id", "title", "kind", "body", "tags", "created_at", "created_by", "updated_at", "updated_by"]
     });
@@ -216,8 +218,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 terms. Mode meaning finds notes by what they are about. When meaning is not \
                 available yet (the search model is still downloading or the space is still \
                 being indexed), the search runs by words; the result's mode says which ran and \
-                its note says why. Returns the best matches with a snippet; call read_node for \
-                the full text.",
+                its note says why. Covers every space you may read, ranked together; each \
+                result names its space. Returns the best matches with a snippet; call \
+                read_node for the full text.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -268,7 +271,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             description: "Read one node of the user's Knode memory in full: its Markdown text, \
                 kind, tags, who wrote it and when, its links and backlinks with how each reads \
                 (such as part of, has part), and its attached files. Pass the id from search or \
-                recent, or the node's exact title. [[Title]] in the text is a link to another \
+                recent, or the node's exact title; ids from any space you read work. [[Title]] in the text is a link to another \
                 node you can read the same way; read_attachment reads an attached file. The version it returns lets write_node \
                 merge your rewrite with what others change meanwhile.",
             input_schema: json!({
@@ -307,7 +310,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 end of the body instead of replacing it. When you rewrite a body you read, pass \
                 the version read_node gave: if the user or another agent changed the node since, \
                 your edit is merged with theirs instead of overwriting it. Search first to avoid \
-                duplicates. Keep one topic per node, with a short, specific title.",
+                duplicates. Keep one topic per node, with a short, specific title. Saves to one \
+                space: the space of the project folder you work in, or the one Knode was \
+                started with; the result names it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -325,7 +330,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "result": { "type": "string", "enum": ["created", "updated", "unchanged"] },
                     "node": summary,
-                    "merged": { "type": "boolean", "description": "True when others changed the body since the version you read, and your edit was merged with theirs." }
+                    "merged": { "type": "boolean", "description": "True when others changed the body since the version you read, and your edit was merged with theirs." },
+                    "space": { "type": "string", "description": "The space the node was saved to, by name." }
                 },
                 "required": ["result", "node"]
             }),
@@ -342,7 +348,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 answers (an answer to a question), contradicts, or a kind this space defines; \
                 link_kinds lists them all with their meaning. Links written as [[Title]] in a \
                 body are made automatically; this tool is for links that are not in the text. \
-                Linking twice does nothing more.",
+                Both nodes must be in the space you save to; the result names it. Linking \
+                twice does nothing more.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -358,7 +365,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             }),
             output_schema: json!({
                 "type": "object",
-                "properties": { "link": link },
+                "properties": {
+                    "link": link,
+                    "space": { "type": "string", "description": "The space the link was made in, by name." }
+                },
                 "required": ["link"]
             }),
             read_only: false,
@@ -372,7 +382,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 notes each has; or, given one by name or id, its notes, most recently changed \
                 first, and the projects inside it. Start here when the work is about a project: \
                 it finds the project's notes without searching, then read the ones you need \
-                with read_node.",
+                with read_node. Covers every space you may read; each project names its space.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -400,8 +410,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "recent",
             title: "Recent nodes",
             description: "List the nodes of the user's Knode memory that changed most recently, \
-                newest first, with who changed them. Use it to pick up where the user or another \
-                agent left off, or to see what was saved lately.",
+                newest first, with who changed them, across every space you may read, each \
+                naming its space. Use it to pick up where the user or another agent left off, \
+                or to see what was saved lately.",
             input_schema: json!({
                 "type": "object",
                 "properties": { "limit": limit }
