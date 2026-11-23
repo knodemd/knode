@@ -59,6 +59,7 @@ mod history;
 mod links;
 mod loro;
 mod manifest;
+mod moving;
 mod projects;
 mod schema;
 mod space;
@@ -81,6 +82,7 @@ pub use graph::{CanvasBoard, CanvasItem, Graph, GraphEdge, GraphFilter, GraphNod
 pub use links::{LinkDirection, LinkKind, LinkKindSpec, NodeLink};
 pub use loro::{LoroLock, SYNC_NODES_DIR};
 pub use manifest::{FORMAT_VERSION, Manifest};
+pub use moving::{CrossingLink, MovePreview, MovedProject, SpaceRef, Staying, UndoneMove};
 pub use projects::{AddedFolder, FolderProject, PassedOverProject, Project, folder_project_name};
 pub use schema::SCHEMA_VERSION;
 pub use space::Space;
@@ -244,6 +246,10 @@ pub mod actions {
     pub const ATTACHMENT_REMOVE: &str = "attachment.remove";
     /// Unused blobs were removed, files and rows (schema version 4).
     pub const BLOBS_PURGE: &str = "blobs.purge";
+    /// A project, the projects inside it and their nodes moved to or from another space, with
+    /// their history. Undone in both spaces at once with
+    /// [`Space::undo_move`](crate::Space::undo_move).
+    pub const PROJECT_MOVE: &str = "project.move";
 }
 
 /// The folder kinds the format defines (schema version 3). Folders of other kinds are kept and
