@@ -869,11 +869,18 @@ pub fn set_failed(
 
 /// Puts a stage of a recording back to pending, so the app does it again. A summary is pending
 /// only once the transcript is done.
+///
+/// A transcript done again forgets its language, so the app listens for the one spoken again
+/// (the first may have been wrong), and minutes already written are made again from it.
 pub fn retry(space: &mut Space, id: &NodeId, stage: Stage, by: &Provenance) -> Result<Recording> {
     let recording = get(space, id)?;
     match stage {
         Stage::Transcript => {
             space.set_property(id, keys::TRANSCRIPT, TranscriptState::Pending.as_str(), by)?;
+            space.remove_property(id, keys::LANGUAGE)?;
+            if recording.summary == SummaryState::Done {
+                space.set_property(id, keys::SUMMARY, SummaryState::Pending.as_str(), by)?;
+            }
             if !matches!(
                 recording.summary,
                 SummaryState::Failed | SummaryState::Unavailable

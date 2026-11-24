@@ -451,6 +451,27 @@ fn fail_and_retry() {
 }
 
 #[test]
+fn a_transcript_done_again_forgets_its_language_and_redoes_the_minutes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(dir.path());
+    let rec = create(&mut space, &meeting(dir.path(), None), &me()).unwrap();
+    let done = set_transcript(&mut space, &rec.id, &transcript(), &engine()).unwrap();
+    assert!(done.language.is_some());
+    let summary = Summary {
+        model: "Apple Foundation Models".into(),
+        overview: "Short.".into(),
+        ..Default::default()
+    };
+    set_summary(&mut space, &rec.id, &summary, &engine()).unwrap();
+
+    let again = retry(&mut space, &rec.id, Stage::Transcript, &me()).unwrap();
+    assert_eq!(again.transcript, TranscriptState::Pending);
+    assert_eq!(again.language, None);
+    assert_eq!(again.summary, SummaryState::Pending);
+    assert_eq!(pending(&space).unwrap().len(), 1);
+}
+
+#[test]
 fn other_nodes_are_not_recordings() {
     let dir = tempfile::tempdir().unwrap();
     let mut space = space(dir.path());
