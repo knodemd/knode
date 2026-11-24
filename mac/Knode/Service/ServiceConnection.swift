@@ -14,10 +14,19 @@ public enum ServiceError: Error, Equatable, LocalizedError {
     /// The answer could not be read.
     case badResponse(String)
 
+    /// JSON-RPC's code for a method the service does not know: it is older than the app.
+    public static let methodNotFound = -32601
+
+    /// Whether the service answered that it does not know the method asked for.
+    public var isMethodNotFound: Bool {
+        if case .remote(let code, _, _, _) = self { code == Self.methodNotFound } else { false }
+    }
+
     public var errorDescription: String? {
         switch self {
         case .unavailable: "Knode Service is not running."
         case .disconnected: "Knode Service stopped."
+        case .remote(let code, _, _, _) where code == Self.methodNotFound: SpaceStoreError.serviceOutdated.errorDescription
         case .remote(_, _, let message, _): message.prefix(1).uppercased() + message.dropFirst() + "."
         case .badResponse(let message): "Knode Service sent an answer the app can't read: \(message)."
         }

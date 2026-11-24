@@ -41,6 +41,9 @@ private struct ServiceMenuPanel: View {
             KHairline()
             VStack(alignment: .leading, spacing: KSpace.x4) {
                 if let error = monitor.errorMessage { KErrorText(error) }
+                if monitor.isOutdated {
+                    KErrorText("Knode Service is older than this app, so some of what the app asks of it fails. Restart it; if the knode command was installed apart from the app, update it first.")
+                }
                 openSpaces
                 spaceForAgents
                 if case .running(let status) = monitor.state, let index = status.index {
@@ -132,6 +135,10 @@ private struct ServiceMenuPanel: View {
                 openSettings()
             }
             if monitor.isRunning {
+                if monitor.isOutdated {
+                    ServiceMenuAction("Restart Knode Service", icon: .play) { Task { await monitor.restartService() } }
+                        .disabled(monitor.isBusy)
+                }
                 ServiceMenuAction("Stop Knode Service", icon: .stop) { Task { await monitor.stopService() } }
                     .disabled(monitor.isBusy)
             } else {

@@ -247,9 +247,13 @@ public enum SpaceStoreError: Error, Equatable, LocalizedError {
     case personOnly(String)
     /// The Knode settings (`config.toml`) could not be read or written.
     case config(String)
+    /// The running Knode Service is older than the app and does not know what it was asked.
+    case serviceOutdated
 
     public var errorDescription: String? {
         switch self {
+        case .serviceOutdated:
+            "Knode Service is older than this app and can't do this yet. Restart Knode Service from the Knode menu; if the knode command was installed apart from the app, update it first."
         case .spaceNotFound: "This space is not open."
         case .nodeNotFound: "This note no longer exists."
         case .notASpace(let url): "\(url.lastPathComponent) is not a Knode space."
