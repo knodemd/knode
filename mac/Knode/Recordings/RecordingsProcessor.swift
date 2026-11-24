@@ -62,6 +62,10 @@ final class RecordingsProcessor {
     @ObservationIgnored private var worker: Task<Void, Never>?
     @ObservationIgnored private var job: Task<Outcome, Never>?
     @ObservationIgnored private var changesTask: Task<Void, Never>?
+    @ObservationIgnored private var rescanTask: Task<Void, Never>?
+    /// How often every space is looked at again, so minutes Apple's model could not write yet
+    /// (still downloading, Apple Intelligence off) are written once it can.
+    @ObservationIgnored private let rescanInterval: Duration
     @ObservationIgnored private var stopped = false
 
     init(
@@ -69,8 +73,10 @@ final class RecordingsProcessor {
         transcriber: any Transcriber,
         summarizer: any Summarizer,
         spaceURLs: @escaping @MainActor () -> [URL],
-        scratch: URL = FileManager.default.temporaryDirectory.appending(path: "Knode Transcribing", directoryHint: .isDirectory)
+        scratch: URL = FileManager.default.temporaryDirectory.appending(path: "Knode Transcribing", directoryHint: .isDirectory),
+        rescanInterval: Duration = .seconds(600)
     ) {
+        self.rescanInterval = rescanInterval
         self.store = store
         self.transcriber = transcriber
         self.summarizer = summarizer
@@ -91,6 +97,16 @@ final class RecordingsProcessor {
         }
         observeSpaces()
         scanAll()
+        if rescanTask == nil {
+            let interval = rescanInterval
+            rescanTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: interval)
+                    guard !Task.isCancelled else { return }
+                    self?.scanAll()
+                }
+            }
+        }
     }
 
     /// Knode Service started again: what it holds may have work the app has not seen.
@@ -114,6 +130,8 @@ final class RecordingsProcessor {
         stopped = true
         changesTask?.cancel()
         changesTask = nil
+        rescanTask?.cancel()
+        rescanTask = nil
         queued = []
         job?.cancel()
         await worker?.value
@@ -229,6 +247,17 @@ final class RecordingsProcessor {
         guard let failed = try? await store.failedRecordings(in: space) else { return }
         let known = failed.compactMap { recording in Failure(recording, in: space, at: url) }
         failures = failures.filter { $0.space != space } + known
+        await retryMinutesNowAvailable(failed, in: space)
+    }
+
+    /// Minutes the model could not write before, put back to pending once it can write in their
+    /// language, so they are written without anyone asking.
+    private func retryMinutesNowAvailable(_ recordings: [StoredRecording], in space: Space.ID) async {
+        for recording in recordings where recording.transcript == .done && recording.summary == .unavailable && !stopped {
+            let probe = Transcript(locale: recording.language ?? Locale.current.identifier(.bcp47), segments: [])
+            guard await summarizer.availability(for: probe) == .available else { continue }
+            _ = try? await store.retryRecording(recording.id, stage: .summary, in: space)
+        }
     }
 
     private func run(_ recording: Node.ID, in space: Space.ID) async {

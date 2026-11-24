@@ -104,7 +104,7 @@ actor FakeRecordingsBackend: RecordingsBackend {
 
     func failedRecordings(in space: Space.ID) async throws -> [StoredRecording] {
         if failedUnsupported { throw SpaceStoreError.unsupported("no recordings.failed") }
-        return recordings.values.filter { $0.transcript == .failed || $0.summary == .failed }.sorted { $0.startedAt < $1.startedAt }
+        return recordings.values.filter { $0.transcript == .failed || $0.summary == .failed || $0.summary == .unavailable }.sorted { $0.startedAt < $1.startedAt }
     }
 
     /// A recording that failed before the app started.
@@ -209,15 +209,15 @@ final class RecordingTranscriber: Transcriber {
 /// A summarizer that remembers the transcripts it read, and can wait until cancelled.
 final class RecordingSummarizer: Summarizer {
     let read = Mutex<[Transcript]>([])
-    let available: SummarizerAvailability
+    let availableNow: Mutex<SummarizerAvailability>
     let blocks: Bool
 
     init(available: SummarizerAvailability = .available, blocks: Bool = false) {
-        self.available = available
+        self.availableNow = Mutex(available)
         self.blocks = blocks
     }
 
-    func availability(for transcript: Transcript) async -> SummarizerAvailability { available }
+    func availability(for transcript: Transcript) async -> SummarizerAvailability { availableNow.withLock { $0 } }
 
     func summarize(_ transcript: Transcript, progress: @escaping @Sendable (Double) -> Void) async throws -> MeetingSummary {
         read.withLock { $0.append(transcript) }
@@ -344,6 +344,26 @@ struct RecordingsProcessorTests {
         #expect(await store.recordings[id]?.transcript == .done)
         // Unavailable is not a failure to retry by hand.
         #expect(processor.failures.isEmpty)
+        await processor.stop()
+    }
+
+    @Test func minutesAreWrittenOnTheirOwnOnceTheModelIsReady() async throws {
+        let store = try FakeRecordingsBackend()
+        let id = try await store.add(kind: .meeting, tracks: [("microphone.m4a", .mixed)])
+        let summarizer = RecordingSummarizer(available: .unavailable(.modelNotReady))
+        let url = store.spaceURL
+        let processor = RecordingsProcessor(
+            store: store, transcriber: RecordingTranscriber(), summarizer: summarizer, spaceURLs: { [url] },
+            rescanInterval: .milliseconds(50)
+        )
+        processor.start()
+        #expect(try await eventually { await store.recordings[id]?.summary == .unavailable })
+        #expect(await store.retried.isEmpty)
+
+        // Apple's model finished downloading: the next look at the space writes the minutes.
+        summarizer.availableNow.withLock { $0 = .available }
+        #expect(try await eventually { await store.recordings[id]?.summary == .done })
+        #expect(await store.retried == [id])
         await processor.stop()
     }
 
