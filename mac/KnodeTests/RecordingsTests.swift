@@ -127,6 +127,38 @@ struct FakeTrackTranscriber: TrackTranscriber {
     }
 }
 
+/// Hears a language clip as the text given for each locale; transcribes tracks as `segmentsByFile`.
+final class FakeMultilingualTranscriber: TrackTranscriber {
+    let languages: [String]
+    let clipByLocale: [String: String]
+    let segmentsByFile: [String: [TranscriptSegment]]
+    let sampled = Mutex<[String]>([])
+
+    init(languages: [String], clipByLocale: [String: String], segmentsByFile: [String: [TranscriptSegment]] = [:]) {
+        self.languages = languages
+        self.clipByLocale = clipByLocale
+        self.segmentsByFile = segmentsByFile
+    }
+
+    func resolveLocale(_ preferred: Locale?) async throws -> Locale { preferred ?? Locale(identifier: languages[0]) }
+
+    func candidateLocales() async throws -> [Locale] { languages.map(Locale.init(identifier:)) }
+
+    func languageSample(of url: URL) async throws -> URL? {
+        sampled.withLock { $0.append(url.lastPathComponent) }
+        let clip = FileManager.default.temporaryDirectory.appending(path: "\(UUID().uuidString)-sample.caf")
+        try Data().write(to: clip)
+        return clip
+    }
+
+    func segments(of url: URL, locale: Locale, progress: @escaping @Sendable (Double) -> Void) async throws -> [TranscriptSegment] {
+        if url.lastPathComponent.hasSuffix("-sample.caf") {
+            return [TranscriptSegment(startMs: 0, endMs: 500, speaker: nil, text: clipByLocale[locale.identifier(.bcp47)] ?? "")]
+        }
+        return segmentsByFile[url.lastPathComponent] ?? []
+    }
+}
+
 private func segment(_ start: Int, _ speaker: String?, _ text: String) -> TranscriptSegment {
     TranscriptSegment(startMs: start, endMs: start + 500, speaker: speaker, text: text)
 }
@@ -319,6 +351,48 @@ struct TranscriptMergeTests {
         #expect(TranscriptionLocale.bestMatch(preferred: ["es-419"], supported: supported)?.identifier(.bcp47) == "es-ES")
         #expect(TranscriptionLocale.bestMatch(preferred: ["fr-FR", "en-GB"], supported: supported)?.identifier(.bcp47) == "en-GB")
         #expect(TranscriptionLocale.bestMatch(preferred: ["fr-FR"], supported: supported) == nil)
+        // A region with no model of its own takes the language's usual one, not the first by name.
+        let english = ["en-AU", "en-GB", "en-US"].map(Locale.init(identifier:))
+        #expect(TranscriptionLocale.bestMatch(preferred: ["en-ES"], supported: english)?.identifier(.bcp47) == "en-US")
+    }
+
+    @Test func candidatesAreOnePerLanguageInTheUsersOrder() {
+        let supported = ["en-AU", "en-GB", "en-US", "es-ES", "es-MX"].map(Locale.init(identifier:))
+        let found = TranscriptionLocale.candidates(preferred: ["en-ES", "es-ES", "en-GB", "fr-FR"], supported: supported)
+        #expect(found.map { $0.identifier(.bcp47) } == ["en-US", "es-ES"])
+    }
+
+    @Test func theLanguageSpokenWinsOverTheMacsLanguage() {
+        // What the English model made of a Spanish meeting, and what the Spanish one did.
+        let english = (Locale(identifier: "en-US"), "See, Bobo. Yeah, poracier, del Caro de laps. Pero, podo, tiempo, para, para, que morto.")
+        let spanish = (Locale(identifier: "es-ES"), "Sí, vale. Pero cuándo lo hacemos, que tenemos poco tiempo para montarlo y pagarlo antes del viernes.")
+        #expect(TranscriptionLocale.mostLikely([english, spanish])?.identifier(.bcp47) == "es-ES")
+        let englishMeeting = (Locale(identifier: "en-US"), "Okay, so the plan is to ship the release on Friday and review the open pull requests tomorrow.")
+        let heardInSpanish = (Locale(identifier: "es-ES"), "Ok sé el plan es chip de release on fraile")
+        #expect(TranscriptionLocale.mostLikely([englishMeeting, heardInSpanish])?.identifier(.bcp47) == "en-US")
+        #expect(TranscriptionLocale.mostLikely([(Locale(identifier: "en-US"), ""), (Locale(identifier: "es-ES"), " ")]) == nil)
+    }
+
+    @Test func aRecordingWithoutALanguageIsTranscribedInTheOneSpoken() async throws {
+        let transcriber = FakeMultilingualTranscriber(
+            languages: ["en-US", "es-ES"],
+            clipByLocale: [
+                "en-US": "See, Bobo. Poracier, del Caro de laps. Podo, tiempo, para, que morto.",
+                "es-ES": "Sí, vale. Pero cuándo lo hacemos, que tenemos poco tiempo para montarlo.",
+            ],
+            segmentsByFile: ["microphone.m4a": [segment(0, nil, "Hola")]]
+        )
+        let tracks = [
+            RecordedTrack(role: .system, url: URL(filePath: "/tmp/system.m4a")),
+            RecordedTrack(role: .microphone, url: URL(filePath: "/tmp/microphone.m4a")),
+        ]
+        let transcript = try await transcriber.transcribe(tracks, locale: nil) { _ in }
+        #expect(transcript.locale == "es-ES")
+        #expect(transcriber.sampled.withLock { $0 } == ["microphone.m4a"])
+        // A recording that already has a language keeps it, without listening for one.
+        let again = try await transcriber.transcribe(tracks, locale: Locale(identifier: "en-US")) { _ in }
+        #expect(again.locale == "en-US")
+        #expect(transcriber.sampled.withLock { $0 }.count == 1)
     }
 
     @Test func encodesSegmentsAndMinutesInSnakeCase() throws {

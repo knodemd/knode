@@ -52,7 +52,8 @@ final class NoteEditorModel {
     @ObservationIgnored private let typingLimit: Duration
     @ObservationIgnored private let presenceDuration: Duration
     @ObservationIgnored private let createdAt: Date
-    @ObservationIgnored private let kind: String
+    /// The note's kind, such as `note` or `meeting`.
+    @ObservationIgnored let kind: String
     @ObservationIgnored private var pendingSave: Task<Void, Never>?
     @ObservationIgnored var onSave: (@MainActor (Node) -> Void)?
 

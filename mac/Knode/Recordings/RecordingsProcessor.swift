@@ -152,6 +152,14 @@ final class RecordingsProcessor {
         schedule(failure.spaceURL)
     }
 
+    /// Transcribes a recording again from the start, as the person: the language spoken is listened
+    /// for again and minutes already written are made again from the new transcript.
+    func transcribeAgain(_ recording: Node.ID, in space: Space.ID) async throws {
+        _ = try await store.retryRecording(recording, stage: .transcript, in: space)
+        failures.removeAll { $0.id == recording }
+        if let url = known[space] { schedule(url) } else { scanAll() }
+    }
+
     static let cancelled = "Cancelled"
 
     // MARK: Finding work

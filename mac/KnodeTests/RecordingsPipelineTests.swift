@@ -156,7 +156,11 @@ actor FakeRecordingsBackend: RecordingsBackend {
     func retryRecording(_ id: Node.ID, stage: StoredRecording.Stage, in space: Space.ID) async throws -> StoredRecording {
         retried.append(id)
         switch stage {
-        case .transcript: recordings[id]?.transcript = .pending
+        case .transcript:
+            // As the core does: the language is listened for again, and done minutes made again.
+            recordings[id]?.transcript = .pending
+            recordings[id]?.language = nil
+            if recordings[id]?.summary == .done { recordings[id]?.summary = .pending }
         case .summary: recordings[id]?.summary = .pending
         }
         recordings[id]?.error = nil
@@ -294,6 +298,26 @@ struct RecordingsProcessorTests {
         #expect(await store.retried == [id])
         #expect(processor.failures.isEmpty)
         #expect(try await eventually { await store.recordings[id]?.summary == .done })
+        await processor.stop()
+    }
+
+    @Test func aRecordingCanBeTranscribedAgain() async throws {
+        let store = try FakeRecordingsBackend()
+        let id = try await store.add(kind: .meeting, tracks: [("microphone.m4a", .microphone), ("system.m4a", .system)])
+        let transcriber = RecordingTranscriber()
+        let processor = processor(store, transcriber: transcriber)
+        processor.start()
+        #expect(try await eventually { await store.recordings[id]?.summary == .done })
+        #expect(transcriber.state.withLock { $0.calls.count } == 1)
+
+        try await processor.transcribeAgain(id, in: store.space.id)
+        #expect(await store.retried == [id])
+        #expect(try await eventually { transcriber.state.withLock { $0.calls.count } == 2 })
+        #expect(try await eventually { await store.recordings[id]?.summary == .done })
+        #expect(RecordingCommands.isRecording("meeting"))
+        #expect(RecordingCommands.isRecording("voice-memo"))
+        #expect(!RecordingCommands.isRecording("note"))
+        #expect(!RecordingCommands.isRecording(nil))
         await processor.stop()
     }
 

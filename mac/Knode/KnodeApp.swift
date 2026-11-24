@@ -117,7 +117,7 @@ struct KnodeApp: App {
         .defaultSize(width: 1200, height: 760)
         .commands {
             SpaceCommands(model: model)
-            RecordingCommands(controller: recording)
+            RecordingCommands(controller: recording, model: model, processor: recordings)
             #if DEBUG
             DesignGalleryCommands()
             #endif
@@ -212,6 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// bar is full.
 struct RecordingCommands: Commands {
     let controller: RecordingController
+    let model: AppModel
+    let processor: RecordingsProcessor
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
@@ -242,7 +244,23 @@ struct RecordingCommands: Commands {
 
             Button("Show Recording") { RecordingWindow.show(openWindow) }
                 .disabled(controller.phase == .idle)
+
+            Divider()
+
+            // The open recording, such as one transcribed in the wrong language.
+            Button("Transcribe Again") {
+                guard let editor = model.editor else { return }
+                Task {
+                    do { try await processor.transcribeAgain(editor.nodeID, in: editor.spaceID) } catch { NSSound.beep() }
+                }
+            }
+            .disabled(!Self.isRecording(model.editor?.kind))
         }
+    }
+
+    /// Whether a note of this kind is a recording the app transcribes.
+    static func isRecording(_ kind: String?) -> Bool {
+        kind.flatMap(StoredRecording.Kind.init(rawValue:)) != nil
     }
 
     private func begin(_ mode: RecordingMode) {
