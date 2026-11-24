@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import NaturalLanguage
 import Speech
 
 /// Why a recording could not be transcribed.
@@ -41,6 +42,12 @@ protocol TrackTranscriber: Sendable {
     func resolveLocale(_ preferred: Locale?) async throws -> Locale
     /// The segments of one file, without speakers, in time order.
     func segments(of url: URL, locale: Locale, progress: @escaping @Sendable (Double) -> Void) async throws -> [TranscriptSegment]
+    /// The supported locales of the user's languages, one per language, in the user's order: the
+    /// languages a recording without a language may be in.
+    func candidateLocales() async throws -> [Locale]
+    /// A short clip of the file to hear which language is spoken, removed by the caller; `nil` when
+    /// none can be cut.
+    func languageSample(of url: URL) async throws -> URL?
 }
 
 extension TrackTranscriber {
@@ -49,7 +56,7 @@ extension TrackTranscriber {
         locale: Locale?,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> Transcript {
-        let resolved = try await resolveLocale(locale)
+        let resolved = if let locale { try await resolveLocale(locale) } else { try await detectLocale(tracks) }
         var perTrack: [(RecordedTrack, [TranscriptSegment])] = []
         for (index, track) in tracks.enumerated() {
             try Task.checkCancellation()
@@ -61,6 +68,33 @@ extension TrackTranscriber {
         }
         progress(1)
         return Transcript(locale: resolved.identifier(.bcp47), segments: TranscriptMerger.merge(perTrack))
+    }
+
+    func candidateLocales() async throws -> [Locale] { [try await resolveLocale(nil)] }
+
+    func languageSample(of url: URL) async throws -> URL? { nil }
+
+    /// The language spoken, for a recording that has none: with one of the user's languages that
+    /// one; with several, a clip of the microphone (or the first track) is transcribed in each and
+    /// the one whose words read most like that language wins. A person whose Mac is in English and
+    /// who speaks Spanish gets a Spanish transcript.
+    func detectLocale(_ tracks: [RecordedTrack]) async throws -> Locale {
+        let candidates = try await candidateLocales()
+        guard candidates.count > 1 else {
+            if let only = candidates.first { return only }
+            return try await resolveLocale(nil)
+        }
+        guard let track = tracks.first(where: { $0.role == .microphone }) ?? tracks.first,
+              let clip = try await languageSample(of: track.url)
+        else { return candidates[0] }
+        defer { try? FileManager.default.removeItem(at: clip) }
+        var heard: [(Locale, String)] = []
+        for candidate in candidates {
+            try Task.checkCancellation()
+            let segments = try await segments(of: clip, locale: candidate) { _ in }
+            heard.append((candidate, segments.map(\.text).joined(separator: " ")))
+        }
+        return TranscriptionLocale.mostLikely(heard) ?? candidates[0]
     }
 }
 
@@ -101,11 +135,43 @@ enum TranscriptionLocale {
                let sameRegion = sameLanguage.first(where: { $0.region?.identifier == region }) {
                 return sameRegion
             }
+            // The language's usual region (en-US for English, es-ES for Spanish), else the first.
+            let usual = Locale(identifier: Locale.Language(identifier: language).maximalIdentifier).region?.identifier
+            if let usual, let match = sameLanguage.first(where: { $0.region?.identifier == usual }) { return match }
             if let first = sameLanguage.sorted(by: { $0.identifier(.bcp47) < $1.identifier(.bcp47) }).first {
                 return first
             }
         }
         return nil
+    }
+
+    /// Of the user's languages, one supported locale per language, in the user's order.
+    static func candidates(preferred: [String], supported: [Locale]) -> [Locale] {
+        var seen: Set<String> = []
+        return preferred.compactMap { identifier in
+            guard let match = bestMatch(preferred: [identifier], supported: supported),
+                  let language = match.language.languageCode?.identifier,
+                  seen.insert(language).inserted
+            else { return nil }
+            return match
+        }
+    }
+
+    /// Of the same clip transcribed in each locale, the locale whose text reads most like its own
+    /// language; `nil` when no text says anything.
+    static func mostLikely(_ heard: [(Locale, String)]) -> Locale? {
+        var best: (locale: Locale, score: Double)?
+        for (locale, text) in heard {
+            let words = text.split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }).count
+            guard words > 0, let language = locale.language.languageCode?.identifier else { continue }
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(text)
+            let probability = recognizer.languageHypotheses(withMaximum: 5)[NLLanguage(rawValue: language)] ?? 0
+            // A wrong model hears few, short words; the right one more of them.
+            let score = probability * log(Double(words) + 1)
+            if score > (best?.score ?? 0) { best = (locale, score) }
+        }
+        return best?.locale
     }
 }
 
@@ -130,6 +196,37 @@ struct SpeechAnalyzerTranscriber: Transcriber, TrackTranscriber {
         }
         if let english = supported.first(where: { $0.identifier(.bcp47) == "en-US" }) { return english }
         throw TranscriptionError.unsupportedLocale(preferredLanguages().first ?? Locale.current.identifier(.bcp47))
+    }
+
+    func candidateLocales() async throws -> [Locale] {
+        guard SpeechTranscriber.isAvailable else { throw TranscriptionError.unavailable }
+        let found = TranscriptionLocale.candidates(preferred: preferredLanguages(), supported: await SpeechTranscriber.supportedLocales)
+        return found.isEmpty ? [try await resolveLocale(nil)] : Array(found.prefix(3))
+    }
+
+    /// Ninety seconds from the middle of the file, where people are most likely talking.
+    func languageSample(of url: URL) async throws -> URL? {
+        let opened = try await AudioReading.open(url, scratch: scratch)
+        defer { opened.removeTemporary() }
+        let file = opened.file
+        let rate = file.processingFormat.sampleRate
+        let length = AVAudioFramePosition(90 * rate)
+        guard file.length > 0, rate > 0 else { return nil }
+        let start = max(0, file.length / 2 - length / 2)
+        let count = AVAudioFrameCount(min(length, file.length - start))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: count) else { return nil }
+        file.framePosition = start
+        try file.read(into: buffer, frameCount: count)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let clip = scratch.appending(path: "\(UUID().uuidString)-sample.caf")
+        do {
+            let output = try AVAudioFile(forWriting: clip, settings: file.processingFormat.settings, commonFormat: file.processingFormat.commonFormat, interleaved: file.processingFormat.isInterleaved)
+            try output.write(from: buffer)
+        } catch {
+            try? FileManager.default.removeItem(at: clip)
+            throw TranscriptionError.unreadableAudio(error.localizedDescription)
+        }
+        return clip
     }
 
     func segments(of url: URL, locale: Locale, progress: @escaping @Sendable (Double) -> Void) async throws -> [TranscriptSegment] {
