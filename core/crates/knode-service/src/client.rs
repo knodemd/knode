@@ -22,7 +22,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::agents::{
-    AgentAddParams, AgentInfo, AgentRevokeParams, AuthParams, GrantSetParams, Identity, SpaceGrant,
+    AgentAddParams, AgentInfo, AgentRevokeParams, AuthParams, GrantSetParams, Identity, MySpace,
+    SpaceGrant,
 };
 use crate::keys::{OWNER_TOKEN_FILE, read_owner_token};
 use crate::protocol::*;
@@ -865,6 +866,12 @@ impl Client {
             by: by.clone(),
         };
         self.request(methods::GRANTS_SET, params)
+    }
+
+    /// The spaces the agent of this connection may read, with its level in each: those it was
+    /// given `read` or `write` in. A space where it has `none` is never listed. Agents only.
+    pub fn my_spaces(&self) -> Result<Vec<MySpace>> {
+        self.request(methods::GRANTS_MINE, json!({}))
     }
 
     /// Starts receiving changes: to one space, or to every space with `None`. Changes made

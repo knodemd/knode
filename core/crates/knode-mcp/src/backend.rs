@@ -284,6 +284,36 @@ pub trait Backend: Send + Sync + 'static {
     fn space_path(&self) -> Option<PathBuf> {
         None
     }
+    /// `grants.mine`: every space the agent of this connection may read, its own space among
+    /// them, each with a backend of its own. Empty when the backend cannot tell, such as a space
+    /// opened directly: the agent then reads and writes this backend's space alone.
+    fn reachable(&self) -> BackendResult<Vec<Reachable>> {
+        Ok(Vec::new())
+    }
+}
+
+/// A space an agent may read, as [`Backend::reachable`] lists it.
+pub struct Reachable {
+    /// The space, as Knode Service opened it.
+    pub path: PathBuf,
+    /// Its name.
+    pub name: String,
+    /// Whether the agent may write to it, and not only read it.
+    pub writable: bool,
+    /// Its folders, as the space records them, to find the space of the agent's working folder.
+    pub folders: Vec<knode_format::Folder>,
+    /// The backend that reads and writes it.
+    pub backend: Box<dyn Backend>,
+}
+
+impl std::fmt::Debug for Reachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reachable")
+            .field("path", &self.path)
+            .field("name", &self.name)
+            .field("writable", &self.writable)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A folder that feeds the space, as this machine sees it.
@@ -813,5 +843,9 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn space_path(&self) -> Option<PathBuf> {
         (**self).space_path()
+    }
+
+    fn reachable(&self) -> BackendResult<Vec<Reachable>> {
+        (**self).reachable()
     }
 }

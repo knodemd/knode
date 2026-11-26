@@ -111,6 +111,8 @@ pub mod methods {
     pub const AGENTS_REVOKE: &str = "agents.revoke";
     /// Sets what an agent may do in a space. People only.
     pub const GRANTS_SET: &str = "grants.set";
+    /// The spaces the agent of the connection may read, with its level in each. Agents only.
+    pub const GRANTS_MINE: &str = "grants.mine";
     /// Opens a node's body for editing together: its text and the version of its document.
     pub const DOC_OPEN: &str = "doc.open";
     /// Edits a node's body with splices or a new text, based on the version the editor has.

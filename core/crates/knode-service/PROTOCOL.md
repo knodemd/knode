@@ -52,6 +52,8 @@ grant takes effect on the next call:
 - With `none` the space is **invisible**: a call that names it fails exactly as for a space that
   does not exist (`not_a_space`, with the same message), it is left out of `service.status`, and
   its changes are not sent to the agent.
+- `grants.mine` lists the spaces it may read, with its level in each, so it can search them all
+  without knowing their paths beforehand.
 - With `read`, `space.open`, `space.set_up`, `settings.get`, `folders.list`, `node.get`, `node.find_by_title`, `links.from`, `links.back`,
   `links.unresolved`, `search`, `recent`, `history`, `changes`, `change`, `vault.export`,
   `markdown.folder.get`, `doc.open`, `doc.updates` and `subscribe` are allowed; writes fail with
@@ -174,6 +176,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `agents.add` | `name`, `kind`, `fingerprint`, `by` | The agent. Adds it with the fingerprint of its new key, or gives an agent of that name the new key and revokes its old ones, in every space it was given. People only. |
 | `agents.revoke` | `agent` (its name), `by` | The agent. Revokes all its keys and sets its level to `none` in every space it was given. People only. |
 | `grants.set` | `agent` (its name), `space`, `level` (`none`, `read` or `write`), `by` | `{ "space", "level" }`. Writes the agent and its key fingerprints into the space, then its level. People only. |
+| `grants.mine` | none | `[{ "space", "name", "level" }]`: the spaces the agent of the connection was given `read` or `write` in, as the service opened them. A space where its level is `none` is never listed. Agents only: `knode mcp` reads every space listed and saves to one of them. |
 
 An agent, as `agents.list`, `agents.add` and `agents.revoke` return it, is:
 

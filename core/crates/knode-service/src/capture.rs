@@ -39,7 +39,7 @@ use crate::markdown::{record_path, resolve_path};
 use crate::protocol::ChangeKind;
 use crate::server::State;
 use crate::spaces::{
-    capture_enabled, capture_since, capture_waits_for_setup, excluded, inside, rule_patterns,
+    capture_enabled, capture_since, capture_waits_for_setup, excluded, nearest, rule_patterns,
 };
 
 /// The folder in the Knode home where capture keeps its state.
@@ -301,14 +301,10 @@ impl Routes {
         };
         if let Some(project) = project.filter(|p| p.is_absolute()) {
             let recorded = record_path(project);
-            let matching: Vec<&Project> = self
-                .projects
-                .iter()
-                .filter(|p| inside(&p.path, &recorded))
-                .collect();
-            if let Some(longest) = matching.iter().map(|p| p.path.len()).max() {
+            let nearest = nearest(&self.projects, |p| &p.path, &recorded);
+            if !nearest.is_empty() {
                 let mut spaces: Vec<String> = Vec::new();
-                for folder in matching.iter().filter(|p| p.path.len() == longest) {
+                for folder in nearest {
                     let relative = recorded[folder.path.len()..].trim_start_matches('/');
                     let rules: Vec<&str> = folder.exclude.iter().map(String::as_str).collect();
                     if folder.capture

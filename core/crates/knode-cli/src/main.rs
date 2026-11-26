@@ -677,15 +677,25 @@ fn agent_key(paths: &Paths, agent: Option<String>) -> Result<String, String> {
 }
 
 fn mcp(paths: &Paths, flag: Option<&Path>, agent: Option<String>) -> Result<()> {
+    let mut given = false;
     let backend = match resolve(paths, flag) {
-        Ok(resolved) => match agent_key(paths, agent) {
-            Ok(key) => service::agent_backend(&resolved.path, key)?,
-            Err(message) => Box::new(knode_mcp::DirectBackend::unavailable(message)),
-        },
+        Ok(resolved) => {
+            // A space given with --space or KNODE_SPACE is where the agent saves, wherever it
+            // works; otherwise the folder it works in chooses (decision 0017).
+            given = matches!(resolved.source, SpaceSource::Flag | SpaceSource::Env);
+            match agent_key(paths, agent) {
+                Ok(key) => service::agent_backend(&resolved.path, key)?,
+                Err(message) => Box::new(knode_mcp::DirectBackend::unavailable(message)),
+            }
+        }
         // The server still starts, so the agent can tell the person what to do.
         Err(error) => Box::new(knode_mcp::DirectBackend::unavailable(format!(
             "Knode has no space to use: {error:#}. Ask the user to run `knode init <name>` in a terminal."
         ))),
     };
-    knode_mcp::run_stdio(backend).context("the MCP server stopped")
+    // Claude Code and Codex start the server in the folder the agent works in.
+    let server = knode_mcp::KnodeServer::new(backend)
+        .given(given)
+        .working_in(std::env::current_dir().ok());
+    knode_mcp::serve_stdio(server).context("the MCP server stopped")
 }

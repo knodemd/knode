@@ -5,15 +5,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use knode_format::{
-    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, HistoryEntry, Link, LinkKind,
-    LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Project, Provenance,
-    SearchMode, View,
+    Attachment, CanvasBoard, Change, ChangeDetail, ChangeId, GrantLevel, HistoryEntry, Link,
+    LinkKind, LinkKindSpec, NewNode, Node, NodeId, NodeLink, NodeSummary, NodeUpdate, Project,
+    Provenance, SearchMode, View,
 };
 use knode_service::{Client, Error};
 
 use crate::backend::{
-    Backend, BackendError, BackendResult, BodyDoc, LocalFolder, ReadVersions, SearchResults,
-    Written, append_splice,
+    Backend, BackendError, BackendResult, BodyDoc, LocalFolder, Reachable, ReadVersions,
+    SearchResults, Written, append_splice,
 };
 
 type Connect = dyn Fn() -> knode_service::Result<Client> + Send + Sync;
@@ -26,8 +26,8 @@ type Connect = dyn Fn() -> knode_service::Result<Client> + Send + Sync;
 /// A request whose answer was lost is not sent again, so a write is never made twice.
 pub struct ServiceBackend {
     space: PathBuf,
-    connect: Box<Connect>,
-    client: Mutex<Option<Arc<Client>>>,
+    connect: Arc<Connect>,
+    client: Arc<Mutex<Option<Arc<Client>>>>,
     read: ReadVersions,
 }
 
@@ -50,10 +50,20 @@ impl ServiceBackend {
         let client = connect()?;
         Ok(ServiceBackend {
             space: space.into(),
-            connect: Box::new(connect),
-            client: Mutex::new(Some(Arc::new(client))),
+            connect: Arc::new(connect),
+            client: Arc::new(Mutex::new(Some(Arc::new(client)))),
             read: ReadVersions::default(),
         })
+    }
+
+    /// A backend for another space over the same connection, as the same person or agent.
+    pub fn for_space(&self, space: impl Into<PathBuf>) -> Self {
+        ServiceBackend {
+            space: space.into(),
+            connect: Arc::clone(&self.connect),
+            client: Arc::clone(&self.client),
+            read: ReadVersions::default(),
+        }
     }
 
     /// The space this backend reads and writes.
@@ -197,6 +207,27 @@ impl Backend for ServiceBackend {
 
     fn space_path(&self) -> Option<PathBuf> {
         Some(self.space.clone())
+    }
+
+    fn reachable(&self) -> BackendResult<Vec<Reachable>> {
+        let mine = self.with(|c, _| c.my_spaces())?;
+        Ok(mine
+            .into_iter()
+            .map(|mine| {
+                let backend = self.for_space(&mine.space);
+                let folders = backend
+                    .with(|c, s| c.folders(s))
+                    .map(|folders| folders.into_iter().map(|f| f.folder).collect())
+                    .unwrap_or_default();
+                Reachable {
+                    path: mine.space,
+                    name: mine.name,
+                    writable: mine.level == GrantLevel::Write,
+                    folders,
+                    backend: Box::new(backend),
+                }
+            })
+            .collect())
     }
 
     fn history(&self, id: &NodeId) -> BackendResult<Vec<HistoryEntry>> {

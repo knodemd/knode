@@ -620,22 +620,53 @@ pub fn folder_overlaps(spaces: &[SpaceFolders]) -> Vec<FolderOverlap> {
 /// no project folder holds it. Whether capture is on is not considered.
 pub fn project_destinations(spaces: &[SpaceFolders], folder: &Path) -> Vec<MappedFolder> {
     let recorded = record_path(folder);
-    let matching: Vec<MappedFolder> = spaces
-        .iter()
-        .flat_map(|space| {
-            space
-                .folders
-                .iter()
-                .filter(|f| f.kind == folder_kinds::PROJECT && inside(&f.path, &recorded))
-                .map(move |f| MappedFolder::of(space, f))
-        })
+    let projects = spaces.iter().flat_map(|space| {
+        space
+            .folders
+            .iter()
+            .filter(|f| f.kind == folder_kinds::PROJECT)
+            .map(move |f| MappedFolder::of(space, f))
+    });
+    nearest(projects, |f| &f.path, &recorded)
+}
+
+/// The space an agent working in `folder` saves to (decision 0017 of the handbook): the space of
+/// the project folder nearest to it, by the rule capture routes conversations with
+/// ([`project_destinations`]). When that folder is a project folder of several of `spaces`, the
+/// first of them in the order given wins, so callers put the default space first. `None` when no
+/// project folder of `spaces` holds `folder`, as given or with its links resolved. Whether
+/// capture is on is not considered: it decides what is kept of conversations, not where an
+/// agent saves.
+pub fn working_space<'a>(spaces: &'a [SpaceFolders], folder: &Path) -> Option<&'a SpaceFolders> {
+    let mut found = project_destinations(spaces, folder);
+    if found.is_empty()
+        && let Ok(real) = std::fs::canonicalize(folder)
+    {
+        found = project_destinations(spaces, &real);
+    }
+    let first = found.first()?;
+    spaces.iter().find(|space| space.space == first.space)
+}
+
+/// Of `items`, those whose folder (`path_of`, as the space records it) holds the recorded path
+/// `recorded` and is the nearest to it: the longest. Several when the same folder is given more
+/// than once, such as by two spaces; none when no folder holds it. The rule of section 15.5,
+/// shared by capture and by agents choosing where to save.
+pub(crate) fn nearest<T>(
+    items: impl IntoIterator<Item = T>,
+    path_of: impl Fn(&T) -> &str,
+    recorded: &str,
+) -> Vec<T> {
+    let matching: Vec<T> = items
+        .into_iter()
+        .filter(|item| inside(path_of(item), recorded))
         .collect();
-    let Some(longest) = matching.iter().map(|f| f.path.len()).max() else {
+    let Some(longest) = matching.iter().map(|item| path_of(item).len()).max() else {
         return Vec::new();
     };
     matching
         .into_iter()
-        .filter(|f| f.path.len() == longest)
+        .filter(|item| path_of(item).len() == longest)
         .collect()
 }
 
@@ -707,6 +738,77 @@ fn match_part(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn project_at(path: &str) -> Folder {
+        Folder {
+            id: path.to_string(),
+            kind: folder_kinds::PROJECT.to_string(),
+            path: path.to_string(),
+            capture: true,
+            rules: serde_json::json!({}),
+            created_at: knode_format::Timestamp(0),
+            created_by: Provenance::person("Ada"),
+            updated_at: knode_format::Timestamp(0),
+            updated_by: Provenance::person("Ada"),
+        }
+    }
+
+    fn with_projects(name: &str, folders: &[&str]) -> SpaceFolders {
+        SpaceFolders {
+            space: PathBuf::from(format!("/spaces/{name}.knode")),
+            name: name.to_string(),
+            folders: folders.iter().map(|f| project_at(f)).collect(),
+            capture: true,
+        }
+    }
+
+    fn working_in(spaces: &[SpaceFolders], folder: &str) -> Option<String> {
+        working_space(spaces, Path::new(folder)).map(|s| s.name.clone())
+    }
+
+    #[test]
+    fn an_agent_saves_to_the_space_of_the_nearest_project_folder() {
+        let spaces = [
+            with_projects("Personal", &["/work"]),
+            with_projects("Team", &["/work/team-repo"]),
+        ];
+        // Nested folders: the nearest wins, as for capture.
+        assert_eq!(
+            working_in(&spaces, "/work/team-repo/src").as_deref(),
+            Some("Team")
+        );
+        assert_eq!(
+            working_in(&spaces, "/work/team-repo").as_deref(),
+            Some("Team")
+        );
+        assert_eq!(
+            working_in(&spaces, "/work/other").as_deref(),
+            Some("Personal")
+        );
+        // A folder that only starts with the same letters is not inside it.
+        assert_eq!(
+            working_in(&spaces, "/work/team-repository").as_deref(),
+            Some("Personal")
+        );
+        // No project folder holds it.
+        assert_eq!(working_in(&spaces, "/elsewhere"), None);
+    }
+
+    #[test]
+    fn a_folder_of_two_spaces_goes_to_the_first_given() {
+        let spaces = [
+            with_projects("Personal", &["/repo"]),
+            with_projects("Team", &["/repo"]),
+        ];
+        assert_eq!(working_in(&spaces, "/repo/a").as_deref(), Some("Personal"));
+        let spaces = [
+            with_projects("Team", &["/repo"]),
+            with_projects("Personal", &["/repo"]),
+        ];
+        assert_eq!(working_in(&spaces, "/repo/a").as_deref(), Some("Team"));
+        // Capture writes to both: the same rule, every space of the nearest folder.
+        assert_eq!(project_destinations(&spaces, Path::new("/repo")).len(), 2);
+    }
 
     #[test]
     fn patterns_follow_the_specification() {

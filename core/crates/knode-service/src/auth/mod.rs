@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::agents::{
     AgentAddParams, AgentInfo, AgentRevokeParams, AuthParams, GrantSetParams, Identity, KeyInfo,
-    SpaceGrant,
+    MySpace, SpaceGrant,
 };
 use crate::keys::{FINGERPRINT_PREFIX, fingerprint, is_key, owner_token};
 use crate::protocol::{RpcError, Status, codes, methods};
@@ -254,8 +254,12 @@ pub(crate) fn dispatch(
             methods::AGENTS_ADD => add(state, params(method, raw)?),
             methods::AGENTS_REVOKE => revoke(state, params(method, raw)?),
             methods::GRANTS_SET => set_grant(state, params(method, raw)?),
+            methods::GRANTS_MINE => Err(RpcError::invalid_params(
+                "grants.mine is for agents; a person is not limited by grants",
+            )),
             _ => call(state, method, raw),
         },
+        Session::Agent(agent) if method == methods::GRANTS_MINE => to_value(mine(state, agent)?),
         Session::Agent(agent) => agent_call(state, agent, method, raw),
     }
 }
@@ -512,6 +516,40 @@ fn announce_reading(
         method: method.to_owned(),
         nodes,
     });
+}
+
+/// `grants.mine`: the spaces the agent was given `read` or `write` in, with its level in each.
+/// A space where its level is `none`, or whose key is not valid there, stays invisible.
+fn mine(state: &State, agent: &AgentSession) -> Result<Vec<MySpace>, RpcError> {
+    still_valid(state, agent)?;
+    let given = lock_ignoring_poison(&state.auth.registry)
+        .agents
+        .iter()
+        .find(|a| a.id == agent.id)
+        .map(|a| a.spaces.clone())
+        .unwrap_or_default();
+    let mut spaces: Vec<MySpace> = Vec::new();
+    for path in given {
+        let Ok(space) = state.space(&path) else {
+            continue;
+        };
+        let space = lock_ignoring_poison(&space);
+        let level = level_of(&space, agent).unwrap_or(GrantLevel::None);
+        if level >= GrantLevel::Read && !spaces.iter().any(|s| s.space == space.path()) {
+            spaces.push(MySpace {
+                space: space.path().to_path_buf(),
+                name: space.manifest().name.clone(),
+                level,
+            });
+        }
+    }
+    state.auth.log.record(
+        Some(&agent.id),
+        None,
+        methods::GRANTS_MINE,
+        Outcome::Allowed,
+    );
+    Ok(spaces)
 }
 
 /// `service.status` as an agent sees it: only the spaces it may see.
