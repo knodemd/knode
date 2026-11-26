@@ -67,6 +67,10 @@ grant takes effect on the next call:
   `attachment.add` and `attachment.remove`. `attachment.add_file`, `attachment.path`,
   `conversations.import` and `import.run` name files on this machine (or fetch a web page) and
   are for people only.
+- With `read`, `recordings.get`, `recordings.pending` and `recordings.failed` are allowed; the
+  other `recordings.*`
+  methods store files of this machine and what the app made on the device, and are for people
+  only.
 - Creating and renaming spaces, changing settings and folders, managing agents, keys and grants,
   `purge`, `markdown.folder.set`, `doc.peer`, `doc.merge` and every other method are for people
   only and fail with `forbidden`. (The authorship of merged Loro updates comes from their peers,
@@ -130,7 +134,7 @@ epoch, in UTC. The shapes of nodes, links, history entries and search hits are t
 | `onboarding.apply_into` | `space`, `plan` (a reviewed `knode onboard analyze` plan), `by` | The onboarding receipt. Applies the plan into this space instead of a new one, only while `space.set_up` is `false`: the source is checked against the plan, the plan is rehearsed in a throwaway space, then its documents, a `project` node per project with the documents `part-of` it and `onboarding.json` are written into the space, and `capture.enabled` is set to `off`. What the space held stays. Fails with `invalid` when the space is set up, the source changed or a note of the source has the id of a node already in the space, and then writes nothing. People only. |
 | `space.rename` | `space`, `name`, `by` | Space info, with the new name. Changes `name` in `manifest.json`; the package keeps its folder name. People only. |
 | `settings.get` | `space` | Every setting of the space, by key: `{ "space.id": "01K8…", "space.icon": "🌱" }`. A key left out has its default. Agents never get the settings of sources (`source.<id>`), whose exclusions name chats and mailboxes; `changes` and `change` give agents those changes without their values. |
-| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` is `on` or `off`, both stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
+| `settings.set` | `space`, `key`, `value` (`null` for the default), `by` | Every setting, as `settings.get`. `space.icon` is one emoji; `capture.enabled` and `recordings.summaries` are `on` or `off`, all stored as the person's choice (`null` puts back the default, stored as no value); turning it on for a space whose capture was off or waiting for setup also records the time in `capture.since` (below). Other keys fail with `invalid`; the live Markdown folder is changed with `markdown.folder.set`. People only. |
 | `folders.list` | `space` | The folders that feed the space, oldest first. See below. |
 | `folders.set` | `space`, `kind`, `path`, `capture`? (default `true`), `rules`? (default `{}`), `id`?, `by` | The folder. Adds it, or changes the folder with this `id`, or with the same kind and path. `kind` is `project`, `notes` or `agent`; `path` is absolute or starts with `~/`, and may not be inside the space. People only. |
 | `folders.remove` | `space`, `id`, `by` | `true` if there was such a folder. Nothing captured or imported from it is removed. People only. |
@@ -252,6 +256,54 @@ Link kinds, attachments added and removed, and graph views created, renamed, fil
 are changes in the history (`link_kind.set`, `link_kind.remove`, `attachment.add`,
 `attachment.remove`, `view.set`, `view.remove`). Viewports, positions and groups carry their own
 provenance and add no change.
+
+### Recordings
+
+Meetings recorded on the device, voice memos and audio files added by hand, with their transcript
+and their summary. Transcribing and summarising happen in the app, on the device; these methods
+store what it produces and say what is still to do. A recording is a node of kind `meeting`,
+`voice-memo` or `recording` with its audio files attached, its properties under `recording.`
+(`started_at`, `ended_at`, `duration_ms`, `source`, `key`, `language`, `transcript`, `summary`,
+`error`, `app`, `tracks`) and a `part-of` link to its project. Its transcript is a node of kind
+`transcript`, `derived-from` it.
+
+Every method returns a recording, or a list of them:
+
+```json
+{
+  "id": "01J…", "kind": "meeting", "title": "Weekly sync",
+  "started_at": 1795343400000, "ended_at": 1795345200000, "duration_ms": 1800000,
+  "source": "recorder", "key": null, "language": "es-ES",
+  "transcript": "done", "summary": "pending", "error": null, "app": "zoom.us",
+  "project": "01J…", "transcript_id": "01J…",
+  "tracks": [{ "name": "microphone.m4a", "track": "microphone" }, { "name": "system.m4a", "track": "system" }]
+}
+```
+
+`kind` is `meeting`, `voice-memo` or `recording`; `source` follows it: `recorder`, `voice-memos`
+or `file`. `track` is `microphone` (the person), `system` (the others in an online meeting) or
+`mixed` (everyone in one file). `transcript` is `pending`, `done` or `failed`; `summary` is
+`pending`, `done`, `off`, `unavailable` or `failed`; `error` says why a stage failed or is
+unavailable. Times are Unix milliseconds.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `recordings.create` | `space`, `kind`, `title`, `started_at`, `ended_at`, `project`?, `audio` (`[{ "path" (absolute), "track" }]`), `key`?, `app`?, `summaries`? (bool, `true` when omitted), `by` | The recording. Every file is checked first (it must exist, up to 100 MB), then the node is created with a header saying when and for how long, an `![[name]]` embed per file, the files attached (copied) and a `part-of` link to `project`; `recording.key` is written last, and a node left half made by a failed step is deleted, so a key the space has always names a whole recording. `transcript` is `pending`; `summary` is `pending` with `summaries`, else `off`. A `key` the space already has returns that recording, after attaching (and embedding) each file of `audio` whose `track` it has no attached file for and adding the `part-of` link to `project` if missing; its `tracks` list only what is attached. People only. |
+| `recordings.pending` | `space` | The recordings whose transcript is `pending`, or whose summary is `pending` while the transcript is `done`, oldest first (by `started_at`). A recording that cannot be read is left out (and logged) rather than failing the list. |
+| `recordings.failed` | `space` | The recordings whose transcript is `failed`, or whose summary is `failed` or `unavailable`, newest first (by `started_at`): those the app offers to try again with `recordings.retry`. A recording that cannot be read is left out (and logged). |
+| `recordings.get` | `space`, `id` | The recording. Fails with `not_found` without such a node and `invalid` for a node that is not a recording. |
+| `recordings.transcript` | `space`, `id`, `transcript` (`{ "language"?, "engine", "segments": [{ "start_ms", "end_ms", "speaker", "text" }] }`), `by` | The recording. Creates its transcript node, `Transcript: <title> (<YYYY-MM-DD HH:MM>)` with the local time the recording started (followed by ` 2`, ` 3`... when another node already has that title, so the link finds this transcript), or replaces the one written before (keeping its title while no other node takes it): a line naming the engine, then one paragraph per turn (a run of segments by the same speaker), `**Speaker** (HH:MM:SS): text`. Sets `transcript` to `done` and `language`, removes `error` (unless the summary failed) and adds a `[[Transcript: …]]` line to the recording's body, after its embeds. People only. |
+| `recordings.summary` | `space`, `id`, `summary` (`{ "model", "overview", "key_points", "decisions", "action_items": [{ "task", "owner"? }], "open_questions" }`), `by` | The recording. Writes the minutes into its body between a `<!-- knode:minutes -->` line and a `<!-- /knode:minutes -->` line (HTML comments: hidden in Markdown, kept as they are in Markdown files): `## Summary`, `## Key points`, `## Decisions`, `## Action items` (`- [ ] task — owner`) and `## Open questions`, leaving out empty ones, and a line saying `model` wrote them on this Mac from the transcript. When the body has the two lines once, in order, only what is between them is replaced; otherwise the block is added after the header, embeds and transcript link. Text outside the markers is never changed. Sets `summary` to `done`. People only. |
+| `recordings.fail` | `space`, `id`, `stage` (`transcript` or `summary`), `state` (`failed`, or `unavailable` for a summary), `error`, `by` | The recording, with the stage in that state and `error` set. People only. |
+| `recordings.retry` | `space`, `id`, `stage`, `by` | The recording, with the stage back to `pending` and `error` removed. A summary fails with `invalid` until the transcript is `done`. People only. |
+
+The writes announce the recording and its transcript as changes. Whether the app summarises
+recordings is the space setting `recordings.summaries` (`on`, the default also when it is not
+set, or `off`; only `off` turns it off), read and
+changed with `settings.get` and `settings.set`; the app passes it as `summaries` when it stores a
+recording. Agents with `read` may call `recordings.get`, `recordings.pending` and
+`recordings.failed`; the other
+methods are for people only.
 
 ### Data exports
 

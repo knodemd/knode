@@ -15,10 +15,12 @@ use knode_format::NodeId;
 
 mod attachments;
 mod maps;
+mod recordings;
 mod spaces;
 
 pub use attachments::*;
 pub use maps::*;
+pub use recordings::*;
 pub use spaces::*;
 
 uniffi::setup_scaffolding!();

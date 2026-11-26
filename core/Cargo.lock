@@ -2345,6 +2345,7 @@ version = "0.0.0"
 dependencies = [
  "knode-config",
  "knode-format",
+ "knode-ingest",
  "knode-service",
  "serde_json",
  "tempfile",

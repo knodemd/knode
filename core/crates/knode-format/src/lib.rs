@@ -270,4 +270,7 @@ pub mod setting_keys {
     pub const MARKDOWN_FOLDER: &str = "markdown.folder";
     /// The id of the embedding model searches by meaning use, in decimal (schema version 4).
     pub const EMBEDDING_MODEL: &str = "embedding.model";
+    /// `on` (the default, also when absent) or `off`: whether recordings are summarised on the
+    /// device once they are transcribed. Only `off` turns it off.
+    pub const RECORDINGS_SUMMARIES: &str = "recordings.summaries";
 }

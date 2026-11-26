@@ -56,6 +56,7 @@ pub mod markdown;
 mod paths;
 pub mod protocol;
 pub mod readwise;
+pub mod recordings;
 pub mod search;
 mod server;
 pub mod sources;
