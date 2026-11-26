@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Knode
 
@@ -61,6 +62,29 @@ func eventually(isolation: isolated (any Actor)? = #isolation, _ condition: () a
         await #expect(throws: ServiceError.remote(code: -32601, kind: "", message: "no method nope")) {
             _ = try await connection.call("nope", as: Bool.self)
         }
+    }
+
+    @Test func anOlderServiceIsReportedAsOutdated() async throws {
+        let store = ServiceSpaceStore(socketURL: service.socketURL, person: "Ada")
+        let heard = Mutex(false)
+        let observer = NotificationCenter.default.addObserver(forName: ServiceMonitor.outdatedNotification, object: nil, queue: nil) { _ in
+            heard.withLock { $0 = true }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        await #expect(throws: SpaceStoreError.serviceOutdated) {
+            _ = try await store.call("nope.newer", [:], as: Bool.self)
+        }
+        #expect(heard.withLock { $0 })
+        #expect(SpaceStoreError.serviceOutdated.localizedDescription.hasPrefix("Knode Service is older than this app"))
+        #expect(ServiceError.remote(code: -32601, kind: nil, message: "no method").localizedDescription.hasPrefix("Knode Service is older"))
+    }
+
+    @Test func comparesServiceVersions() {
+        #expect(ServiceMonitor.isVersion("0.3.9", olderThan: "0.4.0"))
+        #expect(ServiceMonitor.isVersion("0.4", olderThan: "0.4.1"))
+        #expect(!ServiceMonitor.isVersion("0.4.0", olderThan: "0.4"))
+        #expect(!ServiceMonitor.isVersion("0.0.0", olderThan: "0.0.0"))
+        #expect(!ServiceMonitor.isVersion("1.0.0-beta", olderThan: "0.9.9"))
     }
 
     @Test func connectingWithoutAServiceFails() {

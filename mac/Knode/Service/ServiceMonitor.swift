@@ -37,6 +37,33 @@ final class ServiceMonitor {
         if case .running = state { true } else { false }
     }
 
+    /// Posted when the service answers that it does not know a method the app asked for.
+    nonisolated static let outdatedNotification = Notification.Name("md.knode.service-outdated")
+
+    /// The process of the running service once it answered that it did not know a method.
+    private var outdatedPID: Int?
+
+    /// Whether the running service is older than this app: it said it did not know a method the
+    /// app asked for, or its version is lower. Restarting it, after updating a `knode` installed
+    /// apart from the app, fixes it.
+    var isOutdated: Bool {
+        guard case .running(let status) = state else { return false }
+        return status.pid == outdatedPID || Self.isVersion(status.version, olderThan: appVersion)
+    }
+
+    /// Whether `version` comes before `other`, comparing their numbers (`0.3.9` before `0.4.0`).
+    nonisolated static func isVersion(_ version: String, olderThan other: String) -> Bool {
+        func numbers(_ text: String) -> [Int] {
+            text.split(separator: "-").first.map { $0.split(separator: ".").map { Int($0) ?? 0 } } ?? []
+        }
+        let a = numbers(version), b = numbers(other)
+        for index in 0..<max(a.count, b.count) {
+            let x = index < a.count ? a[index] : 0, y = index < b.count ? b[index] : 0
+            if x != y { return x < y }
+        }
+        return false
+    }
+
     /// Called when the service starts running or stops.
     @ObservationIgnored var onRunningChange: (@MainActor (Bool) -> Void)?
 
@@ -45,13 +72,17 @@ final class ServiceMonitor {
     @ObservationIgnored private let command: @MainActor () -> KnodeCommand
     @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private let appVersion: String
+    @ObservationIgnored private var outdatedObserver: (any NSObjectProtocol)?
 
     init(
         socketURL: URL = KnodeHome.current.socketURL,
         launchAgentURL: URL = ServiceMonitor.defaultLaunchAgentURL,
         pollInterval: Duration = .seconds(3),
+        appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
         command: @escaping @MainActor () -> KnodeCommand
     ) {
+        self.appVersion = appVersion
         self.socketURL = socketURL
         self.launchAgentURL = launchAgentURL
         self.pollInterval = pollInterval
@@ -65,6 +96,9 @@ final class ServiceMonitor {
 
     func start() {
         guard task == nil else { return }
+        outdatedObserver = NotificationCenter.default.addObserver(forName: Self.outdatedNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.markOutdated() }
+        }
         refreshRunsAtLogin()
         task = Task { [weak self] in await self?.watch() }
     }
@@ -72,6 +106,13 @@ final class ServiceMonitor {
     func stop() {
         task?.cancel()
         task = nil
+        if let outdatedObserver { NotificationCenter.default.removeObserver(outdatedObserver) }
+        outdatedObserver = nil
+    }
+
+    /// Remembers that the running service did not know a method the app asked for.
+    func markOutdated() {
+        if case .running(let status) = state { outdatedPID = status.pid }
     }
 
     func refreshRunsAtLogin() {
@@ -83,6 +124,13 @@ final class ServiceMonitor {
     func startService() async { await perform(["service", "start"]) }
 
     func stopService() async { await perform(["service", "stop"]) }
+
+    /// Stops Knode Service and starts it again, such as after Full Disk Access was turned on:
+    /// macOS gives it to a process when it starts.
+    func restartService() async {
+        await perform(["service", "stop"])
+        await perform(["service", "start"])
+    }
 
     func setRunsAtLogin(_ on: Bool) async {
         await perform(["service", on ? "install" : "uninstall"])

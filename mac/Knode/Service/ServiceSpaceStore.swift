@@ -361,6 +361,8 @@ public actor ServiceSpaceStore: CoeditingStore {
     func callJSON(_ method: String, _ params: [String: JSONValue]) async throws -> Data {
         do {
             return try await connected().callJSON(method, params)
+        } catch let error as ServiceError where error.isMethodNotFound {
+            throw Self.serviceOutdated()
         } catch ServiceError.remote(_, let kind, let message, let later) {
             throw Self.storeError(kind: kind, message: message, url: nil, node: nil, later: later)
         }
@@ -369,9 +371,17 @@ public actor ServiceSpaceStore: CoeditingStore {
     func call<Result: Decodable & Sendable>(_ method: String, _ params: [String: JSONValue], as type: Result.Type, url: URL? = nil, node: Node.ID? = nil, change: Int64? = nil) async throws -> Result {
         do {
             return try await connected().call(method, params, as: type)
+        } catch let error as ServiceError where error.isMethodNotFound {
+            throw Self.serviceOutdated()
         } catch ServiceError.remote(_, let kind, let message, let later) {
             throw Self.storeError(kind: kind, message: message, url: url, node: node, change: change, later: later)
         }
+    }
+
+    /// Tells the menu bar that the running service is older than the app, so it offers a restart.
+    static func serviceOutdated() -> SpaceStoreError {
+        NotificationCenter.default.post(name: ServiceMonitor.outdatedNotification, object: nil)
+        return .serviceOutdated
     }
 
     static func storeError(kind: String?, message: String, url: URL?, node: Node.ID?, change: Int64? = nil, later: [Int64] = []) -> any Error {
