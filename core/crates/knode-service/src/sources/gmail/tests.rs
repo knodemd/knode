@@ -344,6 +344,34 @@ fn page_of(state: SignInState) -> String {
 }
 
 #[test]
+fn the_google_client_comes_from_run_time_then_build_time() {
+    let resolve = |runtime, build| GoogleClient::resolve(runtime, build);
+    let built = (Some("built-id"), Some("built-secret"));
+    let client = resolve((Some(" run-id "), Some("run-secret")), built).unwrap();
+    assert_eq!(client.id, "run-id");
+    assert_eq!(client.secret.as_deref(), Some("run-secret"));
+
+    let client = resolve((None, None), built).unwrap();
+    assert_eq!(client.id, "built-id");
+    assert_eq!(client.secret.as_deref(), Some("built-secret"));
+
+    let client = resolve((Some("run-id"), None), built).unwrap();
+    assert_eq!(
+        client.secret, None,
+        "the secret of the built client never goes with another id"
+    );
+
+    let client = resolve((Some(" "), Some("run-secret")), built).unwrap();
+    assert_eq!(client.id, "built-id", "a blank id at run time is no id");
+    assert_eq!(client.secret.as_deref(), Some("built-secret"));
+
+    let client = resolve((None, None), (Some("built-id"), Some(""))).unwrap();
+    assert_eq!(client.secret, None);
+    assert!(resolve((None, Some("run-secret")), (None, Some("built-secret"))).is_none());
+    assert!(resolve((None, None), (None, None)).is_none());
+}
+
+#[test]
 fn without_a_client_id_it_says_sign_in_with_google_is_not_set_up() {
     let fake = Fake::default();
     let connector = GmailConnector::with(Arc::new(fake), None, endpoints());

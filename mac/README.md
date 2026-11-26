@@ -212,6 +212,17 @@ local builds. Like the core, it is
 rebuilt only when a file in `scripts/knode-cli-inputs.xcfilelist` changes, and the script fails if a
 source file of `knode-cli` or of a crate it uses is missing from that list.
 
+## Service clients in local builds
+
+The Gmail, Telegram and Slack connectors sign in with Knode's own client ids, which cargo embeds
+when it builds the core and the knode command. Both build scripts load them from the environment
+or, for developer builds, from `core/.env.services`: copy `core/.env.services.example` there and
+fill in what you have. The file is ignored by git and never committed. Without it the connectors
+still build and ask for a client id at run time (`KNODE_GOOGLE_CLIENT_ID` and the others, read
+when Knode Service starts, which also override the built-in ones). Xcode does not rerun the build
+scripts when that file changes, so clean the build folder after editing it. Release builds take
+the values from GitHub Actions secrets; see the handbook, chapter 7.
+
 ## Layout
 
 | Path | What it holds |

@@ -928,6 +928,8 @@ mod tests {
         let run = (Some("123"), Some("abc"));
         let build = (Some("456"), Some("def"));
         assert_eq!(App::from_values(run, build).unwrap().id, 123);
+        assert_eq!(App::from_values(run, build).unwrap().hash, "abc");
+        assert_eq!(App::from_values((None, None), build).unwrap().hash, "def");
         assert_eq!(App::from_values((None, None), build).unwrap().id, 456);
         assert_eq!(
             App::from_values((Some("123"), None), build).unwrap().id,

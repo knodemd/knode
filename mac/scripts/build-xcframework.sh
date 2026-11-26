@@ -23,6 +23,16 @@ fi
 # every source file of the crates of this workspace it is built from.
 "$mac_dir/scripts/update-inputs.sh" --check core
 
+# The client ids of the services the connectors sign in to, which cargo embeds: from the
+# environment (release builds) or core/.env.services (developer builds, never committed). Xcode
+# skips this script when no input changed, so after editing that file clean the build folder.
+export KNODE_SERVICES_FILE="$core_dir/.env.services"
+# shellcheck source=/dev/null
+. "$mac_dir/../scripts/load-service-clients.sh"
+if [ "${CONFIGURATION:-}" = Release ]; then
+    "$mac_dir/../scripts/check-service-clients.sh"
+fi
+
 # A build folder of its own, so the settings Xcode exports never invalidate core/target.
 export CARGO_TARGET_DIR="$mac_dir/build/cargo"
 export MACOSX_DEPLOYMENT_TARGET=26.0
