@@ -55,36 +55,25 @@ pub(crate) fn destination(name: &str) -> Option<String> {
     }
 }
 
-/// The names a body uses as `![[name]]` or `[[name]]`: the destinations that could be the name of
-/// an attachment (no `/`, which names never have).
-pub(crate) fn wiki_names(body: &str) -> BTreeSet<String> {
-    knode_md::wiki_links(body)
+/// The paths a body embeds or links to that may be files, with folders: `![[sub/p.png]]`,
+/// `![p](../sub/p.png)`. Markdown destinations leave out web addresses and other schemes,
+/// anchors and absolute paths, and lose `./`, `#fragment` and `?query`; they are
+/// percent-decoded.
+pub(crate) fn linked_paths(body: &str) -> BTreeSet<String> {
+    let wiki = knode_md::wiki_links(body)
         .into_iter()
         .map(|link| link.destination)
-        .filter(|d| !d.is_empty() && !d.contains(['/', '\\', '[', ']', '|', '#']))
-        .collect()
-}
-
-/// The file a Markdown link or image destination names when it is a file next to the note: the
-/// destination without `./`, `#fragment` or `?query`, percent-decoded. `None` for web addresses
-/// and other schemes (`https:`, `data:`, `knode:`), anchors, absolute paths and paths in other
-/// folders.
-pub(crate) fn local_name(dest: &str) -> Option<String> {
-    if crate::apps::markdown::is_url(dest) || dest.starts_with(['#', '/']) {
-        return None;
-    }
-    let dest = dest.split(['#', '?']).next().unwrap_or_default();
-    let dest = dest.strip_prefix("./").unwrap_or(dest);
-    let name = crate::apps::markdown::decode_path(dest);
-    (!name.is_empty() && !name.contains(['/', '\\', ':'])).then_some(name)
-}
-
-/// The names a body uses as `![alt](name)` or `[text](name)`: see [`local_name`].
-pub(crate) fn link_names(body: &str) -> BTreeSet<String> {
-    links(body)
-        .into_iter()
-        .filter_map(|(_, dest)| local_name(&dest))
-        .collect()
+        .filter(|d| !d.is_empty() && !d.contains(['\\', '[', ']', '|', '#']));
+    let markdown = links(body).into_iter().filter_map(|(range, dest)| {
+        let wiki = body[range].trim_start_matches('!').starts_with("[[");
+        if wiki || crate::apps::markdown::is_url(&dest) || dest.starts_with(['#', '/']) {
+            return None;
+        }
+        let dest = dest.split(['#', '?']).next().unwrap_or_default();
+        let path = crate::apps::markdown::decode_path(dest.strip_prefix("./").unwrap_or(dest));
+        (!path.is_empty() && !path.contains(['\\', ':'])).then_some(path)
+    });
+    wiki.chain(markdown).collect()
 }
 
 /// The source ranges of the inline links and images of `body`, with their destinations.
@@ -188,24 +177,26 @@ mod tests {
     }
 
     #[test]
-    fn wiki_names_are_whole_destinations() {
-        let names = wiki_names("![[beds.svg]] [[Plan#v2]] [[a/b.png]] ![[photo.png|200]]");
-        assert_eq!(
-            names.into_iter().collect::<Vec<_>>(),
-            ["beds.svg", "photo.png"]
-        );
-    }
-
-    #[test]
-    fn link_names_are_files_next_to_the_note() {
-        let names = link_names(
-            "![a](pic.png) ![b](<my pic.png>) ![c](my%20pic2.png) [d](./doc.pdf#page=2) \
+    fn linked_paths_are_whole_destinations_of_files() {
+        let paths = linked_paths(
+            "![[beds.svg]] [[Plan#v2]] [[a/b.png]] ![[photo.png|200]] \
+             ![a](pic.png) ![b](<my pic.png>) ![c](my%20pic2.png) [d](./doc.pdf#page=2) \
              ![e](https://x.org/w.png) ![f](data:image/png;base64,AA) [g](#top) [h](/abs.png) \
-             [i](sub/pic.png) [j](knode:blob/abc) [k](mailto:a@b.c)",
+             [i](sub/pic.png) [l](../sub/up.png) [j](knode:blob/abc) [k](mailto:a@b.c)",
         );
         assert_eq!(
-            names.into_iter().collect::<Vec<_>>(),
-            ["doc.pdf", "my pic.png", "my pic2.png", "pic.png"]
+            paths.into_iter().collect::<Vec<_>>(),
+            [
+                "../sub/up.png",
+                "a/b.png",
+                "beds.svg",
+                "doc.pdf",
+                "my pic.png",
+                "my pic2.png",
+                "photo.png",
+                "pic.png",
+                "sub/pic.png"
+            ]
         );
     }
 }

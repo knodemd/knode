@@ -328,3 +328,51 @@ fn links_of_unknown_kinds_are_kept_or_reported() {
             .any(|s| s.reason.contains("Not A Kind"))
     );
 }
+
+#[test]
+fn files_next_to_the_note_named_by_a_path_attach_and_round_trip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let vault = tmp.path().join("vault");
+    // Relative to the note, coming back to its own folder; and from the top of the vault, as
+    // Obsidian writes with "Absolute path in vault".
+    let s = "# S\n\n![x](../sub/p.png)\n";
+    let t = "# T\n\n![[sub/q.png]] ![y](sub/r.png)\n";
+    // A file in another folder (an attachments folder) is not attached.
+    let u = "# U\n\n![z](../attachments/a.png)\n";
+    put(&vault, "sub/s.md", s);
+    put(&vault, "sub/t.md", t);
+    put(&vault, "sub/u.md", u);
+    for name in ["sub/p.png", "sub/q.png", "sub/r.png", "attachments/a.png"] {
+        put(&vault, name, PHOTO);
+    }
+
+    let mut space = Space::create(tmp.path().join("Vault.knode"), "Vault").unwrap();
+    let report = import(&mut space, &vault, &me()).unwrap();
+    assert_eq!(report.attached, ["sub/p.png", "sub/q.png", "sub/r.png"]);
+    let names = |title: &str| -> Vec<String> {
+        let id = space.find_by_title(title).unwrap()[0].id;
+        let mut names: Vec<String> = space
+            .attachments(&id)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names("S"), ["p.png"]);
+    assert_eq!(names("T"), ["q.png", "r.png"]);
+    assert!(names("U").is_empty());
+
+    // Exported, the files are next to the notes again, where their paths find them.
+    let out = tmp.path().join("out");
+    export(&space, &out).unwrap();
+    let files = tree(&out);
+    for (path, body) in [("sub/s.md", s), ("sub/t.md", t)] {
+        let md = String::from_utf8(files[path].clone()).unwrap();
+        assert!(md.ends_with(&format!("\n---\n{body}")), "{md}");
+    }
+    for name in ["sub/p.png", "sub/q.png", "sub/r.png"] {
+        assert_eq!(files[name], PHOTO, "{name}");
+    }
+}

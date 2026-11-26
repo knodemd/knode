@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::apps::markdown::{decode_path, is_url};
 use crate::attachments::links;
-use crate::names::{folder_of, join};
+use crate::names::{folder_of, join, normalize};
 use crate::property_keys as keys;
 use crate::{ImportReport, Result, Skipped, io_error};
 
@@ -452,21 +452,6 @@ fn missing(
         });
     }
     out
-}
-
-/// `path` with `.` and `..` folded away, or `None` when it goes above the folder.
-fn normalize(path: &str) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            _ => parts.push(part),
-        }
-    }
-    Some(parts.join("/"))
 }
 
 /// The `[[links]]` of the note at `path` that name several nodes by title.

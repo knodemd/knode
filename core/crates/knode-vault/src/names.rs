@@ -83,6 +83,21 @@ pub(crate) fn join(folder: &str, name: &str) -> String {
     }
 }
 
+/// `path` with `.` and `..` folded away, or `None` when it goes above the folder.
+pub(crate) fn normalize(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
 /// Whether `path` is a relative path of a `.md` file that stays inside the folder: only plain
 /// names, separated by `/`, none hidden.
 pub(crate) fn is_safe_relative(path: &str) -> bool {
