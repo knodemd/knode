@@ -107,6 +107,11 @@ struct SourceCard: View {
                                detail: source.isOn ? "Off pauses it: nothing new comes in until you turn it on again." : "Paused: nothing new comes in.",
                                isOn: Binding(get: { source.isOn }, set: { on in Task { await sources.setOn(on, for: source) } }))
                     .disabled(sources.isBusy || source.state == .unavailable)
+                if sources.contactNames.supports(source) {
+                    KHairline()
+                    ContactNamesToggle(isOn: sources.contactNames.isOn) { on in await sources.setNamesFromContacts(on) }
+                        .disabled(sources.isBusy || sources.contactNames.isBusy)
+                }
                 KHairline()
                 HStack(spacing: KSpace.x2) {
                     KButton("Run now", icon: .refresh, size: .small) { Task { await sources.run(source) } }
@@ -471,6 +476,12 @@ private struct HistoryStep: View {
                 }
             }
             KExplanation("The history is chosen once. To change it, disconnect and connect again; what came in stays.")
+            if let names = flow.contactNames {
+                KCard(padding: KSpace.x2) {
+                    ContactNamesToggle(isOn: names.isOn) { on in await flow.setNamesFromContacts(on) }
+                        .disabled(flow.isBusy || names.isBusy)
+                }
+            }
         }
     }
 
@@ -480,6 +491,20 @@ private struct HistoryStep: View {
             KSettingText(title: title, detail: detail)
         }
         .accessibilityLabel(title)
+    }
+}
+
+/// Names from Contacts instead of phone numbers and email addresses, for Messages.
+struct ContactNamesToggle: View {
+    var isOn: Bool
+    var set: @MainActor (Bool) async -> Void
+
+    var body: some View {
+        KSettingToggle("Names from Contacts",
+                       detail: isOn
+                           ? "People show by their names in Contacts. Knode reads Contacts on this Mac and keeps the names in its own folder, never in the space."
+                           : "People show by phone number or email address. Turn on to show their names from Contacts; Knode asks for access first.",
+                       isOn: Binding(get: { isOn }, set: { on in Task { await set(on) } }))
     }
 }
 
@@ -603,6 +628,7 @@ private struct PreviewSourcesClient: SourcesClient {
         return account
     }
     func signOut(_ source: String) async throws -> Bool { true }
+    func setContactNames(_ names: [String: String]) async throws -> Int { names.count }
 }
 
 enum SourcesPreviews {

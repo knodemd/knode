@@ -279,6 +279,9 @@ public protocol SourcesClient: Sendable {
     func signIn(_ source: String, _ step: SourceSignInRequest) async throws -> SourceAccountState
     /// `sources.sign_out`: ends the session and forgets it. Whether it was signed in.
     @discardableResult func signOut(_ source: String) async throws -> Bool
+    /// `sources.contact_names`: replaces the names from Contacts that connectors show people
+    /// with, phone numbers and email addresses to names; empty forgets them. How many it kept.
+    @discardableResult func setContactNames(_ names: [String: String]) async throws -> Int
 }
 
 /// The `SourcesClient` of Knode Service, over its socket as the person.
@@ -343,6 +346,10 @@ public struct ServiceSourcesClient: SourcesClient {
 
     @discardableResult public func signOut(_ source: String) async throws -> Bool {
         try await call("sources.sign_out", ["source": .string(source)], as: Bool.self)
+    }
+
+    @discardableResult public func setContactNames(_ names: [String: String]) async throws -> Int {
+        try await call("sources.contact_names", ["names": .object(names.mapValues { .string($0) })], as: Int.self)
     }
 
     /// One short connection per call, like the Agents settings.

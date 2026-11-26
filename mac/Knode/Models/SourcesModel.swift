@@ -30,6 +30,8 @@ final class SourcesModel {
     @ObservationIgnored let client: any SourcesClient
     @ObservationIgnored let signIns: SourceSignIns
     @ObservationIgnored let openURL: @MainActor (URL) -> Void
+    /// Names from Contacts for Messages.
+    @ObservationIgnored let contactNames: ContactNames
     @ObservationIgnored private let startService: @MainActor () async -> Void
     @ObservationIgnored private let pollInterval: Duration
 
@@ -39,14 +41,19 @@ final class SourcesModel {
     ///   - openURL: opens System Settings or a sign-in page.
     ///   - startService: starts Knode Service, as the menu bar does.
     ///   - pollInterval: how often `watch()` asks for the sources.
+    ///   - contacts: where names for Messages are read, once the person turns them on.
+    ///   - preferences: where turning names on is remembered; `nil` remembers nothing.
     init(
         client: any SourcesClient,
         signIns: SourceSignIns? = nil,
         openURL: @escaping @MainActor (URL) -> Void = { _ in },
         startService: @escaping @MainActor () async -> Void = {},
-        pollInterval: Duration = .seconds(2)
+        pollInterval: Duration = .seconds(2),
+        contacts: any ContactStore = NoContactStore(),
+        preferences: UserDefaults? = nil
     ) {
         self.client = client
+        contactNames = ContactNames(store: contacts, client: client, preferences: preferences)
         self.signIns = signIns ?? SourceSignIns(fallback: ServiceSourceSignIn(client: client))
         self.openURL = openURL
         self.startService = startService
@@ -66,6 +73,20 @@ final class SourcesModel {
         errorMessage = nil
         await load()
         await loadAccounts()
+        await contactNames.refresh()
+    }
+
+    /// Turns names from Contacts on or off for Messages, asking for access the first time.
+    func setNamesFromContacts(_ on: Bool) async {
+        do {
+            try await contactNames.setOn(on)
+            errorMessage = nil
+        } catch let error as ServiceError where error.meansNotRunning {
+            state = .serviceStopped
+        } catch {
+            errorMessage = error.localizedDescription
+            errorFromLoad = false
+        }
     }
 
     /// Asks which account each connector that reads one is signed in to. Not on every refresh
@@ -171,6 +192,7 @@ final class SourcesModel {
         guard let space else { return nil }
         return SourceConnectFlow(
             source: source, space: space, client: client, signIn: signIns.flow(for: source), signInAgain: signInAgain, openURL: openURL,
+            contactNames: contactNames,
             onChange: { [weak self] status in self?.apply(status) },
             onSignIn: { [weak self] in Task { await self?.loadAccounts() } }
         )
@@ -253,15 +275,18 @@ final class SourceConnectFlow: Identifiable {
     @ObservationIgnored private let openURL: @MainActor (URL) -> Void
     @ObservationIgnored private let onChange: @MainActor (SourceStatus?) -> Void
     @ObservationIgnored private let onSignIn: @MainActor () -> Void
+    /// Names from Contacts, offered with the history for the connectors that use them.
+    @ObservationIgnored let contactNames: ContactNames?
     @ObservationIgnored private var browserWait: Task<Void, Never>?
     /// Which wait is the current one: a cancelled one that ends later changes nothing.
     @ObservationIgnored private var waitID = 0
 
     init(
         source: SourceStatus, space: URL, client: any SourcesClient, signIn: (any SourceSignIn)?, signInAgain: Bool = false,
-        openURL: @escaping @MainActor (URL) -> Void, onChange: @escaping @MainActor (SourceStatus?) -> Void,
-        onSignIn: @escaping @MainActor () -> Void = {}
+        openURL: @escaping @MainActor (URL) -> Void, contactNames: ContactNames? = nil,
+        onChange: @escaping @MainActor (SourceStatus?) -> Void, onSignIn: @escaping @MainActor () -> Void = {}
     ) {
+        self.contactNames = contactNames.flatMap { $0.supports(source) ? $0 : nil }
         self.signInAgain = signInAgain && signIn != nil && source.isConnected
         afterSignIn = source.isConnected ? .containers : .history
         self.source = source
@@ -418,6 +443,16 @@ final class SourceConnectFlow: Identifiable {
             self.enter(next)
         }
         if step == .containers, !containersLoaded { await loadContainers() }
+    }
+
+    /// Whether the history step offers names from Contacts.
+    var offersContactNames: Bool { contactNames != nil }
+
+    /// Turns names from Contacts on or off, asking for access the first time. Before connecting,
+    /// so the first run already names people.
+    func setNamesFromContacts(_ on: Bool) async {
+        guard let contactNames else { return }
+        await busy { try await contactNames.setOn(on) }
     }
 
     /// Connects with the history chosen, paused until the person has chosen what it leaves out,

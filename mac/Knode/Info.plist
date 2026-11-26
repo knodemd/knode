@@ -22,5 +22,7 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Knode shows the people in your Messages conversations by their names in Contacts instead of their phone numbers and email addresses. The names stay on this Mac.</string>
 </dict>
 </plist>

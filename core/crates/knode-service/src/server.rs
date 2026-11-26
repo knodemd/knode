@@ -276,11 +276,14 @@ async fn serve(bound: Bound, shutdown: impl Future<Output = ()>) -> io::Result<(
         auth,
     } = bound;
     let listener = UnixListener::from_std(listener)?;
-    let connectors = match &sources {
-        Some(options) => options.connectors.clone(),
-        None => crate::sources::builtin_connectors(),
+    let (connectors, contacts) = match &sources {
+        Some(options) => (options.connectors.clone(), options.contacts.clone()),
+        None => {
+            let contacts = Arc::new(crate::sources::ContactBook::new());
+            (crate::sources::builtin_connectors_with(&contacts), contacts)
+        }
     };
-    let registry = Arc::new(Registry::new(&home, connectors));
+    let registry = Arc::new(Registry::with_contacts(&home, connectors, contacts));
     let state = Arc::new(State::new(auth, registry));
     let index = index.and_then(|options| state.index.start(state.clone(), &home, options));
     let sources = match sources {
