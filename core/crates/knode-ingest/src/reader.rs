@@ -137,7 +137,10 @@ impl SessionReader {
     /// except an unfinished last line, which is read again next time.
     pub fn poll(&mut self) -> Result<Progress, Error> {
         let agent = self.conversation.agent;
-        if matches!(agent, Agent::OpenCode | Agent::Cursor | Agent::Windsurf) {
+        if matches!(
+            agent,
+            Agent::OpenCode | Agent::Cursor | Agent::CursorCli | Agent::Windsurf
+        ) {
             return self.poll_database();
         }
         if read_whole(agent, &self.path) {
@@ -192,12 +195,14 @@ impl SessionReader {
         Ok(self.replace(conversation, version))
     }
 
-    /// Reads a session kept in a database (OpenCode, Cursor, Windsurf), whole, if it changed.
+    /// Reads a session kept in a database (OpenCode, Cursor, Cursor CLI, Windsurf), whole, if it
+    /// changed.
     fn poll_database(&mut self) -> Result<Progress, Error> {
         let agent = self.conversation.agent;
         let version = match agent {
             Agent::Cursor => crate::cursor::version(&self.path)?,
             Agent::Windsurf => crate::windsurf::version(&self.path)?,
+            Agent::CursorCli => crate::cursor_cli::version(&self.path)?,
             _ => crate::opencode::version(&self.path)?,
         };
         let Some(version) = version else {
@@ -214,6 +219,7 @@ impl SessionReader {
         let version = match agent {
             Agent::Cursor => crate::cursor::read(&self.path, &mut conversation)?,
             Agent::Windsurf => crate::windsurf::read(&self.path, &mut conversation)?,
+            Agent::CursorCli => crate::cursor_cli::read(&self.path, &mut conversation)?,
             _ => {
                 crate::opencode::read(&self.path, &mut conversation)?;
                 version

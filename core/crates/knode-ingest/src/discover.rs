@@ -25,6 +25,10 @@ pub const AIDER_ROOT_VARIABLE: &str = "KNODE_AIDER_ROOT";
 /// `state.vscdb`, instead of the default.
 pub const CURSOR_ROOT_VARIABLE: &str = "KNODE_CURSOR_ROOT";
 
+/// The environment variable that names the Cursor CLI's `chats` folder instead of
+/// `~/.cursor/chats`.
+pub const CURSOR_CLI_ROOT_VARIABLE: &str = "KNODE_CURSOR_CLI_ROOT";
+
 /// The environment variable that names Windsurf's `User/workspaceStorage` folder instead of the
 /// default.
 pub const WINDSURF_ROOT_VARIABLE: &str = "KNODE_WINDSURF_ROOT";
@@ -88,6 +92,7 @@ pub struct SessionFile {
 ///   when it is not set;
 /// - Cursor: `KNODE_CURSOR_ROOT` ([`CURSOR_ROOT_VARIABLE`]), or Cursor's data folder, then
 ///   `User/globalStorage`;
+/// - Cursor CLI: `KNODE_CURSOR_CLI_ROOT` ([`CURSOR_CLI_ROOT_VARIABLE`]), or `~/.cursor/chats`;
 /// - Windsurf: `KNODE_WINDSURF_ROOT` ([`WINDSURF_ROOT_VARIABLE`]), or Windsurf's data folder,
 ///   then `User/workspaceStorage`;
 /// - Cline and Roo Code, which can run in several editors: see [`default_roots`]; this is the
@@ -183,6 +188,8 @@ fn single_root(agent: Agent) -> Option<PathBuf> {
         Agent::Aider => env_dir(AIDER_ROOT_VARIABLE)?,
         Agent::Cursor => env_dir(CURSOR_ROOT_VARIABLE)
             .or_else(|| Some(editor_dir("Cursor")?.join("User").join("globalStorage")))?,
+        Agent::CursorCli => env_dir(CURSOR_CLI_ROOT_VARIABLE)
+            .or_else(|| Some(home()?.join(".cursor").join("chats")))?,
         Agent::Windsurf => env_dir(WINDSURF_ROOT_VARIABLE).or_else(|| {
             Some(
                 editor_dir("Windsurf")?
@@ -232,6 +239,7 @@ pub fn discover(agent: Agent, root: &Path) -> io::Result<Vec<SessionFile>> {
         Agent::OpenCode => crate::opencode::list(root)?,
         Agent::Cursor => crate::cursor::list(root)?,
         Agent::Windsurf => crate::windsurf::list(root)?,
+        Agent::CursorCli => cursor_cli_chats(root)?,
         _ => {
             let mut files = Vec::new();
             walk(agent, root, root, max_depth(agent), &mut files)?;
@@ -239,6 +247,29 @@ pub fn discover(agent: Agent, root: &Path) -> io::Result<Vec<SessionFile>> {
         }
     };
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// The Cursor CLI chats under `root`: `<workspace hash>/<chat id>/store.db`, each with at least
+/// one message. A missing root gives none.
+fn cursor_cli_chats(root: &Path) -> io::Result<Vec<SessionFile>> {
+    let workspaces = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut files = Vec::new();
+    for workspace in workspaces.flatten() {
+        let Ok(chats) = fs::read_dir(workspace.path()) else {
+            continue;
+        };
+        for chat in chats.flatten() {
+            let database = chat.path().join(crate::cursor_cli::DATABASE);
+            if database.is_file() {
+                files.extend(crate::cursor_cli::session(&database));
+            }
+        }
+    }
     Ok(files)
 }
 
@@ -288,6 +319,16 @@ pub(crate) fn changed_sessions(
                 Some(dir) => crate::windsurf::list_workspace(dir),
                 None => Ok(Vec::new()),
             };
+        }
+        Agent::CursorCli => {
+            let chat = crate::cursor_cli::database_of(path).filter(|db| {
+                db.strip_prefix(root)
+                    .is_ok_and(|r| r.components().count() == 3)
+            });
+            return Ok(chat
+                .and_then(|db| crate::cursor_cli::session(&db))
+                .into_iter()
+                .collect());
         }
         Agent::OpenCode | Agent::Cursor | Agent::Windsurf => return Ok(Vec::new()),
         _ => {}
@@ -358,6 +399,7 @@ pub(crate) fn read_whole(agent: Agent, path: &Path) -> bool {
         Agent::Amp
         | Agent::OpenCode
         | Agent::Cursor
+        | Agent::CursorCli
         | Agent::Windsurf
         | Agent::Cline
         | Agent::RooCode => true,
