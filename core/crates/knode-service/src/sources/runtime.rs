@@ -402,6 +402,7 @@ impl Runtime {
         let started = Timestamp::now();
         registry.set_running(&key, true);
         let result = self.batches(entry, &key);
+        entry.connector.finished();
         registry.set_running(&key, false);
         if matches!(result, Ok((_, Ended::Gone))) {
             return false;

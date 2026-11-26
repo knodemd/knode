@@ -6,7 +6,9 @@
 //! into a private temporary folder and only the copy is read
 //! ([`sqlite::open_copy`](crate::sources::sqlite::open_copy)). Before anything is read, the
 //! copy is checked for every table and column Knode reads; when one is missing, nothing is
-//! written and the error says the connector needs an update.
+//! written and the error says the connector needs an update. One copy serves every batch of a
+//! run while the database does not change, and it is removed when the run ends
+//! ([`sqlite::Reused`](crate::sources::sqlite::Reused)).
 //!
 //! Every conversation becomes one node of kind [`CHAT_KIND`](super::CHAT_KIND), the same as a
 //! chat export: its messages grouped by day under `## YYYY-MM-DD`, each `**Sender** (HH:MM):
@@ -47,9 +49,10 @@ use super::model::{Chat, ChatMessage, Media};
 use super::render::{escape_name, escape_text};
 use super::write::ChatWriter;
 use super::{ChatFormat, ChatImportError, ChatImportReport, keys};
+use crate::sources::sqlite::{Held, Reused};
 use crate::sources::{
-    Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
-    SourceInfo, Trigger, Written,
+    Batch, Connector, Container, Cursor, FetchRequest, Fetched, FileStamp, History, Permission,
+    SourceError, SourceInfo, Trigger, Written,
 };
 use db::{ChatRow, MessageRow, Snapshot, failed};
 
@@ -91,6 +94,8 @@ pub struct IMessageConnector {
     /// The Messages folder, with `chat.db` and `Attachments` in it.
     dir: PathBuf,
     options: Options,
+    /// The copy of the database a run reads, kept until the run ends while it does not change.
+    snapshot: Reused<Snapshot>,
 }
 
 impl fmt::Debug for IMessageConnector {
@@ -119,6 +124,7 @@ impl IMessageConnector {
                 names: None,
                 offset: None,
             },
+            snapshot: Reused::default(),
         }
     }
 
@@ -146,6 +152,26 @@ impl IMessageConnector {
         self.dir.join("chat.db")
     }
 
+    /// The checked copy of the database: the one this run already made while the database and
+    /// its log did not change, otherwise a new one.
+    fn snapshot(&self) -> Result<Held<'_, Snapshot>, SourceError> {
+        let database = self.database();
+        let stamp = FileStamp::of(&[database.clone(), db::wal_path(&database)]);
+        self.snapshot.get(stamp, || Snapshot::take(&database))
+    }
+
+    /// Whether a copy of the database is kept now, for tests.
+    #[doc(hidden)]
+    pub fn holds_a_copy(&self) -> bool {
+        self.snapshot.is_held()
+    }
+
+    /// How many copies of the database the connector made so far, for tests.
+    #[doc(hidden)]
+    pub fn copies_made(&self) -> u64 {
+        self.snapshot.made()
+    }
+
     fn names(&self) -> Option<&dyn ContactNames> {
         self.options.names.as_deref()
     }
@@ -171,11 +197,11 @@ impl Connector for IMessageConnector {
     }
 
     fn check(&self) -> Result<(), SourceError> {
-        Snapshot::take(&self.database()).map(|_| ())
+        self.snapshot().map(|_| ())
     }
 
     fn containers(&self, _request: &FetchRequest<'_>) -> Result<Vec<Container>, SourceError> {
-        let snapshot = Snapshot::take(&self.database())?;
+        let snapshot = self.snapshot()?;
         Ok(snapshot
             .chats()
             .map_err(failed)?
@@ -187,8 +213,12 @@ impl Connector for IMessageConnector {
             .collect())
     }
 
+    fn finished(&self) {
+        self.snapshot.release();
+    }
+
     fn fetch(&self, request: &FetchRequest<'_>) -> Result<Fetched, SourceError> {
-        let snapshot = Snapshot::take(&self.database())?;
+        let snapshot = self.snapshot()?;
         let (mut after, seen) = parse_cursor(request.cursor);
         let reset = renumbered(&snapshot, after, seen.as_deref())?;
         if reset {

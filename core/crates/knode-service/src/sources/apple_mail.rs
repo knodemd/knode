@@ -9,7 +9,9 @@
 //!   private temporary folder and only the copy is read
 //!   ([`sqlite::open_copy`](knode_ingest::sources::sqlite::open_copy)). The copy is checked
 //!   first for the tables and columns Knode reads ([`SCHEMA`]); when one is missing, nothing
-//!   is written and the error says the connector needs an update. The `.emlx` files are only
+//!   is written and the error says the connector needs an update. One copy serves every batch
+//!   of a run while the index does not change, and it is removed when the run ends
+//!   ([`sqlite::Reused`](knode_ingest::sources::sqlite::Reused)). The `.emlx` files are only
 //!   read.
 //! - The cursor is the number (`ROWID`) of the last message of the index read, with the store
 //!   it belongs to. Messages the index lists but whose file Mail has not written yet (a mail
@@ -45,7 +47,7 @@ use std::time::{Duration, SystemTime};
 use knode_ingest::sources::FileStamp;
 
 use knode_format::{Provenance, Space, Timestamp};
-use knode_ingest::sources::sqlite::{DatabaseCopy, check_schema, open_copy};
+use knode_ingest::sources::sqlite::{DatabaseCopy, Held, Reused, check_schema, open_copy};
 use knode_ingest::sources::{
     Batch, Connector, Container, Cursor, FetchRequest, Fetched, History, Permission, SourceError,
     SourceInfo, Trigger, Written,
@@ -92,6 +94,8 @@ pub struct AppleMailConnector {
     mail_dir: PathBuf,
     /// The index as it was when it was last read.
     seen: Arc<Mutex<Seen>>,
+    /// The copy of the index a run reads, kept until the run ends while it does not change.
+    snapshot: Reused<Snapshot>,
 }
 
 /// What the connector remembers between runs: by request, the index as it was when a fetch
@@ -171,6 +175,7 @@ impl AppleMailConnector {
         AppleMailConnector {
             mail_dir: mail_dir.into(),
             seen: Arc::default(),
+            snapshot: Reused::default(),
         }
     }
 
@@ -227,7 +232,25 @@ impl AppleMailConnector {
         }
     }
 
-    fn snapshot(&self) -> Result<Snapshot, SourceError> {
+    /// The checked copy of the index: the one this run already made while the index did not
+    /// change, otherwise a new one.
+    fn snapshot(&self) -> Result<Held<'_, Snapshot>, SourceError> {
+        self.snapshot.get(self.stamp(), || self.take_snapshot())
+    }
+
+    /// Whether a copy of the index is kept now, for tests.
+    #[doc(hidden)]
+    pub fn holds_a_copy(&self) -> bool {
+        self.snapshot.is_held()
+    }
+
+    /// How many copies of the index the connector made so far, for tests.
+    #[doc(hidden)]
+    pub fn copies_made(&self) -> u64 {
+        self.snapshot.made()
+    }
+
+    fn take_snapshot(&self) -> Result<Snapshot, SourceError> {
         let store = self.store()?;
         let index = Self::index_path(&store);
         let copy = open_copy(&index).map_err(|e| match e {
@@ -299,6 +322,10 @@ impl Connector for AppleMailConnector {
 
     fn check(&self) -> Result<(), SourceError> {
         self.snapshot().map(|_| ())
+    }
+
+    fn finished(&self) {
+        self.snapshot.release();
     }
 
     fn waiting(&self, cursor: &Cursor) -> bool {

@@ -663,6 +663,52 @@ fn reads_in_batches_without_losing_or_repeating_a_message() {
 }
 
 #[test]
+fn a_run_copies_the_database_once_and_lets_the_copy_go_when_it_ends() {
+    let m = two_conversations();
+    for i in 0..7 {
+        m.message(
+            ADA_CHAT,
+            Some(ADA),
+            &format!("2026-03-04T09:1{i}"),
+            &format!("Message {i}"),
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut space = space(&dir);
+    let setting = Setting {
+        max_items: 2,
+        ..Setting::default()
+    };
+    let connector = m.connector();
+    let (cursor, written) = run(&connector, &mut space, None, &setting).unwrap();
+    assert_eq!(written.items, 7);
+    assert_eq!(
+        connector.copies_made(),
+        1,
+        "the check and four batches read one copy"
+    );
+    assert!(connector.holds_a_copy());
+    connector.finished();
+    assert!(
+        !connector.holds_a_copy(),
+        "no copy stays on disk between runs"
+    );
+
+    // The database changes during a run: the next batch reads a new copy, with the change.
+    connector.check().unwrap();
+    m.message(
+        ADA_CHAT,
+        Some(ADA),
+        "2026-03-04T10:00",
+        "Written during the run",
+    );
+    let (_, written) = run(&connector, &mut space, Some(cursor), &setting).unwrap();
+    assert_eq!(written.items, 1);
+    assert_eq!(connector.copies_made(), 3);
+    connector.finished();
+}
+
+#[test]
 fn excluded_conversations_are_never_read() {
     let m = two_conversations();
     m.message(ADA_CHAT, Some(ADA), "2026-03-04T09:15", "Keep this");
