@@ -764,19 +764,45 @@ impl<A: TelegramApi> TelegramConnector<A> {
         if found.is_empty() {
             return Ok(Fetched::nothing(next).with_more(more));
         }
-        let batch = self.batch(found, &dialogs)?;
-        Ok(Fetched::batch(batch, next).with_more(more))
+        let (batch, cut) = self.batch(found, &dialogs)?;
+        if !cut {
+            return Ok(Fetched::batch(batch, next).with_more(more));
+        }
+        // Telegram asked to wait during a download: the batch ends before that message, and
+        // every chat's cursor stops at its last message kept, so the rest is read again.
+        let mut cursor = ChatCursors::read(request.cursor);
+        for chat in &batch.chats {
+            if let Some(top) = chat.messages.iter().map(|m| m.id).max() {
+                cursor.set(chat.id, top);
+            }
+        }
+        if !caught_up {
+            self.lock().caught_up.remove(request.space_id);
+        }
+        Ok(Fetched::batch(batch, cursor.write()).with_more(true))
     }
 
-    /// Groups the messages by chat and downloads their media.
+    /// Groups the messages by chat and downloads their media. When Telegram asks to wait
+    /// during a download, the batch ends before that message and `true` says it was cut; when
+    /// that is the first message, the wait is the error.
     fn batch(
         &self,
         messages: Vec<Message>,
         dialogs: &[Dialog],
-    ) -> Result<TelegramBatch, SourceError> {
+    ) -> Result<(TelegramBatch, bool), SourceError> {
         let mut chats: BTreeMap<i64, ChatBatch> = BTreeMap::new();
         let mut media = MediaDir::default();
+        let mut cut = false;
         for message in messages {
+            let file = match self.download(&message, &mut media) {
+                Ok(file) => file,
+                Err(DownloadError::Wait(_)) if !chats.is_empty() => {
+                    cut = true;
+                    break;
+                }
+                Err(DownloadError::Wait(e)) => return Err(source_error(e)),
+                Err(DownloadError::Source(e)) => return Err(e),
+            };
             let chat_id = message.chat.id;
             let entry = chats.entry(chat_id).or_insert_with(|| {
                 let dialog = dialogs.iter().find(|d| d.chat.id == chat_id);
@@ -798,7 +824,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
                     files: BTreeMap::new(),
                 }
             });
-            if let Some(file) = self.download(&message, &mut media)? {
+            if let Some(file) = file {
                 entry.files.insert(message.id, file);
             }
             entry.messages.push(message);
@@ -818,11 +844,12 @@ impl<A: TelegramApi> TelegramConnector<A> {
                 }
             }
         }
-        Ok(TelegramBatch {
+        let batch = TelegramBatch {
             chats: chats.into_values().collect(),
             replied,
             media,
-        })
+        };
+        Ok((batch, cut))
     }
 
     /// Downloads a message's photo or file when it is small enough, into the batch's folder.
@@ -830,7 +857,7 @@ impl<A: TelegramApi> TelegramConnector<A> {
         &self,
         message: &Message,
         dir: &mut MediaDir,
-    ) -> Result<Option<Downloaded>, SourceError> {
+    ) -> Result<Option<Downloaded>, DownloadError> {
         let max = self.options.media_max_bytes;
         let (name, size) = match &message.media {
             Some(MessageMedia::Photo { size }) => (format!("photo_{}.jpg", message.id), *size),
@@ -848,13 +875,15 @@ impl<A: TelegramApi> TelegramConnector<A> {
         let bytes = match self.call(|api| api.download(&message.chat, message.id, max)) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return Ok(Some(Downloaded::TooLarge(name))),
-            Err(e @ (ApiError::FloodWait(_) | ApiError::SignedOut | ApiError::NoApp)) => {
-                return Err(source_error(e));
+            Err(e @ ApiError::FloodWait(_)) => return Err(DownloadError::Wait(e)),
+            Err(e @ (ApiError::SignedOut | ApiError::NoApp)) => {
+                return Err(DownloadError::Source(source_error(e)));
             }
             Err(_) => return Ok(Some(Downloaded::Failed(name))),
         };
         let entry = format!("{}-{}", message.chat.id, message.id);
-        dir.write(&entry, &bytes)?;
+        dir.write(&entry, &bytes)
+            .map_err(|e| DownloadError::Source(e.into()))?;
         Ok(Some(Downloaded::File { name, entry }))
     }
 
@@ -1059,6 +1088,14 @@ impl ChatCursors {
     fn write(&self) -> Cursor {
         Cursor::new(serde_json::to_string(self).unwrap_or_default())
     }
+}
+
+/// Why a download stopped the batch.
+enum DownloadError {
+    /// Telegram asked to wait (`FLOOD_WAIT`).
+    Wait(ApiError),
+    /// Anything else, which ends the run.
+    Source(SourceError),
 }
 
 /// A downloaded file, or why there is none.
